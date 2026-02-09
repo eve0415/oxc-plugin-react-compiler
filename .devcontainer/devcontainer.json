@@ -1,0 +1,166 @@
+{
+  "name": "oxc-plugin-react-compiler",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/copilot-cli:1": {}
+  },
+  "postCreateCommand": "git config --local core.ignorecase false",
+  "postStartCommand": "npm install -g @openai/codex @google/gemini-cli && pnpm install --frozen-lockfile",
+  "containerEnv": {
+    "TZ": "Asia/Tokyo"
+  },
+  "mounts": [
+    "type=bind,source=${localEnv:HOME}/.claude,target=/home/node/.claude,type=bind,consistency=cached",
+    "type=bind,source=${localEnv:HOME}/.codex,target=/home/node/.codex,type=bind,consistency=cached",
+    "type=bind,source=${localEnv:HOME}/.gemini,target=/home/node/.gemini,type=bind,consistency=cached"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "oxc.oxc-vscode",
+        "redhat.vscode-yaml",
+        "tamasfe.even-better-toml",
+        "ms-azuretools.vscode-docker",
+        "TypeScriptTeam.native-preview",
+        "vitest.explorer",
+        "ambar.bundle-size",
+        "blazejkustra.react-compiler-marker",
+        "github.vscode-github-actions",
+        "GitHub.vscode-pull-request-github",
+        "Anthropic.claude-code",
+        "openai.chatgpt",
+        "google.gemini-cli-vscode-ide-companion"
+      ],
+      "settings": {
+        "diffEditor.diffAlgorithm": "advanced",
+        "diffEditor.experimental.showMoves": true,
+        "editor.formatOnSave": true,
+        "editor.formatOnType": true,
+        "editor.formatOnPaste": true,
+        "editor.codeActionsOnSave": {
+          "source.organizeImports": "always",
+          "source.addMissingImports": "always"
+        },
+        "editor.cursorBlinking": "smooth",
+        "editor.cursorSmoothCaretAnimation": "on",
+        "editor.defaultFormatter": "oxc.oxc-vscode",
+        "editor.linkedEditing": true,
+        "editor.pasteAs.preferences": ["text.updateImports.jsts"],
+        "editor.quickSuggestions": {
+          "strings": "on"
+        },
+        "editor.smoothScrolling": true,
+        "editor.tabSize": 2,
+        "files.associations": {
+          ".env*": "dotenv",
+          ".dev.vars": "dotenv",
+          ".dev.vars.*": "dotenv",
+          "*.css": "tailwindcss"
+        },
+        "files.insertFinalNewline": true,
+        "files.eol": "\n",
+        "files.readonlyInclude": {
+          "pnpm-lock.yaml": true,
+          "worker-configuration.d.ts": true,
+          "src/routeTree.gen.ts": true,
+          "src/generated/*": true
+        },
+        "files.trimFinalNewlines": true,
+        "files.trimTrailingWhitespace": true,
+        "files.watcherExclude": {
+          ".wrangler": true,
+          "worker-configuration.d.ts": true,
+          "src/routeTree.gen.ts": true,
+          "dist": true
+        },
+        "javascript.updateImportsOnPaste.enabled": true,
+        "oxc.fixKind": "all",
+        "oxc.typeAware": true,
+        "oxc.unusedDisableDirectives": "deny",
+        "search.exclude": {
+          "pnpm-lock.yaml": true,
+          ".wrangler": true,
+          "worker-configuration.d.ts": true,
+          "src/routeTree.gen.ts": true,
+          "dist": true
+        },
+        "tailwindCSS.classAttributes": ["className", ".*Styles"],
+        "tailwindCSS.experimental.classRegex": [
+          ["cva\\(((?:[^()]|\\([^()]*\\))*)\\)", "[\"'`]([^\"'`]*).*?[\"'`]"],
+          ["cx\\(((?:[^()]|\\([^()]*\\))*)\\)", "(?:'|\"|`)([^']*)(?:'|\"|`)"],
+          ["cva\\(([^;]*)[\\);]", "[`'\"`]([^'\"`;]*)[`'\"`]"]
+        ],
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "terminal.integrated.profiles.linux": {
+          "zsh": {
+            "path": "/bin/zsh"
+          }
+        },
+        "typescript.experimental.useTsgo": true,
+        "typescript.inlayHints.functionLikeReturnTypes.enabled": true,
+        "typescript.inlayHints.parameterNames.enabled": "all",
+        "typescript.inlayHints.parameterTypes.enabled": true,
+        "typescript.inlayHints.variableTypes.enabled": true,
+        "typescript.preferences.autoImportFileExcludePatterns": ["vm", "node:vm"],
+        "typescript.preferences.preferTypeOnlyAutoImports": true,
+        "typescript.implementationsCodeLens.enabled": true,
+        "typescript.tsserver.watchOptions": {
+          "fallbackPolling": "dynamicPriorityPolling",
+          "watchFile": "useFsEvents",
+          "synchronousWatchDirectory": true,
+          "excludeDirectories": ["**/node_modules/**/*"]
+        },
+        "vitest.maximumConfigs": 50,
+        "[css]": {
+          "editor.defaultFormatter": "bradlc.vscode-tailwindcss"
+        },
+        "[javascript]": {
+          "editor.defaultFormatter": "oxc.oxc-vscode"
+        },
+        "[typescript]": {
+          "editor.defaultFormatter": "oxc.oxc-vscode"
+        },
+        "[typescriptreact]": {
+          "editor.defaultFormatter": "oxc.oxc-vscode"
+        },
+        "[json]": {
+          "editor.defaultFormatter": "oxc.oxc-vscode"
+        },
+        "[jsonc]": {
+          "editor.defaultFormatter": "oxc.oxc-vscode"
+        },
+        "[markdown]": {
+          "diffEditor.ignoreTrimWhitespace": false,
+          "editor.quickSuggestions": {
+            "comments": "off",
+            "strings": "off",
+            "other": "off"
+          },
+          "editor.tabSize": 4,
+          "editor.unicodeHighlight.ambiguousCharacters": false,
+          "editor.unicodeHighlight.invisibleCharacters": false,
+          "editor.wordWrap": "on"
+        }
+      },
+      "mcp": {
+        "servers": {
+          "context7": {
+            "type": "http",
+            "url": "https://mcp.context7.com/mcp"
+          },
+          "tanstack": {
+            "command": "npx",
+            "args": ["@tanstack/cli", "mcp"]
+          },
+          "github": {
+            "type": "http",
+            "url": "https://api.githubcopilot.com/mcp/"
+          }
+        }
+      }
+    }
+  }
+}

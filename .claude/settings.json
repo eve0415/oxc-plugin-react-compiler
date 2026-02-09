@@ -1,0 +1,19 @@
+{
+  "env": {
+    "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR": "1",
+    "ENABLE_TOOL_SEARCH": "true",
+    "ENABLE_EXPERIMENTAL_MCP_CLI": "false",
+    "CLAUDE_CODE_HIDE_ACCOUNT_INFO": "true"
+  },
+  "permissions": {
+    "defaultMode": "plan"
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledPlugins": {
+    "feature-dev@claude-plugins-official": true,
+    "typescript-lsp@claude-plugins-official": true,
+    "code-simplifier@claude-plugins-official": true,
+    "code-review@claude-code-plugins": true,
+    "pr-review-toolkit@claude-code-plugins": true
+  }
+}
