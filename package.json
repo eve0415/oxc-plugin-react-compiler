@@ -1,0 +1,28 @@
+{
+  "type": "module",
+  "imports": {
+    "#*": [
+      "./src/*",
+      "./src/*.ts",
+      "./src/*.tsx"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^25.1.0",
+    "oxfmt": "^0.28.0",
+    "oxlint": "^1.42.0",
+    "oxlint-tsgolint": "^0.11.3",
+    "vite": "8.0.0-beta.13"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "10.29.2"
+    },
+    "runtime": {
+      "name": "node",
+      "version": "24.13.x"
+    }
+  },
+  "packageManager": "pnpm@10.29.2"
+}
