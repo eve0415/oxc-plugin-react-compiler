@@ -5,7 +5,8 @@
   },
   "features": {
     "ghcr.io/devcontainers/features/github-cli:1": {},
-    "ghcr.io/devcontainers/features/copilot-cli:1": {}
+    "ghcr.io/devcontainers/features/copilot-cli:1": {},
+    "ghcr.io/devcontainers/features/rust:1": {}
   },
   "postCreateCommand": "git config --local core.ignorecase false",
   "postStartCommand": "npm install -g @openai/codex @google/gemini-cli && pnpm install --frozen-lockfile",
@@ -23,6 +24,7 @@
         "oxc.oxc-vscode",
         "redhat.vscode-yaml",
         "tamasfe.even-better-toml",
+        "rust-lang.rust-analyzer",
         "ms-azuretools.vscode-docker",
         "TypeScriptTeam.native-preview",
         "vitest.explorer",

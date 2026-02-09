@@ -8,7 +8,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   du -sh /var/cache/apt && \
   rm /etc/apt/apt.conf.d/docker-clean && \
   apt-get update && \
-  apt-get install -y xdg-utils chromium chromium-driver
+  apt-get install -y xdg-utils
 
 RUN echo 'store-dir=/home/node/.local/share/pnpm/store/.pnpm-store' >> /usr/local/etc/npmrc
 
