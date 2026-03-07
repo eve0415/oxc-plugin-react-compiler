@@ -17,8 +17,39 @@ struct JsRuntime {
     run_as_node: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BackendMode {
+    Raw,
+    Ast,
+    Compare,
+}
+
+impl BackendMode {
+    fn from_args(args: &[String]) -> Self {
+        match args
+            .iter()
+            .position(|a| a == "--backend")
+            .and_then(|i| args.get(i + 1))
+            .map(String::as_str)
+        {
+            Some("ast") => Self::Ast,
+            Some("compare") => Self::Compare,
+            _ => Self::Raw,
+        }
+    }
+
+    fn env_value(self) -> Option<&'static str> {
+        match self {
+            Self::Raw => Some("raw"),
+            Self::Ast => Some("ast"),
+            Self::Compare => None,
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    let backend_mode = BackendMode::from_args(&args);
     let filter = args
         .iter()
         .position(|a| a == "--filter")
@@ -75,36 +106,39 @@ fn main() {
         .unwrap_or(10);
     let fixture_timeout = std::time::Duration::from_secs(fixture_timeout_secs);
 
-    let results_raw: Vec<FixtureResult> = if parallel {
-        fixtures
-            .par_iter()
-            .map(|fixture| {
-                if verbose {
-                    println!("Running {}", fixture.name);
-                }
-                let res =
-                    run_fixture_with_timeout(fixture, fixture_timeout, run_skipped, strict_output);
-                if verbose {
-                    println!("Finished {}", fixture.name);
-                }
-                res
-            })
-            .collect()
+    let results_raw: Vec<FixtureResult> = if backend_mode == BackendMode::Compare {
+        let raw_results = run_fixture_suite(
+            &fixtures,
+            fixture_timeout,
+            run_skipped,
+            strict_output,
+            parallel,
+            verbose,
+            BackendMode::Raw,
+            true,
+        );
+        let ast_results = run_fixture_suite(
+            &fixtures,
+            fixture_timeout,
+            run_skipped,
+            strict_output,
+            parallel,
+            verbose,
+            BackendMode::Ast,
+            true,
+        );
+        compare_backend_results(&fixtures, raw_results, ast_results)
     } else {
-        fixtures
-            .iter()
-            .map(|fixture| {
-                if verbose {
-                    println!("Running {}", fixture.name);
-                }
-                let res =
-                    run_fixture_with_timeout(fixture, fixture_timeout, run_skipped, strict_output);
-                if verbose {
-                    println!("Finished {}", fixture.name);
-                }
-                res
-            })
-            .collect()
+        run_fixture_suite(
+            &fixtures,
+            fixture_timeout,
+            run_skipped,
+            strict_output,
+            parallel,
+            verbose,
+            backend_mode,
+            false,
+        )
     };
     let results: Vec<FixtureResult> = results_raw
         .into_iter()
@@ -599,6 +633,246 @@ fn main() {
     }
 }
 
+fn run_fixture_suite(
+    fixtures: &[Fixture],
+    fixture_timeout: std::time::Duration,
+    run_skipped: bool,
+    strict_output: bool,
+    parallel: bool,
+    verbose: bool,
+    backend_mode: BackendMode,
+    capture_generated_code: bool,
+) -> Vec<FixtureResult> {
+    with_codegen_backend_env(backend_mode, || {
+        if parallel {
+            fixtures
+                .par_iter()
+                .map(|fixture| {
+                    if verbose {
+                        println!("Running {}", fixture.name);
+                    }
+                    let res = run_fixture_with_timeout(
+                        fixture,
+                        fixture_timeout,
+                        run_skipped,
+                        strict_output,
+                        capture_generated_code,
+                    );
+                    if verbose {
+                        println!("Finished {}", fixture.name);
+                    }
+                    res
+                })
+                .collect()
+        } else {
+            fixtures
+                .iter()
+                .map(|fixture| {
+                    if verbose {
+                        println!("Running {}", fixture.name);
+                    }
+                    let res = run_fixture_with_timeout(
+                        fixture,
+                        fixture_timeout,
+                        run_skipped,
+                        strict_output,
+                        capture_generated_code,
+                    );
+                    if verbose {
+                        println!("Finished {}", fixture.name);
+                    }
+                    res
+                })
+                .collect()
+        }
+    })
+}
+
+fn with_codegen_backend_env<T>(backend_mode: BackendMode, f: impl FnOnce() -> T) -> T {
+    let previous = std::env::var("OXC_REACT_CODEGEN_BACKEND").ok();
+    match backend_mode.env_value() {
+        Some(value) => unsafe { std::env::set_var("OXC_REACT_CODEGEN_BACKEND", value) },
+        None => unsafe { std::env::remove_var("OXC_REACT_CODEGEN_BACKEND") },
+    }
+    let result = f();
+    match previous {
+        Some(value) => unsafe { std::env::set_var("OXC_REACT_CODEGEN_BACKEND", value) },
+        None => unsafe { std::env::remove_var("OXC_REACT_CODEGEN_BACKEND") },
+    }
+    result
+}
+
+fn compare_backend_results(
+    fixtures: &[Fixture],
+    raw_results: Vec<FixtureResult>,
+    ast_results: Vec<FixtureResult>,
+) -> Vec<FixtureResult> {
+    fixtures
+        .iter()
+        .zip(raw_results)
+        .zip(ast_results)
+        .map(|((fixture, raw), ast)| compare_backend_result(fixture, raw, ast))
+        .collect()
+}
+
+fn compare_backend_result(
+    fixture: &Fixture,
+    raw: FixtureResult,
+    ast: FixtureResult,
+) -> FixtureResult {
+    if raw.name != ast.name {
+        return FixtureResult {
+            name: fixture.name.clone(),
+            status: Status::Fail,
+            message: Some("Raw/AST result ordering mismatch".to_string()),
+            expected_state: raw.expected_state,
+            actual_state: ActualState::HarnessFailure,
+            outcome: FixtureOutcome::HarnessFailure,
+            parity_success: false,
+            generated_code: None,
+            actual_code: None,
+            expected_code: None,
+            is_error_fixture: raw.is_error_fixture || ast.is_error_fixture,
+        };
+    }
+
+    if raw.actual_state != ast.actual_state {
+        return FixtureResult {
+            name: fixture.name.clone(),
+            status: Status::Fail,
+            message: Some(format!(
+                "Backend state mismatch: raw={:?}, ast={:?}",
+                raw.actual_state, ast.actual_state
+            )),
+            expected_state: raw.expected_state,
+            actual_state: ast.actual_state,
+            outcome: FixtureOutcome::Mismatch,
+            parity_success: false,
+            generated_code: ast.generated_code.clone(),
+            actual_code: ast.generated_code,
+            expected_code: raw.generated_code,
+            is_error_fixture: raw.is_error_fixture || ast.is_error_fixture,
+        };
+    }
+
+    if raw.actual_state != ActualState::Transformed {
+        return FixtureResult {
+            name: fixture.name.clone(),
+            status: Status::Pass,
+            message: None,
+            expected_state: raw.expected_state,
+            actual_state: raw.actual_state,
+            outcome: raw.outcome,
+            parity_success: true,
+            generated_code: None,
+            actual_code: None,
+            expected_code: None,
+            is_error_fixture: raw.is_error_fixture || ast.is_error_fixture,
+        };
+    }
+
+    let Some(raw_code) = raw.generated_code.as_deref() else {
+        return FixtureResult {
+            name: fixture.name.clone(),
+            status: Status::Fail,
+            message: Some("Missing raw backend generated code".to_string()),
+            expected_state: raw.expected_state,
+            actual_state: ActualState::HarnessFailure,
+            outcome: FixtureOutcome::HarnessFailure,
+            parity_success: false,
+            generated_code: None,
+            actual_code: None,
+            expected_code: None,
+            is_error_fixture: raw.is_error_fixture || ast.is_error_fixture,
+        };
+    };
+    let Some(ast_code) = ast.generated_code.as_deref() else {
+        return FixtureResult {
+            name: fixture.name.clone(),
+            status: Status::Fail,
+            message: Some("Missing AST backend generated code".to_string()),
+            expected_state: raw.expected_state,
+            actual_state: ActualState::HarnessFailure,
+            outcome: FixtureOutcome::HarnessFailure,
+            parity_success: false,
+            generated_code: None,
+            actual_code: None,
+            expected_code: None,
+            is_error_fixture: raw.is_error_fixture || ast.is_error_fixture,
+        };
+    };
+
+    let raw_formatted = match format_with_oxfmt(&fixture.input_path, raw_code) {
+        Ok(code) => code,
+        Err(err) => {
+            return FixtureResult {
+                name: fixture.name.clone(),
+                status: Status::Fail,
+                message: Some(format!("Failed to format raw backend output with oxfmt: {err}")),
+                expected_state: raw.expected_state,
+                actual_state: ActualState::HarnessFailure,
+                outcome: FixtureOutcome::HarnessFailure,
+                parity_success: false,
+                generated_code: None,
+                actual_code: None,
+                expected_code: None,
+                is_error_fixture: raw.is_error_fixture || ast.is_error_fixture,
+            };
+        }
+    };
+    let ast_formatted = match format_with_oxfmt(&fixture.input_path, ast_code) {
+        Ok(code) => code,
+        Err(err) => {
+            return FixtureResult {
+                name: fixture.name.clone(),
+                status: Status::Fail,
+                message: Some(format!("Failed to format AST backend output with oxfmt: {err}")),
+                expected_state: raw.expected_state,
+                actual_state: ActualState::HarnessFailure,
+                outcome: FixtureOutcome::HarnessFailure,
+                parity_success: false,
+                generated_code: None,
+                actual_code: None,
+                expected_code: None,
+                is_error_fixture: raw.is_error_fixture || ast.is_error_fixture,
+            };
+        }
+    };
+
+    let raw_normalized = normalize_backend_compare_code(&raw_formatted);
+    let ast_normalized = normalize_backend_compare_code(&ast_formatted);
+
+    if raw_normalized == ast_normalized {
+        FixtureResult {
+            name: fixture.name.clone(),
+            status: Status::Pass,
+            message: None,
+            expected_state: raw.expected_state,
+            actual_state: ActualState::Transformed,
+            outcome: FixtureOutcome::TransformedMatch,
+            parity_success: true,
+            generated_code: Some(ast_code.to_string()),
+            actual_code: None,
+            expected_code: None,
+            is_error_fixture: raw.is_error_fixture || ast.is_error_fixture,
+        }
+    } else {
+        FixtureResult {
+            name: fixture.name.clone(),
+            status: Status::Fail,
+            message: Some("Raw and AST backends differ after oxfmt normalization".to_string()),
+            expected_state: raw.expected_state,
+            actual_state: ActualState::Transformed,
+            outcome: FixtureOutcome::Mismatch,
+            parity_success: false,
+            generated_code: Some(ast_code.to_string()),
+            actual_code: Some(ast_normalized),
+            expected_code: Some(raw_normalized),
+            is_error_fixture: raw.is_error_fixture || ast.is_error_fixture,
+        }
+    }
+}
+
 /// Normalize cache-related references:
 /// - `_c(N)` → `_c(?)` for any N
 /// - `$[N]` → `$[?]` for any N
@@ -1012,6 +1286,7 @@ struct FixtureResult {
     actual_state: ActualState,
     outcome: FixtureOutcome,
     parity_success: bool,
+    generated_code: Option<String>,
     actual_code: Option<String>,
     expected_code: Option<String>,
     is_error_fixture: bool,
@@ -1679,13 +1954,19 @@ fn run_fixture_with_timeout(
     timeout: std::time::Duration,
     run_skipped: bool,
     strict_output: bool,
+    capture_generated_code: bool,
 ) -> FixtureResult {
     let fixture_clone = fixture.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024) // 64MB stack
         .spawn(move || {
-            let r = run_fixture(&fixture_clone, run_skipped, strict_output);
+            let r = run_fixture(
+                &fixture_clone,
+                run_skipped,
+                strict_output,
+                capture_generated_code,
+            );
             let _ = tx.send(r);
         })
         .expect("failed to spawn fixture thread");
@@ -1702,6 +1983,7 @@ fn run_fixture_with_timeout(
                 actual_state: ActualState::Timeout,
                 outcome: FixtureOutcome::Timeout,
                 parity_success: false,
+                generated_code: None,
                 actual_code: None,
                 expected_code: None,
                 is_error_fixture: matches!(expected_state, Some(ExpectedState::Error)),
@@ -1717,6 +1999,7 @@ fn run_fixture_with_timeout(
                 actual_state: ActualState::HarnessFailure,
                 outcome: FixtureOutcome::HarnessFailure,
                 parity_success: false,
+                generated_code: None,
                 actual_code: None,
                 expected_code: None,
                 is_error_fixture: matches!(expected_state, Some(ExpectedState::Error)),
@@ -1725,7 +2008,12 @@ fn run_fixture_with_timeout(
     }
 }
 
-fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> FixtureResult {
+fn run_fixture(
+    fixture: &Fixture,
+    run_skipped: bool,
+    strict_output: bool,
+    capture_generated_code: bool,
+) -> FixtureResult {
     let source = match std::fs::read_to_string(&fixture.input_path) {
         Ok(s) => s,
         Err(e) => {
@@ -1737,6 +2025,7 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> Fix
                 actual_state: ActualState::HarnessFailure,
                 outcome: FixtureOutcome::HarnessFailure,
                 parity_success: false,
+                generated_code: None,
                 actual_code: None,
                 expected_code: None,
                 is_error_fixture: false,
@@ -1755,6 +2044,7 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> Fix
                 actual_state: ActualState::HarnessFailure,
                 outcome: FixtureOutcome::HarnessFailure,
                 parity_success: false,
+                generated_code: None,
                 actual_code: None,
                 expected_code: None,
                 is_error_fixture: false,
@@ -1829,6 +2119,7 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> Fix
             actual_state: ActualState::HarnessFailure,
             outcome: FixtureOutcome::HarnessFailure,
             parity_success: false,
+            generated_code: None,
             actual_code: None,
             expected_code: None,
             is_error_fixture: matches!(expected_state, Some(ExpectedState::Error)),
@@ -1844,6 +2135,7 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> Fix
             actual_state: ActualState::Skipped,
             outcome: FixtureOutcome::ExpectedSkipMatch,
             parity_success: true,
+            generated_code: None,
             actual_code: None,
             expected_code: None,
             is_error_fixture: false,
@@ -2137,6 +2429,7 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> Fix
                 actual_state: ActualState::Error,
                 outcome: FixtureOutcome::ExpectedErrorMatch,
                 parity_success: true,
+                generated_code: None,
                 actual_code: None,
                 expected_code: None,
                 is_error_fixture: true,
@@ -2153,6 +2446,11 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> Fix
                 actual_state: ActualState::Transformed,
                 outcome: FixtureOutcome::Mismatch,
                 parity_success: false,
+                generated_code: if capture_generated_code {
+                    Some(result.code.clone())
+                } else {
+                    None
+                },
                 actual_code: Some(canonicalize_strict_text(&result.code)),
                 expected_code: expected_error.map(|s| canonicalize_strict_text(&s)),
                 is_error_fixture: true,
@@ -2185,6 +2483,11 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> Fix
                         actual_state: ActualState::Bailout,
                         outcome: FixtureOutcome::UnexpectedSkip,
                         parity_success: false,
+                        generated_code: if capture_generated_code {
+                            Some(result.code.clone())
+                        } else {
+                            None
+                        },
                         actual_code: Some(actual),
                         expected_code: Some(expected),
                         is_error_fixture: false,
@@ -2198,6 +2501,11 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> Fix
                         actual_state: ActualState::Transformed,
                         outcome: FixtureOutcome::TransformedMatch,
                         parity_success: true,
+                        generated_code: if capture_generated_code {
+                            Some(result.code.clone())
+                        } else {
+                            None
+                        },
                         actual_code: None,
                         expected_code: None,
                         is_error_fixture: false,
@@ -2211,6 +2519,11 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> Fix
                         actual_state: ActualState::Transformed,
                         outcome: FixtureOutcome::Mismatch,
                         parity_success: false,
+                        generated_code: if capture_generated_code {
+                            Some(result.code.clone())
+                        } else {
+                            None
+                        },
                         actual_code: Some(actual),
                         expected_code: Some(expected),
                         is_error_fixture: false,
@@ -2227,6 +2540,11 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> Fix
                         actual_state: ActualState::Bailout,
                         outcome: FixtureOutcome::ExpectedBailoutMatch,
                         parity_success: true,
+                        generated_code: if capture_generated_code {
+                            Some(result.code.clone())
+                        } else {
+                            None
+                        },
                         actual_code: None,
                         expected_code: None,
                         is_error_fixture: false,
@@ -2243,6 +2561,11 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> Fix
                         actual_state: ActualState::Transformed,
                         outcome: FixtureOutcome::Mismatch,
                         parity_success: false,
+                        generated_code: if capture_generated_code {
+                            Some(result.code.clone())
+                        } else {
+                            None
+                        },
                         actual_code: Some(actual),
                         expected_code: Some(expected),
                         is_error_fixture: false,
@@ -2263,6 +2586,11 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> Fix
                 },
                 outcome: FixtureOutcome::Mismatch,
                 parity_success: false,
+                generated_code: if capture_generated_code {
+                    Some(result.code.clone())
+                } else {
+                    None
+                },
                 actual_code: Some(actual),
                 expected_code: Some(expected),
                 is_error_fixture: false,
@@ -2279,6 +2607,11 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> Fix
                 },
                 outcome: FixtureOutcome::HarnessFailure,
                 parity_success: false,
+                generated_code: if capture_generated_code {
+                    Some(result.code.clone())
+                } else {
+                    None
+                },
                 actual_code: Some(actual),
                 expected_code: Some(expected),
                 is_error_fixture: false,
@@ -2289,6 +2622,71 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> Fix
 
 fn canonicalize_strict_text(code: &str) -> String {
     code.replace("\r\n", "\n").trim_end().to_string()
+}
+
+const OXFMT_FORMAT_SCRIPT: &str = r#"
+import { format } from 'oxfmt';
+import fs from 'node:fs';
+
+const fileName = process.argv[1] || 'fixture.js';
+const source = fs.readFileSync(0, 'utf8');
+const result = await format(fileName, source, {});
+if (result.errors && result.errors.length > 0) {
+  process.stderr.write(
+    result.errors.map(error => error.message || 'unknown oxfmt error').join('\n'),
+  );
+  process.exit(2);
+}
+process.stdout.write(result.code);
+"#;
+
+fn format_with_oxfmt(input_path: &Path, code: &str) -> Result<String, String> {
+    let file_name = input_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("fixture.js");
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| "failed to resolve workspace root".to_string())?;
+
+    let mut child = Command::new("pnpm")
+        .current_dir(workspace_root)
+        .args(["exec", "node", "--input-type=module", "-e", OXFMT_FORMAT_SCRIPT, file_name])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("failed to spawn oxfmt: {err}"))?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(code.as_bytes())
+            .map_err(|err| format!("failed to write oxfmt stdin: {err}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|err| format!("failed to read oxfmt output: {err}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("oxfmt exited with status {}", output.status)
+        } else {
+            stderr
+        });
+    }
+
+    String::from_utf8(output.stdout).map_err(|err| format!("oxfmt emitted invalid utf8: {err}"))
+}
+
+fn normalize_backend_compare_code(code: &str) -> String {
+    code.replace("\r\n", "\n")
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn prepare_code_for_compare(code: &str, strict_output: bool) -> String {
