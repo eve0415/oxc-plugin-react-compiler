@@ -4,6 +4,7 @@ use crate::CompileResult;
 use crate::options::PluginOptions;
 
 pub(crate) mod ast_backend;
+pub(crate) mod hir_to_ast;
 pub(crate) mod raw;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +42,7 @@ pub(crate) struct CompiledFunction {
     pub(crate) body_end: u32,
     pub(crate) directives: Vec<String>,
     pub(crate) preserved_body_statements: Vec<String>,
+    pub(crate) hir_function: Option<crate::hir::types::HIRFunction>,
     pub(crate) needs_instrument_forget: bool,
     pub(crate) needs_emit_freeze: bool,
     pub(crate) outlined_functions: Vec<(String, String, String)>,

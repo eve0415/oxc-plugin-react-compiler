@@ -1443,6 +1443,7 @@ fn dedupe_outlined_functions(outlined: &mut Vec<(String, String, String)>) {
 /// Result of running the HIR pipeline.
 struct PipelineOutput {
     codegen_result: codegen_reactive::CodegenResult,
+    final_hir_snapshot: HIRFunction,
     hir_outlined: Vec<optimization::outline_functions::OutlinedFunction>,
     reserved_removed_names: std::collections::HashSet<String>,
     has_fire_rewrite: bool,
@@ -1953,6 +1954,7 @@ fn run_hir_pipeline(
     // Capture feature flags before consuming the HIR function.
     let has_fire_rewrite = hir_func.env.has_fire_rewrite();
     let has_inferred_effect = hir_func.env.has_inferred_effect();
+    let final_hir_snapshot = hir_func.clone();
     let post_hir_named_identifiers = collect_named_identifiers_hir(&hir_func);
     let mut reserved_removed_names: std::collections::HashSet<String> = pre_dce_named_identifiers;
     reserved_removed_names.retain(|name| !post_hir_named_identifiers.contains(name));
@@ -1972,6 +1974,7 @@ fn run_hir_pipeline(
 
     Ok(PipelineOutput {
         codegen_result,
+        final_hir_snapshot,
         hir_outlined,
         reserved_removed_names,
         has_fire_rewrite,
@@ -6270,6 +6273,7 @@ fn try_compile_function<'a>(
         body_end: body.span.end,
         directives,
         preserved_body_statements,
+        hir_function: Some(pipeline_output.final_hir_snapshot),
         needs_instrument_forget,
         needs_emit_freeze,
         outlined_functions: outlined,
@@ -6444,6 +6448,7 @@ fn try_compile_function_with_name<'a>(
         body_end: body.span.end,
         directives,
         preserved_body_statements,
+        hir_function: Some(pipeline_output.final_hir_snapshot),
         needs_instrument_forget,
         needs_emit_freeze,
         outlined_functions: outlined,
@@ -6626,6 +6631,7 @@ fn try_compile_arrow<'a>(
         body_end: arrow.span.end,
         directives,
         preserved_body_statements,
+        hir_function: Some(pipeline_output.final_hir_snapshot),
         needs_instrument_forget,
         needs_emit_freeze,
         outlined_functions: outlined,
