@@ -8,6 +8,7 @@
 //! - `oxc_semantic` for scope and symbol analysis
 //! - `oxc_codegen` for output generation
 
+mod codegen_backend;
 pub mod environment;
 pub mod error;
 pub mod hir;
