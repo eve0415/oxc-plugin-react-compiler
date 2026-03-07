@@ -135,5 +135,18 @@ dist
 .yarn/install-state.gz
 .pnp.*
 
+# Rust
+target/
+
+# napi
+*.node
+
 # AI
-.claude/settings.local.json
+.claude/*.local.*
+
+# JetBrains IDEs
+.idea/
+.worktrees/
+.claude/worktrees/
+
+tmp/

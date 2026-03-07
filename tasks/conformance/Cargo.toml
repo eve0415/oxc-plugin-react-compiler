@@ -1,0 +1,14 @@
+[package]
+name = "conformance"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Conformance test runner for oxc_react_compiler"
+publish = false
+
+[dependencies]
+oxc_react_compiler = { path = "../../crates/oxc_react_compiler" }
+regex = "1.12.3"
+rayon = "1.11.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
