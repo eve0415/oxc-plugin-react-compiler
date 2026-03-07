@@ -326,9 +326,7 @@ fn scope_id_at_place(
     place: &Place,
     scope_ranges: &mut HashMap<ScopeId, MutableRange>,
 ) -> Option<ScopeId> {
-    let Some(scope_id) = get_place_scope(id, place, scope_ranges) else {
-        return None;
-    };
+    let scope_id = get_place_scope(id, place, scope_ranges)?;
     if !scope_ranges.contains_key(&scope_id)
         && let Some(initial_scope) = &place.identifier.scope
     {
@@ -619,7 +617,10 @@ fn compute_aligned_ranges(func: &HIRFunction) -> HashMap<ScopeId, MutableRange> 
                         }
                     } else {
                         // Value -> value transition: reuse the range.
-                        node.as_ref().unwrap().value_range.clone()
+                        let Some(existing_node) = node.as_ref() else {
+                            continue;
+                        };
+                        existing_node.value_range.clone()
                     };
 
                     value_block_nodes.insert(

@@ -7,9 +7,8 @@
 //! This pass performs abstract interpretation over the HIR CFG until a fixpoint is reached.
 //! For each instruction, it computes candidate effects (AliasingEffect variants) based on
 //! the instruction's syntax/type, then applies those effects to an abstract state that
-//! tracks:
-//!   - The abstract "kind" of each value (Mutable, Frozen, Primitive, Global, Context, MaybeFrozen)
-//!   - Which identifiers point to which abstract values
+//! tracks the abstract "kind" of each value (Mutable, Frozen, Primitive, Global,
+//! Context, MaybeFrozen) and which identifiers point to which abstract values.
 //! The resolved effects are written onto each instruction's `effects` field.
 
 use std::collections::{HashMap, HashSet};
@@ -123,20 +122,6 @@ impl InferenceState {
         }
     }
 
-    /// Allocate a fresh value ID.
-    fn fresh_value_id(&mut self) -> ValueId {
-        let id = ValueId(self.next_value_id);
-        self.next_value_id += 1;
-        id
-    }
-
-    /// Initialize a new abstract value and return its ID.
-    fn initialize(&mut self, kind: AbstractValue) -> ValueId {
-        let id = self.fresh_value_id();
-        self.values.insert(id, kind);
-        id
-    }
-
     /// Initialize (or overwrite) an abstract value tied to a concrete place ID.
     ///
     /// Using stable IDs avoids cross-branch collisions where different branch-local
@@ -200,15 +185,6 @@ impl InferenceState {
         }
         let value_id = values.iter().next()?;
         self.function_signatures.get(value_id)
-    }
-
-    fn function_contexts_for_place(&self, place_id: IdentifierId) -> Option<Vec<Place>> {
-        let values = self.variables.get(&place_id)?;
-        if values.len() != 1 {
-            return None;
-        }
-        let value_id = values.iter().next()?;
-        self.function_contexts.get(value_id).cloned()
     }
 
     /// Assign: make `place_id` point to the same values as `from_id`.
@@ -427,6 +403,21 @@ impl InferenceState {
             self.variables
                 .insert(phi.place.identifier.id, merged_values);
         }
+    }
+}
+
+#[cfg(test)]
+impl InferenceState {
+    fn fresh_value_id(&mut self) -> ValueId {
+        let id = ValueId(self.next_value_id);
+        self.next_value_id += 1;
+        id
+    }
+
+    fn initialize(&mut self, kind: AbstractValue) -> ValueId {
+        let id = self.fresh_value_id();
+        self.values.insert(id, kind);
+        id
     }
 }
 
@@ -1970,10 +1961,10 @@ fn apply_effect(
                             effects,
                         );
                     }
-                    if *is_spread {
-                        if let Some(mutate_iterator) = conditionally_mutate_iterator(operand) {
-                            apply_effect(ctx, state, &mutate_iterator, initialized, effects);
-                        }
+                    if *is_spread
+                        && let Some(mutate_iterator) = conditionally_mutate_iterator(operand)
+                    {
+                        apply_effect(ctx, state, &mutate_iterator, initialized, effects);
                     }
 
                     apply_effect(
@@ -4016,10 +4007,10 @@ fn get_known_method_signature(
         });
         if let Some(shape_id) = receiver_shape_id {
             let globals = GlobalRegistry::new();
-            if let Some(property_type) = globals.shapes.get_property(shape_id, method_name) {
-                if let PropertyType::Function(signature) = property_type {
-                    return Some(signature.clone());
-                }
+            if let Some(property_type) = globals.shapes.get_property(shape_id, method_name)
+                && let PropertyType::Function(signature) = property_type
+            {
+                return Some(signature.clone());
             }
         }
     }
@@ -4856,7 +4847,7 @@ mod tests {
 
     #[test]
     fn test_inference_state_basic() {
-        let mut state = InferenceState::empty(false, true, true, true);
+        let mut state = InferenceState::empty(false, true, true, true, false, false);
 
         let id1 = IdentifierId::new(1);
         let vid = state.initialize(AbstractValue::new(ValueKind::Mutable, ValueReason::Other));
@@ -4869,7 +4860,7 @@ mod tests {
 
     #[test]
     fn test_inference_state_freeze() {
-        let mut state = InferenceState::empty(false, true, true, true);
+        let mut state = InferenceState::empty(false, true, true, true, false, false);
 
         let id1 = IdentifierId::new(1);
         let vid = state.initialize(AbstractValue::new(ValueKind::Mutable, ValueReason::Other));
@@ -4888,7 +4879,7 @@ mod tests {
 
     #[test]
     fn test_inference_state_assign() {
-        let mut state = InferenceState::empty(false, true, true, true);
+        let mut state = InferenceState::empty(false, true, true, true, false, false);
 
         let id1 = IdentifierId::new(1);
         let id2 = IdentifierId::new(2);
@@ -4910,8 +4901,8 @@ mod tests {
 
     #[test]
     fn test_inference_state_merge() {
-        let mut state1 = InferenceState::empty(false, true, true, true);
-        let mut state2 = InferenceState::empty(false, true, true, true);
+        let mut state1 = InferenceState::empty(false, true, true, true, false, false);
+        let mut state2 = InferenceState::empty(false, true, true, true, false, false);
 
         let id1 = IdentifierId::new(1);
         let vid1 = state1.initialize(AbstractValue::new(ValueKind::Mutable, ValueReason::Other));
@@ -4935,7 +4926,7 @@ mod tests {
 
     #[test]
     fn test_mutation_result() {
-        let mut state = InferenceState::empty(false, true, true, true);
+        let mut state = InferenceState::empty(false, true, true, true, false, false);
         let id1 = IdentifierId::new(1);
         let vid = state.initialize(AbstractValue::new(ValueKind::Mutable, ValueReason::Other));
         state.define(id1, vid);

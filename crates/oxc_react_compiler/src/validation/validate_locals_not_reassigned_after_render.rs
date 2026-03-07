@@ -360,11 +360,12 @@ fn collect_method_names(func: &HIRFunction) -> HashMap<DeclarationId, String> {
     let mut method_name_by_decl = HashMap::new();
     for (_block_id, block) in &func.body.blocks {
         for instr in &block.instructions {
-            if let InstructionValue::PropertyLoad { property, .. } = &instr.value {
-                if let PropertyLiteral::String(name) = property {
-                    method_name_by_decl
-                        .insert(instr.lvalue.identifier.declaration_id, name.clone());
-                }
+            if let InstructionValue::PropertyLoad {
+                property: PropertyLiteral::String(name),
+                ..
+            } = &instr.value
+            {
+                method_name_by_decl.insert(instr.lvalue.identifier.declaration_id, name.clone());
             }
         }
     }

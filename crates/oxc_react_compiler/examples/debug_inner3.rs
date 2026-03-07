@@ -19,18 +19,22 @@ function Component(props) {
                 let lower_result = oxc_react_compiler::hir::build::lower_function(
                     body,
                     &func.params,
-                    name,
-                    func.span,
-                    func.generator,
-                    func.r#async,
-                    &semantic,
-                    source,
-                    oxc_react_compiler::environment::Environment::new(
-                        oxc_react_compiler::options::EnvironmentConfig::default(),
+                    oxc_react_compiler::hir::build::LoweringContext::new(
+                        &semantic,
+                        source,
+                        oxc_react_compiler::environment::Environment::new(
+                            oxc_react_compiler::options::EnvironmentConfig::default(),
+                        ),
+                    ),
+                    oxc_react_compiler::hir::build::LowerFunctionOptions::function(
+                        name,
+                        func.span,
+                        func.generator,
+                        func.r#async,
                     ),
                 );
                 if let Ok(lr) = lower_result {
-                    for (block_id, block) in &lr.func.body.blocks {
+                    for (_block_id, block) in &lr.func.body.blocks {
                         for instr in &block.instructions {
                             if let oxc_react_compiler::hir::types::InstructionValue::FunctionExpression { lowered_func, .. } = &instr.value {
                                 eprintln!("=== Inner function HIR ===");
@@ -63,11 +67,8 @@ function Component(props) {
                                 }
                                 eprintln!("  Params:");
                                 for p in &lowered_func.func.params {
-                                    match p {
-                                        oxc_react_compiler::hir::types::Argument::Place(place) => {
-                                            eprintln!("    {:?}", place.identifier);
-                                        }
-                                        _ => {}
+                                    if let oxc_react_compiler::hir::types::Argument::Place(place) = p {
+                                        eprintln!("    {:?}", place.identifier);
                                     }
                                 }
                             }

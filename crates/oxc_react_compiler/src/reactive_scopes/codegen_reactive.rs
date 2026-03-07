@@ -200,8 +200,6 @@ struct Context {
     fbt_operands: HashSet<IdentifierId>,
     /// Synthesized names cache.
     synthesized_names: HashMap<String, String>,
-    /// Cache variable name (usually "$").
-    cache_var: String,
     /// Next temp variable index for renumbering unnamed temporaries.
     next_temp_index: u32,
     /// Maps IdentifierId -> renumbered temp index for unnamed identifiers.
@@ -301,96 +299,28 @@ struct ObjectMethodInfo {
     lowered_func: LoweredFunction,
 }
 
-impl Context {
-    fn new(
-        unique_identifiers: HashSet<String>,
-        fbt_operands: HashSet<IdentifierId>,
-        initial_temp_snapshot: TempSnapshot,
-        captured_in_child_functions: HashSet<DeclarationId>,
-        mutable_captured_in_child_functions: HashSet<DeclarationId>,
-        reassigned_decls: HashSet<DeclarationId>,
-        read_declarations: HashSet<DeclarationId>,
-        manual_memo_root_decls: HashSet<DeclarationId>,
-        function_decl_decls: HashSet<DeclarationId>,
-        jsx_only_component_tag_decls: HashSet<DeclarationId>,
-        scope_dependency_decls: HashSet<DeclarationId>,
-        inline_primitive_literals: HashMap<DeclarationId, String>,
-        disable_memoization_features: bool,
-        disable_memoization_for_debugging: bool,
-        enable_change_variable_codegen: bool,
-        enable_emit_hook_guards: bool,
-        enable_change_detection_for_debugging: bool,
-        enable_name_anonymous_functions: bool,
-        function_name: String,
-        initial_reserved_child_decl_names: HashSet<String>,
-    ) -> Self {
-        let (temp, temp_by_identifier) = initial_temp_snapshot;
-        Context {
-            next_cache_index: 0,
-            declarations: HashSet::new(),
-            runtime_emitted_declarations: HashSet::new(),
-            temp,
-            temp_by_identifier,
-            object_methods: HashMap::new(),
-            object_methods_store: Vec::new(),
-            callback_deps: HashMap::new(),
-            hook_callback_arg_decls: HashSet::new(),
-            resolved_names: HashMap::new(),
-            suppressed_temp_ids: Vec::new(),
-            hook_call_by_decl: HashMap::new(),
-            stable_ref_decls: HashSet::new(),
-            stable_setter_decls: HashSet::new(),
-            stable_effect_event_decls: HashSet::new(),
-            multi_source_decls: HashSet::new(),
-            decl_assignment_sources: HashMap::new(),
-            stable_ref_names: HashSet::new(),
-            unique_identifiers,
-            fbt_operands,
-            synthesized_names: HashMap::new(),
-            cache_var: "$".to_string(),
-            next_temp_index: 0,
-            temp_remap: HashMap::new(),
-            declared_names: HashSet::new(),
-            captured_in_child_functions,
-            mutable_captured_in_child_functions,
-            reassigned_decls,
-            read_declarations,
-            inline_primitive_literals,
-            capturable_primitive_literals: HashMap::new(),
-            non_local_binding_decls: HashSet::new(),
-            disable_memoization_features,
-            disable_memoization_for_debugging,
-            enable_change_variable_codegen,
-            emit_hook_guards: enable_emit_hook_guards,
-            enable_change_detection_for_debugging,
-            enable_name_anonymous_functions,
-            needs_structural_check_import: false,
-            function_name,
-            param_display_names: HashMap::new(),
-            reserved_child_decl_names: initial_reserved_child_decl_names,
-            block_scope_declared_temp_names: Vec::new(),
-            declaration_name_overrides: HashMap::new(),
-            used_declaration_names: HashSet::new(),
-            preferred_decl_names: HashMap::new(),
-            codegen_error: None,
-            emitted_optional_dep_reads: HashSet::new(),
-            pending_manual_memo_reads: HashSet::new(),
-            manual_memo_root_decls,
-            manual_memo_dep_roots_by_id: HashMap::new(),
-            manual_memo_dep_roots_by_decl: HashMap::new(),
-            pruned_manual_memo_decls: HashSet::new(),
-            stable_zero_dep_decls: HashSet::new(),
-            scope_dependency_decls,
-            scope_dependency_overrides: HashMap::new(),
-            function_decl_decls,
-            jsx_only_component_tag_decls,
-            inline_identifier_aliases: HashMap::new(),
-            elided_named_declarations: HashSet::new(),
-            preserve_loop_header_inits: false,
-            block_scope_output_names: Vec::new(),
-        }
-    }
+#[derive(Clone, Copy, Default)]
+pub struct CodegenReactiveOptions {
+    pub disable_memoization_features: bool,
+    pub disable_memoization_for_debugging: bool,
+    pub enable_change_variable_codegen: bool,
+    pub enable_emit_hook_guards: bool,
+    pub enable_change_detection_for_debugging: bool,
+    pub enable_reset_cache_on_source_file_changes: bool,
+    pub enable_name_anonymous_functions: bool,
+}
 
+#[derive(Default)]
+struct CodegenReactiveInputs {
+    inline_primitive_literals: HashMap<DeclarationId, String>,
+    inherited_declaration_name_overrides: HashMap<DeclarationId, String>,
+    initial_temp_snapshot: TempSnapshot,
+    fbt_operands: HashSet<IdentifierId>,
+    inherited_reserved_child_decl_names: HashSet<String>,
+    emit_function_hook_guard: bool,
+}
+
+impl Context {
     fn alloc_cache_slot(&mut self) -> u32 {
         let idx = self.next_cache_index;
         self.next_cache_index += 1;
@@ -485,6 +415,18 @@ impl Context {
         }
         merged
     }
+
+    fn child_codegen_options(&self) -> CodegenReactiveOptions {
+        CodegenReactiveOptions {
+            disable_memoization_features: self.disable_memoization_features,
+            disable_memoization_for_debugging: self.disable_memoization_for_debugging,
+            enable_change_variable_codegen: self.enable_change_variable_codegen,
+            enable_emit_hook_guards: self.emit_hook_guards,
+            enable_change_detection_for_debugging: self.enable_change_detection_for_debugging,
+            enable_reset_cache_on_source_file_changes: false,
+            enable_name_anonymous_functions: self.enable_name_anonymous_functions,
+        }
+    }
 }
 
 /// Generate code from a ReactiveFunction tree.
@@ -495,13 +437,7 @@ pub fn codegen_reactive_function(
     codegen_reactive_function_with_options_and_fbt_operands(
         func,
         unique_identifiers,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
+        CodegenReactiveOptions::default(),
         HashSet::new(),
     )
 }
@@ -517,13 +453,13 @@ pub fn codegen_reactive_function_with_options(
     codegen_reactive_function_with_options_and_fbt_operands(
         func,
         unique_identifiers,
-        disable_memoization_features,
-        false,
-        enable_change_variable_codegen,
-        enable_emit_hook_guards,
-        enable_change_detection_for_debugging,
-        false,
-        false,
+        CodegenReactiveOptions {
+            disable_memoization_features,
+            enable_change_variable_codegen,
+            enable_emit_hook_guards,
+            enable_change_detection_for_debugging,
+            ..CodegenReactiveOptions::default()
+        },
         HashSet::new(),
     )
 }
@@ -531,51 +467,35 @@ pub fn codegen_reactive_function_with_options(
 pub fn codegen_reactive_function_with_options_and_fbt_operands(
     func: &ReactiveFunction,
     unique_identifiers: HashSet<String>,
-    disable_memoization_features: bool,
-    disable_memoization_for_debugging: bool,
-    enable_change_variable_codegen: bool,
-    enable_emit_hook_guards: bool,
-    enable_change_detection_for_debugging: bool,
-    enable_reset_cache_on_source_file_changes: bool,
-    enable_name_anonymous_functions: bool,
+    options: CodegenReactiveOptions,
     fbt_operands: HashSet<IdentifierId>,
 ) -> CodegenResult {
     codegen_reactive_function_with_primitives(
         func,
         unique_identifiers,
-        HashMap::new(),
-        HashMap::new(),
-        (HashMap::new(), HashMap::new()),
-        disable_memoization_features,
-        disable_memoization_for_debugging,
-        enable_change_variable_codegen,
-        enable_emit_hook_guards,
-        enable_change_detection_for_debugging,
-        enable_reset_cache_on_source_file_changes,
-        enable_name_anonymous_functions,
-        enable_emit_hook_guards,
-        fbt_operands,
-        HashSet::new(),
+        CodegenReactiveInputs {
+            emit_function_hook_guard: options.enable_emit_hook_guards,
+            fbt_operands,
+            ..CodegenReactiveInputs::default()
+        },
+        options,
     )
 }
 
 fn codegen_reactive_function_with_primitives(
     func: &ReactiveFunction,
     unique_identifiers: HashSet<String>,
-    inline_primitive_literals: HashMap<DeclarationId, String>,
-    inherited_declaration_name_overrides: HashMap<DeclarationId, String>,
-    initial_temp_snapshot: TempSnapshot,
-    disable_memoization_features: bool,
-    disable_memoization_for_debugging: bool,
-    enable_change_variable_codegen: bool,
-    enable_emit_hook_guards: bool,
-    enable_change_detection_for_debugging: bool,
-    enable_reset_cache_on_source_file_changes: bool,
-    enable_name_anonymous_functions: bool,
-    emit_function_hook_guard: bool,
-    fbt_operands: HashSet<IdentifierId>,
-    inherited_reserved_child_decl_names: HashSet<String>,
+    inputs: CodegenReactiveInputs,
+    options: CodegenReactiveOptions,
 ) -> CodegenResult {
+    let CodegenReactiveInputs {
+        inline_primitive_literals,
+        inherited_declaration_name_overrides,
+        initial_temp_snapshot,
+        fbt_operands,
+        inherited_reserved_child_decl_names,
+        emit_function_hook_guard,
+    } = inputs;
     let captured_in_child_functions = collect_child_context_declarations(&func.body);
     let mutable_captured_in_child_functions =
         collect_mutable_child_context_declarations(&func.body);
@@ -590,36 +510,79 @@ fn codegen_reactive_function_with_primitives(
         .directives
         .iter()
         .any(|d| d == "use memo" || d == "use forget" || d.starts_with("use memo if("));
-    let emit_hook_guards =
-        enable_emit_hook_guards && inferred_memo_enabled && !disable_memoization_features;
+    let emit_hook_guards = options.enable_emit_hook_guards
+        && inferred_memo_enabled
+        && !options.disable_memoization_features;
     let function_name = func
         .name_hint
         .clone()
         .or_else(|| func.id.clone())
         .unwrap_or_else(|| "<anonymous>".to_string());
-    let mut cx = Context::new(
+    let (temp, temp_by_identifier) = initial_temp_snapshot;
+    let mut cx = Context {
+        next_cache_index: 0,
+        declarations: HashSet::new(),
+        runtime_emitted_declarations: HashSet::new(),
+        temp,
+        temp_by_identifier,
+        object_methods: HashMap::new(),
+        object_methods_store: Vec::new(),
+        callback_deps: HashMap::new(),
+        hook_callback_arg_decls: HashSet::new(),
+        resolved_names: HashMap::new(),
+        suppressed_temp_ids: Vec::new(),
+        hook_call_by_decl: HashMap::new(),
+        stable_ref_decls: HashSet::new(),
+        stable_setter_decls: HashSet::new(),
+        stable_effect_event_decls: HashSet::new(),
+        multi_source_decls: HashSet::new(),
+        decl_assignment_sources: HashMap::new(),
+        stable_ref_names: HashSet::new(),
         unique_identifiers,
         fbt_operands,
-        initial_temp_snapshot,
+        synthesized_names: HashMap::new(),
+        next_temp_index: 0,
+        temp_remap: HashMap::new(),
+        declared_names: HashSet::new(),
         captured_in_child_functions,
         mutable_captured_in_child_functions,
         reassigned_decls,
         read_declarations,
+        inline_primitive_literals,
+        capturable_primitive_literals: HashMap::new(),
+        non_local_binding_decls: HashSet::new(),
+        disable_memoization_features: options.disable_memoization_features,
+        disable_memoization_for_debugging: options.disable_memoization_for_debugging,
+        enable_change_variable_codegen: options.enable_change_variable_codegen,
+        emit_hook_guards,
+        enable_change_detection_for_debugging: options.enable_change_detection_for_debugging,
+        enable_name_anonymous_functions: options.enable_name_anonymous_functions,
+        needs_structural_check_import: false,
+        function_name,
+        param_display_names: HashMap::new(),
+        reserved_child_decl_names: inherited_reserved_child_decl_names,
+        block_scope_declared_temp_names: Vec::new(),
+        declaration_name_overrides: HashMap::new(),
+        used_declaration_names: HashSet::new(),
+        preferred_decl_names: HashMap::new(),
+        codegen_error: None,
+        emitted_optional_dep_reads: HashSet::new(),
+        pending_manual_memo_reads: HashSet::new(),
         manual_memo_root_decls,
+        manual_memo_dep_roots_by_id: HashMap::new(),
+        manual_memo_dep_roots_by_decl: HashMap::new(),
+        pruned_manual_memo_decls: HashSet::new(),
+        stable_zero_dep_decls: HashSet::new(),
+        scope_dependency_decls,
+        scope_dependency_overrides: HashMap::new(),
         function_decl_decls,
         jsx_only_component_tag_decls,
-        scope_dependency_decls,
-        inline_primitive_literals,
-        disable_memoization_features,
-        disable_memoization_for_debugging,
-        enable_change_variable_codegen,
-        emit_hook_guards,
-        enable_change_detection_for_debugging,
-        enable_name_anonymous_functions,
-        function_name,
-        inherited_reserved_child_decl_names,
-    );
-    let fast_refresh_state = if enable_reset_cache_on_source_file_changes {
+        inline_identifier_aliases: HashMap::new(),
+        elided_named_declarations: HashSet::new(),
+        preserve_loop_header_inits: false,
+        block_scope_output_names: Vec::new(),
+    };
+    let fast_refresh_state = if options.enable_reset_cache_on_source_file_changes {
         get_fast_refresh_source_hash().map(|hash| (cx.alloc_cache_slot(), hash))
     } else {
         None
@@ -691,7 +654,7 @@ fn codegen_reactive_function_with_primitives(
         }
         cx.declare(&place.identifier);
     }
-    if disable_memoization_features {
+    if cx.disable_memoization_features {
         let fire_binding_decls = collect_fire_binding_declarations(&func.body);
         if std::env::var("DEBUG_REACTIVE_SCOPE_NAMES").is_ok() && !fire_binding_decls.is_empty() {
             eprintln!(
@@ -713,8 +676,8 @@ fn codegen_reactive_function_with_primitives(
 
     // Remove trailing bare `return;`
     let trimmed = body.trim_end();
-    let mut body = if trimmed.ends_with("return;") {
-        let mut s = trimmed[..trimmed.len() - 7].to_string();
+    let mut body = if let Some(prefix) = trimmed.strip_suffix("return;") {
+        let mut s = prefix.to_string();
         s.push('\n');
         s
     } else {
@@ -766,7 +729,7 @@ fn codegen_reactive_function_with_primitives(
     if std::env::var("DEBUG_REACTIVE_RAW").is_ok() {
         eprintln!(
             "[REACTIVE_RAW_OUTPUT] function={:?}\n{}",
-            func.name_hint.as_ref().map(|n| n.as_str()),
+            func.name_hint.as_deref(),
             output
         );
     }
@@ -2428,10 +2391,10 @@ fn codegen_block_no_reset_with_options(
         }
 
         fn is_push_method_property(cx: &Context, property: &Place) -> bool {
-            if let Some(name) = resolve_place_name(cx, property) {
-                if name == "push" || name.ends_with(".push") || name.ends_with("?.push") {
-                    return true;
-                }
+            if let Some(name) = resolve_place_name(cx, property)
+                && (name == "push" || name.ends_with(".push") || name.ends_with("?.push"))
+            {
+                return true;
             }
             cx.temp
                 .get(&property.identifier.declaration_id)
@@ -2446,37 +2409,36 @@ fn codegen_block_no_reset_with_options(
         while let Some(stmt) = block.get(cursor) {
             match stmt {
                 ReactiveStatement::Instruction(instr) => {
-                    if let Some(target_name) = assignment_target_name {
-                        if let InstructionValue::MethodCall {
+                    if let Some(target_name) = assignment_target_name
+                        && let InstructionValue::MethodCall {
                             receiver, property, ..
                         } = &instr.value
+                    {
+                        let receiver_name = resolve_place_simple_identifier(cx, receiver);
+                        let property_name = resolve_place_name(cx, property);
+                        let property_temp = cx
+                            .temp
+                            .get(&property.identifier.declaration_id)
+                            .and_then(|value| value.as_ref())
+                            .map(|value| value.expr.clone());
+                        let property_is_push = is_push_method_property(cx, property);
+                        if debug {
+                            eprintln!(
+                                "[STRUCT_GAP] lookahead methodcall idx={} receiver={:?} target={} prop_name={:?} prop_temp={:?} push={}",
+                                cursor,
+                                receiver_name,
+                                target_name,
+                                property_name,
+                                property_temp,
+                                property_is_push
+                            );
+                        }
+                        if receiver_name
+                            .as_deref()
+                            .is_some_and(|name| name == target_name)
+                            && property_is_push
                         {
-                            let receiver_name = resolve_place_simple_identifier(cx, receiver);
-                            let property_name = resolve_place_name(cx, property);
-                            let property_temp = cx
-                                .temp
-                                .get(&property.identifier.declaration_id)
-                                .and_then(|value| value.as_ref())
-                                .map(|value| value.expr.clone());
-                            let property_is_push = is_push_method_property(cx, property);
-                            if debug {
-                                eprintln!(
-                                    "[STRUCT_GAP] lookahead methodcall idx={} receiver={:?} target={} prop_name={:?} prop_temp={:?} push={}",
-                                    cursor,
-                                    receiver_name,
-                                    target_name,
-                                    property_name,
-                                    property_temp,
-                                    property_is_push
-                                );
-                            }
-                            if receiver_name
-                                .as_deref()
-                                .is_some_and(|name| name == target_name)
-                                && property_is_push
-                            {
-                                return Some(NextEmittedStatement::PushOnTarget);
-                            }
+                            return Some(NextEmittedStatement::PushOnTarget);
                         }
                     }
                     if instr.lvalue.is_none() {
@@ -2996,8 +2958,8 @@ fn codegen_block_no_reset_with_options(
         let seed_loc = sequence_seed_loc(start_instr);
         let mut saw_intermediate = false;
         let end = (start + 24).min(block.len());
-        for idx in (start + 1)..end {
-            let ReactiveStatement::Instruction(instr) = &block[idx] else {
+        for stmt in block.iter().take(end).skip(start + 1) {
+            let ReactiveStatement::Instruction(instr) = stmt else {
                 break;
             };
             if instr.lvalue.is_some() {
@@ -3064,8 +3026,8 @@ fn codegen_block_no_reset_with_options(
     fn has_following_call_temp_load_pattern(block: &[ReactiveStatement], start: usize) -> bool {
         let mut call_temp_decl: Option<DeclarationId> = None;
         let end = (start + 8).min(block.len());
-        for idx in (start + 1)..end {
-            let ReactiveStatement::Instruction(instr) = &block[idx] else {
+        for stmt in block.iter().take(end).skip(start + 1) {
+            let ReactiveStatement::Instruction(instr) = stmt else {
                 break;
             };
             if let Some(call_decl) = call_temp_decl {
@@ -3111,8 +3073,8 @@ fn codegen_block_no_reset_with_options(
         seed_loc: &SourceLocation,
     ) -> bool {
         let end = (start + 8).min(block.len());
-        for idx in (start + 1)..end {
-            let ReactiveStatement::Instruction(instr) = &block[idx] else {
+        for stmt in block.iter().take(end).skip(start + 1) {
+            let ReactiveStatement::Instruction(instr) = stmt else {
                 break;
             };
             match &instr.value {
@@ -3161,8 +3123,8 @@ fn codegen_block_no_reset_with_options(
         seed_loc: &SourceLocation,
     ) -> bool {
         let end = (start + 12).min(block.len());
-        for idx in (start + 1)..end {
-            match &block[idx] {
+        for stmt in block.iter().take(end).skip(start + 1) {
+            match stmt {
                 ReactiveStatement::Instruction(instr) => {
                     // Any named write means we're no longer in an expression-only chain.
                     if instr
@@ -3408,8 +3370,13 @@ fn codegen_block_no_reset_with_options(
                 matches!(block.get(i + 1), Some(ReactiveStatement::Scope(_))),
                 terminal_loc
             );
-            for lookahead in (i + 1)..(i + 6).min(block.len()) {
-                let desc = match &block[lookahead] {
+            for (lookahead, stmt) in block
+                .iter()
+                .enumerate()
+                .take((i + 6).min(block.len()))
+                .skip(i + 1)
+            {
+                let desc = match stmt {
                     ReactiveStatement::Instruction(instr) => {
                         let value_kind = match &instr.value {
                             InstructionValue::DeclareLocal { .. } => "DeclareLocal",
@@ -3905,26 +3872,6 @@ fn codegen_block_no_reset_with_options(
                     i += 1;
                     continue;
                 }
-                /*
-                if should_inline_zero_dep_scope_for_autodeps_call(cx, scope_block, &block[i + 1..])
-                {
-                    // Populate temp aliases from the scope body so subsequent
-                    // call arguments can inline through them, but don't emit the
-                    // aliasing statements themselves.
-                    inline_alias_scope_without_emit(cx, &scope_block.instructions);
-                    i += 1;
-                    continue;
-                }
-                */
-                /*
-                if should_inline_zero_dep_scope_for_non_hook_usage(cx, scope_block, &block[i + 1..])
-                {
-                    let inner = codegen_block_no_reset(cx, &scope_block.instructions);
-                    output.push_str(&inner);
-                    i += 1;
-                    continue;
-                }
-                */
                 let temp_snapshot = cx.snapshot_temps();
                 // Bridge a following return by synthesizing an output when this scope
                 // has no explicit outputs (no declarations or reassignments).
@@ -3932,33 +3879,31 @@ fn codegen_block_no_reset_with_options(
                 // compute values consumed by an immediate `return`.
                 if scope_block.scope.declarations.is_empty()
                     && scope_block.scope.reassignments.is_empty()
+                    && let Some(ReactiveStatement::Terminal(term_stmt)) = block.get(i + 1)
+                    && let ReactiveTerminal::Return { value, .. } = &term_stmt.terminal
                 {
-                    if let Some(ReactiveStatement::Terminal(term_stmt)) = block.get(i + 1) {
-                        if let ReactiveTerminal::Return { value, .. } = &term_stmt.terminal {
-                            // Clone the scope and treat the return value as a reassignment output,
-                            // so sentinel-based caching uses it as the first output slot.
-                            let mut scope_clone = scope_block.scope.clone();
-                            // Avoid duplicates just in case.
-                            if !scope_clone
-                                .reassignments
-                                .iter()
-                                .any(|id| id.id == value.identifier.id)
-                            {
-                                scope_clone.reassignments.push(value.identifier.clone());
-                            }
-                            codegen_reactive_scope(
-                                cx,
-                                &mut output,
-                                &scope_clone,
-                                &scope_block.instructions,
-                            );
-                            last_source_end_line = None;
-                            cx.restore_temps(temp_snapshot);
-                            // Proceed to emit the following return as usual in the next loop iteration.
-                            i += 1;
-                            continue;
-                        }
+                    // Clone the scope and treat the return value as a reassignment output,
+                    // so sentinel-based caching uses it as the first output slot.
+                    let mut scope_clone = scope_block.scope.clone();
+                    // Avoid duplicates just in case.
+                    if !scope_clone
+                        .reassignments
+                        .iter()
+                        .any(|id| id.id == value.identifier.id)
+                    {
+                        scope_clone.reassignments.push(value.identifier.clone());
                     }
+                    codegen_reactive_scope(
+                        cx,
+                        &mut output,
+                        &scope_clone,
+                        &scope_block.instructions,
+                    );
+                    last_source_end_line = None;
+                    cx.restore_temps(temp_snapshot);
+                    // Proceed to emit the following return as usual in the next loop iteration.
+                    i += 1;
+                    continue;
                 }
                 codegen_reactive_scope(
                     cx,
@@ -4054,63 +3999,6 @@ fn codegen_block_no_reset_with_options(
         &mut last_source_end_line,
     );
     output
-}
-
-fn can_hoist_labeled_if_break_to_prev_literal_init(
-    term_stmt: &ReactiveTerminalStatement,
-    output: &str,
-) -> bool {
-    let Some(label) = &term_stmt.label else {
-        return false;
-    };
-    if label.implicit {
-        return false;
-    }
-    let ReactiveTerminal::If {
-        consequent,
-        alternate,
-        ..
-    } = &term_stmt.terminal
-    else {
-        return false;
-    };
-    if alternate.is_some() {
-        return false;
-    }
-    let Some((break_target, break_prefix)) = split_trailing_break(consequent) else {
-        return false;
-    };
-    if break_target != label.id || !break_prefix.is_empty() {
-        return false;
-    }
-
-    let trimmed_output = output.trim_end_matches('\n');
-    let Some(prev_line_raw) = trimmed_output.rsplit('\n').next() else {
-        return false;
-    };
-    let prev_line = prev_line_raw.trim();
-    if prev_line.contains(':') {
-        return false;
-    }
-    prev_line.ends_with(" = [];")
-        || prev_line.ends_with(" = {};")
-        || prev_line.ends_with("=[];")
-        || prev_line.ends_with("={};")
-}
-
-fn hoist_label_onto_previous_statement_line(output: &mut String, label_id: BlockId) {
-    let trailing_newlines = output.chars().rev().take_while(|ch| *ch == '\n').count();
-    let mut core = output.trim_end_matches('\n').to_string();
-    if let Some(last_nl) = core.rfind('\n') {
-        core.insert_str(last_nl + 1, &format!("bb{}: ", label_id.0));
-    } else {
-        core = format!("bb{}: {}", label_id.0, core);
-    }
-    output.clear();
-    output.push_str(&core);
-    for _ in 0..trailing_newlines {
-        output.push('\n');
-    }
 }
 
 fn split_trailing_break(block: &[ReactiveStatement]) -> Option<(BlockId, &[ReactiveStatement])> {
@@ -5049,28 +4937,6 @@ fn slice_starts_with_keyword(code: &str, start: usize, kw: &str) -> bool {
     after.is_none_or(|ch| !(ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()))
 }
 
-fn has_multiple_following_effectful_calls(block: &[ReactiveStatement], idx: usize) -> bool {
-    let mut call_count = 0usize;
-    for stmt in block.iter().skip(idx + 1) {
-        let ReactiveStatement::Instruction(instr) = stmt else {
-            break;
-        };
-        if instr.lvalue.is_some() {
-            continue;
-        }
-        if matches!(
-            instr.value,
-            InstructionValue::CallExpression { .. } | InstructionValue::MethodCall { .. }
-        ) {
-            call_count += 1;
-            if call_count >= 2 {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 fn maybe_emit_reused_optional_dependency_reads(
     cx: &mut Context,
     output: &mut String,
@@ -5407,14 +5273,6 @@ fn extract_initializer_rhs_global(stmt: &str) -> Option<String> {
         return Some(rhs.to_string());
     }
     None
-}
-
-fn extract_all_simple_expression_statements_global(block_code: &str) -> Option<Vec<String>> {
-    let mut exprs = Vec::new();
-    for stmt in split_top_level_statement_chunks_global(block_code)? {
-        exprs.push(extract_simple_expression_statement_global(&stmt)?);
-    }
-    if exprs.is_empty() { None } else { Some(exprs) }
 }
 
 fn normalize_fusion_match_text(text: &str) -> String {
@@ -6013,9 +5871,7 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
     let Some(test_lvalue) = &test_instr.lvalue else {
         return None;
     };
-    if test_lvalue.identifier.name.is_none() {
-        return None;
-    }
+    test_lvalue.identifier.name.as_ref()?;
     let test_name = identifier_name_static(&test_lvalue.identifier);
     if !is_codegen_temp_name(&test_name) || cx.has_declared(&test_lvalue.identifier) {
         return None;
@@ -6075,10 +5931,7 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
     }
 
     // Materialize default statements first so we can safely fall back.
-    let test_stmt = match codegen_instruction_nullable(cx, test_instr) {
-        Some(stmt) => stmt,
-        None => return None,
-    };
+    let test_stmt = codegen_instruction_nullable(cx, test_instr)?;
     let mut scope_stmt = String::new();
     codegen_reactive_scope(
         cx,
@@ -6463,8 +6316,14 @@ fn maybe_codegen_fused_named_test_reassign_then_ternary_branch(
     // Materialize intermediary temporaries so consequent/alternate places are
     // renderable even when their builder instructions normally emit no output.
     let mut assign_stmt: Option<String> = None;
-    for bridge_idx in (start + 1)..=ternary_idx {
-        let ReactiveStatement::Instruction(instr) = &block[bridge_idx] else {
+    for (offset, stmt) in block
+        .iter()
+        .take(ternary_idx + 1)
+        .skip(start + 1)
+        .enumerate()
+    {
+        let bridge_idx = start + 1 + offset;
+        let ReactiveStatement::Instruction(instr) = stmt else {
             return None;
         };
         let emitted = codegen_instruction_nullable(&mut probe, instr);
@@ -6677,19 +6536,12 @@ fn maybe_codegen_fused_reassign_then_ternary_branch(
                 break;
             }
 
-            let Some(targets) = collect_named_reassign_targets(instr) else {
-                return None;
-            };
+            let targets = collect_named_reassign_targets(instr)?;
             if !same_target_set(&target_idents, &targets) {
                 return None;
             }
-            let stmt = match codegen_instruction_nullable(&mut probe_cx, instr) {
-                Some(stmt) => stmt,
-                None => return None,
-            };
-            let Some(expr) = extract_simple_expression_statement_global(&stmt) else {
-                return None;
-            };
+            let stmt = codegen_instruction_nullable(&mut probe_cx, instr)?;
+            let expr = extract_simple_expression_statement_global(&stmt)?;
             assignments.push(CandidateAssign { idx, expr });
             idx += 1;
             continue;
@@ -6706,12 +6558,8 @@ fn maybe_codegen_fused_reassign_then_ternary_branch(
         idx += 1;
     }
 
-    let Some(ternary_idx) = ternary_idx else {
-        return None;
-    };
-    let Some((test, consequent, alternate)) = ternary_operands else {
-        return None;
-    };
+    let ternary_idx = ternary_idx?;
+    let (test, consequent, alternate) = ternary_operands?;
 
     let target_names: Vec<String> = target_idents
         .iter()
@@ -6826,10 +6674,7 @@ fn maybe_codegen_fused_reassign_temp_load_then_ternary(
     }
     match &assign_load_instr.value {
         InstructionValue::LoadLocal { place, .. } | InstructionValue::LoadContext { place, .. }
-            if place.identifier.declaration_id == temp_lvalue.identifier.declaration_id =>
-        {
-            ()
-        }
+            if place.identifier.declaration_id == temp_lvalue.identifier.declaration_id => {}
         _ => return None,
     };
 
@@ -7574,9 +7419,11 @@ fn maybe_codegen_fused_method_call_eval_order(
     }
 
     let collect_prefix_side_effect_indices = |from: usize, to: usize| -> Option<Vec<usize>> {
+        let participants = participants.get(from..to)?;
         let mut indices = Vec::new();
-        for idx in from..to {
-            let instr = participants[idx].instr;
+        for (offset, participant) in participants.iter().enumerate() {
+            let idx = from + offset;
+            let instr = participant.instr;
             if is_side_effect_call_instruction(instr) {
                 indices.push(idx);
             } else if instr.lvalue.is_some()
@@ -7917,24 +7764,6 @@ fn wrap_sequence_expr(prefix_exprs: &[String], final_expr: String) -> String {
     format!("({})", parts.join(", "))
 }
 
-fn render_side_effect_prefix_exprs(
-    cx: &mut Context,
-    block: &[ReactiveStatement],
-    indices: &[usize],
-) -> Option<Vec<String>> {
-    let mut exprs = Vec::with_capacity(indices.len());
-    for idx in indices {
-        let ReactiveStatement::Instruction(instr) = &block[*idx] else {
-            return None;
-        };
-        if !is_side_effect_call_instruction(instr) {
-            return None;
-        }
-        exprs.push(codegen_instruction_value_ev(cx, &instr.value).expr);
-    }
-    Some(exprs)
-}
-
 fn render_side_effect_prefix_exprs_from_participants(
     cx: &mut Context,
     participants: &[EvalOrderFusionParticipant<'_>],
@@ -8011,25 +7840,19 @@ fn maybe_codegen_fused_method_call_destructure_assignment(
                 if receiver.identifier.declaration_id != receiver_alias_decl {
                     return None;
                 }
-                let Some(pattern) = destructure_pattern.clone() else {
-                    return None;
-                };
-                let Some(value_place) = destructure_value.clone() else {
-                    return None;
-                };
+                let pattern = destructure_pattern.clone()?;
+                let value_place = destructure_value.clone()?;
                 if destructure_idx != Some(idx.saturating_sub(1)) {
                     return None;
                 }
 
-                let Some(assign_arg_index) = args.iter().position(|arg| {
+                let assign_arg_index = args.iter().position(|arg| {
                     matches!(
                         arg,
                         Argument::Place(place)
                             if place.identifier.declaration_id == value_place.identifier.declaration_id
                     )
-                }) else {
-                    return None;
-                };
+                })?;
 
                 let mut temp_decl_ids: HashSet<DeclarationId> = HashSet::new();
                 for stmt_idx in &temp_instr_indices {
@@ -8218,9 +8041,9 @@ fn find_following_scope_for_deferred_inline_temp(
     Some(scope_id)
 }
 
-fn collect_instruction_definitions<'a>(
-    stmts: &'a [ReactiveStatement],
-) -> HashMap<DeclarationId, &'a ReactiveInstruction> {
+fn collect_instruction_definitions(
+    stmts: &[ReactiveStatement],
+) -> HashMap<DeclarationId, &ReactiveInstruction> {
     let mut definitions = HashMap::new();
     for stmt in stmts {
         if let ReactiveStatement::Instruction(instr) = stmt
@@ -8902,83 +8725,6 @@ fn scope_tail_sequence_reassign<'a>(
     }
 }
 
-fn should_inline_zero_dep_scope_for_autodeps_call(
-    cx: &mut Context,
-    scope_block: &ReactiveScopeBlock,
-    following_stmts: &[ReactiveStatement],
-) -> bool {
-    let debug = std::env::var("DEBUG_SCOPE_INLINE").is_ok();
-    if !scope_block.scope.dependencies.is_empty()
-        || !scope_block.scope.reassignments.is_empty()
-        || scope_block.scope.declarations.len() != 1
-        || !is_simple_alias_scope(&scope_block.instructions)
-    {
-        if debug {
-            eprintln!(
-                "[SCOPE_INLINE] reject precheck deps={} reassignments={} decls={} simple_alias={}",
-                scope_block.scope.dependencies.len(),
-                scope_block.scope.reassignments.len(),
-                scope_block.scope.declarations.len(),
-                is_simple_alias_scope(&scope_block.instructions)
-            );
-        }
-        return false;
-    }
-
-    if debug {
-        let decls: Vec<String> = scope_block
-            .scope
-            .declarations
-            .values()
-            .map(|d| identifier_name_with_cx(cx, &d.identifier))
-            .collect();
-        eprintln!("[SCOPE_INLINE] candidate decls={:?}", decls);
-    }
-
-    for stmt in following_stmts {
-        let ReactiveStatement::Instruction(next_instr) = stmt else {
-            if debug {
-                eprintln!("[SCOPE_INLINE] stop: non-instruction");
-            }
-            break;
-        };
-        let args: &[Argument] = match &next_instr.value {
-            InstructionValue::CallExpression { args, .. }
-            | InstructionValue::MethodCall { args, .. } => args.as_slice(),
-            _ => {
-                if debug {
-                    eprintln!("[SCOPE_INLINE] skip: non-call instruction");
-                }
-                continue;
-            }
-        };
-
-        let rendered_args: Vec<String> = args.iter().map(|arg| codegen_argument(cx, arg)).collect();
-        if debug {
-            eprintln!("[SCOPE_INLINE] call args={:?}", rendered_args);
-        }
-        let has_callback_arg = rendered_args.iter().any(|arg| {
-            let trimmed = arg.trim();
-            trimmed.contains("=>") || trimmed.starts_with("function")
-        }) || args.iter().any(is_function_argument);
-        let has_array_arg = rendered_args.iter().any(|arg| {
-            let trimmed = arg.trim();
-            trimmed.starts_with('[') && trimmed.ends_with(']')
-        }) || args.iter().any(is_array_argument);
-        if has_callback_arg && has_array_arg {
-            if debug {
-                eprintln!("[SCOPE_INLINE] accept");
-            }
-            return true;
-        }
-    }
-
-    if debug {
-        eprintln!("[SCOPE_INLINE] reject: no matching call");
-    }
-    false
-}
-
 fn maybe_codegen_fused_ternary_source_scope(
     cx: &mut Context,
     scope_block: &ReactiveScopeBlock,
@@ -9000,9 +8746,7 @@ fn maybe_codegen_fused_ternary_source_scope(
         }
         return None;
     }
-    let Some(decl) = scope_block.scope.declarations.values().next() else {
-        return None;
-    };
+    let decl = scope_block.scope.declarations.values().next()?;
     if debug {
         let mut descs = Vec::new();
         for stmt in following_stmts.iter().take(3) {
@@ -9080,9 +8824,7 @@ fn maybe_codegen_fused_ternary_source_scope(
         }
         return None;
     };
-    let Some(scope_is_consequent) = scope_is_consequent else {
-        return None;
-    };
+    let scope_is_consequent = scope_is_consequent?;
     for stmt in &following_stmts[..ternary_idx] {
         let ReactiveStatement::Instruction(instr) = stmt else {
             if debug {
@@ -9640,184 +9382,6 @@ fn maybe_codegen_fused_zero_dep_literal_store_scope(
     Some(consumed_following)
 }
 
-fn maybe_codegen_fused_zero_dep_store_into_following_dep_scope(
-    cx: &mut Context,
-    scope_block: &ReactiveScopeBlock,
-    following_stmts: &[ReactiveStatement],
-    output: &mut String,
-) -> Option<usize> {
-    let (scope_decl, source_instr) = zero_dep_single_decl_scope_source(scope_block)?;
-
-    let ReactiveStatement::Instruction(store_instr) = following_stmts.first()? else {
-        return None;
-    };
-    let (target_ident, store_result_decl) = parse_named_store_from_decl(store_instr, scope_decl)?;
-    if cx
-        .function_decl_decls
-        .contains(&target_ident.declaration_id)
-    {
-        return None;
-    }
-
-    // Scan through inline-temp bridge instructions until the next reactive scope.
-    let mut bridge_instrs: Vec<&ReactiveInstruction> = Vec::new();
-    let mut cursor = 1usize;
-    let dep_scope = loop {
-        match following_stmts.get(cursor)? {
-            ReactiveStatement::Instruction(instr) if is_fusable_inline_temp_instruction(instr) => {
-                if reactive_instruction_writes_declaration(instr, target_ident.declaration_id) {
-                    return None;
-                }
-                bridge_instrs.push(instr);
-                cursor += 1;
-            }
-            ReactiveStatement::Scope(scope) => break scope,
-            _ => return None,
-        }
-    };
-    let consumed_following = cursor + 1;
-
-    if dep_scope.scope.dependencies.is_empty() {
-        return None;
-    }
-    if !dep_scope.scope.declarations.is_empty() {
-        return None;
-    }
-    if !dep_scope
-        .scope
-        .reassignments
-        .iter()
-        .any(|ident| ident.declaration_id == target_ident.declaration_id)
-    {
-        return None;
-    }
-    if reactive_block_writes_declaration(
-        &following_stmts[consumed_following..],
-        target_ident.declaration_id,
-    ) {
-        return None;
-    }
-    if let Some(store_result_decl) = store_result_decl
-        && reactive_block_uses_declaration(
-            &following_stmts[consumed_following..],
-            store_result_decl,
-        )
-    {
-        return None;
-    }
-    if !has_direct_return_tail_for_decl(
-        &following_stmts[consumed_following..],
-        target_ident.declaration_id,
-    ) {
-        return None;
-    }
-
-    // Manually emit a dep-guarded scope with prelude instructions folded into
-    // the recompute branch:
-    //   1) zero-dep literal init
-    //   2) named store from that literal
-    //   3) bridge temp loads
-    //   4) original dep-scope computation
-    let cache_var = cx.synthesize_name("$");
-    let mut deps = dep_scope.scope.dependencies.clone();
-    sort_scope_dependencies_for_codegen(cx, &mut deps);
-    let mut dep_slots_exprs: Vec<(u32, String)> = Vec::with_capacity(deps.len());
-    for dep in deps {
-        let dep_slot = cx.alloc_cache_slot();
-        let dep_expr = codegen_dependency(cx, &dep);
-        dep_slots_exprs.push((dep_slot, dep_expr));
-    }
-    let output_slot = cx.alloc_cache_slot();
-
-    let target_name = identifier_name_with_cx(cx, target_ident);
-    if !has_materialized_named_binding(cx, target_ident) {
-        output.push_str(&format!("let {};\n", target_name));
-        cx.mark_decl_runtime_emitted(target_ident.declaration_id);
-    }
-    cx.declare(target_ident);
-
-    let mut test_condition = String::new();
-    for (idx, (dep_slot, dep_expr)) in dep_slots_exprs.iter().enumerate() {
-        if idx > 0 {
-            test_condition.push_str(" || ");
-        }
-        test_condition.push_str(&format!("{}[{}] !== {}", cache_var, dep_slot, dep_expr));
-    }
-
-    let mut computation = String::new();
-    let direct_seed_store = match &store_instr.value {
-        InstructionValue::StoreLocal { lvalue, value, .. }
-        | InstructionValue::StoreContext { lvalue, value, .. }
-            if value.identifier.declaration_id == scope_decl =>
-        {
-            let rhs = codegen_instruction_value_ev(cx, &source_instr.value)
-                .wrap_if_needed(ExprPrecedence::Assignment);
-            let kind = if has_materialized_named_binding(cx, &lvalue.place.identifier) {
-                InstructionKind::Reassign
-            } else {
-                lvalue.kind
-            };
-            codegen_store(cx, store_instr, kind, &lvalue.place, &rhs)
-        }
-        _ => None,
-    };
-    if let Some(stmt) = direct_seed_store {
-        computation.push_str(&stmt);
-        if !stmt.ends_with('\n') {
-            computation.push('\n');
-        }
-    } else {
-        if let Some(stmt) = codegen_instruction_nullable(cx, source_instr) {
-            computation.push_str(&stmt);
-            if !stmt.ends_with('\n') {
-                computation.push('\n');
-            }
-        }
-        if let Some(stmt) = codegen_instruction_nullable(cx, store_instr) {
-            computation.push_str(&stmt);
-            if !stmt.ends_with('\n') {
-                computation.push('\n');
-            }
-        }
-    }
-    for instr in bridge_instrs {
-        if let Some(stmt) = codegen_instruction_nullable(cx, instr) {
-            computation.push_str(&stmt);
-            if !stmt.ends_with('\n') {
-                computation.push('\n');
-            }
-        }
-    }
-    computation.push_str(&codegen_scope_computation_no_reset(
-        cx,
-        &dep_scope.scope,
-        &dep_scope.instructions,
-    ));
-    for (dep_slot, dep_expr) in &dep_slots_exprs {
-        computation.push_str(&format!("{}[{}] = {};\n", cache_var, dep_slot, dep_expr));
-    }
-    computation.push_str(&format!(
-        "{}[{}] = {};\n",
-        cache_var, output_slot, target_name
-    ));
-
-    output.push_str(&format!(
-        "if ({}) {{\n{} }} else {{\n{} = {}[{}];\n}}\n",
-        test_condition, computation, target_name, cache_var, output_slot
-    ));
-
-    debug_codegen_expr(
-        "fused-zero-dep-store-into-following-dep-scope",
-        format!(
-            "target={} consumed_following={} dep_scope={}",
-            identifier_name_with_cx(cx, target_ident),
-            consumed_following,
-            dep_scope.scope.id.0
-        ),
-    );
-    Some(consumed_following)
-}
-
 fn maybe_codegen_fused_zero_dep_sequence_logical_scope(
     cx: &mut Context,
     scope_block: &ReactiveScopeBlock,
@@ -9873,9 +9437,9 @@ fn maybe_codegen_fused_zero_dep_sequence_logical_scope(
     Some(1)
 }
 
-fn parse_zero_dep_sequence_null_scope_target<'a>(
-    scope_block: &'a ReactiveScopeBlock,
-) -> Option<(&'a Identifier, &'a ReactiveInstruction, DeclarationId)> {
+fn parse_zero_dep_sequence_null_scope_target(
+    scope_block: &ReactiveScopeBlock,
+) -> Option<(&Identifier, &ReactiveInstruction, DeclarationId)> {
     if !scope_block.scope.dependencies.is_empty()
         || scope_block.scope.declarations.len() != 1
         || scope_block.scope.reassignments.len() != 1
@@ -9983,9 +9547,9 @@ fn has_direct_return_tail_for_decl(
     }
 }
 
-fn zero_dep_single_decl_scope_source<'a>(
-    scope_block: &'a ReactiveScopeBlock,
-) -> Option<(DeclarationId, &'a ReactiveInstruction)> {
+fn zero_dep_single_decl_scope_source(
+    scope_block: &ReactiveScopeBlock,
+) -> Option<(DeclarationId, &ReactiveInstruction)> {
     if !scope_block.scope.dependencies.is_empty()
         || !scope_block.scope.reassignments.is_empty()
         || scope_block.scope.declarations.len() != 1
@@ -10019,10 +9583,10 @@ fn zero_dep_single_decl_scope_source<'a>(
     Some((decl.identifier.declaration_id, source_instr))
 }
 
-fn parse_named_store_from_decl<'a>(
-    store_instr: &'a ReactiveInstruction,
+fn parse_named_store_from_decl(
+    store_instr: &ReactiveInstruction,
     source_decl: DeclarationId,
-) -> Option<(&'a Identifier, Option<DeclarationId>)> {
+) -> Option<(&Identifier, Option<DeclarationId>)> {
     let (store_lvalue, store_value) = match &store_instr.value {
         InstructionValue::StoreLocal { lvalue, value, .. }
         | InstructionValue::StoreContext { lvalue, value, .. } => (lvalue, value),
@@ -10213,9 +9777,7 @@ fn maybe_codegen_fused_zero_dep_ternary_default_scope(
         break;
     }
 
-    let Some(ternary_idx) = ternary_idx else {
-        return None;
-    };
+    let ternary_idx = ternary_idx?;
     let source_seed_expr = probe_cx
         .temp
         .get(&source_decl_id)
@@ -10503,16 +10065,14 @@ fn maybe_codegen_fused_callback_reassign_scope(
         };
         if let InstructionValue::LoadLocal { place, .. }
         | InstructionValue::LoadContext { place, .. } = &instr.value
+            && place.identifier.name.is_some()
+            && !post_dep_reassign_decls.contains(&place.identifier.declaration_id)
         {
-            if place.identifier.name.is_some()
-                && !post_dep_reassign_decls.contains(&place.identifier.declaration_id)
+            let expr = codegen_place_to_expression(cx, place);
+            if !is_inlineable_primitive_literal_expression(expr.trim())
+                && seen_dep_keys.insert(expr.clone())
             {
-                let expr = codegen_place_to_expression(cx, place);
-                if !is_inlineable_primitive_literal_expression(expr.trim())
-                    && seen_dep_keys.insert(expr.clone())
-                {
-                    dep_exprs.push(expr);
-                }
+                dep_exprs.push(expr);
             }
         }
     }
@@ -10520,16 +10080,14 @@ fn maybe_codegen_fused_callback_reassign_scope(
     for instr in &post_dep_instructions {
         if let InstructionValue::LoadLocal { place, .. }
         | InstructionValue::LoadContext { place, .. } = &instr.value
+            && place.identifier.name.is_some()
+            && !post_dep_reassign_decls.contains(&place.identifier.declaration_id)
         {
-            if place.identifier.name.is_some()
-                && !post_dep_reassign_decls.contains(&place.identifier.declaration_id)
+            let expr = codegen_place_to_expression(cx, place);
+            if !is_inlineable_primitive_literal_expression(expr.trim())
+                && seen_dep_keys.insert(expr.clone())
             {
-                let expr = codegen_place_to_expression(cx, place);
-                if !is_inlineable_primitive_literal_expression(expr.trim())
-                    && seen_dep_keys.insert(expr.clone())
-                {
-                    dep_exprs.push(expr);
-                }
+                dep_exprs.push(expr);
             }
         }
     }
@@ -10820,17 +10378,13 @@ fn filtered_effect_callback_deps_for_explicit_empty_array(
         return None;
     }
 
-    let Some(callback_decl) = scope_block
+    let callback_decl = scope_block
         .scope
         .declarations
         .values()
         .next()
-        .map(|decl| decl.identifier.declaration_id)
-    else {
-        return None;
-    };
-    let Some(ReactiveStatement::Instruction(callback_instr)) = scope_block.instructions.first()
-    else {
+        .map(|decl| decl.identifier.declaration_id)?;
+    let ReactiveStatement::Instruction(callback_instr) = scope_block.instructions.first()? else {
         return None;
     };
     if callback_instr
@@ -10847,12 +10401,9 @@ fn filtered_effect_callback_deps_for_explicit_empty_array(
         return None;
     }
 
-    let Some(deps_decl) = following_stmts
+    let deps_decl = following_stmts
         .first()
-        .and_then(is_zero_dep_empty_array_scope)
-    else {
-        return None;
-    };
+        .and_then(is_zero_dep_empty_array_scope)?;
     let Some(ReactiveStatement::Instruction(hook_instr)) = following_stmts.get(1) else {
         return None;
     };
@@ -10911,159 +10462,6 @@ fn filtered_effect_callback_deps_for_explicit_empty_array(
     }
 
     Some(filtered)
-}
-
-fn is_simple_alias_scope(instructions: &ReactiveBlock) -> bool {
-    if instructions.is_empty() {
-        return false;
-    }
-    for stmt in instructions {
-        let ReactiveStatement::Instruction(instr) = stmt else {
-            continue;
-        };
-        match instr.value {
-            InstructionValue::LoadLocal { .. }
-            | InstructionValue::LoadContext { .. }
-            | InstructionValue::StoreLocal { .. }
-            | InstructionValue::StoreContext { .. }
-            | InstructionValue::TypeCastExpression { .. }
-            | InstructionValue::DeclareLocal { .. }
-            | InstructionValue::DeclareContext { .. }
-            | InstructionValue::Primitive { .. } => {}
-            _ => return false,
-        }
-    }
-    true
-}
-
-fn should_inline_zero_dep_scope_for_non_hook_usage(
-    cx: &mut Context,
-    scope_block: &ReactiveScopeBlock,
-    following_stmts: &[ReactiveStatement],
-) -> bool {
-    let debug = std::env::var("DEBUG_SCOPE_INLINE").is_ok();
-    if !scope_block.scope.dependencies.is_empty()
-        || !scope_block.scope.reassignments.is_empty()
-        || scope_block.scope.declarations.len() != 1
-    {
-        if debug {
-            eprintln!(
-                "[SCOPE_INLINE_NONHOOK] reject precheck deps={} reassignments={} decls={}",
-                scope_block.scope.dependencies.len(),
-                scope_block.scope.reassignments.len(),
-                scope_block.scope.declarations.len()
-            );
-        }
-        return false;
-    }
-    let Some(decl) = scope_block.scope.declarations.values().next() else {
-        return false;
-    };
-    let decl_name = identifier_name_with_cx(cx, &decl.identifier);
-    if decl_name.is_empty() || is_codegen_temp_name(&decl_name) {
-        return false;
-    }
-    if debug {
-        eprintln!("[SCOPE_INLINE_NONHOOK] candidate decl={}", decl_name);
-    }
-
-    for stmt in following_stmts {
-        let ReactiveStatement::Instruction(instr) = stmt else {
-            break;
-        };
-
-        if instruction_has_autodeps_placeholder(cx, instr) {
-            if debug {
-                eprintln!("[SCOPE_INLINE_NONHOOK] reject: AUTODEPS call appears first");
-            }
-            return false;
-        }
-        if instruction_has_callback_and_array_args(cx, instr) {
-            if debug {
-                eprintln!("[SCOPE_INLINE_NONHOOK] reject: hook-like call appears first");
-            }
-            return false;
-        }
-        if !matches!(
-            &instr.value,
-            InstructionValue::CallExpression { .. } | InstructionValue::MethodCall { .. }
-        ) {
-            continue;
-        }
-        if let InstructionValue::MethodCall { args, .. } = &instr.value
-            && args.len() >= 2
-        {
-            if debug {
-                eprintln!("[SCOPE_INLINE_NONHOOK] reject: ambiguous method call appears first");
-            }
-            return false;
-        }
-
-        let is_hook_call = match &instr.value {
-            InstructionValue::CallExpression { callee, .. } => {
-                let callee_name = resolve_place_name(cx, callee)
-                    .unwrap_or_else(|| codegen_place_to_expression(cx, callee));
-                extract_hook_name(&callee_name).is_some()
-            }
-            InstructionValue::MethodCall {
-                receiver, property, ..
-            } => {
-                let recv_expr = codegen_place_to_expression(cx, receiver);
-                let (prop_name, _is_computed) = resolve_method_property(cx, property, &recv_expr);
-                if extract_hook_name(&prop_name).is_some() {
-                    true
-                } else {
-                    let recv_name = resolve_place_name(cx, receiver).unwrap_or(recv_expr);
-                    extract_hook_name(&recv_name).is_some()
-                }
-            }
-            _ => false,
-        };
-
-        if debug {
-            match &instr.value {
-                InstructionValue::CallExpression { callee, args, .. } => {
-                    let callee_name = resolve_place_name(cx, callee)
-                        .unwrap_or_else(|| codegen_place_to_expression(cx, callee));
-                    let rendered_args: Vec<String> =
-                        args.iter().map(|arg| codegen_argument(cx, arg)).collect();
-                    eprintln!(
-                        "[SCOPE_INLINE_NONHOOK] first call detail callee={} args={:?}",
-                        callee_name, rendered_args
-                    );
-                }
-                InstructionValue::MethodCall {
-                    receiver,
-                    property,
-                    args,
-                    ..
-                } => {
-                    let recv_name = resolve_place_name(cx, receiver)
-                        .unwrap_or_else(|| codegen_place_to_expression(cx, receiver));
-                    let (prop_name, _) = resolve_method_property(cx, property, &recv_name);
-                    let rendered_args: Vec<String> =
-                        args.iter().map(|arg| codegen_argument(cx, arg)).collect();
-                    eprintln!(
-                        "[SCOPE_INLINE_NONHOOK] first call detail method {}.{} args={:?}",
-                        recv_name, prop_name, rendered_args
-                    );
-                }
-                _ => {}
-            }
-            eprintln!(
-                "[SCOPE_INLINE_NONHOOK] first call is {}",
-                if is_hook_call { "hook" } else { "non-hook" }
-            );
-        }
-        if !is_hook_call {
-            return true;
-        }
-    }
-
-    if debug {
-        eprintln!("[SCOPE_INLINE_NONHOOK] reject: no matching non-hook call");
-    }
-    false
 }
 
 fn should_inline_zero_dep_global_zero_arg_call_scope(
@@ -11750,7 +11148,7 @@ fn is_codegen_temp_name(name: &str) -> bool {
     trimmed[1..].chars().all(|c| c.is_ascii_digit())
 }
 
-fn is_temp_like_identifier(cx: &Context, id: &Identifier) -> bool {
+fn is_temp_like_identifier(_cx: &Context, id: &Identifier) -> bool {
     match &id.name {
         None => true,
         // Upstream codegen only treats unnamed identifiers as temporaries.
@@ -11816,10 +11214,10 @@ fn handler_block_references_name(block: &ReactiveBlock, name: &str) -> bool {
 
     fn check_instr(instr: &ReactiveInstruction, name: &str) -> bool {
         // Check lvalue
-        if let Some(ref lv) = instr.lvalue {
-            if check_place(lv, name) {
-                return true;
-            }
+        if let Some(ref lv) = instr.lvalue
+            && check_place(lv, name)
+        {
+            return true;
         }
         // Check instruction value operands
         match &instr.value {
@@ -11892,11 +11290,11 @@ fn handler_block_references_name(block: &ReactiveBlock, name: &str) -> bool {
                 ..
             } => {
                 check_block(consequent, name)
-                    || alternate.as_ref().map_or(false, |b| check_block(b, name))
+                    || alternate.as_ref().is_some_and(|b| check_block(b, name))
             }
             ReactiveTerminal::Switch { cases, .. } => cases
                 .iter()
-                .any(|c| c.block.as_ref().map_or(false, |b| check_block(b, name))),
+                .any(|c| c.block.as_ref().is_some_and(|b| check_block(b, name))),
             ReactiveTerminal::For { loop_block, .. }
             | ReactiveTerminal::ForOf { loop_block, .. }
             | ReactiveTerminal::ForIn { loop_block, .. }
@@ -11941,26 +11339,6 @@ fn instruction_has_callback_and_array_args(cx: &mut Context, instr: &ReactiveIns
         trimmed.starts_with('[') && trimmed.ends_with(']')
     }) || args.iter().any(is_array_argument);
     has_callback_arg && has_array_arg
-}
-
-fn inline_alias_scope_without_emit(cx: &mut Context, instructions: &ReactiveBlock) {
-    for stmt in instructions {
-        let ReactiveStatement::Instruction(instr) = stmt else {
-            continue;
-        };
-        let _ = codegen_instruction_nullable(cx, instr);
-        match &instr.value {
-            InstructionValue::StoreLocal { lvalue, value, .. }
-            | InstructionValue::StoreContext { lvalue, value, .. }
-                if lvalue.kind != InstructionKind::Reassign =>
-            {
-                let rhs_ev = codegen_place_expr_value(cx, value);
-                cx.temp
-                    .insert(lvalue.place.identifier.declaration_id, Some(rhs_ev));
-            }
-            _ => {}
-        }
-    }
 }
 
 fn is_function_argument(arg: &Argument) -> bool {
@@ -12847,30 +12225,29 @@ fn codegen_reactive_scope(
         && scope.reassignments.is_empty()
         && block.len() == 1
         && !single_decl_is_function_like
+        && let Some(dep_index) = selected_dep_exprs.iter().position(|dep| dep.contains("?."))
     {
-        if let Some(dep_index) = selected_dep_exprs.iter().position(|dep| dep.contains("?.")) {
-            let dep_expr = selected_dep_exprs[dep_index].clone();
-            let decl = sorted_decls[0].1;
-            let alias_name = identifier_name_with_cx(cx, &decl.identifier);
-            if let Some(alias_index) = parse_codegen_temp_index(&alias_name) {
-                let mut shifted_index = alias_index + 1;
-                let mut shifted_name = format!("t{}", shifted_index);
-                while shifted_name == alias_name
-                    || cx.used_declaration_names.contains(&shifted_name)
-                    || cx.reserved_child_decl_names.contains(&shifted_name)
-                {
-                    shifted_index += 1;
-                    shifted_name = format!("t{}", shifted_index);
-                }
-                cx.declaration_name_overrides
-                    .insert(decl.identifier.declaration_id, shifted_name.clone());
-                cx.used_declaration_names.insert(shifted_name.clone());
-                cx.unique_identifiers.insert(shifted_name);
-
-                output.push_str(&format!("const {} = {};\n", alias_name, dep_expr));
-                selected_dep_exprs[dep_index] = alias_name.clone();
-                optional_dep_alias = Some((dep_expr, alias_name));
+        let dep_expr = selected_dep_exprs[dep_index].clone();
+        let decl = sorted_decls[0].1;
+        let alias_name = identifier_name_with_cx(cx, &decl.identifier);
+        if let Some(alias_index) = parse_codegen_temp_index(&alias_name) {
+            let mut shifted_index = alias_index + 1;
+            let mut shifted_name = format!("t{}", shifted_index);
+            while shifted_name == alias_name
+                || cx.used_declaration_names.contains(&shifted_name)
+                || cx.reserved_child_decl_names.contains(&shifted_name)
+            {
+                shifted_index += 1;
+                shifted_name = format!("t{}", shifted_index);
             }
+            cx.declaration_name_overrides
+                .insert(decl.identifier.declaration_id, shifted_name.clone());
+            cx.used_declaration_names.insert(shifted_name.clone());
+            cx.unique_identifiers.insert(shifted_name);
+
+            output.push_str(&format!("const {} = {};\n", alias_name, dep_expr));
+            selected_dep_exprs[dep_index] = alias_name.clone();
+            optional_dep_alias = Some((dep_expr, alias_name));
         }
     }
     for dep_expr in &selected_dep_exprs {
@@ -13091,21 +12468,22 @@ fn codegen_reactive_scope(
         output.push_str(stmt);
     }
 
-    if selected_dep_exprs.is_empty() && scope.reassignments.is_empty() && block.len() == 1 {
-        if let ReactiveStatement::Instruction(instr) = &block[0]
-            && matches!(
-                instr.value,
-                InstructionValue::FunctionExpression { .. }
-                    | InstructionValue::ObjectMethod { .. }
-                    | InstructionValue::Primitive { .. }
-                    | InstructionValue::ArrayExpression { .. }
-                    | InstructionValue::ObjectExpression { .. }
-            )
-        {
-            for (_, decl) in &sorted_decls {
-                cx.stable_zero_dep_decls
-                    .insert(decl.identifier.declaration_id);
-            }
+    if selected_dep_exprs.is_empty()
+        && scope.reassignments.is_empty()
+        && block.len() == 1
+        && let ReactiveStatement::Instruction(instr) = &block[0]
+        && matches!(
+            instr.value,
+            InstructionValue::FunctionExpression { .. }
+                | InstructionValue::ObjectMethod { .. }
+                | InstructionValue::Primitive { .. }
+                | InstructionValue::ArrayExpression { .. }
+                | InstructionValue::ObjectExpression { .. }
+        )
+    {
+        for (_, decl) in &sorted_decls {
+            cx.stable_zero_dep_decls
+                .insert(decl.identifier.declaration_id);
         }
     }
 
@@ -13462,7 +12840,7 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                 }
                 let has_block = block_code
                     .as_ref()
-                    .map_or(false, |code| !code.trim().is_empty());
+                    .is_some_and(|code| !code.trim().is_empty());
 
                 if let Some(test) = &case.test {
                     let test_expr = codegen_place_to_expression(cx, test);
@@ -13477,10 +12855,10 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                 } else {
                     result.push_str("default:\n");
                 }
-                if let Some(block_code) = &block_code {
-                    if !block_code.trim().is_empty() {
-                        result.push_str(&format!("{{\n{}}}\n", block_code));
-                    }
+                if let Some(block_code) = &block_code
+                    && !block_code.trim().is_empty()
+                {
+                    result.push_str(&format!("{{\n{}}}\n", block_code));
                 }
             }
             result.push_str("}\n");
@@ -13661,10 +13039,10 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
 /// Generate code for an instruction, returning None if no statement is needed.
 fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -> Option<String> {
     // Track stable setter declarations (setState/dispatch-like values).
-    if let Some(lvalue) = &instr.lvalue {
-        if is_stable_setter_identifier(&lvalue.identifier) {
-            cx.mark_stable_setter_identifier(&lvalue.identifier);
-        }
+    if let Some(lvalue) = &instr.lvalue
+        && is_stable_setter_identifier(&lvalue.identifier)
+    {
+        cx.mark_stable_setter_identifier(&lvalue.identifier);
     }
 
     // Track resolved names through lowered aliases for better hook matching.
@@ -14359,15 +13737,13 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
                 // Declare all pattern operands
                 for p in operands {
                     cx.declare(&p.identifier);
-                    if force_temp_declare {
-                        if let Some(name) = cx
+                    if force_temp_declare
+                        && let Some(name) = cx
                             .declaration_name_overrides
                             .get(&p.identifier.declaration_id)
-                        {
-                            if let Some(names) = cx.block_scope_declared_temp_names.last_mut() {
-                                names.insert(name.clone());
-                            }
-                        }
+                        && let Some(names) = cx.block_scope_declared_temp_names.last_mut()
+                    {
+                        names.insert(name.clone());
                     }
                 }
                 let kw = match kind {
@@ -14433,7 +13809,7 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
             }
             None
         }
-        InstructionValue::LoadGlobal { binding, .. } => {
+        InstructionValue::LoadGlobal { binding: _, .. } => {
             let ev = codegen_instruction_value_ev(cx, &instr.value);
             codegen_instruction_expr_with_prec_kind(cx, instr, &ev.expr, ev.prec, ExprKind::Normal)
         }
@@ -14605,7 +13981,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                     call_expr
                 )
             };
-            return Some(pre);
+            Some(pre)
         }
         InstructionValue::MethodCall {
             receiver,
@@ -14722,10 +14098,10 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                     call_expr
                 )
             };
-            return Some(pre);
+            Some(pre)
         }
-        _ => return None,
-    };
+        _ => None,
+    }
 }
 
 /// Handle store-like instructions (StoreLocal, StoreContext).
@@ -14964,30 +14340,6 @@ fn codegen_store(
     }
 }
 
-/// Convert an instruction expression value to a statement (backward compat wrapper).
-fn codegen_instruction_expr(
-    cx: &mut Context,
-    instr: &ReactiveInstruction,
-    value: &str,
-) -> Option<String> {
-    codegen_instruction_expr_with_prec_kind(
-        cx,
-        instr,
-        value,
-        ExprPrecedence::Primary,
-        ExprKind::Normal,
-    )
-}
-
-fn codegen_instruction_expr_with_prec(
-    cx: &mut Context,
-    instr: &ReactiveInstruction,
-    value: &str,
-    prec: ExprPrecedence,
-) -> Option<String> {
-    codegen_instruction_expr_with_prec_kind(cx, instr, value, prec, ExprKind::Normal)
-}
-
 fn codegen_instruction_expr_with_prec_kind(
     cx: &mut Context,
     instr: &ReactiveInstruction,
@@ -15087,16 +14439,6 @@ fn codegen_instruction_expr_with_prec_kind(
                 // Preserve upstream parity: unnamed-temp literal loads in statement
                 // position are dead no-ops after lowering and should be elided.
                 None
-            } else if place.identifier.name.is_some() {
-                debug_codegen_expr(
-                    "stmt-expr-emit",
-                    format!(
-                        "kind={} expr={}",
-                        instruction_value_tag(&instr.value),
-                        value
-                    ),
-                );
-                Some(format!("{};\n", value))
             } else {
                 debug_codegen_expr(
                     "stmt-expr-emit",
@@ -15120,11 +14462,6 @@ fn codegen_instruction_expr_with_prec_kind(
             Some(format!("{};\n", value))
         }
     }
-}
-
-/// Generate an expression from an instruction value (backward compat wrapper returning String).
-fn codegen_instruction_value(cx: &mut Context, value: &InstructionValue) -> String {
-    codegen_instruction_value_ev(cx, value).expr
 }
 
 /// Generate an ExprValue from an instruction value (with proper precedence tracking).
@@ -15872,58 +15209,6 @@ fn apply_optional_to_rendered_expr(expr: &str, optional: bool) -> Option<String>
     None
 }
 
-/// Check whether a concise arrow function body expression needs wrapping in
-/// parentheses. Babel wraps ObjectExpression, AssignmentExpression, and
-/// SequenceExpression when used as concise arrow bodies.
-fn needs_parens_in_arrow_body(expr: &str) -> bool {
-    if expr.starts_with('{') {
-        return true;
-    }
-    let mut depth = 0i32;
-    let bytes = expr.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-    while i < len {
-        let ch = bytes[i];
-        match ch {
-            b'(' | b'[' | b'{' => depth += 1,
-            b')' | b']' | b'}' => depth -= 1,
-            b'\'' | b'"' | b'`' => {
-                let quote = ch;
-                i += 1;
-                while i < len && bytes[i] != quote {
-                    if bytes[i] == b'\\' {
-                        i += 1;
-                    }
-                    i += 1;
-                }
-            }
-            b',' if depth == 0 => return true,
-            b'=' if depth == 0 => {
-                let prev = if i > 0 { bytes[i - 1] } else { 0 };
-                let next = if i + 1 < len { bytes[i + 1] } else { 0 };
-                if prev == b'!' || prev == b'<' || prev == b'>' || prev == b'=' {
-                } else if next == b'=' || next == b'>' {
-                } else {
-                    return true;
-                }
-            }
-            // Ternary operator at top level: Babel wraps ConditionalExpression
-            // in parens when used as an arrow function body.
-            b'?' if depth == 0 => {
-                // Distinguish ternary `?` from optional chaining `?.`
-                let next = if i + 1 < len { bytes[i + 1] } else { 0 };
-                if next != b'.' && next != b'?' {
-                    return true;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    false
-}
-
 // ---- Place & identifier helpers ----
 
 fn codegen_place_to_expression(cx: &mut Context, place: &Place) -> String {
@@ -16219,7 +15504,7 @@ fn truncate_ref_current_dep(
 ) -> ReactiveScopeDependency {
     if (matches!(&dep.identifier.type_, Type::Object { shape_id: Some(s) } if s == "BuiltInUseRefId")
         || stable_ref_decls.contains(&dep.identifier.declaration_id))
-        && dep.path.first().map_or(false, |p| p.property == "current")
+        && dep.path.first().is_some_and(|p| p.property == "current")
     {
         ReactiveScopeDependency {
             identifier: dep.identifier.clone(),
@@ -16228,10 +15513,6 @@ fn truncate_ref_current_dep(
     } else {
         dep.clone()
     }
-}
-
-fn block_contains_try_terminal(block: &ReactiveBlock) -> bool {
-    block.iter().any(statement_contains_try_terminal)
 }
 
 fn is_single_iteration_do_while_scope_block(block: &ReactiveBlock) -> bool {
@@ -16264,49 +15545,6 @@ fn block_has_unconditional_break_terminator(block: &ReactiveBlock) -> bool {
     }
     true
 }
-
-fn statement_contains_try_terminal(stmt: &ReactiveStatement) -> bool {
-    match stmt {
-        ReactiveStatement::Terminal(term) => terminal_contains_try(&term.terminal),
-        ReactiveStatement::Scope(scope) => block_contains_try_terminal(&scope.instructions),
-        ReactiveStatement::PrunedScope(pruned) => block_contains_try_terminal(&pruned.instructions),
-        ReactiveStatement::Instruction(_) => false,
-    }
-}
-
-fn terminal_contains_try(terminal: &ReactiveTerminal) -> bool {
-    match terminal {
-        ReactiveTerminal::Try { .. } => true,
-        ReactiveTerminal::If {
-            consequent,
-            alternate,
-            ..
-        } => {
-            block_contains_try_terminal(consequent)
-                || alternate
-                    .as_ref()
-                    .is_some_and(|block| block_contains_try_terminal(block))
-        }
-        ReactiveTerminal::Switch { cases, .. } => cases
-            .iter()
-            .filter_map(|c| c.block.as_ref())
-            .any(block_contains_try_terminal),
-        ReactiveTerminal::For { loop_block, .. }
-        | ReactiveTerminal::ForOf { loop_block, .. }
-        | ReactiveTerminal::ForIn { loop_block, .. }
-        | ReactiveTerminal::While { loop_block, .. }
-        | ReactiveTerminal::DoWhile { loop_block, .. }
-        | ReactiveTerminal::Label {
-            block: loop_block, ..
-        } => block_contains_try_terminal(loop_block),
-        ReactiveTerminal::Break { .. }
-        | ReactiveTerminal::Continue { .. }
-        | ReactiveTerminal::Return { .. }
-        | ReactiveTerminal::Throw { .. } => false,
-    }
-}
-
-// ---- Dependency codegen ----
 
 fn codegen_dependency(cx: &mut Context, dep: &ReactiveScopeDependency) -> String {
     let mut expr = if dep.path.is_empty() {
@@ -16447,10 +15685,9 @@ fn block_has_optional_computed_load_call_key(block: &ReactiveBlock) -> bool {
             InstructionValue::CallExpression { .. }
                 | InstructionValue::MethodCall { .. }
                 | InstructionValue::TaggedTemplateExpression { .. }
-        ) {
-            if let Some(lvalue) = &instr.lvalue {
-                call_like_results.insert(lvalue.identifier.id);
-            }
+        ) && let Some(lvalue) = &instr.lvalue
+        {
+            call_like_results.insert(lvalue.identifier.id);
         }
     }
     for stmt in block {
@@ -16862,12 +16099,10 @@ fn infer_callback_dependency_paths(
                             }
                             if let Some(root_decl) =
                                 id_to_root_decl.get(&place.identifier.id).copied()
-                            {
-                                if id_to_root_decl.insert(instr.lvalue.identifier.id, root_decl)
+                                && id_to_root_decl.insert(instr.lvalue.identifier.id, root_decl)
                                     != Some(root_decl)
-                                {
-                                    changed = true;
-                                }
+                            {
+                                changed = true;
                             }
                         }
                     }
@@ -16881,12 +16116,10 @@ fn infer_callback_dependency_paths(
                             }
                             if let Some(root_decl) =
                                 id_to_root_decl.get(&value.identifier.id).copied()
-                            {
-                                if id_to_root_decl.insert(instr.lvalue.identifier.id, root_decl)
+                                && id_to_root_decl.insert(instr.lvalue.identifier.id, root_decl)
                                     != Some(root_decl)
-                                {
-                                    changed = true;
-                                }
+                            {
+                                changed = true;
                             }
                         }
                     }
@@ -16933,12 +16166,10 @@ fn infer_callback_dependency_paths(
                             }
                             if let Some(root_decl) =
                                 id_to_root_decl.get(&object.identifier.id).copied()
-                            {
-                                if id_to_root_decl.insert(instr.lvalue.identifier.id, root_decl)
+                                && id_to_root_decl.insert(instr.lvalue.identifier.id, root_decl)
                                     != Some(root_decl)
-                                {
-                                    changed = true;
-                                }
+                            {
+                                changed = true;
                             }
                         }
                     }
@@ -16948,40 +16179,38 @@ fn infer_callback_dependency_paths(
                         optional,
                         ..
                     } => {
-                        if let Some(base) = id_to_path.get(&object.identifier.id) {
-                            if let Some(prop) = literal_by_id.get(&property.identifier.id) {
-                                let suffix = if is_non_negative_integer_string(prop) {
-                                    if *optional {
-                                        format!("?.[{}]", prop)
-                                    } else {
-                                        format!("[{}]", prop)
-                                    }
-                                } else if is_valid_js_identifier(prop) {
-                                    if *optional {
-                                        format!("?.{}", prop)
-                                    } else {
-                                        format!(".{}", prop)
-                                    }
-                                } else if *optional {
-                                    format!("?.[\"{}\"]", escape_string(prop))
+                        if let Some(base) = id_to_path.get(&object.identifier.id)
+                            && let Some(prop) = literal_by_id.get(&property.identifier.id)
+                        {
+                            let suffix = if is_non_negative_integer_string(prop) {
+                                if *optional {
+                                    format!("?.[{}]", prop)
                                 } else {
-                                    format!("[\"{}\"]", escape_string(prop))
-                                };
-                                let next = format!("{}{}", base, suffix);
-                                if id_to_path.insert(instr.lvalue.identifier.id, next.clone())
-                                    != Some(next)
-                                {
-                                    changed = true;
+                                    format!("[{}]", prop)
                                 }
-                                if let Some(root_decl) =
-                                    id_to_root_decl.get(&object.identifier.id).copied()
-                                {
-                                    if id_to_root_decl.insert(instr.lvalue.identifier.id, root_decl)
-                                        != Some(root_decl)
-                                    {
-                                        changed = true;
-                                    }
+                            } else if is_valid_js_identifier(prop) {
+                                if *optional {
+                                    format!("?.{}", prop)
+                                } else {
+                                    format!(".{}", prop)
                                 }
+                            } else if *optional {
+                                format!("?.[\"{}\"]", escape_string(prop))
+                            } else {
+                                format!("[\"{}\"]", escape_string(prop))
+                            };
+                            let next = format!("{}{}", base, suffix);
+                            if id_to_path.insert(instr.lvalue.identifier.id, next.clone())
+                                != Some(next)
+                            {
+                                changed = true;
+                            }
+                            if let Some(root_decl) =
+                                id_to_root_decl.get(&object.identifier.id).copied()
+                                && id_to_root_decl.insert(instr.lvalue.identifier.id, root_decl)
+                                    != Some(root_decl)
+                            {
+                                changed = true;
                             }
                         }
                     }
@@ -17048,10 +16277,9 @@ fn infer_callback_dependency_paths(
             if let (Some(path), Some(root_decl)) = (
                 id_to_path.get(&place.identifier.id),
                 id_to_root_decl.get(&place.identifier.id),
-            ) {
-                if !used_paths.iter().any(|(existing, _)| existing == path) {
-                    used_paths.push((path.clone(), *root_decl));
-                }
+            ) && !used_paths.iter().any(|(existing, _)| existing == path)
+            {
+                used_paths.push((path.clone(), *root_decl));
             }
         });
     }
@@ -17395,10 +16623,10 @@ fn collect_local_declaration_names_from_lowered_function(
         for instr in &block.instructions {
             match &instr.value {
                 InstructionValue::StoreLocal { lvalue, .. } => {
-                    if lvalue.kind != InstructionKind::Reassign {
-                        if let Some(name) = &lvalue.place.identifier.name {
-                            names.insert(name.value().to_string());
-                        }
+                    if lvalue.kind != InstructionKind::Reassign
+                        && let Some(name) = &lvalue.place.identifier.name
+                    {
+                        names.insert(name.value().to_string());
                     }
                 }
                 InstructionValue::DeclareLocal { lvalue, .. } => {
@@ -17962,13 +17190,11 @@ fn codegen_object_property(cx: &mut Context, prop: &ObjectPropertyOrSpread) -> S
                             codegen_reactive_function_with_options_and_fbt_operands(
                                 &reactive_func,
                                 cx.unique_identifiers.clone(),
-                                false,
-                                false,
-                                false,
-                                false,
-                                false,
-                                false,
-                                cx.enable_name_anonymous_functions,
+                                CodegenReactiveOptions {
+                                    enable_name_anonymous_functions: cx
+                                        .enable_name_anonymous_functions,
+                                    ..CodegenReactiveOptions::default()
+                                },
                                 cx.fbt_operands.clone(),
                             );
                         adopt_codegen_error(cx, inner_result.error.take());
@@ -18079,15 +17305,17 @@ fn resolve_method_property(cx: &mut Context, place: &Place, receiver_expr: &str)
     // This handles the pattern from PropagateEarlyReturns where MethodCall's property is a
     // PropertyLoad place that resolves to `<receiver>.<prop>`.
     if let Some(prop_name) = resolved.strip_prefix(receiver_expr) {
-        if let Some(name) = prop_name.strip_prefix('.') {
-            if !name.is_empty() && is_valid_js_identifier_name(name) {
-                return (name.to_string(), false);
-            }
+        if let Some(name) = prop_name.strip_prefix('.')
+            && !name.is_empty()
+            && is_valid_js_identifier_name(name)
+        {
+            return (name.to_string(), false);
         }
-        if let Some(name) = prop_name.strip_prefix("?.") {
-            if !name.is_empty() && is_valid_js_identifier_name(name) {
-                return (name.to_string(), false);
-            }
+        if let Some(name) = prop_name.strip_prefix("?.")
+            && !name.is_empty()
+            && is_valid_js_identifier_name(name)
+        {
+            return (name.to_string(), false);
         }
         if let Some(expr) = extract_single_computed_member_suffix(prop_name) {
             return (expr, true);
@@ -18387,19 +17615,15 @@ fn codegen_function_expression(
     let mut inner_result = codegen_reactive_function_with_primitives(
         &reactive_func,
         cx.unique_identifiers.clone(),
-        cx.primitive_literals_for_child(),
-        inherited_decl_name_overrides,
-        cx.snapshot_temps(),
-        cx.disable_memoization_features,
-        cx.disable_memoization_for_debugging,
-        cx.enable_change_variable_codegen,
-        cx.emit_hook_guards,
-        cx.enable_change_detection_for_debugging,
-        false,
-        cx.enable_name_anonymous_functions,
-        false,
-        cx.fbt_operands.clone(),
-        HashSet::new(),
+        CodegenReactiveInputs {
+            inline_primitive_literals: cx.primitive_literals_for_child(),
+            inherited_declaration_name_overrides: inherited_decl_name_overrides,
+            initial_temp_snapshot: cx.snapshot_temps(),
+            fbt_operands: cx.fbt_operands.clone(),
+            inherited_reserved_child_decl_names: HashSet::new(),
+            emit_function_hook_guard: false,
+        },
+        cx.child_codegen_options(),
     );
     adopt_codegen_error(cx, inner_result.error.take());
 
@@ -18549,201 +17773,6 @@ fn compact_method_if_single_statement(method_src: String) -> String {
         compact_body,
         method_src[close_brace_idx + 1..].trim_start()
     )
-}
-
-/// Codegen a single HIR instruction (used for inner function bodies).
-/// Reuses codegen_instruction_value_ev for the expression, then wraps in assignment.
-fn codegen_hir_instruction(cx: &mut Context, instr: &Instruction) -> Option<String> {
-    let lvalue = &instr.lvalue;
-
-    // Handle specific instruction types first
-    match &instr.value {
-        InstructionValue::DeclareLocal { lvalue: lv, .. }
-        | InstructionValue::DeclareContext { lvalue: lv, .. } => {
-            // DeclareLocal with Catch kind produces no output (catch bindings
-            // are declared via the catch clause parameter, not via DeclareLocal).
-            if lv.kind == InstructionKind::Catch {
-                return None;
-            }
-            let kind = match lv.kind {
-                InstructionKind::Const | InstructionKind::Function => "const",
-                InstructionKind::Let => "let",
-                _ => "let",
-            };
-            let lv_name = identifier_name_with_cx(cx, &lv.place.identifier);
-            cx.declare(&lv.place.identifier);
-            cx.set_temp_expr(&lv.place.identifier, None);
-            return Some(format!("{} {};\n", kind, lv_name));
-        }
-        InstructionValue::StoreLocal {
-            lvalue: lv,
-            value: val,
-            ..
-        } => {
-            let val_expr = codegen_place_to_expression(cx, val);
-            let lv_name = identifier_name_with_cx(cx, &lv.place.identifier);
-            // Catch kind: emit `const name = rhs;` as a named alias for the catch parameter
-            if lv.kind == InstructionKind::Catch {
-                cx.declare(&lv.place.identifier);
-                cx.set_temp_expr(&lv.place.identifier, None);
-                return Some(format!("const {} = {};\n", lv_name, val_expr));
-            }
-            if !has_materialized_named_binding(cx, &lv.place.identifier) {
-                let kind = match lv.kind {
-                    InstructionKind::Const | InstructionKind::Function => "const",
-                    InstructionKind::Let => "let",
-                    InstructionKind::Reassign => {
-                        return Some(format!("{} = {};\n", lv_name, val_expr));
-                    }
-                    _ => "let",
-                };
-                cx.declare(&lv.place.identifier);
-                cx.set_temp_expr(&lv.place.identifier, None);
-                return Some(format!("{} {} = {};\n", kind, lv_name, val_expr));
-            } else {
-                cx.set_temp_expr(&lv.place.identifier, None);
-                return Some(format!("{} = {};\n", lv_name, val_expr));
-            }
-        }
-        InstructionValue::StoreContext {
-            lvalue: lv,
-            value: val,
-            ..
-        } => {
-            let val_expr = codegen_place_to_expression(cx, val);
-            let lv_name = identifier_name_with_cx(cx, &lv.place.identifier);
-            cx.declare(&lv.place.identifier);
-            return Some(format!("{} = {};\n", lv_name, val_expr));
-        }
-        _ => {}
-    }
-
-    // Get the expression value with full precedence info
-    let ev = codegen_instruction_value_ev(cx, &instr.value);
-
-    // Check if this is a temp that should be stored
-    if lvalue.identifier.name.is_none() {
-        // Side-effecting instructions must always be emitted as statements,
-        // even when their result is assigned to an unnamed temp.
-        let must_emit = matches!(
-            &instr.value,
-            InstructionValue::PropertyStore { .. }
-                | InstructionValue::ComputedStore { .. }
-                | InstructionValue::PropertyDelete { .. }
-                | InstructionValue::ComputedDelete { .. }
-                | InstructionValue::PostfixUpdate { .. }
-                | InstructionValue::PrefixUpdate { .. }
-        );
-        if must_emit {
-            return Some(format!("{};\n", ev.expr));
-        }
-        cx.set_temp_expr(&lvalue.identifier, Some(ev));
-        return None;
-    }
-
-    let name = identifier_name_with_cx(cx, &lvalue.identifier);
-    let declared = has_materialized_named_binding(cx, &lvalue.identifier);
-    cx.declare(&lvalue.identifier);
-    cx.set_temp_expr(&lvalue.identifier, None);
-
-    if name == "undefined" || ev.expr.is_empty() {
-        if !ev.expr.is_empty() {
-            Some(format!("{};\n", ev.expr))
-        } else {
-            None
-        }
-    } else if declared {
-        Some(format!("{} = {};\n", name, ev.expr))
-    } else {
-        Some(format!("let {} = {};\n", name, ev.expr))
-    }
-}
-
-/// Generate the body of an inner function by walking its HIR blocks.
-/// This is a simplified codegen that walks blocks in order, emitting instructions
-/// and handling basic terminals (goto, return, if, etc.).
-fn codegen_inner_function_body(cx: &mut Context, func: &HIRFunction) -> String {
-    let temp_snapshot = cx.snapshot_temps();
-    let decl_snapshot = cx.declarations.clone();
-
-    // Register params
-    for param in &func.params {
-        let place = match param {
-            Argument::Place(p) => p,
-            Argument::Spread(p) => p,
-        };
-        cx.set_temp_expr(&place.identifier, None);
-        cx.declare(&place.identifier);
-    }
-
-    let mut output = String::new();
-
-    // Emit directives
-    for directive in &func.directives {
-        output.push_str(&format!("\"{}\";\n", directive));
-    }
-
-    // Walk blocks in order
-    for (_block_id, block) in &func.body.blocks {
-        // Snapshot which temps had Some values before this block's instructions.
-        // We use this to detect temps that got new expressions stored during processing.
-        let temps_with_value_before: HashSet<DeclarationId> = cx
-            .temp
-            .iter()
-            .filter(|(_, v)| v.is_some())
-            .map(|(k, _)| *k)
-            .collect();
-
-        for instr in &block.instructions {
-            if let Some(stmt) = codegen_hir_instruction(cx, instr) {
-                output.push_str(&stmt);
-                if !stmt.ends_with('\n') {
-                    output.push('\n');
-                }
-            }
-        }
-
-        // Emit any unconsumed temp expressions from this block as statements.
-        // This handles cases like `setX(1)` whose result is assigned to an unnamed
-        // temp but never consumed — the call must still be emitted.
-        let mut unconsumed: Vec<(DeclarationId, String)> = Vec::new();
-        for (decl_id, ev) in cx.temp.iter() {
-            if let Some(ev) = ev {
-                if !temps_with_value_before.contains(decl_id) && !ev.expr.is_empty() {
-                    unconsumed.push((*decl_id, ev.expr.clone()));
-                }
-            }
-        }
-        // Sort by DeclarationId for deterministic output
-        unconsumed.sort_by_key(|(id, _)| *id);
-        for (decl_id, expr) in unconsumed {
-            output.push_str(&format!("{};\n", expr));
-            cx.temp.insert(decl_id, None);
-        }
-
-        // Handle terminal
-        match &block.terminal {
-            Terminal::Return { value, .. } => {
-                let expr = codegen_place_to_expression(cx, value);
-                if expr != "undefined" {
-                    output.push_str(&format!("return {};\n", expr));
-                } else {
-                    output.push_str("return;\n");
-                }
-            }
-            Terminal::Throw { value, .. } => {
-                let expr = codegen_place_to_expression(cx, value);
-                output.push_str(&format!("throw {};\n", expr));
-            }
-            // Skip gotos, branches, and other control flow — they're handled by
-            // the block ordering
-            _ => {}
-        }
-    }
-
-    cx.restore_temps(temp_snapshot);
-    cx.declarations = decl_snapshot;
-    output
 }
 
 fn codegen_params(cx: &mut Context, params: &[Argument]) -> String {
@@ -19060,10 +18089,6 @@ fn codegen_template_literal(
     result
 }
 
-fn codegen_template_value(value: &TemplateQuasi) -> String {
-    value.raw.clone()
-}
-
 // ---- Operator helpers ----
 
 fn operator_to_str(op: &BinaryOperator) -> &'static str {
@@ -19108,13 +18133,6 @@ fn update_op_to_str(op: &UpdateOperator) -> &'static str {
     match op {
         UpdateOperator::Increment => "++",
         UpdateOperator::Decrement => "--",
-    }
-}
-
-fn property_literal_to_str(prop: &PropertyLiteral) -> String {
-    match prop {
-        PropertyLiteral::String(s) => s.clone(),
-        PropertyLiteral::Number(n) => format!("{}", n),
     }
 }
 
@@ -19177,7 +18195,7 @@ fn escape_jsx_text(s: &str) -> String {
 // ---- JSX helpers ----
 
 fn jsx_attr_needs_expression_container(escaped_inner: &str) -> bool {
-    escaped_inner.contains('\\') || escaped_inner.chars().any(|c| !c.is_ascii())
+    escaped_inner.contains('\\') || !escaped_inner.is_ascii()
 }
 
 fn jsx_text_needs_expression_container(escaped_inner: &str) -> bool {

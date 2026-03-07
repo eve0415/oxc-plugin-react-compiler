@@ -243,7 +243,7 @@ mod tests {
         //
         // After pruning, block 0 should absorb blocks 1 and 2,
         // and blocks 1 and 2 should be removed.
-        let mut preds_0 = HashSet::new();
+        let preds_0 = HashSet::new();
         let mut preds_1 = HashSet::new();
         preds_1.insert(BlockId(0));
         let mut preds_2 = HashSet::new();

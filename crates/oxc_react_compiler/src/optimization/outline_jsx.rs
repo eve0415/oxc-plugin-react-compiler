@@ -20,6 +20,16 @@ struct OutlineState {
     children: HashSet<IdentifierId>,
 }
 
+struct OutlineBatch<'a> {
+    env: &'a Environment,
+    globals: &'a HashMap<IdentifierId, Instruction>,
+    state: &'a mut OutlineState,
+    rewrite_instr: &'a mut HashMap<InstructionId, Vec<Instruction>>,
+    identifier_name_overrides: &'a mut HashMap<IdentifierId, IdentifierName>,
+    outlined: &'a mut Vec<OutlinedFunction>,
+    ctx: &'a mut OutlineCtx,
+}
+
 #[derive(Debug, Clone)]
 struct OutlinedJsxAttribute {
     original_name: String,
@@ -95,13 +105,15 @@ fn outline_jsx_impl(
                     {
                         process_and_outline_jsx(
                             fn_type,
-                            &env,
-                            &globals,
-                            &mut state,
-                            &mut rewrite_instr,
-                            &mut identifier_name_overrides,
-                            outlined,
-                            ctx,
+                            OutlineBatch {
+                                env: &env,
+                                globals: &globals,
+                                state: &mut state,
+                                rewrite_instr: &mut rewrite_instr,
+                                identifier_name_overrides: &mut identifier_name_overrides,
+                                outlined,
+                                ctx,
+                            },
                         );
                         state = OutlineState::default();
                     }
@@ -119,13 +131,15 @@ fn outline_jsx_impl(
 
         process_and_outline_jsx(
             fn_type,
-            &env,
-            &globals,
-            &mut state,
-            &mut rewrite_instr,
-            &mut identifier_name_overrides,
-            outlined,
-            ctx,
+            OutlineBatch {
+                env: &env,
+                globals: &globals,
+                state: &mut state,
+                rewrite_instr: &mut rewrite_instr,
+                identifier_name_overrides: &mut identifier_name_overrides,
+                outlined,
+                ctx,
+            },
         );
 
         if !rewrite_instr.is_empty() {
@@ -148,16 +162,16 @@ fn outline_jsx_impl(
     dead_code_elimination(func);
 }
 
-fn process_and_outline_jsx(
-    fn_type: ReactFunctionType,
-    env: &Environment,
-    globals: &HashMap<IdentifierId, Instruction>,
-    state: &mut OutlineState,
-    rewrite_instr: &mut HashMap<InstructionId, Vec<Instruction>>,
-    identifier_name_overrides: &mut HashMap<IdentifierId, IdentifierName>,
-    outlined: &mut Vec<OutlinedFunction>,
-    ctx: &mut OutlineCtx,
-) {
+fn process_and_outline_jsx(fn_type: ReactFunctionType, batch: OutlineBatch<'_>) {
+    let OutlineBatch {
+        env,
+        globals,
+        state,
+        rewrite_instr,
+        identifier_name_overrides,
+        outlined,
+        ctx,
+    } = batch;
     if state.jsx.len() <= 1 {
         return;
     }

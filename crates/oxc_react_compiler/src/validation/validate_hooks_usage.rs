@@ -72,10 +72,9 @@ fn hook_desc_for_place(place: &Place) -> String {
         shape_id: Some(shape_id),
         ..
     } = &place.identifier.type_
+        && let Some(name) = hook_name_for_shape_id(shape_id)
     {
-        if let Some(name) = hook_name_for_shape_id(shape_id) {
-            return name.to_string();
-        }
+        return name.to_string();
     }
     place
         .identifier
@@ -190,19 +189,18 @@ fn resolve_method_callee_kind(
     };
 
     let mut callee_kind = get_kind_for_place(property);
-    if callee_kind == Kind::Local {
-        if let Some(prop_str) = id_string_values.get(&property.identifier.id) {
-            if Environment::is_hook_name(prop_str) {
-                let receiver_kind = get_kind_for_place(receiver);
-                callee_kind = match receiver_kind {
-                    Kind::Global => Kind::KnownHook,
-                    Kind::KnownHook => Kind::KnownHook,
-                    Kind::PotentialHook => Kind::PotentialHook,
-                    Kind::Local => Kind::PotentialHook,
-                    Kind::Error => Kind::Error,
-                };
-            }
-        }
+    if callee_kind == Kind::Local
+        && let Some(prop_str) = id_string_values.get(&property.identifier.id)
+        && Environment::is_hook_name(prop_str)
+    {
+        let receiver_kind = get_kind_for_place(receiver);
+        callee_kind = match receiver_kind {
+            Kind::Global => Kind::KnownHook,
+            Kind::KnownHook => Kind::KnownHook,
+            Kind::PotentialHook => Kind::PotentialHook,
+            Kind::Local => Kind::PotentialHook,
+            Kind::Error => Kind::Error,
+        };
     }
     callee_kind
 }
@@ -791,7 +789,6 @@ fn compute_reachable_blocks(func: &HIRFunction) -> HashSet<BlockId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::types::*;
 
     fn make_test_place(id: u32, name: Option<&str>) -> Place {
         Place {

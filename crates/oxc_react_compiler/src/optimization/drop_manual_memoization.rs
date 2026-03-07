@@ -348,17 +348,16 @@ pub fn drop_manual_memoization(func: &mut HIRFunction) -> Result<(), CompilerErr
             if let Some((receiver_id, prop_id)) = method_call_info
                 && react_ids.contains(&receiver_id)
                 && !memo_hooks.contains(&prop_id)
+                && let Some(prop_name) = primitive_strings.get(&prop_id)
             {
-                if let Some(prop_name) = primitive_strings.get(&prop_id) {
-                    if prop_name == "useMemo" {
-                        memo_hooks.insert(prop_id);
-                        memo_kinds.insert(prop_id, MemoKind::UseMemo);
-                        memo_load_instr_ids.insert(prop_id, instr.id);
-                    } else if prop_name == "useCallback" {
-                        memo_hooks.insert(prop_id);
-                        memo_kinds.insert(prop_id, MemoKind::UseCallback);
-                        memo_load_instr_ids.insert(prop_id, instr.id);
-                    }
+                if prop_name == "useMemo" {
+                    memo_hooks.insert(prop_id);
+                    memo_kinds.insert(prop_id, MemoKind::UseMemo);
+                    memo_load_instr_ids.insert(prop_id, instr.id);
+                } else if prop_name == "useCallback" {
+                    memo_hooks.insert(prop_id);
+                    memo_kinds.insert(prop_id, MemoKind::UseCallback);
+                    memo_load_instr_ids.insert(prop_id, instr.id);
                 }
             }
 
@@ -600,11 +599,7 @@ fn find_optional_places(func: &HIRFunction) -> HashSet<IdentifierId> {
         };
 
         let mut test_block_id = *optional_test;
-        'scan: loop {
-            let Some(test_block) = blocks_by_id.get(&test_block_id).copied() else {
-                break;
-            };
-
+        'scan: while let Some(test_block) = blocks_by_id.get(&test_block_id).copied() {
             match &test_block.terminal {
                 Terminal::Branch {
                     consequent,

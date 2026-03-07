@@ -38,6 +38,12 @@ pub struct IdCounter {
     pub next_identifier: u32,
 }
 
+impl Default for IdCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IdCounter {
     pub fn new() -> Self {
         Self {
@@ -602,10 +608,9 @@ impl HIRBuilder {
                 continue_block,
                 ..
             } = scope
+                && (label.is_none() || label == l.as_deref())
             {
-                if label.is_none() || label == l.as_deref() {
-                    return Some(*continue_block);
-                }
+                return Some(*continue_block);
             }
         }
         None

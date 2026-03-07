@@ -98,16 +98,21 @@ function Component(props) {
         // Find the Component function
         if let oxc_ast::ast::Statement::FunctionDeclaration(func) = &parser_ret.program.body[0] {
             let body = func.body.as_ref().unwrap();
-            let lower_result = hir::build::lower_function(
-                body,
-                &func.params,
-                Some("Component"),
-                func.span,
-                func.generator,
-                func.r#async,
+            let cx = hir::build::LoweringContext::new(
                 &semantic,
                 source,
                 crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
+            );
+            let lower_result = hir::build::lower_function(
+                body,
+                &func.params,
+                cx,
+                hir::build::LowerFunctionOptions::function(
+                    Some("Component"),
+                    func.span,
+                    func.generator,
+                    func.r#async,
+                ),
             )
             .unwrap();
             let hir_func = &lower_result.func;
@@ -121,11 +126,11 @@ function Component(props) {
                 );
                 for (i, instr) in block.instructions.iter().enumerate() {
                     eprintln!(
-                        "  [{}] lv_id={:?} lv_name={:?} value={}",
+                        "  [{}] lv_id={:?} lv_name={:?} value={:?}",
                         i,
                         instr.lvalue.identifier.id,
                         instr.lvalue.identifier.name,
-                        format!("{:?}", std::mem::discriminant(&instr.value))
+                        std::mem::discriminant(&instr.value)
                     );
                 }
             }

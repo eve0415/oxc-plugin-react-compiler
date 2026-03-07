@@ -363,7 +363,6 @@ fn intersect(a: BlockId, b: BlockId, graph: &Graph, doms: &HashMap<BlockId, Bloc
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::types::*;
     use std::collections::HashSet;
 
     /// Helper to build a minimal HIRFunction from a list of blocks

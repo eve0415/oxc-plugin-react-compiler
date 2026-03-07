@@ -102,7 +102,7 @@ pub fn align_method_call_scopes(func: &mut HIRFunction) {
         for instr in &block.instructions {
             match &instr.value {
                 InstructionValue::MethodCall {
-                    receiver,
+                    receiver: _,
                     property,
                     receiver_optional,
                     call_optional,
@@ -249,10 +249,10 @@ fn apply_identifier_scope_mapping(
             );
         }
         identifier.scope = mapped_scope.clone();
-    } else if let Some(scope) = &identifier.scope {
-        if let Some(merged_scope) = merged_scopes.find_scope(scope.id) {
-            identifier.scope = Some(Box::new(merged_scope));
-        }
+    } else if let Some(scope) = &identifier.scope
+        && let Some(merged_scope) = merged_scopes.find_scope(scope.id)
+    {
+        identifier.scope = Some(Box::new(merged_scope));
     }
 }
 

@@ -67,12 +67,12 @@ fn main() {
                     e_lines.len()
                 );
                 if a_lines.len() > e_lines.len() {
-                    for i in e_lines.len()..a_lines.len() {
-                        eprintln!("  extra A L{}: {}", i + 1, a_lines[i]);
+                    for (i, line) in a_lines.iter().enumerate().skip(e_lines.len()) {
+                        eprintln!("  extra A L{}: {}", i + 1, line);
                     }
                 } else {
-                    for i in a_lines.len()..e_lines.len() {
-                        eprintln!("  extra E L{}: {}", i + 1, e_lines[i]);
+                    for (i, line) in e_lines.iter().enumerate().skip(a_lines.len()) {
+                        eprintln!("  extra E L{}: {}", i + 1, line);
                     }
                 }
             }

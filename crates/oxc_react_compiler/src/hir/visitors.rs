@@ -59,12 +59,9 @@ pub fn for_each_terminal_operand(terminal: &Terminal, mut f: impl FnMut(&Place))
             }
         }
         Terminal::Try {
-            handler_binding, ..
-        } => {
-            if let Some(binding) = handler_binding {
-                f(binding);
-            }
-        }
+            handler_binding: Some(binding),
+            ..
+        } => f(binding),
         _ => {}
     }
 }

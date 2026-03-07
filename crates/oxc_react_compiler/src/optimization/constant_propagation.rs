@@ -20,6 +20,18 @@ enum Constant {
 
 type Constants = HashMap<IdentifierId, Constant>;
 
+struct EvaluationContext<'a> {
+    update_value_ids: &'a HashSet<IdentifierId>,
+    for_loop_var_decl_ids: &'a HashSet<DeclarationId>,
+    multi_reassign_decl_ids: &'a HashSet<DeclarationId>,
+    context_reassign_decl_ids: &'a HashSet<DeclarationId>,
+    mutation_receiver_ids: &'a HashSet<IdentifierId>,
+    load_local_source: &'a HashMap<IdentifierId, IdentifierId>,
+    mutated_captured_decl_ids: &'a HashSet<DeclarationId>,
+    captured_reassigned_decl_ids: &'a HashSet<DeclarationId>,
+    reassigned_decl_ids: &'a HashSet<DeclarationId>,
+}
+
 #[inline]
 fn debug_cp_trace_enabled() -> bool {
     std::env::var("DEBUG_CP_TRACE").is_ok()
@@ -690,19 +702,18 @@ fn apply_constant_propagation(func: &mut HIRFunction, constants: &mut Constants)
                 }
                 _ => {}
             }
-            if let Some(value) = evaluate_instruction(
-                constants,
-                instr,
-                &update_value_ids,
-                &for_loop_var_decl_ids,
-                &multi_reassign_decl_ids,
-                &context_reassign_decl_ids,
-                &mutation_receiver_ids,
-                &load_local_source,
-                &mutated_captured_decl_ids,
-                &captured_reassigned_decl_ids,
-                &reassigned_decl_ids,
-            ) {
+            let eval_ctx = EvaluationContext {
+                update_value_ids: &update_value_ids,
+                for_loop_var_decl_ids: &for_loop_var_decl_ids,
+                multi_reassign_decl_ids: &multi_reassign_decl_ids,
+                context_reassign_decl_ids: &context_reassign_decl_ids,
+                mutation_receiver_ids: &mutation_receiver_ids,
+                load_local_source: &load_local_source,
+                mutated_captured_decl_ids: &mutated_captured_decl_ids,
+                captured_reassigned_decl_ids: &captured_reassigned_decl_ids,
+                reassigned_decl_ids: &reassigned_decl_ids,
+            };
+            if let Some(value) = evaluate_instruction(constants, instr, &eval_ctx) {
                 constants.insert(instr.lvalue.identifier.id, value);
             }
         }
@@ -766,15 +777,7 @@ fn evaluate_phi(phi: &Phi, constants: &Constants) -> Option<Constant> {
 fn evaluate_instruction(
     constants: &mut Constants,
     instr: &mut Instruction,
-    update_value_ids: &HashSet<IdentifierId>,
-    for_loop_var_decl_ids: &HashSet<DeclarationId>,
-    multi_reassign_decl_ids: &HashSet<DeclarationId>,
-    context_reassign_decl_ids: &HashSet<DeclarationId>,
-    mutation_receiver_ids: &HashSet<IdentifierId>,
-    load_local_source: &HashMap<IdentifierId, IdentifierId>,
-    mutated_captured_decl_ids: &HashSet<DeclarationId>,
-    captured_reassigned_decl_ids: &HashSet<DeclarationId>,
-    reassigned_decl_ids: &HashSet<DeclarationId>,
+    ctx: &EvaluationContext<'_>,
 ) -> Option<Constant> {
     match &instr.value {
         InstructionValue::Primitive { value, loc } => {
@@ -790,11 +793,15 @@ fn evaluate_instruction(
                     instr.id.0,
                     place.identifier.id.0,
                     place.identifier.declaration_id.0,
-                    captured_reassigned_decl_ids.contains(&place.identifier.declaration_id),
-                    captured_reassigned_decl_ids.len()
+                    ctx.captured_reassigned_decl_ids
+                        .contains(&place.identifier.declaration_id),
+                    ctx.captured_reassigned_decl_ids.len()
                 );
             }
-            if captured_reassigned_decl_ids.contains(&place.identifier.declaration_id) {
+            if ctx
+                .captured_reassigned_decl_ids
+                .contains(&place.identifier.declaration_id)
+            {
                 if debug_cp_trace_enabled() {
                     eprintln!(
                         "[CP_TRACE] skip LoadLocal fold due to captured+reassigned instr={} place_id={} place_decl={}",
@@ -804,12 +811,16 @@ fn evaluate_instruction(
                 return None;
             }
             if place.identifier.name.is_some()
-                && mutated_captured_decl_ids.contains(&place.identifier.declaration_id)
+                && ctx
+                    .mutated_captured_decl_ids
+                    .contains(&place.identifier.declaration_id)
             {
                 return None;
             }
             if place.identifier.name.is_some()
-                && context_reassign_decl_ids.contains(&place.identifier.declaration_id)
+                && ctx
+                    .context_reassign_decl_ids
+                    .contains(&place.identifier.declaration_id)
             {
                 if debug_cp_trace_enabled() {
                     eprintln!(
@@ -822,7 +833,10 @@ fn evaluate_instruction(
             let result = read(constants, place)?;
             // Preserve explicit receiver/object temporaries used by side-effecting
             // member operations. Upstream keeps these aliases in nested closures.
-            if mutation_receiver_ids.contains(&instr.lvalue.identifier.id) {
+            if ctx
+                .mutation_receiver_ids
+                .contains(&instr.lvalue.identifier.id)
+            {
                 if debug_cp_trace_enabled() {
                     eprintln!(
                         "[CP_TRACE] skip LoadLocal fold due to mutation-receiver instr={} load_id={} place_id={} place_decl={}",
@@ -836,7 +850,7 @@ fn evaluate_instruction(
             }
             // Don't rewrite LoadLocal if its result feeds a PrefixUpdate/PostfixUpdate —
             // codegen needs the variable reference (e.g., `i++` not `0++`).
-            if update_value_ids.contains(&instr.lvalue.identifier.id) {
+            if ctx.update_value_ids.contains(&instr.lvalue.identifier.id) {
                 return Some(result);
             }
             // Loop-carried variables must not fold through loads either. The
@@ -844,7 +858,9 @@ fn evaluate_instruction(
             // initializer constant here can incorrectly collapse tests like
             // `while (i < 10)` to `while (true)` and freeze uses such as `key={i}`.
             if place.identifier.name.is_some()
-                && for_loop_var_decl_ids.contains(&place.identifier.declaration_id)
+                && ctx
+                    .for_loop_var_decl_ids
+                    .contains(&place.identifier.declaration_id)
             {
                 return None;
             }
@@ -852,7 +868,9 @@ fn evaluate_instruction(
             // our HIR lowers logical/ternary as flat instructions (both sides
             // eagerly evaluated), so the last StoreLocal wins incorrectly.
             if place.identifier.name.is_some()
-                && multi_reassign_decl_ids.contains(&place.identifier.declaration_id)
+                && ctx
+                    .multi_reassign_decl_ids
+                    .contains(&place.identifier.declaration_id)
             {
                 return None;
             }
@@ -945,7 +963,9 @@ fn evaluate_instruction(
         }
         InstructionValue::StoreLocal { value, lvalue, .. } => {
             if lvalue.place.identifier.name.is_some()
-                && mutated_captured_decl_ids.contains(&lvalue.place.identifier.declaration_id)
+                && ctx
+                    .mutated_captured_decl_ids
+                    .contains(&lvalue.place.identifier.declaration_id)
             {
                 return None;
             }
@@ -954,7 +974,9 @@ fn evaluate_instruction(
             // non-local name (e.g. `let logLevel = level; ...; logLevel = ...`).
             // Upstream's context lowering prevents this from over-folding.
             if let Constant::LoadGlobal(NonLocalBinding::Global { name }, _) = &place_value
-                && reassigned_decl_ids.contains(&lvalue.place.identifier.declaration_id)
+                && ctx
+                    .reassigned_decl_ids
+                    .contains(&lvalue.place.identifier.declaration_id)
                 && lvalue
                     .place
                     .identifier
@@ -981,7 +1003,9 @@ fn evaluate_instruction(
             // Don't propagate for-loop init variables — their values change
             // across iterations due to the update clause back-edge.
             if lvalue.place.identifier.name.is_some()
-                && for_loop_var_decl_ids.contains(&lvalue.place.identifier.declaration_id)
+                && ctx
+                    .for_loop_var_decl_ids
+                    .contains(&lvalue.place.identifier.declaration_id)
             {
                 return None;
             }
@@ -1168,7 +1192,7 @@ fn evaluate_instruction(
                 let new_const = Constant::Primitive(result.clone(), loc.clone());
                 constants.insert(lvalue.identifier.id, new_const.clone());
                 // Propagate back to the named variable so subsequent LoadLocals see it
-                if let Some(&named_var_id) = load_local_source.get(&value.identifier.id) {
+                if let Some(&named_var_id) = ctx.load_local_source.get(&value.identifier.id) {
                     constants.insert(named_var_id, new_const);
                 }
                 return Some(Constant::Primitive(result, loc));
@@ -1193,7 +1217,7 @@ fn evaluate_instruction(
                 // Store the updated value for the lvalue
                 constants.insert(lvalue.identifier.id, new_const.clone());
                 // Propagate back to the named variable so subsequent LoadLocals see it
-                if let Some(&named_var_id) = load_local_source.get(&value.identifier.id) {
+                if let Some(&named_var_id) = ctx.load_local_source.get(&value.identifier.id) {
                     constants.insert(named_var_id, new_const);
                 }
                 // But return the value PRIOR to the update

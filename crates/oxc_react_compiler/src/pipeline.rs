@@ -102,7 +102,7 @@ const OPT_OUT_DIRECTIVES: &[&str] = &["use no forget", "use no memo"];
 thread_local! {
     static RETRY_NO_MEMO_MODE: Cell<bool> = const { Cell::new(false) };
     static FILE_HAD_PIPELINE_ERROR: Cell<bool> = const { Cell::new(false) };
-    static CURRENT_FILENAME: RefCell<String> = RefCell::new(String::new());
+    static CURRENT_FILENAME: RefCell<String> = const { RefCell::new(String::new()) };
     static FLOW_COMPONENT_NAMES: RefCell<std::collections::HashSet<String>> =
         RefCell::new(std::collections::HashSet::new());
     static FLOW_HOOK_NAMES: RefCell<std::collections::HashSet<String>> =
@@ -113,7 +113,7 @@ const FLOW_CAST_REWRITE_MARKER: &str = "/*__FLOW_CAST__*/";
 
 fn compute_fast_refresh_source_hash(source: &str) -> String {
     type HmacSha256 = Hmac<Sha256>;
-    let mut mac =
+    let mac =
         HmacSha256::new_from_slice(source.as_bytes()).expect("HMAC accepts arbitrary key sizes");
     let bytes = mac.finalize().into_bytes();
     let mut hash = String::with_capacity(bytes.len() * 2);
@@ -609,7 +609,7 @@ fn rewrite_flow_cast_expressions(source: &str) -> String {
                 && !followed_by_arrow
             {
                 let close_idx = out.len() - 1;
-                if open_idx + 1 <= close_idx {
+                if open_idx < close_idx {
                     let inner = &out[open_idx + 1..close_idx];
                     if let Some((left, right)) = split_flow_cast_inner(inner) {
                         let mut rewritten = String::new();
@@ -1177,7 +1177,7 @@ fn codegen_outlined_function(
     }
 
     let retry_no_memo_mode = RETRY_NO_MEMO_MODE.with(|flag| flag.get());
-    let mut direct_codegen = || {
+    let direct_codegen = || {
         let mut reactive_fn = build_reactive_function::build_reactive_function(func.clone());
         prune_unused_labels_reactive::prune_unused_labels(&mut reactive_fn);
         prune_unused_lvalues::prune_unused_lvalues(&mut reactive_fn);
@@ -1201,7 +1201,7 @@ fn codegen_outlined_function(
 
     // Outlined JSX helpers are components and require full pipeline parity.
     // Non-component outlined functions should stay on the direct path.
-    let mut codegen = if matches!(
+    let codegen = if matches!(
         func.fn_type,
         crate::hir::types::ReactFunctionType::Component
     ) {
@@ -1444,12 +1444,10 @@ struct PipelineOutput {
     codegen_result: codegen_reactive::CodegenResult,
     hir_outlined: Vec<optimization::outline_functions::OutlinedFunction>,
     reserved_removed_names: std::collections::HashSet<String>,
-    all_scopes_pruned: bool,
     has_fire_rewrite: bool,
     has_inferred_effect: bool,
     has_lower_context_access: bool,
     retry_no_memo_mode: bool,
-    had_validation_error: bool,
 }
 
 /// Run the full HIR pipeline (from pruneMaybeThrows through codegen).
@@ -1951,8 +1949,6 @@ fn run_hir_pipeline(
             name, _scope_count, scopes_remain
         );
     }
-    let all_scopes_pruned = scopes_remain == 0 && _scope_count > 0;
-
     // Capture feature flags before consuming the HIR function.
     let has_fire_rewrite = hir_func.env.has_fire_rewrite();
     let has_inferred_effect = hir_func.env.has_inferred_effect();
@@ -1977,12 +1973,10 @@ fn run_hir_pipeline(
         codegen_result,
         hir_outlined,
         reserved_removed_names,
-        all_scopes_pruned,
         has_fire_rewrite,
         has_inferred_effect,
         has_lower_context_access,
         retry_no_memo_mode,
-        had_validation_error,
     })
 }
 
@@ -2884,15 +2878,18 @@ fn run_reactive_passes(
         codegen_reactive::codegen_reactive_function_with_options_and_fbt_operands(
             &reactive_fn,
             unique_identifiers,
-            retry_no_memo_mode,
-            env_config.disable_memoization_for_debugging,
-            env_config.enable_change_variable_codegen,
-            env_config.enable_emit_hook_guards,
-            env_config.enable_change_detection_for_debugging,
-            env_config
-                .enable_reset_cache_on_source_file_changes
-                .unwrap_or(false),
-            env_config.enable_name_anonymous_functions,
+            codegen_reactive::CodegenReactiveOptions {
+                disable_memoization_features: retry_no_memo_mode,
+                disable_memoization_for_debugging: env_config.disable_memoization_for_debugging,
+                enable_change_variable_codegen: env_config.enable_change_variable_codegen,
+                enable_emit_hook_guards: env_config.enable_emit_hook_guards,
+                enable_change_detection_for_debugging: env_config
+                    .enable_change_detection_for_debugging,
+                enable_reset_cache_on_source_file_changes: env_config
+                    .enable_reset_cache_on_source_file_changes
+                    .unwrap_or(false),
+                enable_name_anonymous_functions: env_config.enable_name_anonymous_functions,
+            },
             fbt_operands.clone(),
         );
     if let Some(err) = codegen_result.error.take() {
@@ -2991,22 +2988,20 @@ fn extract_preserved_directives(body: &ast::FunctionBody<'_>) -> Vec<String> {
 /// Check if a file already has the compiler runtime import (already compiled).
 fn has_memo_cache_import(program: &ast::Program<'_>) -> bool {
     for stmt in &program.body {
-        if let ast::Statement::ImportDeclaration(import) = stmt {
-            if import.source.value.as_str() == "react/compiler-runtime"
-                || import.source.value.as_str() == "react-compiler-runtime"
-            {
-                if let Some(specifiers) = &import.specifiers {
-                    for specifier in specifiers {
-                        if let ast::ImportDeclarationSpecifier::ImportSpecifier(spec) = specifier {
-                            let imported = match &spec.imported {
-                                ast::ModuleExportName::IdentifierName(id) => id.name.as_str(),
-                                ast::ModuleExportName::IdentifierReference(id) => id.name.as_str(),
-                                ast::ModuleExportName::StringLiteral(s) => s.value.as_str(),
-                            };
-                            if imported == "c" {
-                                return true;
-                            }
-                        }
+        if let ast::Statement::ImportDeclaration(import) = stmt
+            && (import.source.value.as_str() == "react/compiler-runtime"
+                || import.source.value.as_str() == "react-compiler-runtime")
+            && let Some(specifiers) = &import.specifiers
+        {
+            for specifier in specifiers {
+                if let ast::ImportDeclarationSpecifier::ImportSpecifier(spec) = specifier {
+                    let imported = match &spec.imported {
+                        ast::ModuleExportName::IdentifierName(id) => id.name.as_str(),
+                        ast::ModuleExportName::IdentifierReference(id) => id.name.as_str(),
+                        ast::ModuleExportName::StringLiteral(s) => s.value.as_str(),
+                    };
+                    if imported == "c" {
+                        return true;
                     }
                 }
             }
@@ -3549,21 +3544,18 @@ fn is_non_node_expr(expr: &ast::Expression<'_>) -> bool {
 
 /// Check if a function expression is wrapped in forwardRef() or memo().
 fn is_forwardref_or_memo_arg<'a>(init: &ast::Expression<'a>) -> Option<&'a ast::Expression<'a>> {
-    if let ast::Expression::CallExpression(call) = init {
-        if is_react_api_callee(&call.callee, "forwardRef")
-            || is_react_api_callee(&call.callee, "memo")
-        {
-            if let Some(first_arg) = call.arguments.first() {
-                // Safely get the expression from the argument
-                match first_arg {
-                    ast::Argument::SpreadElement(_) => return None,
-                    _ => {
-                        let expr: &ast::Expression<'a> = unsafe { std::mem::transmute(first_arg) };
-                        return Some(expr);
-                    }
-                }
-            }
+    if let ast::Expression::CallExpression(call) = init
+        && (is_react_api_callee(&call.callee, "forwardRef")
+            || is_react_api_callee(&call.callee, "memo"))
+        && let Some(first_arg) = call.arguments.first()
+    {
+        if matches!(first_arg, ast::Argument::SpreadElement(_)) {
+            return None;
         }
+
+        // Safely get the expression from the argument
+        let expr: &ast::Expression<'a> = unsafe { std::mem::transmute(first_arg) };
+        return Some(expr);
     }
     None
 }
@@ -3592,8 +3584,6 @@ struct CompiledFunction {
     generated_body: String,
     /// Whether this needs the cache import.
     needs_cache_import: bool,
-    /// Number of cache slots.
-    cache_size: u32,
     /// Original function params as string.
     params_str: String,
     /// Source params string before any lowering/rewrite.
@@ -4459,14 +4449,12 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
         if cf.needs_structural_check_import {
             body = maybe_align_structural_check_name(&body, &structural_check_ident);
         }
-        if cf.needs_lower_context_access {
-            if !lower_context_access_ident.is_empty() {
-                body = maybe_align_lower_context_access_name(
-                    &body,
-                    &lower_context_access_imported,
-                    &lower_context_access_ident,
-                );
-            }
+        if cf.needs_lower_context_access && !lower_context_access_ident.is_empty() {
+            body = maybe_align_lower_context_access_name(
+                &body,
+                &lower_context_access_imported,
+                &lower_context_access_ident,
+            );
         }
         body = insert_blank_lines_for_guarded_cache_init(&body);
         if !body.is_empty() && !body.ends_with('\n') {
@@ -4849,27 +4837,6 @@ fn insert_preserved_body_statements(body: &str, statements: &[String]) -> String
 
 fn is_identifier_char(c: char) -> bool {
     c == '_' || c == '$' || c.is_ascii_alphanumeric()
-}
-
-fn contains_identifier_token(source: &str, ident: &str) -> bool {
-    if ident.is_empty() {
-        return false;
-    }
-    for (idx, _) in source.match_indices(ident) {
-        let start_ok = source[..idx]
-            .chars()
-            .next_back()
-            .is_none_or(|c| !is_identifier_char(c));
-        let end = idx + ident.len();
-        let end_ok = source[end..]
-            .chars()
-            .next()
-            .is_none_or(|c| !is_identifier_char(c));
-        if start_ok && end_ok {
-            return true;
-        }
-    }
-    false
 }
 
 fn replace_identifier_token(source: &str, from: &str, to: &str) -> String {
@@ -5888,15 +5855,16 @@ fn collect_all_statement_bindings(
                 collect_all_declaration_bindings(decl, names);
             }
         }
-        ast::Statement::ExportDefaultDeclaration(export_decl) => match &export_decl.declaration {
-            ast::ExportDefaultDeclarationKind::FunctionDeclaration(func) => {
+        ast::Statement::ExportDefaultDeclaration(export_decl) => {
+            if let ast::ExportDefaultDeclarationKind::FunctionDeclaration(func) =
+                &export_decl.declaration
+            {
                 if let Some(id) = &func.id {
                     names.insert(id.name.as_str().to_string());
                 }
                 collect_all_function_bindings(func, names);
             }
-            _ => {}
-        },
+        }
         ast::Statement::BlockStatement(block) => {
             for s in &block.body {
                 collect_all_statement_bindings(s, names);
@@ -5909,14 +5877,9 @@ fn collect_all_statement_bindings(
             }
         }
         ast::Statement::ForStatement(for_stmt) => {
-            if let Some(init) = &for_stmt.init {
-                match init {
-                    ast::ForStatementInit::VariableDeclaration(var_decl) => {
-                        for declarator in &var_decl.declarations {
-                            collect_binding_pattern_names_owned(&declarator.id, names);
-                        }
-                    }
-                    _ => {}
+            if let Some(ast::ForStatementInit::VariableDeclaration(var_decl)) = &for_stmt.init {
+                for declarator in &var_decl.declarations {
+                    collect_binding_pattern_names_owned(&declarator.id, names);
                 }
             }
             collect_all_statement_bindings(&for_stmt.body, names);
@@ -6339,27 +6302,22 @@ fn collect_compilable_functions<'a>(
                 }
                 ast::ExportDefaultDeclarationKind::CallExpression(call) => {
                     // export default memo(() => ...) / forwardRef(() => ...)
-                    if is_react_api_callee(&call.callee, "forwardRef")
-                        || is_react_api_callee(&call.callee, "memo")
+                    if (is_react_api_callee(&call.callee, "forwardRef")
+                        || is_react_api_callee(&call.callee, "memo"))
+                        && let Some(first_arg) = call.arguments.first()
+                        && !matches!(first_arg, ast::Argument::SpreadElement(_))
                     {
-                        if let Some(first_arg) = call.arguments.first() {
-                            match first_arg {
-                                ast::Argument::SpreadElement(_) => {}
-                                _ => {
-                                    let arg_expr: &ast::Expression<'a> =
-                                        unsafe { std::mem::transmute(first_arg) };
-                                    collect_memo_wrapped_function(
-                                        arg_expr,
-                                        source,
-                                        semantic,
-                                        options,
-                                        custom_dirs,
-                                        ignore_opt_out,
-                                        compiled,
-                                    );
-                                }
-                            }
-                        }
+                        let arg_expr: &ast::Expression<'a> =
+                            unsafe { std::mem::transmute(first_arg) };
+                        collect_memo_wrapped_function(
+                            arg_expr,
+                            source,
+                            semantic,
+                            options,
+                            custom_dirs,
+                            ignore_opt_out,
+                            compiled,
+                        );
                     }
                 }
                 _ => {}
@@ -6558,30 +6516,23 @@ fn collect_expression_statement_functions<'a>(
     ignore_opt_out: bool,
     compiled: &mut Vec<CompiledFunction>,
 ) {
-    if let ast::Expression::CallExpression(call) = expr {
-        if is_react_api_callee(&call.callee, "forwardRef")
-            || is_react_api_callee(&call.callee, "memo")
-        {
-            if let Some(first_arg) = call.arguments.first() {
-                match first_arg {
-                    ast::Argument::SpreadElement(_) => {}
-                    _ => {
-                        let arg_expr: &ast::Expression<'a> =
-                            unsafe { std::mem::transmute(first_arg) };
-                        // Functions inside memo/forwardRef are always compiled (forced component)
-                        collect_memo_wrapped_function(
-                            arg_expr,
-                            source,
-                            semantic,
-                            options,
-                            custom_dirs,
-                            ignore_opt_out,
-                            compiled,
-                        );
-                    }
-                }
-            }
-        }
+    if let ast::Expression::CallExpression(call) = expr
+        && (is_react_api_callee(&call.callee, "forwardRef")
+            || is_react_api_callee(&call.callee, "memo"))
+        && let Some(first_arg) = call.arguments.first()
+        && !matches!(first_arg, ast::Argument::SpreadElement(_))
+    {
+        let arg_expr: &ast::Expression<'a> = unsafe { std::mem::transmute(first_arg) };
+        // Functions inside memo/forwardRef are always compiled (forced component)
+        collect_memo_wrapped_function(
+            arg_expr,
+            source,
+            semantic,
+            options,
+            custom_dirs,
+            ignore_opt_out,
+            compiled,
+        );
     } else if let ast::Expression::AssignmentExpression(assign) = expr {
         let name = match &assign.left {
             ast::AssignmentTarget::AssignmentTargetIdentifier(ident) => ident.name.as_str(),
@@ -6633,10 +6584,11 @@ fn collect_expression_statement_functions<'a>(
                         }
                     }
                 } else {
-                    if let Some(body) = &func.body {
-                        if !ignore_opt_out && has_function_opt_out(body, custom_dirs) {
-                            return;
-                        }
+                    if let Some(body) = &func.body
+                        && !ignore_opt_out
+                        && has_function_opt_out(body, custom_dirs)
+                    {
+                        return;
                     }
                     match try_compile_function_with_name(func, name, source, semantic, options) {
                         Ok(Some(cf)) => compiled.push(cf),
@@ -6696,10 +6648,11 @@ fn collect_memo_wrapped_function<'a>(
             }
         }
         ast::Expression::FunctionExpression(func) => {
-            if let Some(body) = &func.body {
-                if !ignore_opt_out && has_function_opt_out(body, custom_dirs) {
-                    return;
-                }
+            if let Some(body) = &func.body
+                && !ignore_opt_out
+                && has_function_opt_out(body, custom_dirs)
+            {
+                return;
             }
             if func.id.is_some() {
                 match try_compile_function(
@@ -6871,16 +6824,12 @@ fn try_compile_function<'a>(
     let env = crate::environment::Environment::new(options.environment.clone());
 
     // Phase 1: Lower to HIR
+    let lowering_cx = build::LoweringContext::new(semantic, source, env);
     let lower_result = match build::lower_function(
         body,
         &func.params,
-        Some(name),
-        func.span,
-        func.generator,
-        func.r#async,
-        semantic,
-        source,
-        env,
+        lowering_cx,
+        build::LowerFunctionOptions::function(Some(name), func.span, func.generator, func.r#async),
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -7009,7 +6958,6 @@ fn try_compile_function<'a>(
         end: func.span.end,
         generated_body,
         needs_cache_import: codegen_result.needs_cache_import || synthesized_param_default_cache,
-        cache_size: codegen_result.cache_size,
         params_str: params_result.params_str,
         original_params_str: func_params_to_string(&func.params, source),
         param_destructurings,
@@ -7058,16 +7006,12 @@ fn try_compile_function_with_name<'a>(
     let env = crate::environment::Environment::new(options.environment.clone());
 
     // Phase 1: Lower to HIR
+    let lowering_cx = build::LoweringContext::new(semantic, source, env);
     let lower_result = match build::lower_function(
         body,
         &func.params,
-        Some(name),
-        func.span,
-        func.generator,
-        func.r#async,
-        semantic,
-        source,
-        env,
+        lowering_cx,
+        build::LowerFunctionOptions::function(Some(name), func.span, func.generator, func.r#async),
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -7188,7 +7132,6 @@ fn try_compile_function_with_name<'a>(
         end: func.span.end,
         generated_body,
         needs_cache_import: codegen_result.needs_cache_import || synthesized_param_default_cache,
-        cache_size: codegen_result.cache_size,
         params_str: params_result.params_str,
         original_params_str: func_params_to_string(&func.params, source),
         param_destructurings,
@@ -7245,16 +7188,12 @@ fn try_compile_arrow<'a>(
 
     let env = crate::environment::Environment::new(options.environment.clone());
 
+    let lowering_cx = build::LoweringContext::new(semantic, source, env);
     let lower_result = match build::lower_arrow_expression(
         &arrow.body,
         &arrow.params,
-        Some(name),
-        arrow.span,
-        arrow.r#async,
-        semantic,
-        source,
-        arrow.expression,
-        env,
+        lowering_cx,
+        build::LowerFunctionOptions::arrow(Some(name), arrow.span, arrow.r#async, arrow.expression),
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -7375,7 +7314,6 @@ fn try_compile_arrow<'a>(
         end: arrow.span.end,
         generated_body,
         needs_cache_import: codegen_result.needs_cache_import || synthesized_param_default_cache,
-        cache_size: codegen_result.cache_size,
         params_str: params_result.params_str,
         original_params_str: arrow_params_to_string(&arrow.params, source),
         param_destructurings,
@@ -7548,10 +7486,12 @@ fn parse_single_slot_memoized_default_body(
     Some(memoized_expr)
 }
 
+type DefaultParamCacheBody = (String, Vec<(String, String, String)>);
+
 fn synthesize_default_param_cache_body(
     generated_body: &str,
     destructurings: &[String],
-) -> Option<(String, Vec<(String, String, String)>)> {
+) -> Option<DefaultParamCacheBody> {
     let debug_default_param_cache = std::env::var("DEBUG_DEFAULT_PARAM_CACHE").is_ok();
     let mut candidates = destructurings
         .iter()
@@ -7925,10 +7865,10 @@ fn has_non_global_references_stmt(
             .is_some_and(|arg| has_non_global_references_expr(arg, own_params)),
         ast::Statement::VariableDeclaration(decl) => {
             for d in &decl.declarations {
-                if let Some(init) = &d.init {
-                    if has_non_global_references_expr(init, own_params) {
-                        return true;
-                    }
+                if let Some(init) = &d.init
+                    && has_non_global_references_expr(init, own_params)
+                {
+                    return true;
                 }
             }
             false
@@ -8327,29 +8267,6 @@ fn build_array_destructuring(
 }
 
 /// Convert a binding pattern to a parameter string, stripping type annotations.
-fn param_pattern_to_string(pattern: &ast::BindingPattern, source: &str) -> String {
-    match pattern {
-        ast::BindingPattern::BindingIdentifier(ident) => ident.name.to_string(),
-        _ => {
-            // For complex patterns (destructuring, etc.), use source text
-            let start = pattern.span().start as usize;
-            let end = pattern.span().end as usize;
-            let raw = &source[start..end];
-            // Strip type annotations: `_props: {}` -> `_props`
-            if let Some(colon_idx) = raw.rfind(':') {
-                let before = raw[..colon_idx].trim();
-                if before
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
-                {
-                    return before.to_string();
-                }
-            }
-            raw.to_string()
-        }
-    }
-}
-
 /// Insert parameter destructuring statements into the generated function body.
 /// They go right after the `const $ = _c(N);` line.
 fn insert_param_destructurings(body: &str, destructurings: &[String]) -> String {
@@ -8418,8 +8335,8 @@ fn prune_unused_destructuring(destr: &str, body: &str) -> String {
     for prop in &props {
         // Extract the local binding name from each property
         // Cases: "a", "c: d", "a = default", "c: d = default", "...rest"
-        let binding_name = if prop.starts_with("...") {
-            &prop[3..]
+        let binding_name = if let Some(rest) = prop.strip_prefix("...") {
+            rest
         } else if let Some(colon_idx) = prop.find(':') {
             // "key: value" or "key: value = default"
             let after_colon = prop[colon_idx + 1..].trim();

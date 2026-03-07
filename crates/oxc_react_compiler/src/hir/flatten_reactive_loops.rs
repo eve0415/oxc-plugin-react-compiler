@@ -92,7 +92,7 @@ pub fn flatten_reactive_loops_hir(func: &mut HIRFunction) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
 
     fn make_place(ident_id: u32) -> Place {
         Place {

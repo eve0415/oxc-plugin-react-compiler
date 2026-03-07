@@ -19,7 +19,7 @@ fn main() {
                                     std::mem::discriminant(&expr.expression)
                                 );
                             }
-                            oxc_ast::ast::Statement::ReturnStatement(ret) => {
+                            oxc_ast::ast::Statement::ReturnStatement(_) => {
                                 eprintln!("    return");
                             }
                             _ => {}

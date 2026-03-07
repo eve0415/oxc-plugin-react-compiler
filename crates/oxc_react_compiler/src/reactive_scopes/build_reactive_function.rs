@@ -487,12 +487,6 @@ struct ValueBlockResult {
 
 /// The result of visiting a value block terminal (logical, ternary, optional, sequence).
 struct ValueBlockTerminalResult {
-    /// The reconstructed terminal value.
-    value: InstructionValue,
-    /// The final place holding the computed value.
-    place: Place,
-    /// The instruction ID that produced the value.
-    id: InstructionId,
     /// Instructions that must be emitted before the reconstructed terminal value.
     instructions: Vec<ReactiveInstruction>,
     /// The reconstructed terminal value instruction when upstream models the
@@ -529,26 +523,6 @@ impl Driver {
             effect: Effect::Unknown,
             reactive: false,
             loc: SourceLocation::default(),
-        }
-    }
-
-    fn make_sequence_expression_instruction(
-        lvalue: Place,
-        instructions: Vec<ReactiveInstruction>,
-        id: InstructionId,
-        value: InstructionValue,
-        loc: SourceLocation,
-    ) -> ReactiveInstruction {
-        ReactiveInstruction {
-            id,
-            lvalue: Some(lvalue),
-            value: InstructionValue::ReactiveSequenceExpression {
-                instructions,
-                id,
-                value: Box::new(value),
-                loc: loc.clone(),
-            },
-            loc,
         }
     }
 
@@ -1697,14 +1671,11 @@ impl Driver {
             Terminal::Sequence {
                 block: seq_block,
                 fallthrough,
-                id,
+                id: _,
                 loc,
             } => {
                 let result = self.visit_value_block(seq_block, &loc);
                 ValueBlockTerminalResult {
-                    value: result.value,
-                    place: result.place,
-                    id,
                     instructions: result.instructions,
                     final_instruction: None,
                     fallthrough,
@@ -1713,7 +1684,7 @@ impl Driver {
             Terminal::Optional {
                 test: opt_test,
                 fallthrough,
-                id,
+                id: _,
                 loc,
                 optional: _,
             } => {
@@ -1748,7 +1719,7 @@ impl Driver {
                     }
 
                     enum OptionalRewriteMode {
-                        ReplaceWithSingle(ReactiveInstruction),
+                        ReplaceWithSingle(Box<ReactiveInstruction>),
                         KeepConsequent,
                     }
 
@@ -1781,7 +1752,7 @@ impl Driver {
                                         );
                                     }
                                     rewrite_mode = Some(OptionalRewriteMode::ReplaceWithSingle(
-                                        ReactiveInstruction {
+                                        Box::new(ReactiveInstruction {
                                             id: consequent_result.id,
                                             lvalue: Some(consequent_result.place.clone()),
                                             value: InstructionValue::PropertyLoad {
@@ -1791,7 +1762,7 @@ impl Driver {
                                                 loc: loc.clone(),
                                             },
                                             loc: loc.clone(),
-                                        },
+                                        }),
                                     ));
                                 }
                                 InstructionValue::ComputedLoad {
@@ -1820,16 +1791,8 @@ impl Driver {
                             if debug_optional {
                                 eprintln!("[REACTIVE_OPTIONAL] rewrite_applied=true");
                             }
-                            let value = rewrite.value.clone();
-                            let place = rewrite
-                                .lvalue
-                                .clone()
-                                .unwrap_or_else(Self::fallback_dummy_place);
-                            all_instrs.push(rewrite);
+                            all_instrs.push(*rewrite);
                             return ValueBlockTerminalResult {
-                                value,
-                                place,
-                                id,
                                 instructions: all_instrs,
                                 final_instruction: None,
                                 fallthrough,
@@ -1851,9 +1814,6 @@ impl Driver {
                         }
                     }
                     return ValueBlockTerminalResult {
-                        value: consequent_result.value,
-                        place: consequent_result.place,
-                        id,
                         instructions: all_instrs,
                         final_instruction: None,
                         fallthrough,
@@ -1866,9 +1826,6 @@ impl Driver {
                     );
                 }
                 ValueBlockTerminalResult {
-                    value: test.value,
-                    place: test.place,
-                    id,
                     instructions: test.instructions,
                     final_instruction: None,
                     fallthrough,
@@ -1902,18 +1859,12 @@ impl Driver {
                         loc: loc.clone(),
                     };
                     return ValueBlockTerminalResult {
-                        value: final_instruction.value.clone(),
-                        place: left.place.clone(),
-                        id,
                         instructions: all_instrs,
                         final_instruction: Some(final_instruction),
                         fallthrough,
                     };
                 }
                 ValueBlockTerminalResult {
-                    value: test.value,
-                    place: test.place,
-                    id,
                     instructions: test.instructions,
                     final_instruction: None,
                     fallthrough,
@@ -1946,18 +1897,12 @@ impl Driver {
                         loc: loc.clone(),
                     };
                     return ValueBlockTerminalResult {
-                        value: final_instruction.value.clone(),
-                        place: consequent_result.place.clone(),
-                        id,
                         instructions: all_instrs,
                         final_instruction: Some(final_instruction),
                         fallthrough,
                     };
                 }
                 ValueBlockTerminalResult {
-                    value: test.value,
-                    place: test.place,
-                    id,
                     instructions: test.instructions,
                     final_instruction: None,
                     fallthrough,
@@ -1973,7 +1918,7 @@ impl Driver {
             Terminal::Scope {
                 block: scope_block,
                 fallthrough,
-                id,
+                id: _,
                 loc,
                 ..
             } => {
@@ -1982,9 +1927,6 @@ impl Driver {
                 // memoization hints don't affect the value computation.
                 let result = self.visit_value_block(scope_block, &loc);
                 ValueBlockTerminalResult {
-                    value: result.value,
-                    place: result.place,
-                    id,
                     instructions: result.instructions,
                     final_instruction: None,
                     fallthrough,
@@ -1993,7 +1935,7 @@ impl Driver {
             Terminal::PrunedScope {
                 block: scope_block,
                 fallthrough,
-                id,
+                id: _,
                 loc,
                 ..
             } => {
@@ -2001,9 +1943,6 @@ impl Driver {
                 // flatten and process the body as a value block.
                 let result = self.visit_value_block(scope_block, &loc);
                 ValueBlockTerminalResult {
-                    value: result.value,
-                    place: result.place,
-                    id,
                     instructions: result.instructions,
                     final_instruction: None,
                     fallthrough,
@@ -2012,16 +1951,13 @@ impl Driver {
             Terminal::Label {
                 block: label_block,
                 fallthrough,
-                id,
+                id: _,
                 loc,
             } => {
                 // Label terminals in value blocks: process the label body as a
                 // value block, flattening the label boundary.
                 let result = self.visit_value_block(label_block, &loc);
                 ValueBlockTerminalResult {
-                    value: result.value,
-                    place: result.place,
-                    id,
                     instructions: result.instructions,
                     final_instruction: None,
                     fallthrough,
@@ -2031,7 +1967,7 @@ impl Driver {
                 consequent,
                 alternate,
                 fallthrough,
-                id,
+                id: _,
                 loc,
                 ..
             } => {
@@ -2042,9 +1978,6 @@ impl Driver {
                 let mut all_instrs = cons_result.instructions;
                 all_instrs.extend(alt_result.instructions);
                 ValueBlockTerminalResult {
-                    value: cons_result.value,
-                    place: cons_result.place,
-                    id,
                     instructions: all_instrs,
                     final_instruction: None,
                     fallthrough,
@@ -2052,16 +1985,13 @@ impl Driver {
             }
             Terminal::Goto {
                 block: goto_block,
-                id,
+                id: _,
                 loc,
                 ..
             } => {
                 // Goto in a value block: follow through to target block.
                 let result = self.visit_value_block(goto_block, &loc);
                 ValueBlockTerminalResult {
-                    value: result.value,
-                    place: result.place,
-                    id,
                     instructions: result.instructions,
                     final_instruction: None,
                     fallthrough: goto_block,
@@ -2210,20 +2140,6 @@ mod tests {
             effect: Effect::Unknown,
             reactive: false,
             loc: SourceLocation::Generated,
-        }
-    }
-
-    /// Helper to create a LoadLocal instruction.
-    fn make_load_local(instr_id: u32, place_id: u32, load_from: u32) -> Instruction {
-        Instruction {
-            id: InstructionId(instr_id),
-            lvalue: make_place(place_id),
-            value: InstructionValue::LoadLocal {
-                place: make_place(load_from),
-                loc: SourceLocation::Generated,
-            },
-            loc: SourceLocation::Generated,
-            effects: None,
         }
     }
 
@@ -2440,7 +2356,7 @@ mod tests {
                 end: InstructionId(10),
             },
             dependencies: vec![],
-            declarations: std::collections::HashMap::new(),
+            declarations: indexmap::IndexMap::new(),
             reassignments: vec![],
             merged_id: None,
             early_return_value: None,

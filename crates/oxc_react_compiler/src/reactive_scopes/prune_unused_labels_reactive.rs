@@ -254,23 +254,6 @@ fn transform_terminal(terminal: &mut ReactiveTerminal, labels: &HashSet<BlockId>
 mod tests {
     use super::*;
 
-    fn make_place(id: u32) -> Place {
-        Place {
-            identifier: Identifier {
-                id: IdentifierId(id),
-                declaration_id: DeclarationId(id),
-                name: None,
-                mutable_range: MutableRange::default(),
-                scope: None,
-                type_: Type::Poly,
-                loc: SourceLocation::Generated,
-            },
-            effect: Effect::Unknown,
-            reactive: false,
-            loc: SourceLocation::Generated,
-        }
-    }
-
     #[test]
     fn test_prune_unused_label_flattens() {
         // A label terminal with no break targeting it should be flattened

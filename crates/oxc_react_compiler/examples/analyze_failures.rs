@@ -104,7 +104,7 @@ fn main() {
     }
 
     let mut sorted: Vec<_> = categories.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    sorted.sort_by_key(|entry| std::cmp::Reverse(entry.1.len()));
 
     for (cat, fixtures) in &sorted {
         eprintln!("{:3} {}", fixtures.len(), cat);

@@ -20,14 +20,18 @@ fn main() {
             let lower_result = oxc_react_compiler::hir::build::lower_function(
                 body,
                 &func.params,
-                Some(name),
-                func.span,
-                func.generator,
-                func.r#async,
-                &semantic,
-                &source,
-                oxc_react_compiler::environment::Environment::new(
-                    oxc_react_compiler::options::EnvironmentConfig::default(),
+                oxc_react_compiler::hir::build::LoweringContext::new(
+                    &semantic,
+                    &source,
+                    oxc_react_compiler::environment::Environment::new(
+                        oxc_react_compiler::options::EnvironmentConfig::default(),
+                    ),
+                ),
+                oxc_react_compiler::hir::build::LowerFunctionOptions::function(
+                    Some(name),
+                    func.span,
+                    func.generator,
+                    func.r#async,
                 ),
             )
             .unwrap();

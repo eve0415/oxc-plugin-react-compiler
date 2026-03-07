@@ -714,35 +714,9 @@ fn collect_loop_body_owned_blocks(
 /// A scope block for multi-scope codegen.
 #[derive(Debug)]
 struct ScopeInfo {
-    scope_id: ScopeId,
     range: MutableRange,
     /// Instruction IDs that belong to this scope.
     instr_ids: HashSet<InstructionId>,
-    /// Reactive dependencies (places read by this scope from outside).
-    deps: Vec<String>,
-    /// The temp variable name for this scope's output.
-    output_var: Option<String>,
-}
-
-/// Convert a ReactiveScopeDependency to a string like "props.value" or "a.b?.c".
-fn dep_to_string(dep: &ReactiveScopeDependency) -> Option<String> {
-    let base = match &dep.identifier.name {
-        Some(IdentifierName::Named(n)) | Some(IdentifierName::Promoted(n)) => n.clone(),
-        _ => return None,
-    };
-    if dep.path.is_empty() {
-        return Some(base);
-    }
-    let mut result = base;
-    for entry in &dep.path {
-        if entry.optional {
-            result.push_str("?.");
-        } else {
-            result.push('.');
-        }
-        result.push_str(&entry.property);
-    }
-    Some(result)
 }
 
 /// Collect unique reactive scopes from all instructions in the function.
@@ -752,20 +726,9 @@ fn collect_scopes(func: &HIRFunction) -> Vec<ScopeInfo> {
     for (_bid, block) in &func.body.blocks {
         for instr in &block.instructions {
             if let Some(ref scope) = instr.lvalue.identifier.scope {
-                let entry = seen.entry(scope.id).or_insert_with(|| {
-                    // Convert scope.dependencies to string deps
-                    let deps: Vec<String> = scope
-                        .dependencies
-                        .iter()
-                        .filter_map(dep_to_string)
-                        .collect();
-                    ScopeInfo {
-                        scope_id: scope.id,
-                        range: scope.range.clone(),
-                        instr_ids: HashSet::new(),
-                        deps,
-                        output_var: None,
-                    }
+                let entry = seen.entry(scope.id).or_insert_with(|| ScopeInfo {
+                    range: scope.range.clone(),
+                    instr_ids: HashSet::new(),
                 });
                 entry.instr_ids.insert(instr.id);
             }
@@ -812,8 +775,6 @@ struct CodeGenerator {
     skip_memo: bool,
     /// Name for the cache variable (default "$", changes to "$0" when "$" conflicts).
     cache_var: String,
-    /// Suffix for temp variable names (default "", changes to "$0" when "tN" conflicts).
-    temp_suffix: String,
     /// Block IDs that are loop fallthroughs — a Goto::Break targeting one of these = `break;`
     loop_fallthrough_blocks: HashSet<BlockId>,
     /// Block IDs that are loop test blocks — a Goto::Continue targeting one of these = `continue;`
@@ -848,9 +809,6 @@ struct CodeGenerator {
     /// Rename map for source variables that conflict with compiler-generated temp names.
     /// e.g., source `t0` → `t0$0` when codegen also generates `t0` as a temp.
     source_rename_map: HashMap<String, String>,
-    /// Actual scope dependencies from reactive scope analysis.
-    /// When set (single-scope with deps), used instead of find_reactive_deps heuristic.
-    scope_deps: Option<Vec<String>>,
     /// Map from IdentifierId to renamed name for shadowed variables.
     /// When an inner declaration reuses a name from an outer scope (e.g., param `a`
     /// and inner `let a`), the inner one is renamed to `a_0`.
@@ -887,7 +845,6 @@ impl CodeGenerator {
             post_scope_return_var: None,
             skip_memo: false,
             cache_var: "$".to_string(),
-            temp_suffix: String::new(),
             loop_fallthrough_blocks: HashSet::new(),
             loop_test_blocks: HashSet::new(),
             temp_name_map: HashMap::new(),
@@ -901,7 +858,6 @@ impl CodeGenerator {
             outlined_map: HashMap::new(),
             method_property_ids: HashSet::new(),
             source_rename_map: HashMap::new(),
-            scope_deps: None,
             id_rename_map: HashMap::new(),
             emitted_let_decls: HashSet::new(),
             catch_rename_map: HashMap::new(),
@@ -920,14 +876,14 @@ impl CodeGenerator {
 
     /// Assign temp names to unnamed operands that appear inside Destructure patterns.
     fn assign_temp_names_for_operands(&mut self, instr: &Instruction) {
-        match &instr.value {
-            InstructionValue::Destructure { lvalue, .. } => match &lvalue.pattern {
+        if let InstructionValue::Destructure { lvalue, .. } = &instr.value {
+            match &lvalue.pattern {
                 Pattern::Array(arr) => {
                     for item in &arr.items {
-                        if let ArrayElement::Place(p) = item {
-                            if p.identifier.name.is_none() {
-                                self.assign_temp_name(p.identifier.id);
-                            }
+                        if let ArrayElement::Place(p) = item
+                            && p.identifier.name.is_none()
+                        {
+                            self.assign_temp_name(p.identifier.id);
                         }
                     }
                 }
@@ -947,8 +903,7 @@ impl CodeGenerator {
                         }
                     }
                 }
-            },
-            _ => {}
+            }
         }
     }
 
@@ -992,13 +947,13 @@ impl CodeGenerator {
         for (block_id, block) in &func.body.blocks {
             if *block_id == entry_id {
                 for instr in &block.instructions {
-                    if let InstructionValue::LoadLocal { place, .. } = &instr.value {
-                        if self.param_ids.contains(&place.identifier.id) {
-                            self.param_ids.insert(instr.lvalue.identifier.id);
-                            if !self.is_outlined && anon_param_ids.contains(&place.identifier.id) {
-                                self.destructured_param_load_ids
-                                    .insert(instr.lvalue.identifier.id);
-                            }
+                    if let InstructionValue::LoadLocal { place, .. } = &instr.value
+                        && self.param_ids.contains(&place.identifier.id)
+                    {
+                        self.param_ids.insert(instr.lvalue.identifier.id);
+                        if !self.is_outlined && anon_param_ids.contains(&place.identifier.id) {
+                            self.destructured_param_load_ids
+                                .insert(instr.lvalue.identifier.id);
                         }
                     }
                 }
@@ -1026,10 +981,10 @@ impl CodeGenerator {
                                 match &lvalue.pattern {
                                     Pattern::Array(arr) => {
                                         for item in &arr.items {
-                                            if let ArrayElement::Place(p) = item {
-                                                if p.identifier.name.is_none() {
-                                                    chain_temps.insert(p.identifier.id);
-                                                }
+                                            if let ArrayElement::Place(p) = item
+                                                && p.identifier.name.is_none()
+                                            {
+                                                chain_temps.insert(p.identifier.id);
                                             }
                                         }
                                     }
@@ -1088,15 +1043,15 @@ impl CodeGenerator {
         let mut source_names: HashSet<String> = HashSet::new();
         for (_, block) in &func.body.blocks {
             for instr in &block.instructions {
-                if let InstructionValue::StoreLocal { lvalue, .. } = &instr.value {
-                    if let Some(IdentifierName::Named(n)) = &lvalue.place.identifier.name {
-                        source_names.insert(n.clone());
-                    }
+                if let InstructionValue::StoreLocal { lvalue, .. } = &instr.value
+                    && let Some(IdentifierName::Named(n)) = &lvalue.place.identifier.name
+                {
+                    source_names.insert(n.clone());
                 }
-                if let InstructionValue::LoadLocal { place, .. } = &instr.value {
-                    if let Some(IdentifierName::Named(n)) = &place.identifier.name {
-                        source_names.insert(n.clone());
-                    }
+                if let InstructionValue::LoadLocal { place, .. } = &instr.value
+                    && let Some(IdentifierName::Named(n)) = &place.identifier.name
+                {
+                    source_names.insert(n.clone());
                 }
                 // Also collect names from Destructure patterns (e.g., `let [x, setX] = ...`)
                 if let InstructionValue::Destructure { lvalue, .. } = &instr.value {
@@ -1104,10 +1059,10 @@ impl CodeGenerator {
                         match pattern {
                             Pattern::Array(arr) => {
                                 for item in &arr.items {
-                                    if let ArrayElement::Place(p) = item {
-                                        if let Some(IdentifierName::Named(n)) = &p.identifier.name {
-                                            names.insert(n.clone());
-                                        }
+                                    if let ArrayElement::Place(p) = item
+                                        && let Some(IdentifierName::Named(n)) = &p.identifier.name
+                                    {
+                                        names.insert(n.clone());
                                     }
                                 }
                             }
@@ -1145,10 +1100,10 @@ impl CodeGenerator {
         // Also add parameter names.
         self.outer_scope_names = source_names.clone();
         for param in &func.params {
-            if let Argument::Place(p) = param {
-                if let Some(IdentifierName::Named(n)) = &p.identifier.name {
-                    self.outer_scope_names.insert(n.clone());
-                }
+            if let Argument::Place(p) = param
+                && let Some(IdentifierName::Named(n)) = &p.identifier.name
+            {
+                self.outer_scope_names.insert(n.clone());
             }
         }
         // Collect function identifiers used as object method property values.
@@ -1157,10 +1112,10 @@ impl CodeGenerator {
             for instr in &block.instructions {
                 if let InstructionValue::ObjectExpression { properties, .. } = &instr.value {
                     for prop in properties {
-                        if let ObjectPropertyOrSpread::Property(p) = prop {
-                            if p.type_ == ObjectPropertyType::Method {
-                                self.method_property_ids.insert(p.place.identifier.id);
-                            }
+                        if let ObjectPropertyOrSpread::Property(p) = prop
+                            && p.type_ == ObjectPropertyType::Method
+                        {
+                            self.method_property_ids.insert(p.place.identifier.id);
                         }
                     }
                 }
@@ -1200,10 +1155,10 @@ impl CodeGenerator {
             // Collect parameter names — these always keep their original name
             let mut param_names: HashSet<String> = HashSet::new();
             for param in &func.params {
-                if let Argument::Place(p) = param {
-                    if let Some(IdentifierName::Named(n)) = &p.identifier.name {
-                        param_names.insert(n.clone());
-                    }
+                if let Argument::Place(p) = param
+                    && let Some(IdentifierName::Named(n)) = &p.identifier.name
+                {
+                    param_names.insert(n.clone());
                 }
             }
             // Also include destructured param names from the entry block
@@ -1221,12 +1176,11 @@ impl CodeGenerator {
                                     match pattern {
                                         Pattern::Array(arr) => {
                                             for item in &arr.items {
-                                                if let ArrayElement::Place(p) = item {
-                                                    if let Some(IdentifierName::Named(n)) =
+                                                if let ArrayElement::Place(p) = item
+                                                    && let Some(IdentifierName::Named(n)) =
                                                         &p.identifier.name
-                                                    {
-                                                        names.insert(n.clone());
-                                                    }
+                                                {
+                                                    names.insert(n.clone());
                                                 }
                                             }
                                         }
@@ -1337,10 +1291,10 @@ impl CodeGenerator {
                         self.consumed_temps.insert(test.identifier.id);
                     }
                     for case in cases {
-                        if let Some(t) = &case.test {
-                            if t.identifier.name.is_none() {
-                                self.consumed_temps.insert(t.identifier.id);
-                            }
+                        if let Some(t) = &case.test
+                            && t.identifier.name.is_none()
+                        {
+                            self.consumed_temps.insert(t.identifier.id);
                         }
                     }
                 }
@@ -1400,14 +1354,13 @@ impl CodeGenerator {
                     self.jsx_element_ids.insert(instr.lvalue.identifier.id);
                 }
                 // Track reassigned variables
-                if let InstructionValue::StoreLocal { lvalue, .. } = &instr.value {
-                    if lvalue.kind == InstructionKind::Reassign {
-                        if let Some(name) = &lvalue.place.identifier.name {
-                            match name {
-                                IdentifierName::Named(n) | IdentifierName::Promoted(n) => {
-                                    self.reassigned_vars.insert(n.clone());
-                                }
-                            }
+                if let InstructionValue::StoreLocal { lvalue, .. } = &instr.value
+                    && lvalue.kind == InstructionKind::Reassign
+                    && let Some(name) = &lvalue.place.identifier.name
+                {
+                    match name {
+                        IdentifierName::Named(n) | IdentifierName::Promoted(n) => {
+                            self.reassigned_vars.insert(n.clone());
                         }
                     }
                 }
@@ -1481,12 +1434,11 @@ impl CodeGenerator {
                 handler_binding: Some(binding),
                 ..
             } = &block.terminal
+                && binding.identifier.name.is_some()
             {
-                if binding.identifier.name.is_some() {
-                    let temp_name = format!("t{}", self.temp_name_counter);
-                    self.temp_name_counter += 1;
-                    self.id_rename_map.insert(binding.identifier.id, temp_name);
-                }
+                let temp_name = format!("t{}", self.temp_name_counter);
+                self.temp_name_counter += 1;
+                self.id_rename_map.insert(binding.identifier.id, temp_name);
             }
         }
 
@@ -1529,20 +1481,19 @@ impl CodeGenerator {
                                 handler_binding: Some(binding),
                                 ..
                             } = &inner_block.terminal
+                                && binding.identifier.name.is_some()
                             {
-                                if binding.identifier.name.is_some() {
-                                    let old_name = format!("t{}", inner_counter);
-                                    let new_name = format!("t{}", self.temp_name_counter);
-                                    self.temp_name_counter += 1;
-                                    catch_fixups.push((
-                                        instr.lvalue.identifier.id,
-                                        old_name,
-                                        new_name.clone(),
-                                    ));
-                                    self.catch_rename_map
-                                        .insert(binding.identifier.id, new_name);
-                                    inner_counter += 1;
-                                }
+                                let old_name = format!("t{}", inner_counter);
+                                let new_name = format!("t{}", self.temp_name_counter);
+                                self.temp_name_counter += 1;
+                                catch_fixups.push((
+                                    instr.lvalue.identifier.id,
+                                    old_name,
+                                    new_name.clone(),
+                                ));
+                                self.catch_rename_map
+                                    .insert(binding.identifier.id, new_name);
+                                inner_counter += 1;
                             }
                         }
                     }
@@ -1593,36 +1544,34 @@ impl CodeGenerator {
                 return_variant,
                 ..
             } = &block.terminal
+                && (*return_variant == ReturnVariant::Explicit
+                    || *return_variant == ReturnVariant::Implicit)
             {
-                if *return_variant == ReturnVariant::Explicit
-                    || *return_variant == ReturnVariant::Implicit
-                {
-                    // First: try to find the root variable via property chain
-                    if let Some(root_name) = self.find_scope_output_var(func, value) {
-                        let return_name = self.get_named_var(value);
-                        // If the root is different from the return var, this is a
-                        // scope output pattern (post-scope instructions needed)
-                        if return_name.as_deref() != Some(&root_name) {
-                            self.is_scope_output = true;
-                            self.post_scope_return_var = return_name;
-                        }
-                        self.promoted_var = Some(root_name.clone());
-                        self.find_promoted_stores(func, &root_name);
-                    } else if self.is_return_place_from_load_global(func, value) {
-                        // Returning a direct LoadGlobal alias (e.g. outlined helper name)
-                        // should stay as `return <global>;` and must not trigger
-                        // scope-output promotion heuristics.
-                    } else if let Some(name) = self.get_named_var(value) {
-                        let load_count = self.count_loads_of_var(func, &name);
-                        if load_count > 1 {
-                            self.promoted_var = Some(name.clone());
-                            self.find_promoted_stores(func, &name);
-                        } else {
-                            // Return value is a named variable with only 1 load (the return itself).
-                            // Use scope output pattern: temp inside scope, named var after scope.
-                            self.is_scope_output = true;
-                            self.post_scope_return_var = Some(name.clone());
-                        }
+                // First: try to find the root variable via property chain
+                if let Some(root_name) = self.find_scope_output_var(func, value) {
+                    let return_name = self.get_named_var(value);
+                    // If the root is different from the return var, this is a
+                    // scope output pattern (post-scope instructions needed)
+                    if return_name.as_deref() != Some(&root_name) {
+                        self.is_scope_output = true;
+                        self.post_scope_return_var = return_name;
+                    }
+                    self.promoted_var = Some(root_name.clone());
+                    self.find_promoted_stores(func, &root_name);
+                } else if self.is_return_place_from_load_global(func, value) {
+                    // Returning a direct LoadGlobal alias (e.g. outlined helper name)
+                    // should stay as `return <global>;` and must not trigger
+                    // scope-output promotion heuristics.
+                } else if let Some(name) = self.get_named_var(value) {
+                    let load_count = self.count_loads_of_var(func, &name);
+                    if load_count > 1 {
+                        self.promoted_var = Some(name.clone());
+                        self.find_promoted_stores(func, &name);
+                    } else {
+                        // Return value is a named variable with only 1 load (the return itself).
+                        // Use scope output pattern: temp inside scope, named var after scope.
+                        self.is_scope_output = true;
+                        self.post_scope_return_var = Some(name.clone());
                     }
                 }
             }
@@ -1808,23 +1757,21 @@ impl CodeGenerator {
                             // If the expression is a PropertyLoad like `x.t`, extract `x`
                             if let Some(dot_idx) = expr.find('.') {
                                 let root = &expr[..dot_idx];
-                                if is_valid_identifier(root) {
-                                    if self.is_mutated_var(func, root)
-                                        || self.is_allocating_var(func, root)
-                                    {
-                                        return Some(root.to_string());
-                                    }
+                                if is_valid_identifier(root)
+                                    && (self.is_mutated_var(func, root)
+                                        || self.is_allocating_var(func, root))
+                                {
+                                    return Some(root.to_string());
                                 }
                             }
                             // If the expression is a ComputedLoad like `x[0]`, extract `x`
                             if let Some(bracket_idx) = expr.find('[') {
                                 let root = &expr[..bracket_idx];
-                                if is_valid_identifier(root) {
-                                    if self.is_mutated_var(func, root)
-                                        || self.is_allocating_var(func, root)
-                                    {
-                                        return Some(root.to_string());
-                                    }
+                                if is_valid_identifier(root)
+                                    && (self.is_mutated_var(func, root)
+                                        || self.is_allocating_var(func, root))
+                                {
+                                    return Some(root.to_string());
                                 }
                             }
                         }
@@ -1933,10 +1880,10 @@ impl CodeGenerator {
         {
             return Some(n.clone());
         }
-        if let Some(expr) = self.expr_map.get(&place.identifier.id) {
-            if is_valid_identifier(expr) {
-                return Some(expr.clone());
-            }
+        if let Some(expr) = self.expr_map.get(&place.identifier.id)
+            && is_valid_identifier(expr)
+        {
+            return Some(expr.clone());
         }
         None
     }
@@ -2113,16 +2060,8 @@ impl CodeGenerator {
                     handler,
                     ..
                 } => {
-                    let try_block_empty = block_map.get(try_block).map_or(false, |b| {
-                        b.instructions.is_empty() && matches!(b.terminal, Terminal::Goto { .. })
-                    });
-                    if try_block_empty {
-                        owned_blocks.insert(*try_block);
-                        owned_blocks.insert(*handler);
-                    } else {
-                        owned_blocks.insert(*try_block);
-                        owned_blocks.insert(*handler);
-                    }
+                    owned_blocks.insert(*try_block);
+                    owned_blocks.insert(*handler);
                 }
                 Terminal::Switch { cases, .. } => {
                     for case in cases {
@@ -2560,10 +2499,10 @@ impl CodeGenerator {
                     }
                 }
             }
-            if let Some(ref ret) = return_expr {
-                if ret != "undefined" {
-                    self.emit_line(&format!("return {};", ret));
-                }
+            if let Some(ref ret) = return_expr
+                && ret != "undefined"
+            {
+                self.emit_line(&format!("return {};", ret));
             }
             return;
         }
@@ -2674,10 +2613,10 @@ impl CodeGenerator {
         }
 
         // Emit return
-        if let Some(ref ret) = return_expr {
-            if ret != "undefined" {
-                self.emit_line(&format!("return {};", ret));
-            }
+        if let Some(ref ret) = return_expr
+            && ret != "undefined"
+        {
+            self.emit_line(&format!("return {};", ret));
         }
     }
 
@@ -2827,7 +2766,7 @@ impl CodeGenerator {
                     // Skip empty try blocks (pruneMaybeThrows equivalent) — if the try
                     // block has no instructions and just goes to fallthrough, eliminate
                     // the try-catch entirely.
-                    let try_block_empty = block_map.get(try_block).map_or(false, |b| {
+                    let try_block_empty = block_map.get(try_block).is_some_and(|b| {
                         b.instructions.is_empty() && matches!(b.terminal, Terminal::Goto { .. })
                     });
                     if try_block_empty {
@@ -2990,15 +2929,15 @@ impl CodeGenerator {
             for instr in &block.instructions {
                 // Check if this StoreLocal should be demoted to a temp assignment
                 let mut demoted = false;
-                if let Some(ref dvar) = demoted_return_var {
-                    if let InstructionValue::StoreLocal { lvalue, value, .. } = &instr.value {
-                        let name = self.identifier_name(&lvalue.place.identifier);
-                        if name == *dvar {
-                            // Convert `const x = expr;` to `memo_var = expr;`
-                            let val = self.resolve_place(value);
-                            memo_stmts.push(format!("{} = {};", memo_var_name, val));
-                            demoted = true;
-                        }
+                if let Some(ref dvar) = demoted_return_var
+                    && let InstructionValue::StoreLocal { lvalue, value, .. } = &instr.value
+                {
+                    let name = self.identifier_name(&lvalue.place.identifier);
+                    if name == *dvar {
+                        // Convert `const x = expr;` to `memo_var = expr;`
+                        let val = self.resolve_place(value);
+                        memo_stmts.push(format!("{} = {};", memo_var_name, val));
+                        demoted = true;
                     }
                 }
                 if demoted {
@@ -3020,10 +2959,7 @@ impl CodeGenerator {
                     {
                         post_scope_stmts.push(stmt);
                         pre_scope_instr_ids.insert(instr.id);
-                    } else if self.is_hook_call_stmt(instr) {
-                        pre_memo_stmts.push(stmt);
-                        pre_scope_instr_ids.insert(instr.id);
-                    } else if self.is_outlined_store(instr) {
+                    } else if self.is_hook_call_stmt(instr) || self.is_outlined_store(instr) {
                         pre_memo_stmts.push(stmt);
                         pre_scope_instr_ids.insert(instr.id);
                     } else if self.is_pre_scope_instruction(
@@ -3353,13 +3289,12 @@ impl CodeGenerator {
                                 continue; // Already marked
                             }
                             let out_id = instr.lvalue.identifier.id;
-                            if let Some(consumers) = id_to_consumers.get(&out_id) {
-                                if !consumers.is_empty()
-                                    && consumers.iter().all(|c| expanded_pre.contains(c))
-                                {
-                                    expanded_pre.insert(instr.id);
-                                    changed = true;
-                                }
+                            if let Some(consumers) = id_to_consumers.get(&out_id)
+                                && !consumers.is_empty()
+                                && consumers.iter().all(|c| expanded_pre.contains(c))
+                            {
+                                expanded_pre.insert(instr.id);
+                                changed = true;
                             }
                         }
                     }
@@ -3424,7 +3359,7 @@ impl CodeGenerator {
             }
 
             // Open try-catch wrapper if needed (try { goes before memo scope body)
-            if let Some((ref handler_binding, handler_block)) = try_wrapper {
+            if try_wrapper.is_some() {
                 self.emit_line("try {");
                 self.indent += 1;
             }
@@ -3479,10 +3414,8 @@ impl CodeGenerator {
                 }
             } else {
                 // Dependency pattern: store deps in $[0..n-1], memo_var in $[n], extras in $[n+1..]
-                if !memo_already_assigned {
-                    if let Some(ref ret) = return_expr {
-                        self.emit_line(&format!("{} = {};", memo_var, ret));
-                    }
+                if !memo_already_assigned && let Some(ref ret) = return_expr {
+                    self.emit_line(&format!("{} = {};", memo_var, ret));
                 }
                 for (i, dep) in reactive_deps.iter().enumerate() {
                     self.emit_line(&format!("{}[{}] = {};", cv, i, dep));
@@ -3785,7 +3718,7 @@ impl CodeGenerator {
 
                 // No separate pre-emission needed — all stmts in rebuilt_memo in source order
                 // Apply try-catch wrapper if needed (non-memoized rebuild path)
-                if let Some((ref handler_binding, handler_block)) = try_wrapper {
+                if try_wrapper.is_some() {
                     self.emit_line("try {");
                     self.indent += 1;
                 }
@@ -3793,10 +3726,10 @@ impl CodeGenerator {
                     self.emit_line(stmt);
                 }
                 // Use rebuilt return if we have one
-                if let Some(ref ret) = effective_rebuilt_return {
-                    if ret != "undefined" {
-                        self.emit_line(&format!("return {};", ret));
-                    }
+                if let Some(ref ret) = effective_rebuilt_return
+                    && ret != "undefined"
+                {
+                    self.emit_line(&format!("return {};", ret));
                 }
                 // Close try-catch wrapper if needed
                 if let Some((ref handler_binding, handler_block)) = try_wrapper {
@@ -3847,10 +3780,10 @@ impl CodeGenerator {
                 for stmt in &filtered_stmts {
                     self.emit_line(stmt);
                 }
-                if let Some(ref ret) = effective_return {
-                    if ret != "undefined" {
-                        self.emit_line(&format!("return {};", ret));
-                    }
+                if let Some(ref ret) = effective_return
+                    && ret != "undefined"
+                {
+                    self.emit_line(&format!("return {};", ret));
                 }
                 // Close try-catch wrapper if needed
                 if let Some((ref handler_binding, handler_block)) = try_wrapper {
@@ -4284,12 +4217,12 @@ impl CodeGenerator {
         // We find the RHS expression in the resolved result and wrap it.
         let mut assignment_replacements: Vec<(String, String)> = Vec::new();
         for instr in &block.instructions {
-            if let InstructionValue::StoreLocal { lvalue, value, .. } = &instr.value {
-                if lvalue.kind == InstructionKind::Reassign {
-                    let name = self.identifier_name(&lvalue.place.identifier);
-                    let rhs = self.resolve_place(value);
-                    assignment_replacements.push((name, rhs));
-                }
+            if let InstructionValue::StoreLocal { lvalue, value, .. } = &instr.value
+                && lvalue.kind == InstructionKind::Reassign
+            {
+                let name = self.identifier_name(&lvalue.place.identifier);
+                let rhs = self.resolve_place(value);
+                assignment_replacements.push((name, rhs));
             }
         }
 
@@ -4329,14 +4262,13 @@ impl CodeGenerator {
         };
         // Check if the last instruction is a StoreLocal with Reassign kind
         // In that case, the update expression is `name = rhs`
-        if let Some(last_instr) = block.instructions.last() {
-            if let InstructionValue::StoreLocal { lvalue, value, .. } = &last_instr.value {
-                if lvalue.kind == InstructionKind::Reassign {
-                    let name = self.identifier_name(&lvalue.place.identifier);
-                    let rhs = self.resolve_place(value);
-                    return format!("{} = {}", name, rhs);
-                }
-            }
+        if let Some(last_instr) = block.instructions.last()
+            && let InstructionValue::StoreLocal { lvalue, value, .. } = &last_instr.value
+            && lvalue.kind == InstructionKind::Reassign
+        {
+            let name = self.identifier_name(&lvalue.place.identifier);
+            let rhs = self.resolve_place(value);
+            return format!("{} = {}", name, rhs);
         }
         // Fall back to get_block_expr for simple update expressions (like i++)
         self.get_block_expr(block_id, block_map)
@@ -4420,12 +4352,9 @@ impl CodeGenerator {
         //   Primitive(Undefined) -> temp  (placeholder for iterator value)
         //   Destructure { lvalue: { pattern: Object/Array, kind }, value: temp }
         // We detect this and reconstruct the destructuring pattern in the loop header.
-        let mut skip_primitives = 0;
-        for (i, instr) in block.instructions.iter().enumerate() {
+        for instr in &block.instructions {
             match &instr.value {
-                InstructionValue::Primitive { .. } => {
-                    skip_primitives = i + 1;
-                }
+                InstructionValue::Primitive { .. } => {}
                 InstructionValue::Destructure { lvalue, .. } => {
                     let keyword = match lvalue.kind {
                         InstructionKind::Const | InstructionKind::HoistedConst => "const",
@@ -4688,10 +4617,10 @@ impl CodeGenerator {
         let mut seen_scopes: HashSet<ScopeId> = HashSet::new();
         for (_, block) in &func.body.blocks {
             for instr in &block.instructions {
-                if let Some(ref scope) = instr.lvalue.identifier.scope {
-                    if seen_scopes.insert(scope.id) {
-                        scope_ranges.push((scope.id, scope.range.start, scope.range.end));
-                    }
+                if let Some(ref scope) = instr.lvalue.identifier.scope
+                    && seen_scopes.insert(scope.id)
+                {
+                    scope_ranges.push((scope.id, scope.range.start, scope.range.end));
                 }
             }
         }
@@ -4743,26 +4672,27 @@ impl CodeGenerator {
         let mut output_decl_ids: HashSet<DeclarationId> = HashSet::new();
         for (_, block) in &func.body.blocks {
             for instr in &block.instructions {
-                if let InstructionValue::StoreLocal { lvalue, .. } = &instr.value {
-                    if lvalue.kind == InstructionKind::Reassign && is_in_scope(instr.id) {
-                        let did = lvalue.place.identifier.declaration_id;
-                        // Check: DeclareLocal must be before the scope boundary
-                        if let Some(&decl_id) = decl_instr.get(&did) {
-                            if decl_id < scope_boundary && !output_decl_ids.contains(&did) {
-                                if let Some(name) = decl_names.get(&did) {
-                                    if !Self::is_temp_name(name) && name != memo_var {
-                                        if debug {
-                                            eprintln!(
-                                                "[SCOPE_OUTPUTS] reassignment: {} (decl@{}, store@{} in scope)",
-                                                name, decl_id.0, instr.id.0
-                                            );
-                                        }
-                                        output_decl_ids.insert(did);
-                                        reassignment_outputs.push((did, name.clone()));
-                                    }
-                                }
-                            }
+                if let InstructionValue::StoreLocal { lvalue, .. } = &instr.value
+                    && lvalue.kind == InstructionKind::Reassign
+                    && is_in_scope(instr.id)
+                {
+                    let did = lvalue.place.identifier.declaration_id;
+                    // Check: DeclareLocal must be before the scope boundary
+                    if let Some(&decl_id) = decl_instr.get(&did)
+                        && decl_id < scope_boundary
+                        && !output_decl_ids.contains(&did)
+                        && let Some(name) = decl_names.get(&did)
+                        && !Self::is_temp_name(name)
+                        && name != memo_var
+                    {
+                        if debug {
+                            eprintln!(
+                                "[SCOPE_OUTPUTS] reassignment: {} (decl@{}, store@{} in scope)",
+                                name, decl_id.0, instr.id.0
+                            );
                         }
+                        output_decl_ids.insert(did);
+                        reassignment_outputs.push((did, name.clone()));
                     }
                 }
             }
@@ -4807,19 +4737,19 @@ impl CodeGenerator {
             if let Some(&decl_instr_id) = decl_instr.get(decl_id) {
                 // Only add if DeclareLocal is at or after the scope boundary
                 // (scope-local variables that escape through return)
-                if decl_instr_id >= scope_boundary {
-                    if let Some(name) = decl_names.get(decl_id) {
-                        if !Self::is_temp_name(name) && name != memo_var {
-                            if debug {
-                                eprintln!(
-                                    "[SCOPE_OUTPUTS] declaration (return-used): {} (decl@{}, boundary={})",
-                                    name, decl_instr_id.0, scope_boundary.0
-                                );
-                            }
-                            output_decl_ids.insert(*decl_id);
-                            declaration_outputs.push((*decl_id, name.clone()));
-                        }
+                if decl_instr_id >= scope_boundary
+                    && let Some(name) = decl_names.get(decl_id)
+                    && !Self::is_temp_name(name)
+                    && name != memo_var
+                {
+                    if debug {
+                        eprintln!(
+                            "[SCOPE_OUTPUTS] declaration (return-used): {} (decl@{}, boundary={})",
+                            name, decl_instr_id.0, scope_boundary.0
+                        );
                     }
+                    output_decl_ids.insert(*decl_id);
+                    declaration_outputs.push((*decl_id, name.clone()));
                 }
             }
         }
@@ -4913,59 +4843,55 @@ impl CodeGenerator {
             for instr in &block.instructions {
                 match &instr.value {
                     InstructionValue::StoreLocal { lvalue, value, .. } => {
-                        if let Some(expr) = self.expr_map.get(&value.identifier.id) {
-                            if self.looks_like_hook_call(expr) {
-                                let hook_name_str = expr.split('(').next().unwrap_or("");
-                                // Skip hooks whose direct return value is stable
-                                if Self::is_stable_hook_return(hook_name_str) {
-                                    continue;
-                                }
-                                let name = self.identifier_name(&lvalue.place.identifier);
-                                if !name.starts_with('_') {
-                                    hook_result_names.push(name);
-                                    hook_result_ids.insert(lvalue.place.identifier.id);
-                                }
+                        if let Some(expr) = self.expr_map.get(&value.identifier.id)
+                            && self.looks_like_hook_call(expr)
+                        {
+                            let hook_name_str = expr.split('(').next().unwrap_or("");
+                            // Skip hooks whose direct return value is stable
+                            if Self::is_stable_hook_return(hook_name_str) {
+                                continue;
+                            }
+                            let name = self.identifier_name(&lvalue.place.identifier);
+                            if !name.starts_with('_') {
+                                hook_result_names.push(name);
+                                hook_result_ids.insert(lvalue.place.identifier.id);
                             }
                         }
                     }
                     InstructionValue::Destructure { lvalue, value, .. } => {
-                        if let Some(expr) = self.expr_map.get(&value.identifier.id) {
-                            if self.looks_like_hook_call(expr) {
-                                let hook_name_str = expr.split('(').next().unwrap_or("");
-                                // For destructured results, check each position
-                                match &lvalue.pattern {
-                                    Pattern::Array(arr) => {
-                                        for (idx, elem) in arr.items.iter().enumerate() {
-                                            if let ArrayElement::Place(p) = elem {
-                                                if let Some(IdentifierName::Named(n))
-                                                | Some(IdentifierName::Promoted(n)) =
-                                                    &p.identifier.name
-                                                {
-                                                    if Self::is_reactive_destructured_element(
-                                                        hook_name_str,
-                                                        idx,
-                                                    ) {
-                                                        hook_result_names.push(n.clone());
-                                                        hook_result_ids.insert(p.identifier.id);
-                                                    }
-                                                }
-                                            }
+                        if let Some(expr) = self.expr_map.get(&value.identifier.id)
+                            && self.looks_like_hook_call(expr)
+                        {
+                            let hook_name_str = expr.split('(').next().unwrap_or("");
+                            // For destructured results, check each position
+                            match &lvalue.pattern {
+                                Pattern::Array(arr) => {
+                                    for (idx, elem) in arr.items.iter().enumerate() {
+                                        if let ArrayElement::Place(p) = elem
+                                            && let Some(IdentifierName::Named(n))
+                                            | Some(IdentifierName::Promoted(n)) =
+                                                &p.identifier.name
+                                            && Self::is_reactive_destructured_element(
+                                                hook_name_str,
+                                                idx,
+                                            )
+                                        {
+                                            hook_result_names.push(n.clone());
+                                            hook_result_ids.insert(p.identifier.id);
                                         }
                                     }
-                                    Pattern::Object(obj) => {
-                                        for prop in &obj.properties {
-                                            if let ObjectPropertyOrSpread::Property(p) = prop {
-                                                if let Some(IdentifierName::Named(n))
-                                                | Some(IdentifierName::Promoted(n)) =
-                                                    &p.place.identifier.name
-                                                {
-                                                    // Object destructuring of hook results: be conservative, treat as reactive
-                                                    if !Self::is_stable_hook_return(hook_name_str) {
-                                                        hook_result_names.push(n.clone());
-                                                        hook_result_ids
-                                                            .insert(p.place.identifier.id);
-                                                    }
-                                                }
+                                }
+                                Pattern::Object(obj) => {
+                                    for prop in &obj.properties {
+                                        if let ObjectPropertyOrSpread::Property(p) = prop
+                                            && let Some(IdentifierName::Named(n))
+                                            | Some(IdentifierName::Promoted(n)) =
+                                                &p.place.identifier.name
+                                        {
+                                            // Object destructuring of hook results: be conservative, treat as reactive
+                                            if !Self::is_stable_hook_return(hook_name_str) {
+                                                hook_result_names.push(n.clone());
+                                                hook_result_ids.insert(p.place.identifier.id);
                                             }
                                         }
                                     }
@@ -5002,7 +4928,6 @@ impl CodeGenerator {
 
         for param_name in &param_names {
             let mut direct_use = false;
-            let mut property_accesses: Vec<String> = Vec::new();
             let mut param_load_ids: HashSet<IdentifierId> = HashSet::new();
 
             // First pass: find all LoadLocal/LoadGlobal instructions for this parameter.
@@ -5015,10 +4940,9 @@ impl CodeGenerator {
                         InstructionValue::LoadLocal { place, .. } => {
                             if let Some(IdentifierName::Named(n))
                             | Some(IdentifierName::Promoted(n)) = &place.identifier.name
+                                && n == param_name
                             {
-                                if n == param_name {
-                                    param_load_ids.insert(instr.lvalue.identifier.id);
-                                }
+                                param_load_ids.insert(instr.lvalue.identifier.id);
                             }
                         }
                         InstructionValue::LoadGlobal { binding, .. } => {
@@ -5027,10 +4951,10 @@ impl CodeGenerator {
                                 NonLocalBinding::ModuleLocal { name } => Some(name),
                                 _ => None,
                             };
-                            if let Some(name) = binding_name {
-                                if name == param_name {
-                                    param_load_ids.insert(instr.lvalue.identifier.id);
-                                }
+                            if let Some(name) = binding_name
+                                && name == param_name
+                            {
+                                param_load_ids.insert(instr.lvalue.identifier.id);
                             }
                         }
                         _ => {}
@@ -5115,9 +5039,8 @@ impl CodeGenerator {
                     }
                 }
                 // Check terminal references only if block has memo instructions
-                let block_in_memo = memo_filter.map_or(true, |f| {
-                    block.instructions.iter().any(|i| f.contains(&i.id))
-                });
+                let block_in_memo = memo_filter
+                    .is_none_or(|f| block.instructions.iter().any(|i| f.contains(&i.id)));
                 if block_in_memo {
                     let mut check_terminal_place = |place: &Place| {
                         if let Some(path) = id_to_path.get(&place.identifier.id) {
@@ -5160,7 +5083,7 @@ impl CodeGenerator {
                     deduped.push(path.clone());
                 }
             }
-            property_accesses = deduped;
+            let mut property_accesses = deduped;
 
             if direct_use {
                 // Parameter is used directly (not only via properties) — use the whole parameter
@@ -5220,23 +5143,23 @@ impl CodeGenerator {
         let mut aliases: HashMap<String, String> = HashMap::new();
         for (_, block) in &func.body.blocks {
             for instr in &block.instructions {
-                if let InstructionValue::StoreLocal { lvalue, value, .. } = &instr.value {
-                    if let Some(expr) = self.expr_map.get(&value.identifier.id) {
-                        // Only alias property access expressions NOT rooted at a parameter.
-                        // "props.x" should stay as "props.x" (param property),
-                        // but "something.StaticText1" can be aliased to "Foo".
-                        if !expr.contains('(') && expr.contains('.') {
-                            let base = expr.split('.').next().unwrap_or("");
-                            let base_no_opt = base.trim_end_matches('?');
-                            if !param_names.contains(base_no_opt) {
-                                let var_name = self.identifier_name(&lvalue.place.identifier);
-                                let is_temp = var_name.starts_with('_')
-                                    || (var_name.starts_with('t')
-                                        && var_name.len() > 1
-                                        && var_name[1..].chars().all(|c| c.is_ascii_digit()));
-                                if !is_temp {
-                                    aliases.insert(expr.clone(), var_name);
-                                }
+                if let InstructionValue::StoreLocal { lvalue, value, .. } = &instr.value
+                    && let Some(expr) = self.expr_map.get(&value.identifier.id)
+                {
+                    // Only alias property access expressions NOT rooted at a parameter.
+                    // "props.x" should stay as "props.x" (param property),
+                    // but "something.StaticText1" can be aliased to "Foo".
+                    if !expr.contains('(') && expr.contains('.') {
+                        let base = expr.split('.').next().unwrap_or("");
+                        let base_no_opt = base.trim_end_matches('?');
+                        if !param_names.contains(base_no_opt) {
+                            let var_name = self.identifier_name(&lvalue.place.identifier);
+                            let is_temp = var_name.starts_with('_')
+                                || (var_name.starts_with('t')
+                                    && var_name.len() > 1
+                                    && var_name[1..].chars().all(|c| c.is_ascii_digit()));
+                            if !is_temp {
+                                aliases.insert(expr.clone(), var_name);
                             }
                         }
                     }
@@ -5268,12 +5191,11 @@ impl CodeGenerator {
             let mut param_load_ids: HashSet<IdentifierId> = HashSet::new();
             for (_, block) in &func.body.blocks {
                 for instr in &block.instructions {
-                    if let InstructionValue::LoadLocal { place, .. } = &instr.value {
-                        if place.identifier.declaration_id == param_decl_id
-                            || place.identifier.id == param_id
-                        {
-                            param_load_ids.insert(instr.lvalue.identifier.id);
-                        }
+                    if let InstructionValue::LoadLocal { place, .. } = &instr.value
+                        && (place.identifier.declaration_id == param_decl_id
+                            || place.identifier.id == param_id)
+                    {
+                        param_load_ids.insert(instr.lvalue.identifier.id);
                     }
                 }
             }
@@ -5281,36 +5203,33 @@ impl CodeGenerator {
             // Find Destructure instructions that consume the param load
             for (_, block) in &func.body.blocks {
                 for instr in &block.instructions {
-                    if let InstructionValue::Destructure { lvalue, value, .. } = &instr.value {
-                        if param_load_ids.contains(&value.identifier.id)
-                            || value.identifier.id == param_id
-                        {
-                            // Extract variable names from the destructuring pattern
-                            match &lvalue.pattern {
-                                Pattern::Object(obj) => {
-                                    for prop in &obj.properties {
-                                        if let ObjectPropertyOrSpread::Property(p) = prop {
-                                            if let Some(IdentifierName::Named(name))
-                                            | Some(IdentifierName::Promoted(name)) =
-                                                &p.place.identifier.name
-                                            {
-                                                derived_var_names.push(name.clone());
-                                                derived_var_ids.insert(p.place.identifier.id);
-                                            }
-                                        }
+                    if let InstructionValue::Destructure { lvalue, value, .. } = &instr.value
+                        && (param_load_ids.contains(&value.identifier.id)
+                            || value.identifier.id == param_id)
+                    {
+                        // Extract variable names from the destructuring pattern
+                        match &lvalue.pattern {
+                            Pattern::Object(obj) => {
+                                for prop in &obj.properties {
+                                    if let ObjectPropertyOrSpread::Property(p) = prop
+                                        && let Some(IdentifierName::Named(name))
+                                        | Some(IdentifierName::Promoted(name)) =
+                                            &p.place.identifier.name
+                                    {
+                                        derived_var_names.push(name.clone());
+                                        derived_var_ids.insert(p.place.identifier.id);
                                     }
                                 }
-                                Pattern::Array(arr) => {
-                                    for elem in &arr.items {
-                                        if let ArrayElement::Place(p) = elem {
-                                            if let Some(IdentifierName::Named(name))
-                                            | Some(IdentifierName::Promoted(name)) =
-                                                &p.identifier.name
-                                            {
-                                                derived_var_names.push(name.clone());
-                                                derived_var_ids.insert(p.identifier.id);
-                                            }
-                                        }
+                            }
+                            Pattern::Array(arr) => {
+                                for elem in &arr.items {
+                                    if let ArrayElement::Place(p) = elem
+                                        && let Some(IdentifierName::Named(name))
+                                        | Some(IdentifierName::Promoted(name)) =
+                                            &p.identifier.name
+                                    {
+                                        derived_var_names.push(name.clone());
+                                        derived_var_ids.insert(p.identifier.id);
                                     }
                                 }
                             }
@@ -5318,34 +5237,27 @@ impl CodeGenerator {
                     }
                     // Also check StoreLocal that consume the param load (for simple destructuring
                     // like `const x = params[0]` after lowering)
-                    if let InstructionValue::StoreLocal { lvalue, value, .. } = &instr.value {
-                        if param_load_ids.contains(&value.identifier.id)
-                            || value.identifier.id == param_id
-                        {
-                            if let Some(IdentifierName::Named(name))
-                            | Some(IdentifierName::Promoted(name)) =
-                                &lvalue.place.identifier.name
-                            {
-                                derived_var_names.push(name.clone());
-                                derived_var_ids.insert(lvalue.place.identifier.id);
-                            }
-                        }
+                    if let InstructionValue::StoreLocal { lvalue, value, .. } = &instr.value
+                        && (param_load_ids.contains(&value.identifier.id)
+                            || value.identifier.id == param_id)
+                        && let Some(IdentifierName::Named(name))
+                        | Some(IdentifierName::Promoted(name)) = &lvalue.place.identifier.name
+                    {
+                        derived_var_names.push(name.clone());
+                        derived_var_ids.insert(lvalue.place.identifier.id);
                     }
                     // Check PropertyLoad from param (for properties accessed on destructured vars)
                     if let InstructionValue::PropertyLoad {
                         object, property, ..
                     } = &instr.value
+                        && (param_load_ids.contains(&object.identifier.id)
+                            || object.identifier.id == param_id)
+                        && let PropertyLiteral::String(prop) = property
                     {
-                        if param_load_ids.contains(&object.identifier.id)
-                            || object.identifier.id == param_id
-                        {
-                            if let PropertyLiteral::String(prop) = property {
-                                // The param is directly property-loaded; the property is a dep
-                                // This handles cases like function Foo({a, b}) where a, b come from
-                                // Destructure but are used via PropertyLoad of the temp param
-                                let _ = prop; // We handle this via derived_var_names
-                            }
-                        }
+                        // The param is directly property-loaded; the property is a dep
+                        // This handles cases like function Foo({a, b}) where a, b come from
+                        // Destructure but are used via PropertyLoad of the temp param
+                        let _ = prop; // We handle this via derived_var_names
                     }
                 }
             }
@@ -5356,18 +5268,16 @@ impl CodeGenerator {
 
             // Now for each derived variable, trace property chains and find leaf uses
             // (same algorithm as find_reactive_deps for named params)
-            for (name_idx, name) in derived_var_names.iter().enumerate() {
+            for name in &derived_var_names {
                 let mut var_load_ids: HashSet<IdentifierId> = HashSet::new();
                 for (_, block) in &func.body.blocks {
                     for instr in &block.instructions {
-                        if let InstructionValue::LoadLocal { place, .. } = &instr.value {
-                            if let Some(IdentifierName::Named(n))
+                        if let InstructionValue::LoadLocal { place, .. } = &instr.value
+                            && let Some(IdentifierName::Named(n))
                             | Some(IdentifierName::Promoted(n)) = &place.identifier.name
-                            {
-                                if n == name {
-                                    var_load_ids.insert(instr.lvalue.identifier.id);
-                                }
-                            }
+                            && n == name
+                        {
+                            var_load_ids.insert(instr.lvalue.identifier.id);
                         }
                     }
                 }
@@ -5634,12 +5544,10 @@ impl CodeGenerator {
                             value: store_val,
                             ..
                         } = &instr.value
-                        {
-                            if lvalue.place.identifier.declaration_id
+                            && lvalue.place.identifier.declaration_id
                                 == place.identifier.declaration_id
-                            {
-                                source_ids.push(store_val.identifier.id);
-                            }
+                        {
+                            source_ids.push(store_val.identifier.id);
                         }
                     }
                 }
@@ -5772,10 +5680,8 @@ impl CodeGenerator {
             for (_, block) in &func.body.blocks {
                 for instr in &block.instructions {
                     let uses_tainted = instruction_input_place_ids(&instr.value).contains(&id);
-                    if uses_tainted {
-                        if tainted.insert(instr.lvalue.identifier.id) {
-                            queue.push_back(instr.lvalue.identifier.id);
-                        }
+                    if uses_tainted && tainted.insert(instr.lvalue.identifier.id) {
+                        queue.push_back(instr.lvalue.identifier.id);
                     }
                 }
             }
@@ -5784,10 +5690,10 @@ impl CodeGenerator {
         // Step 4: Check if any tainted value reaches an escape point
         // Escape point 1: Return value
         for (_, block) in &func.body.blocks {
-            if let Terminal::Return { value, .. } = &block.terminal {
-                if tainted.contains(&value.identifier.id) {
-                    return true;
-                }
+            if let Terminal::Return { value, .. } = &block.terminal
+                && tainted.contains(&value.identifier.id)
+            {
+                return true;
             }
         }
 
@@ -5852,10 +5758,10 @@ impl CodeGenerator {
         // Collect inner function's own parameter names
         let mut inner_param_names: HashSet<String> = HashSet::new();
         for param in &inner_func.params {
-            if let Argument::Place(p) = param {
-                if let Some(IdentifierName::Named(n)) = &p.identifier.name {
-                    inner_param_names.insert(n.clone());
-                }
+            if let Argument::Place(p) = param
+                && let Some(IdentifierName::Named(n)) = &p.identifier.name
+            {
+                inner_param_names.insert(n.clone());
             }
         }
         // Collect all names that are DEFINED within the inner function via StoreLocal.
@@ -5897,10 +5803,10 @@ impl CodeGenerator {
                     }
                     InstructionValue::StoreLocal { lvalue, .. } => {
                         // Reassignment (not Let/Const) to an outer variable is a capture
-                        if lvalue.kind == InstructionKind::Reassign {
-                            if let Some(IdentifierName::Named(n)) = &lvalue.place.identifier.name {
-                                inner_loaded_names.insert(n.clone());
-                            }
+                        if lvalue.kind == InstructionKind::Reassign
+                            && let Some(IdentifierName::Named(n)) = &lvalue.place.identifier.name
+                        {
+                            inner_loaded_names.insert(n.clone());
                         }
                     }
                     _ => {}
@@ -5919,10 +5825,10 @@ impl CodeGenerator {
         // Recursively check nested function expressions
         for (_, block) in &inner_func.body.blocks {
             for instr in &block.instructions {
-                if let InstructionValue::FunctionExpression { lowered_func, .. } = &instr.value {
-                    if self.function_captures_outer_names(&lowered_func.func) {
-                        return true;
-                    }
+                if let InstructionValue::FunctionExpression { lowered_func, .. } = &instr.value
+                    && self.function_captures_outer_names(&lowered_func.func)
+                {
+                    return true;
                 }
             }
         }
@@ -5959,12 +5865,13 @@ impl CodeGenerator {
                 }
 
                 // If the value reads from the promoted variable (via expr_map), it's post-scope
-                if let Some(expr) = self.expr_map.get(&value.identifier.id) {
-                    if expr.starts_with(promoted) && expr.len() > promoted.len() {
-                        let next_char = expr.as_bytes()[promoted.len()];
-                        if next_char == b'.' || next_char == b'[' {
-                            return true;
-                        }
+                if let Some(expr) = self.expr_map.get(&value.identifier.id)
+                    && expr.starts_with(promoted)
+                    && expr.len() > promoted.len()
+                {
+                    let next_char = expr.as_bytes()[promoted.len()];
+                    if next_char == b'.' || next_char == b'[' {
+                        return true;
                     }
                 }
                 false
@@ -5987,10 +5894,10 @@ impl CodeGenerator {
                     if self.resolve_to_name(place) == Some(promoted.to_string()) {
                         return true;
                     }
-                    if let Some(expr) = self.expr_map.get(&place.identifier.id) {
-                        if expr == promoted {
-                            return true;
-                        }
+                    if let Some(expr) = self.expr_map.get(&place.identifier.id)
+                        && expr == promoted
+                    {
+                        return true;
                     }
                 }
                 false
@@ -6004,10 +5911,10 @@ impl CodeGenerator {
                     if self.resolve_to_name(place) == Some(promoted.to_string()) {
                         return true;
                     }
-                    if let Some(expr) = self.expr_map.get(&place.identifier.id) {
-                        if expr == promoted {
-                            return true;
-                        }
+                    if let Some(expr) = self.expr_map.get(&place.identifier.id)
+                        && expr == promoted
+                    {
+                        return true;
                     }
                 }
                 // Method calls ON the promoted var are mutations (in-scope), not reads
@@ -6053,10 +5960,10 @@ impl CodeGenerator {
                     if self.resolve_to_name(place) == Some(promoted.to_string()) {
                         return true;
                     }
-                    if let Some(expr) = self.expr_map.get(&place.identifier.id) {
-                        if expr == promoted {
-                            return true;
-                        }
+                    if let Some(expr) = self.expr_map.get(&place.identifier.id)
+                        && expr == promoted
+                    {
+                        return true;
                     }
                 }
                 false
@@ -6092,10 +5999,10 @@ impl CodeGenerator {
                 continue;
             }
             // Check expression: if it looks like a param name or literal, prescope
-            if let Some(expr) = self.expr_map.get(&id) {
-                if is_literal_primitive(expr) {
-                    continue;
-                }
+            if let Some(expr) = self.expr_map.get(&id)
+                && is_literal_primitive(expr)
+            {
+                continue;
             }
             // Argument depends on scope-computed value
             return false;
@@ -6105,16 +6012,16 @@ impl CodeGenerator {
     /// Check if an instruction is a hook call statement (should be placed before memo scope).
     fn is_hook_call_stmt(&self, instr: &Instruction) -> bool {
         // A StoreLocal whose value is a hook call result
-        if let InstructionValue::StoreLocal { value, .. } = &instr.value {
-            if let Some(expr) = self.expr_map.get(&value.identifier.id) {
-                return self.looks_like_hook_call(expr);
-            }
+        if let InstructionValue::StoreLocal { value, .. } = &instr.value
+            && let Some(expr) = self.expr_map.get(&value.identifier.id)
+        {
+            return self.looks_like_hook_call(expr);
         }
         // A Destructure whose value is a hook call result (e.g., `const [, setX] = useState(0)`)
-        if let InstructionValue::Destructure { value, .. } = &instr.value {
-            if let Some(expr) = self.expr_map.get(&value.identifier.id) {
-                return self.looks_like_hook_call(expr);
-            }
+        if let InstructionValue::Destructure { value, .. } = &instr.value
+            && let Some(expr) = self.expr_map.get(&value.identifier.id)
+        {
+            return self.looks_like_hook_call(expr);
         }
         // A standalone CallExpression that is a hook call
         if let InstructionValue::CallExpression { callee, .. } = &instr.value {
@@ -6156,6 +6063,7 @@ impl CodeGenerator {
     /// An instruction is pre-scope if:
     /// 1. Its instruction ID is before the scope range start, AND
     /// 2. All its operands are either params, globals, or outputs of other pre-scope instructions
+    ///
     /// This ensures non-hook statements that don't depend on the scope are placed
     /// before the scope guard, maintaining their original order relative to hooks.
     fn is_pre_scope_instruction(
@@ -7022,10 +6930,11 @@ impl CodeGenerator {
     /// than `min_prec`. This prevents incorrect grouping when inlining sub-expressions.
     fn resolve_place_with_min_prec(&self, place: &Place, min_prec: u8) -> String {
         let expr = self.resolve_place(place);
-        if let Some(&prec) = self.expr_precedence.get(&place.identifier.id) {
-            if prec > 0 && prec < min_prec {
-                return format!("({})", expr);
-            }
+        if let Some(&prec) = self.expr_precedence.get(&place.identifier.id)
+            && prec > 0
+            && prec < min_prec
+        {
+            return format!("({})", expr);
         }
         expr
     }
@@ -7266,10 +7175,8 @@ impl CodeGenerator {
         let mut result = String::from(" ");
         for (i, s) in child_strs.iter().enumerate() {
             result.push_str(s);
-            if i + 1 < child_strs.len() {
-                if !result.ends_with(' ') {
-                    result.push(' ');
-                }
+            if i + 1 < child_strs.len() && !result.ends_with(' ') {
+                result.push(' ');
             }
         }
         if !result.ends_with(' ') {
@@ -7395,17 +7302,17 @@ impl CodeGenerator {
                     }
                     _ => None,
                 };
-                if let Some((name, id)) = decl_name_id {
-                    if self.outer_scope_names.contains(&name) {
-                        // This inner declaration shadows an outer variable
-                        let mut suffix = 0u32;
-                        let mut new_name = format!("{}_{}", name, suffix);
-                        while self.outer_scope_names.contains(&new_name) {
-                            suffix += 1;
-                            new_name = format!("{}_{}", name, suffix);
-                        }
-                        inner_cg.id_rename_map.insert(id, new_name);
+                if let Some((name, id)) = decl_name_id
+                    && self.outer_scope_names.contains(&name)
+                {
+                    // This inner declaration shadows an outer variable
+                    let mut suffix = 0u32;
+                    let mut new_name = format!("{}_{}", name, suffix);
+                    while self.outer_scope_names.contains(&new_name) {
+                        suffix += 1;
+                        new_name = format!("{}_{}", name, suffix);
                     }
+                    inner_cg.id_rename_map.insert(id, new_name);
                 }
             }
         }
@@ -7437,14 +7344,13 @@ impl CodeGenerator {
                 ) {
                     inner_cg.jsx_element_ids.insert(instr.lvalue.identifier.id);
                 }
-                if let InstructionValue::StoreLocal { lvalue, .. } = &instr.value {
-                    if lvalue.kind == InstructionKind::Reassign {
-                        if let Some(name) = &lvalue.place.identifier.name {
-                            match name {
-                                IdentifierName::Named(n) | IdentifierName::Promoted(n) => {
-                                    inner_cg.reassigned_vars.insert(n.clone());
-                                }
-                            }
+                if let InstructionValue::StoreLocal { lvalue, .. } = &instr.value
+                    && lvalue.kind == InstructionKind::Reassign
+                    && let Some(name) = &lvalue.place.identifier.name
+                {
+                    match name {
+                        IdentifierName::Named(n) | IdentifierName::Promoted(n) => {
+                            inner_cg.reassigned_vars.insert(n.clone());
                         }
                     }
                 }
@@ -7484,14 +7390,13 @@ impl CodeGenerator {
                 handler_binding: Some(binding),
                 ..
             } = &block.terminal
+                && binding.identifier.name.is_some()
             {
-                if binding.identifier.name.is_some() {
-                    let temp_name = format!("t{}", inner_cg.temp_name_counter);
-                    inner_cg.temp_name_counter += 1;
-                    inner_cg
-                        .id_rename_map
-                        .insert(binding.identifier.id, temp_name);
-                }
+                let temp_name = format!("t{}", inner_cg.temp_name_counter);
+                inner_cg.temp_name_counter += 1;
+                inner_cg
+                    .id_rename_map
+                    .insert(binding.identifier.id, temp_name);
             }
         }
 
@@ -7910,10 +7815,10 @@ impl CodeGenerator {
             body_lines.push(format!("\"{}\";", directive));
         }
         body_lines.extend(stmts);
-        if let Some(ret) = return_expr {
-            if ret != "undefined" {
-                body_lines.push(format!("return {};", ret));
-            }
+        if let Some(ret) = return_expr
+            && ret != "undefined"
+        {
+            body_lines.push(format!("return {};", ret));
         }
 
         // Indent body lines by one level (relative to the opening brace)
@@ -8196,14 +8101,14 @@ fn reorder_declarations(stmts: &mut Vec<String>) {
             }
         }
 
-        if let Some(assign_pos) = earliest_assign {
-            if assign_pos < *decl_pos {
-                // Declaration is after assignment — move declaration before assignment
-                let decl_stmt = stmts.remove(*decl_pos);
-                // After removal, assign_pos may have shifted if it was after decl_pos
-                // But we know assign_pos < decl_pos, so it's not affected
-                stmts.insert(assign_pos, decl_stmt);
-            }
+        if let Some(assign_pos) = earliest_assign
+            && assign_pos < *decl_pos
+        {
+            // Declaration is after assignment — move declaration before assignment
+            let decl_stmt = stmts.remove(*decl_pos);
+            // After removal, assign_pos may have shifted if it was after decl_pos
+            // But we know assign_pos < decl_pos, so it's not affected
+            stmts.insert(assign_pos, decl_stmt);
         }
     }
 }
@@ -8229,10 +8134,10 @@ fn is_literal_primitive(expr: &str) -> bool {
         return true;
     }
     // Negative numbers with unary minus that parse::<f64> handles
-    if let Some(rest) = s.strip_prefix('-') {
-        if rest.parse::<f64>().is_ok() {
-            return true;
-        }
+    if let Some(rest) = s.strip_prefix('-')
+        && rest.parse::<f64>().is_ok()
+    {
+        return true;
     }
     // string literal
     if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {

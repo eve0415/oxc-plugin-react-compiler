@@ -418,11 +418,10 @@ fn collect_terminal_used_ids(
             }
         }
         Terminal::Try {
-            handler_binding, ..
+            handler_binding: Some(binding),
+            ..
         } => {
-            if let Some(binding) = handler_binding {
-                used_ids.insert(binding.identifier.id);
-            }
+            used_ids.insert(binding.identifier.id);
         }
         _ => {}
     }

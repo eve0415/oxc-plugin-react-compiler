@@ -39,7 +39,6 @@ fn main() {
                 || source.contains("function Test");
             let has_arrow = source.contains("=> {") || source.contains("=>");
             let has_export_default_func = source.contains("export default function");
-            let first_line = source.lines().next().unwrap_or("");
 
             eprintln!(
                 "{}: func={}, arrow={}, export_default_func={}",

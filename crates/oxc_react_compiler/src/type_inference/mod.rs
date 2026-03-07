@@ -323,10 +323,11 @@ pub fn infer_types(func: &mut HIRFunction) {
                             }
                         }
                     }
-                    InstructionValue::PropertyLoad { property, .. } => {
-                        if let PropertyLiteral::String(prop_name) = property {
-                            id_names.insert(lv_id, prop_name.clone());
-                        }
+                    InstructionValue::PropertyLoad {
+                        property: PropertyLiteral::String(prop_name),
+                        ..
+                    } => {
+                        id_names.insert(lv_id, prop_name.clone());
                     }
                     _ => {}
                 }
@@ -737,24 +738,23 @@ pub fn infer_types(func: &mut HIRFunction) {
                 }
             }
         }
-        if return_types.len() == 1 {
-            if let Some(ty) = return_types.pop()
-                && !matches!(ty, Type::Poly | Type::TypeVar { .. })
-            {
-                assign_type_to_declaration(
-                    func.returns.identifier.declaration_id,
-                    ty.clone(),
-                    &declaration_ids,
-                    &mut id_types,
+        if return_types.len() == 1
+            && let Some(ty) = return_types.pop()
+            && !matches!(ty, Type::Poly | Type::TypeVar { .. })
+        {
+            assign_type_to_declaration(
+                func.returns.identifier.declaration_id,
+                ty.clone(),
+                &declaration_ids,
+                &mut id_types,
+            );
+            if debug_types {
+                eprintln!(
+                    "[TYPE_INFER_RET] fn={} pass={} single_return={:?}",
+                    func.id.as_deref().unwrap_or("<anonymous>"),
+                    _pass,
+                    ty
                 );
-                if debug_types {
-                    eprintln!(
-                        "[TYPE_INFER_RET] fn={} pass={} single_return={:?}",
-                        func.id.as_deref().unwrap_or("<anonymous>"),
-                        _pass,
-                        ty
-                    );
-                }
             }
         }
     }
@@ -1004,10 +1004,10 @@ fn infer_instruction_type(
         // TypeCast: with `enableUseTypeAnnotations`, cast type constrains result
         // (and through the loop above, also the source declaration).
         InstructionValue::TypeCastExpression { value, type_, .. } => {
-            if env_config.enable_use_type_annotations {
-                if !matches!(type_, Type::Poly | Type::TypeVar { .. }) {
-                    return type_.clone();
-                }
+            if env_config.enable_use_type_annotations
+                && !matches!(type_, Type::Poly | Type::TypeVar { .. })
+            {
+                return type_.clone();
             }
             get_type(value.identifier.id, known_types)
         }
@@ -1403,19 +1403,19 @@ fn infer_destructure_pattern_types(
             }
         }
         "BuiltInUseTransition" | "BuiltInUseTransitionHookResult" => {
-            if let Pattern::Array(arr) = pattern {
-                if let Some(ArrayElement::Place(first)) = arr.items.first() {
-                    id_types.insert(first.identifier.id, Type::Primitive);
-                    if let Some(ArrayElement::Place(p)) = arr.items.get(1) {
-                        id_types.insert(
-                            p.identifier.id,
-                            Type::Function {
-                                shape_id: Some("BuiltInStartTransition".to_string()),
-                                return_type: Box::new(Type::Poly),
-                                is_constructor: false,
-                            },
-                        );
-                    }
+            if let Pattern::Array(arr) = pattern
+                && let Some(ArrayElement::Place(first)) = arr.items.first()
+            {
+                id_types.insert(first.identifier.id, Type::Primitive);
+                if let Some(ArrayElement::Place(p)) = arr.items.get(1) {
+                    id_types.insert(
+                        p.identifier.id,
+                        Type::Function {
+                            shape_id: Some("BuiltInStartTransition".to_string()),
+                            return_type: Box::new(Type::Poly),
+                            is_constructor: false,
+                        },
+                    );
                 }
             }
         }
@@ -1578,7 +1578,7 @@ fn append_type_operands(operands: &mut Vec<Type>, ty: Type) {
 }
 
 fn push_unique_type(operands: &mut Vec<Type>, ty: Type) {
-    if !operands.iter().any(|existing| *existing == ty) {
+    if !operands.contains(&ty) {
         operands.push(ty);
     }
 }

@@ -112,6 +112,18 @@ struct MemoizationOptions {
     force_memoize_primitives: bool,
 }
 
+struct MemoizationVisitContext<'a> {
+    options: &'a MemoizationOptions,
+    conditional_only_decls: &'a HashSet<DeclarationId>,
+    conditional_fallback_decls: &'a HashSet<DeclarationId>,
+    id_to_name: &'a HashMap<IdentifierId, String>,
+    load_source: &'a HashMap<IdentifierId, IdentifierId>,
+}
+
+type ReassignmentEntry = (IdentifierId, DeclarationId, Option<ScopeId>);
+type ReassignmentSet = HashSet<ReassignmentEntry>;
+type ReassignmentsByDecl = HashMap<DeclarationId, ReassignmentSet>;
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -353,19 +365,21 @@ fn build_name_and_load_lookups(
                                 load_global_name_for_hook_detection(binding),
                             );
                         }
-                        InstructionValue::PropertyLoad { property, .. } => {
-                            if let PropertyLiteral::String(name) = property {
-                                // Lowered namespace hook calls often flow through an
-                                // unnamed PropertyLoad temp (e.g. React.useEffect).
-                                // Preserve the property literal so hook detection can
-                                // recover the hook identity from the temp id.
-                                id_to_name.insert(lvalue.identifier.id, name.clone());
-                            }
+                        InstructionValue::PropertyLoad {
+                            property: PropertyLiteral::String(name),
+                            ..
+                        } => {
+                            // Lowered namespace hook calls often flow through an
+                            // unnamed PropertyLoad temp (e.g. React.useEffect).
+                            // Preserve the property literal so hook detection can
+                            // recover the hook identity from the temp id.
+                            id_to_name.insert(lvalue.identifier.id, name.clone());
                         }
-                        InstructionValue::Primitive { value, .. } => {
-                            if let PrimitiveValue::String(name) = value {
-                                id_to_name.insert(lvalue.identifier.id, name.clone());
-                            }
+                        InstructionValue::Primitive {
+                            value: PrimitiveValue::String(name),
+                            ..
+                        } => {
+                            id_to_name.insert(lvalue.identifier.id, name.clone());
                         }
                         _ => {}
                     }
@@ -475,34 +489,6 @@ fn is_hook_callee(
     }
 
     false
-}
-
-fn resolve_identifier_name(
-    ident: &Identifier,
-    id_to_name: &HashMap<IdentifierId, String>,
-    load_source: &HashMap<IdentifierId, IdentifierId>,
-) -> Option<String> {
-    if let Some(name) = ident.name.as_ref().map(IdentifierName::value) {
-        return Some(name.to_string());
-    }
-
-    if let Some(name) = id_to_name.get(&ident.id) {
-        return Some(name.clone());
-    }
-
-    let mut current = ident.id;
-    let mut visited: HashSet<IdentifierId> = HashSet::new();
-    while let Some(next) = load_source.get(&current).copied() {
-        if !visited.insert(next) {
-            break;
-        }
-        if let Some(name) = id_to_name.get(&next) {
-            return Some(name.clone());
-        }
-        current = next;
-    }
-
-    None
 }
 
 fn is_hook_function_type(ty: &Type) -> bool {
@@ -1945,18 +1931,14 @@ fn visit_value_for_memoization(
     instr_id: InstructionId,
     value: &InstructionValue,
     lvalue: Option<&Place>,
-    options: &MemoizationOptions,
-    conditional_only_decls: &HashSet<DeclarationId>,
-    conditional_fallback_decls: &HashSet<DeclarationId>,
-    id_to_name: &HashMap<IdentifierId, String>,
-    load_source: &HashMap<IdentifierId, IdentifierId>,
+    ctx: &MemoizationVisitContext<'_>,
 ) {
     let aliasing = compute_memoization_inputs(
         value,
         lvalue,
-        options,
-        conditional_only_decls,
-        conditional_fallback_decls,
+        ctx.options,
+        ctx.conditional_only_decls,
+        ctx.conditional_fallback_decls,
     );
     let debug_hooks = std::env::var("DEBUG_PRUNE_HOOKS").is_ok();
     let debug_mutable_lvalues = std::env::var("DEBUG_MUTABLE_LVALUES").is_ok();
@@ -2024,7 +2006,7 @@ fn visit_value_for_memoization(
     // Handle hook calls -- mark arguments as escaping
     match value {
         InstructionValue::CallExpression { callee, args, .. } => {
-            let is_hook = is_hook_callee(&callee.identifier, id_to_name, load_source);
+            let is_hook = is_hook_callee(&callee.identifier, ctx.id_to_name, ctx.load_source);
             let no_alias = has_no_alias_function_signature(&callee.identifier.type_);
             if debug_hooks {
                 eprintln!(
@@ -2035,7 +2017,7 @@ fn visit_value_for_memoization(
                         .name
                         .as_ref()
                         .map(|n| n.value().to_string()),
-                    id_to_name.get(&callee.identifier.id),
+                    ctx.id_to_name.get(&callee.identifier.id),
                     is_hook,
                     no_alias
                 );
@@ -2052,7 +2034,7 @@ fn visit_value_for_memoization(
             }
         }
         InstructionValue::MethodCall { property, args, .. } => {
-            let is_hook = is_hook_callee(&property.identifier, id_to_name, load_source);
+            let is_hook = is_hook_callee(&property.identifier, ctx.id_to_name, ctx.load_source);
             let no_alias = has_no_alias_function_signature(&property.identifier.type_);
             if debug_hooks {
                 eprintln!(
@@ -2063,7 +2045,7 @@ fn visit_value_for_memoization(
                         .name
                         .as_ref()
                         .map(|n| n.value().to_string()),
-                    id_to_name.get(&property.identifier.id),
+                    ctx.id_to_name.get(&property.identifier.id),
                     is_hook,
                     no_alias
                 );
@@ -2088,11 +2070,7 @@ fn collect_dependencies_block(
     state: &mut State,
     block: &ReactiveBlock,
     active_scopes: &[ScopeId],
-    options: &MemoizationOptions,
-    conditional_only_decls: &HashSet<DeclarationId>,
-    conditional_fallback_decls: &HashSet<DeclarationId>,
-    id_to_name: &HashMap<IdentifierId, String>,
-    load_source: &HashMap<IdentifierId, IdentifierId>,
+    ctx: &MemoizationVisitContext<'_>,
 ) {
     for stmt in block {
         match stmt {
@@ -2102,24 +2080,11 @@ fn collect_dependencies_block(
                     instr.id,
                     &instr.value,
                     instr.lvalue.as_ref(),
-                    options,
-                    conditional_only_decls,
-                    conditional_fallback_decls,
-                    id_to_name,
-                    load_source,
+                    ctx,
                 );
             }
             ReactiveStatement::Terminal(term_stmt) => {
-                collect_dependencies_terminal(
-                    state,
-                    term_stmt,
-                    active_scopes,
-                    options,
-                    conditional_only_decls,
-                    conditional_fallback_decls,
-                    id_to_name,
-                    load_source,
-                );
+                collect_dependencies_terminal(state, term_stmt, active_scopes, ctx);
             }
             ReactiveStatement::Scope(scope_block) => {
                 // If a scope reassigns variables, set the chain of active
@@ -2134,28 +2099,10 @@ fn collect_dependencies_block(
 
                 let mut new_scopes = active_scopes.to_vec();
                 new_scopes.push(scope_block.scope.id);
-                collect_dependencies_block(
-                    state,
-                    &scope_block.instructions,
-                    &new_scopes,
-                    options,
-                    conditional_only_decls,
-                    conditional_fallback_decls,
-                    id_to_name,
-                    load_source,
-                );
+                collect_dependencies_block(state, &scope_block.instructions, &new_scopes, ctx);
             }
             ReactiveStatement::PrunedScope(scope_block) => {
-                collect_dependencies_block(
-                    state,
-                    &scope_block.instructions,
-                    active_scopes,
-                    options,
-                    conditional_only_decls,
-                    conditional_fallback_decls,
-                    id_to_name,
-                    load_source,
-                );
+                collect_dependencies_block(state, &scope_block.instructions, active_scopes, ctx);
             }
         }
     }
@@ -2165,11 +2112,7 @@ fn collect_dependencies_terminal(
     state: &mut State,
     term_stmt: &ReactiveTerminalStatement,
     active_scopes: &[ScopeId],
-    options: &MemoizationOptions,
-    conditional_only_decls: &HashSet<DeclarationId>,
-    conditional_fallback_decls: &HashSet<DeclarationId>,
-    id_to_name: &HashMap<IdentifierId, String>,
-    load_source: &HashMap<IdentifierId, IdentifierId>,
+    ctx: &MemoizationVisitContext<'_>,
 ) {
     let terminal = &term_stmt.terminal;
     match terminal {
@@ -2193,57 +2136,21 @@ fn collect_dependencies_terminal(
             alternate,
             ..
         } => {
-            collect_dependencies_block(
-                state,
-                consequent,
-                active_scopes,
-                options,
-                conditional_only_decls,
-                conditional_fallback_decls,
-                id_to_name,
-                load_source,
-            );
+            collect_dependencies_block(state, consequent, active_scopes, ctx);
             if let Some(alt) = alternate {
-                collect_dependencies_block(
-                    state,
-                    alt,
-                    active_scopes,
-                    options,
-                    conditional_only_decls,
-                    conditional_fallback_decls,
-                    id_to_name,
-                    load_source,
-                );
+                collect_dependencies_block(state, alt, active_scopes, ctx);
             }
         }
         ReactiveTerminal::Switch { cases, .. } => {
             for case in cases {
                 if let Some(block) = &case.block {
-                    collect_dependencies_block(
-                        state,
-                        block,
-                        active_scopes,
-                        options,
-                        conditional_only_decls,
-                        conditional_fallback_decls,
-                        id_to_name,
-                        load_source,
-                    );
+                    collect_dependencies_block(state, block, active_scopes, ctx);
                 }
             }
         }
         ReactiveTerminal::DoWhile { loop_block, .. }
         | ReactiveTerminal::While { loop_block, .. } => {
-            collect_dependencies_block(
-                state,
-                loop_block,
-                active_scopes,
-                options,
-                conditional_only_decls,
-                conditional_fallback_decls,
-                id_to_name,
-                load_source,
-            );
+            collect_dependencies_block(state, loop_block, active_scopes, ctx);
         }
         ReactiveTerminal::For {
             init,
@@ -2251,120 +2158,30 @@ fn collect_dependencies_terminal(
             loop_block,
             ..
         } => {
-            collect_dependencies_block(
-                state,
-                init,
-                active_scopes,
-                options,
-                conditional_only_decls,
-                conditional_fallback_decls,
-                id_to_name,
-                load_source,
-            );
+            collect_dependencies_block(state, init, active_scopes, ctx);
             if let Some(upd) = update {
-                collect_dependencies_block(
-                    state,
-                    upd,
-                    active_scopes,
-                    options,
-                    conditional_only_decls,
-                    conditional_fallback_decls,
-                    id_to_name,
-                    load_source,
-                );
+                collect_dependencies_block(state, upd, active_scopes, ctx);
             }
-            collect_dependencies_block(
-                state,
-                loop_block,
-                active_scopes,
-                options,
-                conditional_only_decls,
-                conditional_fallback_decls,
-                id_to_name,
-                load_source,
-            );
+            collect_dependencies_block(state, loop_block, active_scopes, ctx);
         }
         ReactiveTerminal::ForOf {
             init, loop_block, ..
         } => {
-            collect_dependencies_block(
-                state,
-                init,
-                active_scopes,
-                options,
-                conditional_only_decls,
-                conditional_fallback_decls,
-                id_to_name,
-                load_source,
-            );
-            collect_dependencies_block(
-                state,
-                loop_block,
-                active_scopes,
-                options,
-                conditional_only_decls,
-                conditional_fallback_decls,
-                id_to_name,
-                load_source,
-            );
+            collect_dependencies_block(state, init, active_scopes, ctx);
+            collect_dependencies_block(state, loop_block, active_scopes, ctx);
         }
         ReactiveTerminal::ForIn {
             init, loop_block, ..
         } => {
-            collect_dependencies_block(
-                state,
-                init,
-                active_scopes,
-                options,
-                conditional_only_decls,
-                conditional_fallback_decls,
-                id_to_name,
-                load_source,
-            );
-            collect_dependencies_block(
-                state,
-                loop_block,
-                active_scopes,
-                options,
-                conditional_only_decls,
-                conditional_fallback_decls,
-                id_to_name,
-                load_source,
-            );
+            collect_dependencies_block(state, init, active_scopes, ctx);
+            collect_dependencies_block(state, loop_block, active_scopes, ctx);
         }
         ReactiveTerminal::Label { block, .. } => {
-            collect_dependencies_block(
-                state,
-                block,
-                active_scopes,
-                options,
-                conditional_only_decls,
-                conditional_fallback_decls,
-                id_to_name,
-                load_source,
-            );
+            collect_dependencies_block(state, block, active_scopes, ctx);
         }
         ReactiveTerminal::Try { block, handler, .. } => {
-            collect_dependencies_block(
-                state,
-                block,
-                active_scopes,
-                options,
-                conditional_only_decls,
-                conditional_fallback_decls,
-                id_to_name,
-                load_source,
-            );
-            collect_dependencies_block(
-                state,
-                handler,
-                active_scopes,
-                options,
-                conditional_only_decls,
-                conditional_fallback_decls,
-                id_to_name,
-                load_source,
-            );
+            collect_dependencies_block(state, block, active_scopes, ctx);
+            collect_dependencies_block(state, handler, active_scopes, ctx);
         }
     }
 }
@@ -2472,10 +2289,7 @@ fn prune_scopes_block(
     memoized: &HashSet<DeclarationId>,
     definitions: &HashMap<DeclarationId, HashSet<DeclarationId>>,
     pruned_scopes: &mut HashSet<ScopeId>,
-    reassignments: &mut HashMap<
-        DeclarationId,
-        HashSet<(IdentifierId, DeclarationId, Option<ScopeId>)>,
-    >,
+    reassignments: &mut ReassignmentsByDecl,
 ) {
     let mut i = 0;
     while i < block.len() {
@@ -2652,10 +2466,7 @@ fn prune_scopes_terminal(
     memoized: &HashSet<DeclarationId>,
     definitions: &HashMap<DeclarationId, HashSet<DeclarationId>>,
     pruned_scopes: &mut HashSet<ScopeId>,
-    reassignments: &mut HashMap<
-        DeclarationId,
-        HashSet<(IdentifierId, DeclarationId, Option<ScopeId>)>,
-    >,
+    reassignments: &mut ReassignmentsByDecl,
 ) {
     match terminal {
         ReactiveTerminal::If {
@@ -2976,6 +2787,13 @@ pub fn prune_non_escaping_scopes_with_options(
             conditional_fallback
         );
     }
+    let visit_ctx = MemoizationVisitContext {
+        options: &options,
+        conditional_only_decls: &conditional_only_decls,
+        conditional_fallback_decls: &conditional_fallback_decls,
+        id_to_name: &id_to_name,
+        load_source: &load_source,
+    };
 
     // Declare params
     for param in &func.params {
@@ -2985,16 +2803,7 @@ pub fn prune_non_escaping_scopes_with_options(
         }
     }
 
-    collect_dependencies_block(
-        &mut state,
-        &func.body,
-        &[],
-        &options,
-        &conditional_only_decls,
-        &conditional_fallback_decls,
-        &id_to_name,
-        &load_source,
-    );
+    collect_dependencies_block(&mut state, &func.body, &[], &visit_ctx);
 
     // Phase 2: Walk from escaping values to determine memoized set
     let memoized = compute_memoized_identifiers(&mut state);
@@ -3025,10 +2834,7 @@ pub fn prune_non_escaping_scopes_with_options(
 
     // Phase 3: Prune scopes that do not declare/reassign any escaping values
     let mut pruned_scopes = HashSet::new();
-    let mut reassignments: HashMap<
-        DeclarationId,
-        HashSet<(IdentifierId, DeclarationId, Option<ScopeId>)>,
-    > = HashMap::new();
+    let mut reassignments: ReassignmentsByDecl = HashMap::new();
     prune_scopes_block(
         &mut func.body,
         &memoized,
@@ -3112,7 +2918,7 @@ mod tests {
     }
 
     fn make_reactive_scope(scope_id: u32, decl_ids: &[(u32, Option<&str>)]) -> ReactiveScope {
-        let mut declarations = HashMap::new();
+        let mut declarations = indexmap::IndexMap::new();
         for &(id, name) in decl_ids {
             declarations.insert(
                 IdentifierId(id),

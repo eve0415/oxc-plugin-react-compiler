@@ -55,66 +55,66 @@ fn main() {
             .iter()
             .find(|l| l.starts_with("let ") && l.ends_with(";"));
 
-        if let (Some(actual_l), Some(expected_l)) = (actual_let, expected_let) {
-            if actual_l != expected_l {
-                // Try substituting
-                let actual_var = actual_l.trim_start_matches("let ").trim_end_matches(";");
-                let expected_var = expected_l.trim_start_matches("let ").trim_end_matches(";");
+        if let (Some(actual_l), Some(expected_l)) = (actual_let, expected_let)
+            && actual_l != expected_l
+        {
+            // Try substituting
+            let actual_var = actual_l.trim_start_matches("let ").trim_end_matches(";");
+            let expected_var = expected_l.trim_start_matches("let ").trim_end_matches(";");
 
-                let substituted = actual
-                    .replace(
-                        &format!("let {};", actual_var),
-                        &format!("let {};", expected_var),
-                    )
-                    .replace(
-                        &format!("{} = ", actual_var),
-                        &format!("{} = ", expected_var),
-                    )
-                    .replace(
-                        &format!("return {};", actual_var),
-                        &format!("return {};", expected_var),
-                    )
-                    .replace(
-                        &format!("$[0] = {};", actual_var),
-                        &format!("$[0] = {};", expected_var),
-                    )
-                    .replace(
-                        &format!("$[1] = {};", actual_var),
-                        &format!("$[1] = {};", expected_var),
-                    )
-                    .replace(
-                        &format!("$[2] = {};", actual_var),
-                        &format!("$[2] = {};", expected_var),
-                    )
-                    .replace(
-                        &format!("{} = $[0];", actual_var),
-                        &format!("{} = $[0];", expected_var),
-                    )
-                    .replace(
-                        &format!("{} = $[1];", actual_var),
-                        &format!("{} = $[1];", expected_var),
-                    )
-                    .replace(
-                        &format!("{} = $[2];", actual_var),
-                        &format!("{} = $[2];", expected_var),
-                    )
-                    .replace(
-                        &format!("const {} = {};", expected_var, actual_var),
-                        "REMOVE_THIS_LINE",
-                    );
+            let substituted = actual
+                .replace(
+                    &format!("let {};", actual_var),
+                    &format!("let {};", expected_var),
+                )
+                .replace(
+                    &format!("{} = ", actual_var),
+                    &format!("{} = ", expected_var),
+                )
+                .replace(
+                    &format!("return {};", actual_var),
+                    &format!("return {};", expected_var),
+                )
+                .replace(
+                    &format!("$[0] = {};", actual_var),
+                    &format!("$[0] = {};", expected_var),
+                )
+                .replace(
+                    &format!("$[1] = {};", actual_var),
+                    &format!("$[1] = {};", expected_var),
+                )
+                .replace(
+                    &format!("$[2] = {};", actual_var),
+                    &format!("$[2] = {};", expected_var),
+                )
+                .replace(
+                    &format!("{} = $[0];", actual_var),
+                    &format!("{} = $[0];", expected_var),
+                )
+                .replace(
+                    &format!("{} = $[1];", actual_var),
+                    &format!("{} = $[1];", expected_var),
+                )
+                .replace(
+                    &format!("{} = $[2];", actual_var),
+                    &format!("{} = $[2];", expected_var),
+                )
+                .replace(
+                    &format!("const {} = {};", expected_var, actual_var),
+                    "REMOVE_THIS_LINE",
+                );
 
-                // Remove the "const x = tN;" line that would be redundant
-                let substituted_clean: String = substituted
-                    .lines()
-                    .filter(|l| l.trim() != "REMOVE_THIS_LINE")
-                    .collect::<Vec<_>>()
-                    .join("\n");
+            // Remove the "const x = tN;" line that would be redundant
+            let substituted_clean: String = substituted
+                .lines()
+                .filter(|l| l.trim() != "REMOVE_THIS_LINE")
+                .collect::<Vec<_>>()
+                .join("\n");
 
-                if substituted_clean == expected {
-                    would_fix += 1;
-                } else {
-                    still_wrong += 1;
-                }
+            if substituted_clean == expected {
+                would_fix += 1;
+            } else {
+                still_wrong += 1;
             }
         }
     }

@@ -271,7 +271,6 @@ fn validate_use_memo_call(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::types::*;
 
     fn make_test_place(id: u32, name: Option<&str>) -> Place {
         Place {

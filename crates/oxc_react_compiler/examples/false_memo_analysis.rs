@@ -4,7 +4,6 @@ fn main() {
     let mut no_change_expected = 0;
     let mut has_hooks_expected = 0;
     let mut has_jsx_expected = 0;
-    let mut empty_func_expected = 0;
     let mut samples: Vec<String> = Vec::new();
 
     for entry in std::fs::read_dir(fixture_dir).unwrap() {

@@ -113,7 +113,7 @@ pub fn inline_jsx_transform(func: &mut HIRFunction, config: &InlineJsxTransformC
             for (orig_id, mut decl) in existing {
                 let new_decl = handle_identifier(&decl.identifier, &inlined_jsx_declarations);
                 if new_decl.id != orig_id {
-                    scope.declarations.remove(&orig_id);
+                    scope.declarations.shift_remove(&orig_id);
                     decl.identifier = new_decl.clone();
                     scope.declarations.insert(
                         decl.identifier.id,

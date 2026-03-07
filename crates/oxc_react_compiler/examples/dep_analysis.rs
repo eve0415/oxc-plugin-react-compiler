@@ -70,7 +70,7 @@ fn main() {
         }
 
         let has_dep_mismatch = diff_lines.iter().any(|(a, e)| {
-            (a.contains("$[") && a.contains(" !== ") && e.contains("$[") && e.contains(" !== "))
+            a.contains("$[") && a.contains(" !== ") && e.contains("$[") && e.contains(" !== ")
         });
 
         if has_dep_mismatch {

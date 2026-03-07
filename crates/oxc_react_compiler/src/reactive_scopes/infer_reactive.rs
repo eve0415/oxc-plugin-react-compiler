@@ -44,10 +44,11 @@ pub fn infer_reactive_places(func: &mut HIRFunction) -> bool {
                 InstructionValue::LoadGlobal { binding, .. } => {
                     id_to_name.insert(instr.lvalue.identifier.id, binding.name().to_string());
                 }
-                InstructionValue::Primitive { value, .. } => {
-                    if let PrimitiveValue::String(name) = value {
-                        id_to_name.insert(instr.lvalue.identifier.id, name.clone());
-                    }
+                InstructionValue::Primitive {
+                    value: PrimitiveValue::String(name),
+                    ..
+                } => {
+                    id_to_name.insert(instr.lvalue.identifier.id, name.clone());
                 }
                 InstructionValue::PropertyLoad {
                     property: PropertyLiteral::String(name),
@@ -723,10 +724,11 @@ pub fn has_reactive_values(func: &HIRFunction) -> bool {
                 InstructionValue::LoadGlobal { binding, .. } => {
                     id_to_name.insert(instr.lvalue.identifier.id, binding.name().to_string());
                 }
-                InstructionValue::Primitive { value, .. } => {
-                    if let PrimitiveValue::String(name) = value {
-                        id_to_name.insert(instr.lvalue.identifier.id, name.clone());
-                    }
+                InstructionValue::Primitive {
+                    value: PrimitiveValue::String(name),
+                    ..
+                } => {
+                    id_to_name.insert(instr.lvalue.identifier.id, name.clone());
                 }
                 InstructionValue::PropertyLoad {
                     property: PropertyLiteral::String(name),

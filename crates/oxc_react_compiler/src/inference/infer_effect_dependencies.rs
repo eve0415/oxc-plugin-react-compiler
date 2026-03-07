@@ -1055,7 +1055,7 @@ fn instruction_mutates_root_dependency(
     dep_roots: &HashSet<DeclarationId>,
     defs: &HashMap<IdentifierId, &Instruction>,
 ) -> bool {
-    let mut matches_root = |place: &Place| {
+    let matches_root = |place: &Place| {
         let mut visited = HashSet::new();
         dep_roots.contains(&resolve_place_root_decl(place, defs, &mut visited))
     };

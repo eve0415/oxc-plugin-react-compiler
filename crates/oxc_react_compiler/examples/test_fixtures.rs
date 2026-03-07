@@ -35,10 +35,10 @@ fn main() {
 
         let stem = path.file_stem().unwrap().to_string_lossy().to_string();
 
-        if let Some(name) = filter_name {
-            if !stem.contains(name.as_str()) {
-                continue;
-            }
+        if let Some(name) = filter_name
+            && !stem.contains(name.as_str())
+        {
+            continue;
         }
 
         let expect_path = std::path::Path::new(fixture_dir).join(format!("{stem}.expect.md"));
@@ -129,14 +129,14 @@ fn main() {
         let mut diff = String::new();
         let max_lines = actual_lines.len().max(expected_lines.len());
         for i in 0..max_lines {
-            let a = actual_lines.get(i).map(|s| *s).unwrap_or("<MISSING>");
-            let e = expected_lines.get(i).map(|s| *s).unwrap_or("<MISSING>");
+            let a = actual_lines.get(i).copied().unwrap_or("<MISSING>");
+            let e = expected_lines.get(i).copied().unwrap_or("<MISSING>");
             if a != e {
                 diff.push_str(&format!("  line {}: actual  ='{}'\n", i + 1, a));
                 diff.push_str(&format!("  line {}: expected='{}'\n", i + 1, e));
                 for j in (i + 1)..((i + 6).min(max_lines)) {
-                    let a2 = actual_lines.get(j).map(|s| *s).unwrap_or("<MISSING>");
-                    let e2 = expected_lines.get(j).map(|s| *s).unwrap_or("<MISSING>");
+                    let a2 = actual_lines.get(j).copied().unwrap_or("<MISSING>");
+                    let e2 = expected_lines.get(j).copied().unwrap_or("<MISSING>");
                     if a2 != e2 {
                         diff.push_str(&format!("  line {}: actual  ='{}'\n", j + 1, a2));
                         diff.push_str(&format!("  line {}: expected='{}'\n", j + 1, e2));
@@ -153,13 +153,13 @@ fn main() {
     }
 
     let mut sorted: Vec<_> = issues.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    sorted.sort_by_key(|entry| std::cmp::Reverse(entry.1.len()));
 
     for (category, fixtures) in &sorted {
-        if let Some(cat) = filter_cat {
-            if !category.contains(cat.as_str()) {
-                continue;
-            }
+        if let Some(cat) = filter_cat
+            && !category.contains(cat.as_str())
+        {
+            continue;
         }
         eprintln!("{:3} {}", fixtures.len(), category);
         for (name, actual, expected, diff) in fixtures.iter().take(max_show) {

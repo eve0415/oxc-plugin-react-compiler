@@ -306,7 +306,7 @@ fn each_pattern_operand(pattern: &Pattern) -> Vec<&Place> {
 /// Check if an instruction value has additional lvalues beyond the instruction's
 /// outer lvalue (i.e., it matches the `eachInstructionValueLValue` upstream iterator).
 /// Returns `true` only for unhandled instruction kinds that define inner lvalues.
-fn has_instruction_value_lvalue(value: &InstructionValue) -> bool {
+fn has_instruction_value_lvalue(_value: &InstructionValue) -> bool {
     // The upstream `eachInstructionValueLValue` yields inner lvalues for:
     // - StoreLocal/StoreContext/DeclareLocal/DeclareContext -> lvalue.place
     // - Destructure -> pattern operands
@@ -320,7 +320,6 @@ fn has_instruction_value_lvalue(value: &InstructionValue) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::types::*;
 
     fn make_test_place(id: u32, name: Option<&str>) -> Place {
         Place {

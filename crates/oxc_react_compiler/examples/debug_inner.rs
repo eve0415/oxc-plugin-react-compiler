@@ -1,7 +1,5 @@
 fn main() {
     let fixture_dir = "third_party/react/compiler/packages/babel-plugin-react-compiler/src/__tests__/fixtures/compiler";
-    let options = oxc_react_compiler::options::PluginOptions::default();
-
     // Look at "object-values" specifically
     for entry in std::fs::read_dir(fixture_dir).unwrap() {
         let entry = entry.unwrap();
@@ -15,7 +13,6 @@ fn main() {
         eprintln!("=== SOURCE ===");
         eprintln!("{}", source);
 
-        let filename = path.file_name().unwrap().to_string_lossy().to_string();
         // Need to build the HIR and dump it
         let allocator = oxc_allocator::Allocator::default();
         let source_type = oxc_span::SourceType::jsx();
@@ -33,14 +30,18 @@ fn main() {
                     let lower_result = oxc_react_compiler::hir::build::lower_function(
                         body,
                         &func.params,
-                        name,
-                        func.span,
-                        func.generator,
-                        func.r#async,
-                        &semantic,
-                        &source,
-                        oxc_react_compiler::environment::Environment::new(
-                            oxc_react_compiler::options::EnvironmentConfig::default(),
+                        oxc_react_compiler::hir::build::LoweringContext::new(
+                            &semantic,
+                            &source,
+                            oxc_react_compiler::environment::Environment::new(
+                                oxc_react_compiler::options::EnvironmentConfig::default(),
+                            ),
+                        ),
+                        oxc_react_compiler::hir::build::LowerFunctionOptions::function(
+                            name,
+                            func.span,
+                            func.generator,
+                            func.r#async,
                         ),
                     );
                     if let Ok(lr) = lower_result {

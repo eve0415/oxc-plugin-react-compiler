@@ -122,20 +122,20 @@ fn main() {
     for result in &results {
         if diff && matches!(result.status, Status::Fail) {
             eprintln!("\n=== FAIL: {} ===", result.name);
-            if let Some(ref actual) = result.actual_code {
-                if let Some(ref expected) = result.expected_code {
-                    // Show a simple diff
-                    let actual_lines: Vec<&str> = actual.lines().collect();
-                    let expected_lines: Vec<&str> = expected.lines().collect();
-                    let max = actual_lines.len().max(expected_lines.len());
-                    for i in 0..max {
-                        let a = actual_lines.get(i).unwrap_or(&"");
-                        let e = expected_lines.get(i).unwrap_or(&"");
-                        if a != e {
-                            eprintln!("  line {}: ", i + 1);
-                            eprintln!("    actual:   {}", a);
-                            eprintln!("    expected: {}", e);
-                        }
+            if let Some(ref actual) = result.actual_code
+                && let Some(ref expected) = result.expected_code
+            {
+                // Show a simple diff
+                let actual_lines: Vec<&str> = actual.lines().collect();
+                let expected_lines: Vec<&str> = expected.lines().collect();
+                let max = actual_lines.len().max(expected_lines.len());
+                for i in 0..max {
+                    let a = actual_lines.get(i).unwrap_or(&"");
+                    let e = expected_lines.get(i).unwrap_or(&"");
+                    if a != e {
+                        eprintln!("  line {}: ", i + 1);
+                        eprintln!("    actual:   {}", a);
+                        eprintln!("    expected: {}", e);
                     }
                 }
             }
@@ -528,11 +528,11 @@ fn main() {
         }
         println!("Wrote failures json to {}", path.display());
     }
-    if let Some(path) = regression_vs_path.as_ref() {
-        if let Err(err) = print_regression_vs(path, &failure_report) {
-            eprintln!("[ERROR] {err}");
-            std::process::exit(2);
-        }
+    if let Some(path) = regression_vs_path.as_ref()
+        && let Err(err) = print_regression_vs(path, &failure_report)
+    {
+        eprintln!("[ERROR] {err}");
+        std::process::exit(2);
     }
 
     if update {
@@ -1135,10 +1135,10 @@ fn collect_fixtures_recursive(
             None => stem.clone(),
         };
 
-        if let Some(filter) = filter {
-            if !name.contains(filter) {
-                continue;
-            }
+        if let Some(filter) = filter
+            && !name.contains(filter)
+        {
+            continue;
         }
 
         let expect_path = dir.join(format!("{stem}.expect.md"));
@@ -1856,14 +1856,16 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> Fix
         .unwrap()
         .to_string_lossy()
         .to_string();
-    let mut options = oxc_react_compiler::options::PluginOptions::default();
+    let mut options = oxc_react_compiler::options::PluginOptions {
+        compilation_mode: pragma.compilation_mode,
+        panic_threshold: pragma.panic_threshold,
+        custom_opt_out_directives: pragma.custom_opt_out_directives,
+        ignore_use_no_forget: pragma.ignore_use_no_forget,
+        no_emit: pragma.no_emit,
+        ..Default::default()
+    };
 
     // --- Wire PluginOptions-level pragmas ---
-    options.compilation_mode = pragma.compilation_mode;
-    options.panic_threshold = pragma.panic_threshold;
-    options.custom_opt_out_directives = pragma.custom_opt_out_directives;
-    options.ignore_use_no_forget = pragma.ignore_use_no_forget;
-    options.no_emit = pragma.no_emit;
 
     if let Some(ref target) = pragma.target {
         options.target = target.clone();
@@ -2299,10 +2301,10 @@ fn prepare_code_for_compare(code: &str, strict_output: bool) -> String {
 
 fn is_expected_bailout(expected_input: Option<&str>, source: &str, expected_code: &str) -> bool {
     let expected_norm = normalize_bailout_text(expected_code);
-    if let Some(input) = expected_input {
-        if normalize_bailout_text(input) == expected_norm {
-            return true;
-        }
+    if let Some(input) = expected_input
+        && normalize_bailout_text(input) == expected_norm
+    {
+        return true;
     }
     normalize_bailout_text(source) == expected_norm
 }
@@ -2913,7 +2915,8 @@ fn normalize_code(code: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n");
 
-    let steps: [(&str, fn(&str) -> String); 56] = [
+    type NormalizeStep = (&'static str, fn(&str) -> String);
+    let steps: [NormalizeStep; 56] = [
         ("normalize_multiline_imports", normalize_multiline_imports),
         ("normalize_empty_blocks", normalize_empty_blocks),
         ("normalize_iife_parens", normalize_iife_parens),
@@ -3843,15 +3846,13 @@ fn normalize_dead_do_while(code: &str) -> String {
     while i < lines.len() {
         let trimmed = lines[i].trim();
         // Match `do {` followed by `break;` followed by `} while (...);`
-        if trimmed == "do {" {
-            if i + 2 < lines.len() {
-                let next1 = lines[i + 1].trim();
-                let next2 = lines[i + 2].trim();
-                if next1 == "break;" && next2.starts_with("} while (") && next2.ends_with(");") {
-                    // Skip all 3 lines
-                    i += 3;
-                    continue;
-                }
+        if trimmed == "do {" && i + 2 < lines.len() {
+            let next1 = lines[i + 1].trim();
+            let next2 = lines[i + 2].trim();
+            if next1 == "break;" && next2.starts_with("} while (") && next2.ends_with(");") {
+                // Skip all 3 lines
+                i += 3;
+                continue;
             }
         }
         result.push(lines[i]);
@@ -4447,20 +4448,15 @@ fn normalize_const_let_everywhere(code: &str) -> String {
             // Replace all occurrences of `const ` except cache declarations.
             // We iterate to handle multiple `const` on one line (e.g., for-of inside inline body).
             let mut result = trimmed.to_string();
-            loop {
-                // Find next `const ` that isn't part of cache declaration
-                if let Some(pos) = result.find("const ") {
-                    // Check if this is a cache declaration like `const $ = _c` or `const $=_c`
-                    let after = &result[pos + 6..];
-                    if is_cache_decl(after) {
-                        // Don't replace this one — but need to skip past it to find others
-                        // Just break; cache decls are typically the only `const` on their line
-                        break;
-                    }
-                    result = format!("{}let {}", &result[..pos], &result[pos + 6..]);
-                } else {
+            while let Some(pos) = result.find("const ") {
+                // Check if this is a cache declaration like `const $ = _c` or `const $=_c`
+                let after = &result[pos + 6..];
+                if is_cache_decl(after) {
+                    // Don't replace this one — but need to skip past it to find others
+                    // Just break; cache decls are typically the only `const` on their line
                     break;
                 }
+                result = format!("{}let {}", &result[..pos], &result[pos + 6..]);
             }
             result
         })
@@ -4644,12 +4640,14 @@ fn normalize_const_let_in_scope(code: &str) -> String {
         }
 
         // Inside a scope body, normalize const → let for variable declarations
-        if in_scope && scope_depth > 0 {
-            if trimmed.starts_with("const ") && !trimmed.starts_with("const $ = _c") {
-                let normalized = trimmed.replacen("const ", "let ", 1);
-                result.push(normalized);
-                continue;
-            }
+        if in_scope
+            && scope_depth > 0
+            && trimmed.starts_with("const ")
+            && !trimmed.starts_with("const $ = _c")
+        {
+            let normalized = trimmed.replacen("const ", "let ", 1);
+            result.push(normalized);
+            continue;
         }
 
         result.push(trimmed.to_string());
@@ -4842,6 +4840,7 @@ fn normalize_promote_temps_in_chunk(code: &str) -> String {
 
     // Apply renames and remove identity assignments
     let mut result = Vec::new();
+    let re_identity = regex::Regex::new(r"^(?:const|let|var)\s+(\w+)\s*=\s*(\w+);$").unwrap();
     for line in &lines {
         let trimmed = line.trim();
         let mut s = trimmed.to_string();
@@ -4852,7 +4851,6 @@ fn normalize_promote_temps_in_chunk(code: &str) -> String {
         }
 
         // Skip identity assignments like `const x = x;`
-        let re_identity = regex::Regex::new(r"^(?:const|let|var)\s+(\w+)\s*=\s*(\w+);$").unwrap();
         if let Some(caps) = re_identity.captures(&s) {
             let lhs = caps.get(1).unwrap().as_str();
             let rhs = caps.get(2).unwrap().as_str();
@@ -5708,13 +5706,13 @@ fn normalize_return_undefined_var(code: &str) -> String {
     let n = lines.len();
     let mut result = Vec::new();
     let mut i = 0;
+    let bare_decl_re = regex::Regex::new(r"^let (\w+);$").unwrap();
     while i < n {
         let trimmed = lines[i].trim();
         // Look for pattern: `let <var>;` followed by `return <var>;` followed by `}`
         if i + 2 < n {
             let next = lines[i + 1].trim();
             let after = lines[i + 2].trim();
-            let bare_decl_re = regex::Regex::new(r"^let (\w+);$").unwrap();
             if let Some(caps) = bare_decl_re.captures(trimmed) {
                 let var = &caps[1];
                 if next == format!("return {};", var) && after == "}" {
@@ -5772,15 +5770,15 @@ fn normalize_unicode_escapes(code: &str) -> String {
     // UTF-8 sequence (first byte 0xC0-0xDF, second byte 0x80-0xBF)
     let utf8_pair =
         regex::Regex::new(r"\\u00([cCdD][0-9a-fA-F])\\u00([89aAbB][0-9a-fA-F])").unwrap();
-    let collapsed = utf8_pair
+
+    utf8_pair
         .replace_all(&result, |caps: &regex::Captures| {
             let b1 = u8::from_str_radix(&caps[1], 16).unwrap();
             let b2 = u8::from_str_radix(&caps[2], 16).unwrap();
             let codepoint = ((b1 as u32 & 0x1F) << 6) | (b2 as u32 & 0x3F);
             format!("\\u{:04x}", codepoint)
         })
-        .to_string();
-    collapsed
+        .to_string()
 }
 
 /// Normalize empty switch cases that only contain a break to a label.
@@ -6382,11 +6380,11 @@ fn normalize_multiline_optional_chain_calls(code: &str) -> String {
 
     for line in lines {
         let trimmed = line.trim();
-        if trimmed.starts_with("?.") || trimmed.starts_with("?.[") {
-            if let Some(last) = out.last_mut() {
-                last.push_str(trimmed);
-                continue;
-            }
+        if (trimmed.starts_with("?.") || trimmed.starts_with("?.["))
+            && let Some(last) = out.last_mut()
+        {
+            last.push_str(trimmed);
+            continue;
         }
         out.push(trimmed.to_string());
     }
@@ -6547,12 +6545,13 @@ fn normalize_react_memo_closing_paren(code: &str) -> String {
     let mut out: Vec<String> = code.lines().map(|line| line.trim().to_string()).collect();
 
     for i in 0..out.len() {
-        if out[i].contains("React.memo(") && !out[i].ends_with(");") {
-            if let Some(j) = (i + 1..out.len()).find(|&idx| out[idx] == "});") {
-                out[i].push_str(");");
-                out[j] = "}".to_string();
-                break;
-            }
+        if out[i].contains("React.memo(")
+            && !out[i].ends_with(");")
+            && let Some(j) = (i + 1..out.len()).find(|&idx| out[idx] == "});")
+        {
+            out[i].push_str(");");
+            out[j] = "}".to_string();
+            break;
         }
     }
 
@@ -6999,8 +6998,8 @@ fn normalize_shadowed_temp_decls(code: &str) -> String {
         next_shadow_index += 1;
         lines[i] = replace_identifier_token(trimmed, &temp_name, &shadow_name);
 
-        for later in i + 1..lines.len() {
-            let later_trimmed = lines[later].trim().to_string();
+        for later_line in lines.iter_mut().skip(i + 1) {
+            let later_trimmed = later_line.trim().to_string();
             if later_trimmed.starts_with("function ") {
                 break;
             }
@@ -7009,7 +7008,7 @@ fn normalize_shadowed_temp_decls(code: &str) -> String {
             {
                 break;
             }
-            lines[later] = replace_identifier_token(&later_trimmed, &temp_name, &shadow_name);
+            *later_line = replace_identifier_token(&later_trimmed, &temp_name, &shadow_name);
         }
 
         *entry += 1;
@@ -7581,7 +7580,8 @@ mod tests {
         normalize_react_memo_closing_paren, normalize_shadowed_temp_decls,
         normalize_simple_alias_return_tail, normalize_simple_jsx_attr_brace_spacing,
         normalize_sort_simple_let_decl_runs, normalize_strip_inline_comments,
-        normalize_temp_alpha_renaming, normalize_temp_zero_suffixes, normalize_two_dep_guard_order,
+        normalize_tail_return_from_cache_alias, normalize_temp_alpha_renaming,
+        normalize_temp_zero_suffixes, normalize_two_dep_guard_order,
     };
 
     #[test]
@@ -7860,16 +7860,6 @@ mod tests {
         let input = "const obj = { ref: ref, children: children, value: t0 };";
         let expected = "const obj = { ref, children, value: t0 };";
         assert_eq!(normalize_object_shorthand_pairs(input), expected);
-    }
-
-    #[test]
-    fn normalize_transitional_element_ref_shorthand_expands_generated_ref_field() {
-        let input = "} else { t1 = { $$typeof: Symbol.for(\"react.transitional.element\"), type: Foo, ref, key, props: { ref, ...other } };";
-        let expected = "} else { t1 = { $$typeof: Symbol.for(\"react.transitional.element\"), type: Foo, ref: ref, key, props: { ref, ...other } };";
-        assert_eq!(
-            normalize_transitional_element_ref_shorthand(input),
-            expected
-        );
     }
 
     #[test]

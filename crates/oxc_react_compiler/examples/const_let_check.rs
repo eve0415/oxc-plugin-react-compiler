@@ -57,8 +57,8 @@ fn normalize_const_let(code: &str) -> String {
     code.lines()
         .map(|line| {
             // Normalize: replace "const " with "let " at line start
-            if line.starts_with("const ") {
-                format!("let {}", &line[6..])
+            if let Some(stripped) = line.strip_prefix("const ") {
+                format!("let {}", stripped)
             } else {
                 line.to_string()
             }

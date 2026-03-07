@@ -651,10 +651,11 @@ fn build_name_lookup(func: &HIRFunction) -> HashMap<IdentifierId, String> {
                 InstructionValue::LoadGlobal { binding, .. } => {
                     id_to_name.insert(instr.lvalue.identifier.id, binding.name().to_string());
                 }
-                InstructionValue::Primitive { value, .. } => {
-                    if let PrimitiveValue::String(name) = value {
-                        id_to_name.insert(instr.lvalue.identifier.id, name.clone());
-                    }
+                InstructionValue::Primitive {
+                    value: PrimitiveValue::String(name),
+                    ..
+                } => {
+                    id_to_name.insert(instr.lvalue.identifier.id, name.clone());
                 }
                 _ => {}
             }

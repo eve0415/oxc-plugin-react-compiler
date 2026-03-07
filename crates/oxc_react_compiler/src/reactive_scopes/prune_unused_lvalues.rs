@@ -58,12 +58,10 @@ fn collect_lvalues_and_refs(
                 collect_refs_from_value(&instr.value, candidates);
                 if let Some(lvalue) = &instr.lvalue
                     && lvalue.identifier.name.is_none()
-                {
-                    if let Some(prev) =
+                    && let Some(prev) =
                         candidates.insert(lvalue.identifier.declaration_id, instr.id)
-                    {
-                        to_prune.insert(prev);
-                    }
+                {
+                    to_prune.insert(prev);
                 }
             }
             ReactiveStatement::Terminal(term_stmt) => {
@@ -499,10 +497,8 @@ fn prune_lvalues_in_block(
     for stmt in block.iter_mut() {
         match stmt {
             ReactiveStatement::Instruction(instr) => {
-                if to_prune.contains(&instr.id) {
-                    if instr.lvalue.take().is_some() {
-                        changed = true;
-                    }
+                if to_prune.contains(&instr.id) && instr.lvalue.take().is_some() {
+                    changed = true;
                 }
             }
             ReactiveStatement::Terminal(term_stmt) => {
@@ -1266,7 +1262,7 @@ mod tests {
     }
 
     #[test]
-    fn test_drop_manual_memo_root_load_before_finish() {
+    fn test_preserve_manual_memo_root_load_after_alias_drop() {
         let source = make_place(1, Some(IdentifierName::Named("y".into())));
         let temp = make_place(2, None);
         let alias = make_place(3, None);
@@ -1349,12 +1345,18 @@ mod tests {
         assert_eq!(
             func.body.len(),
             5,
-            "manual memo root load should still be dropped before the memo finishes"
+            "dead alias should be dropped without removing the manual memo root load"
         );
         match &func.body[1] {
-            ReactiveStatement::Instruction(instr) => assert_eq!(instr.id, InstructionId(2)),
+            ReactiveStatement::Instruction(instr) => {
+                assert_eq!(instr.id, InstructionId(1));
+                assert!(
+                    instr.lvalue.is_none(),
+                    "manual memo root load should be preserved as a bare expr after alias removal"
+                );
+            }
             other => panic!(
-                "expected alias load after dropped root load, got {:?}",
+                "expected preserved root load after dropped alias, got {:?}",
                 other
             ),
         }

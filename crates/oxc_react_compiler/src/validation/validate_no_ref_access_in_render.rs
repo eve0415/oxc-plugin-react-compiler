@@ -67,17 +67,6 @@ struct RefFnType {
     return_type: RefAccessType,
 }
 
-impl RefAccessType {
-    fn is_ref_type(&self) -> bool {
-        matches!(
-            self,
-            RefAccessType::Ref { .. }
-                | RefAccessType::RefValue { .. }
-                | RefAccessType::Structure { .. }
-        )
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Type equality (for convergence check)
 // ---------------------------------------------------------------------------
@@ -293,11 +282,12 @@ fn build_hook_name_lookup(func: &HIRFunction) -> HashMap<IdentifierId, String> {
                         hook_names.insert(instr.lvalue.identifier.id, name.clone());
                     }
                 }
-                InstructionValue::Primitive { value, .. } => {
-                    if let PrimitiveValue::String(name) = value {
-                        if Environment::is_hook_name(name) {
-                            hook_names.insert(instr.lvalue.identifier.id, name.clone());
-                        }
+                InstructionValue::Primitive {
+                    value: PrimitiveValue::String(name),
+                    ..
+                } => {
+                    if Environment::is_hook_name(name) {
+                        hook_names.insert(instr.lvalue.identifier.id, name.clone());
                     }
                 }
                 _ => {}
@@ -335,10 +325,11 @@ fn build_callee_name_lookup(func: &HIRFunction) -> HashMap<IdentifierId, String>
                         names.insert(instr.lvalue.identifier.id, name.clone());
                     }
                 }
-                InstructionValue::Primitive { value, .. } => {
-                    if let PrimitiveValue::String(name) = value {
-                        names.insert(instr.lvalue.identifier.id, name.clone());
-                    }
+                InstructionValue::Primitive {
+                    value: PrimitiveValue::String(name),
+                    ..
+                } => {
+                    names.insert(instr.lvalue.identifier.id, name.clone());
                 }
                 _ => {}
             }
@@ -562,12 +553,11 @@ fn collect_temporaries_sidemap(func: &HIRFunction, env: &mut RefEnv) {
                     object, property, ..
                 } => {
                     // Skip ref.current access — don't alias through it
-                    if is_use_ref_type(&object.identifier) {
-                        if let PropertyLiteral::String(s) = property {
-                            if s == "current" {
-                                continue;
-                            }
-                        }
+                    if is_use_ref_type(&object.identifier)
+                        && let PropertyLiteral::String(s) = property
+                        && s == "current"
+                    {
+                        continue;
                     }
                     let temp = env.lookup(object.identifier.id);
                     env.define(instr.lvalue.identifier.id, temp);
@@ -607,11 +597,12 @@ fn validate_impl(
     for (_block_id, block) in &func.body.blocks {
         for instr in &block.instructions {
             match &instr.value {
-                InstructionValue::JsxExpression { children, .. } => {
-                    if let Some(children) = children {
-                        for child in children {
-                            interpolated_as_jsx.insert(child.identifier.id);
-                        }
+                InstructionValue::JsxExpression {
+                    children: Some(children),
+                    ..
+                } => {
+                    for child in children {
+                        interpolated_as_jsx.insert(child.identifier.id);
                     }
                 }
                 InstructionValue::JsxFragment { children, .. } => {
@@ -950,24 +941,23 @@ fn validate_impl(
                         let target = env.get(object.identifier.id).cloned();
                         let mut safe_found = false;
 
-                        if matches!(&instr.value, InstructionValue::PropertyStore { .. }) {
-                            if let Some(RefAccessType::Ref { ref_id }) = &target {
-                                if let Some(pos) =
-                                    safe_blocks.iter().position(|(_, rid)| rid == ref_id)
-                                {
-                                    safe_blocks.remove(pos);
-                                    safe_found = true;
-                                }
-                                if debug_ref_access {
-                                    eprintln!(
-                                        "[REF_ACCESS] property-store block={} object={} ref_id={} safe_found={} safe_blocks={:?}",
-                                        block.id.0,
-                                        object.identifier.id.0,
-                                        ref_id,
-                                        safe_found,
-                                        safe_blocks
-                                    );
-                                }
+                        if matches!(&instr.value, InstructionValue::PropertyStore { .. })
+                            && let Some(RefAccessType::Ref { ref_id }) = &target
+                        {
+                            if let Some(pos) = safe_blocks.iter().position(|(_, rid)| rid == ref_id)
+                            {
+                                safe_blocks.remove(pos);
+                                safe_found = true;
+                            }
+                            if debug_ref_access {
+                                eprintln!(
+                                    "[REF_ACCESS] property-store block={} object={} ref_id={} safe_found={} safe_blocks={:?}",
+                                    block.id.0,
+                                    object.identifier.id.0,
+                                    ref_id,
+                                    safe_found,
+                                    safe_blocks
+                                );
                             }
                         }
 
@@ -1062,20 +1052,18 @@ fn validate_impl(
                         let nullish = matches!(&left_ty, Some(RefAccessType::Nullable))
                             || matches!(&right_ty, Some(RefAccessType::Nullable));
 
-                        if ref_id.is_some() && nullish {
+                        if let Some(ref_id) = ref_id
+                            && nullish
+                        {
                             if debug_ref_access {
                                 eprintln!(
                                     "[REF_ACCESS] guard-from-binary block={} lvalue={} ref_id={}",
-                                    block.id.0,
-                                    instr.lvalue.identifier.id.0,
-                                    ref_id.unwrap()
+                                    block.id.0, instr.lvalue.identifier.id.0, ref_id
                                 );
                             }
                             env.set(
                                 instr.lvalue.identifier.id,
-                                RefAccessType::Guard {
-                                    ref_id: ref_id.unwrap(),
-                                },
+                                RefAccessType::Guard { ref_id },
                                 id_gen,
                             );
                         } else {
@@ -1100,46 +1088,46 @@ fn validate_impl(
                 });
 
                 // Ensure useRef-typed lvalues are tracked as Ref
-                if is_use_ref_type(&instr.lvalue.identifier) {
-                    if !matches!(
+                if is_use_ref_type(&instr.lvalue.identifier)
+                    && !matches!(
                         env.get(instr.lvalue.identifier.id),
                         Some(RefAccessType::Ref { .. })
-                    ) {
-                        let cur = env
-                            .get(instr.lvalue.identifier.id)
-                            .cloned()
-                            .unwrap_or(RefAccessType::None);
-                        let merged = join_ref_access_types_pair(
-                            &cur,
-                            &RefAccessType::Ref {
-                                ref_id: id_gen.next(),
-                            },
-                            id_gen,
-                        );
-                        env.set(instr.lvalue.identifier.id, merged, id_gen);
-                    }
+                    )
+                {
+                    let cur = env
+                        .get(instr.lvalue.identifier.id)
+                        .cloned()
+                        .unwrap_or(RefAccessType::None);
+                    let merged = join_ref_access_types_pair(
+                        &cur,
+                        &RefAccessType::Ref {
+                            ref_id: id_gen.next(),
+                        },
+                        id_gen,
+                    );
+                    env.set(instr.lvalue.identifier.id, merged, id_gen);
                 }
 
                 // Ensure RefValue-typed lvalues are tracked as RefValue
-                if is_ref_value_type(&instr.lvalue.identifier) {
-                    if !matches!(
+                if is_ref_value_type(&instr.lvalue.identifier)
+                    && !matches!(
                         env.get(instr.lvalue.identifier.id),
                         Some(RefAccessType::RefValue { .. })
-                    ) {
-                        let cur = env
-                            .get(instr.lvalue.identifier.id)
-                            .cloned()
-                            .unwrap_or(RefAccessType::None);
-                        let merged = join_ref_access_types_pair(
-                            &cur,
-                            &RefAccessType::RefValue {
-                                loc: Some(instr.loc.clone()),
-                                ref_id: None,
-                            },
-                            id_gen,
-                        );
-                        env.set(instr.lvalue.identifier.id, merged, id_gen);
-                    }
+                    )
+                {
+                    let cur = env
+                        .get(instr.lvalue.identifier.id)
+                        .cloned()
+                        .unwrap_or(RefAccessType::None);
+                    let merged = join_ref_access_types_pair(
+                        &cur,
+                        &RefAccessType::RefValue {
+                            loc: Some(instr.loc.clone()),
+                            ref_id: None,
+                        },
+                        id_gen,
+                    );
+                    env.set(instr.lvalue.identifier.id, merged, id_gen);
                 }
             }
 
@@ -1148,17 +1136,15 @@ fn validate_impl(
             if let Terminal::If {
                 test, fallthrough, ..
             } = &block.terminal
+                && let Some(RefAccessType::Guard { ref_id }) = env.get(test.identifier.id)
+                && !safe_blocks.iter().any(|(_, rid)| rid == ref_id)
             {
-                if let Some(RefAccessType::Guard { ref_id }) = env.get(test.identifier.id) {
-                    if !safe_blocks.iter().any(|(_, rid)| rid == ref_id) {
-                        safe_blocks.push((*fallthrough, *ref_id));
-                        if debug_ref_access {
-                            eprintln!(
-                                "[REF_ACCESS] add-safe-block from={} fallthrough={} ref_id={}",
-                                block.id.0, fallthrough.0, ref_id
-                            );
-                        }
-                    }
+                safe_blocks.push((*fallthrough, *ref_id));
+                if debug_ref_access {
+                    eprintln!(
+                        "[REF_ACCESS] add-safe-block from={} fallthrough={} ref_id={}",
+                        block.id.0, fallthrough.0, ref_id
+                    );
                 }
             }
 

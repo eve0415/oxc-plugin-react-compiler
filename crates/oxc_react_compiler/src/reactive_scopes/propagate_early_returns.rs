@@ -592,7 +592,6 @@ fn traverse_terminal(terminal: &mut ReactiveTerminal, state: &mut State, ids: &m
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn make_place(id: u32) -> Place {
         Place {
@@ -865,12 +864,11 @@ mod tests {
             // The inner scope should NOT have earlyReturnValue
             // (it bubbles up to the outermost)
             // The inner scope is now inside the label block (at index 5)
-            if let ReactiveStatement::Terminal(term) = &outer.instructions[5] {
-                if let ReactiveTerminal::Label { block, .. } = &term.terminal {
-                    if let ReactiveStatement::Scope(inner) = &block[0] {
-                        assert!(inner.scope.early_return_value.is_none());
-                    }
-                }
+            if let ReactiveStatement::Terminal(term) = &outer.instructions[5]
+                && let ReactiveTerminal::Label { block, .. } = &term.terminal
+                && let ReactiveStatement::Scope(inner) = &block[0]
+            {
+                assert!(inner.scope.early_return_value.is_none());
             }
         } else {
             panic!("Expected Scope statement");
@@ -917,38 +915,28 @@ mod tests {
             let early = scope.scope.early_return_value.as_ref().unwrap();
 
             // Inside the label block, find the if terminal
-            if let ReactiveStatement::Terminal(term) = &scope.instructions[5] {
-                if let ReactiveTerminal::Label { block, .. } = &term.terminal {
-                    if let ReactiveStatement::Terminal(if_stmt) = &block[0] {
-                        if let ReactiveTerminal::If {
-                            consequent,
-                            alternate,
-                            ..
-                        } = &if_stmt.terminal
-                        {
-                            // Both branches should use breaks to the same label
-                            if let ReactiveStatement::Terminal(ReactiveTerminalStatement {
-                                terminal: ReactiveTerminal::Break { target: t1, .. },
-                                ..
-                            }) = &consequent[1]
-                            {
-                                if let Some(alt) = alternate {
-                                    if let ReactiveStatement::Terminal(
-                                        ReactiveTerminalStatement {
-                                            terminal: ReactiveTerminal::Break { target: t2, .. },
-                                            ..
-                                        },
-                                    ) = &alt[1]
-                                    {
-                                        assert_eq!(*t1, early.label);
-                                        assert_eq!(*t2, early.label);
-                                        assert_eq!(*t1, *t2);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            if let ReactiveStatement::Terminal(term) = &scope.instructions[5]
+                && let ReactiveTerminal::Label { block, .. } = &term.terminal
+                && let ReactiveStatement::Terminal(if_stmt) = &block[0]
+                && let ReactiveTerminal::If {
+                    consequent,
+                    alternate,
+                    ..
+                } = &if_stmt.terminal
+                // Both branches should use breaks to the same label
+                && let ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                    terminal: ReactiveTerminal::Break { target: t1, .. },
+                    ..
+                }) = &consequent[1]
+                && let Some(alt) = alternate
+                && let ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                    terminal: ReactiveTerminal::Break { target: t2, .. },
+                    ..
+                }) = &alt[1]
+            {
+                assert_eq!(*t1, early.label);
+                assert_eq!(*t2, early.label);
+                assert_eq!(*t1, *t2);
             }
         } else {
             panic!("Expected Scope statement");

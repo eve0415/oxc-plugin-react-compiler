@@ -602,13 +602,13 @@ fn collect_outer_variable_names(func: &HIRFunction) -> HashMap<String, Identifie
         if let Some(ref name) = ctx_place.identifier.name {
             let key = name.value().to_string();
             if vars.contains_key(&key) {
-                if std::env::var("DEBUG_CONTEXT_CAPTURE").is_ok() {
-                    if let Some(existing) = vars.get(&key) {
-                        eprintln!(
-                            "[CONTEXT_CAPTURE] keep-local-over-context name={} local_decl={} context_decl={}",
-                            key, existing.declaration_id.0, ctx_place.identifier.declaration_id.0
-                        );
-                    }
+                if std::env::var("DEBUG_CONTEXT_CAPTURE").is_ok()
+                    && let Some(existing) = vars.get(&key)
+                {
+                    eprintln!(
+                        "[CONTEXT_CAPTURE] keep-local-over-context name={} local_decl={} context_decl={}",
+                        key, existing.declaration_id.0, ctx_place.identifier.declaration_id.0
+                    );
                 }
                 continue;
             }
@@ -621,7 +621,7 @@ fn collect_outer_variable_names(func: &HIRFunction) -> HashMap<String, Identifie
 
 fn source_loc_position(loc: &SourceLocation) -> (u32, u32) {
     match loc {
-        SourceLocation::Source(range) => (range.start.line as u32, range.start.column as u32),
+        SourceLocation::Source(range) => (range.start.line, range.start.column),
         SourceLocation::Generated => (0, 0),
     }
 }
@@ -1051,37 +1051,37 @@ fn populate_context_variables(
                     // mutations (e.g. `.current`) are classified like upstream.
                     instr.lvalue.identifier.type_ = outer_ident.type_.clone();
                 }
-            } else if should_convert_store {
-                if let InstructionValue::StoreGlobal { name, value, loc } = std::mem::replace(
+            } else if should_convert_store
+                && let InstructionValue::StoreGlobal { name, value, loc } = std::mem::replace(
                     &mut instr.value,
                     InstructionValue::Primitive {
                         value: PrimitiveValue::Undefined,
                         loc: SourceLocation::Generated,
                     },
-                ) {
-                    let outer_ident = &captured_names[&name];
-                    instr.value = InstructionValue::StoreContext {
-                        lvalue: LValue {
-                            place: Place {
-                                identifier: Identifier {
-                                    id: outer_ident.id,
-                                    declaration_id: outer_ident.declaration_id,
-                                    name: Some(IdentifierName::Named(name)),
-                                    mutable_range: outer_ident.mutable_range.clone(),
-                                    scope: None,
-                                    type_: outer_ident.type_.clone(),
-                                    loc: outer_ident.loc.clone(),
-                                },
-                                effect: Effect::Unknown,
-                                reactive: false,
-                                loc: loc.clone(),
+                )
+            {
+                let outer_ident = &captured_names[&name];
+                instr.value = InstructionValue::StoreContext {
+                    lvalue: LValue {
+                        place: Place {
+                            identifier: Identifier {
+                                id: outer_ident.id,
+                                declaration_id: outer_ident.declaration_id,
+                                name: Some(IdentifierName::Named(name)),
+                                mutable_range: outer_ident.mutable_range.clone(),
+                                scope: None,
+                                type_: outer_ident.type_.clone(),
+                                loc: outer_ident.loc.clone(),
                             },
-                            kind: InstructionKind::Reassign,
+                            effect: Effect::Unknown,
+                            reactive: false,
+                            loc: loc.clone(),
                         },
-                        value,
-                        loc,
-                    };
-                }
+                        kind: InstructionKind::Reassign,
+                    },
+                    value,
+                    loc,
+                };
             }
         }
     }

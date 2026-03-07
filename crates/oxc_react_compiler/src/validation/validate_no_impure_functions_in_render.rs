@@ -44,7 +44,6 @@ pub fn validate_no_impure_functions_in_render(_func: &HIRFunction) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::types::*;
 
     fn make_test_place(id: u32) -> Place {
         Place {

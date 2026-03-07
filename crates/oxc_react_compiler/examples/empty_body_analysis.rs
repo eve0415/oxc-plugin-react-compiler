@@ -2,8 +2,6 @@ fn main() {
     let fixture_dir = "third_party/react/compiler/packages/babel-plugin-react-compiler/src/__tests__/fixtures/compiler";
     let options = oxc_react_compiler::options::PluginOptions::default();
     let mut count = 0;
-    let mut would_match = 0;
-
     for entry in std::fs::read_dir(fixture_dir).unwrap() {
         let entry = entry.unwrap();
         let path = entry.path();

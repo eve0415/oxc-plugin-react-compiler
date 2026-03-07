@@ -401,9 +401,7 @@ fn traverse_optional_block(
                                 }
                                 _ => None,
                             });
-                        let Some(property_name) = property_name else {
-                            return None;
-                        };
+                        let property_name = property_name?;
                         path.push(DependencyPathEntry {
                             property: property_name,
                             // See PropertyLoad handling above.
@@ -488,10 +486,7 @@ fn traverse_optional_block(
                     let inner_optional =
                         traverse_optional_block(maybe_test, context, Some(*tb_alternate));
 
-                    let inner_optional = match inner_optional {
-                        Some(id) => id,
-                        None => return None,
-                    };
+                    let inner_optional = inner_optional?;
                     if debug_trace {
                         eprintln!(
                             "[OPTIONAL_TRACE] nested optional_block={} got inner_optional={} tb_test={} tb_conseq={} tb_alt={}",
@@ -708,7 +703,6 @@ mod tests {
     fn test_empty_function_returns_empty_sidemap() {
         let func = make_empty_func();
         let result = collect_optional_chain_sidemap(&func);
-        let function_key = &func as *const HIRFunction as usize;
         assert!(result.temporaries_read_in_optional.is_empty());
         assert!(result.processed_instrs_in_optional.is_empty());
         assert!(result.hoistable_objects.is_empty());
@@ -911,6 +905,7 @@ mod tests {
         };
 
         let result = collect_optional_chain_sidemap(&func);
+        let function_key = &func as *const HIRFunction as usize;
 
         // Should have temporaries for the consequent_id ($2) and property_id ($1)
         assert!(

@@ -154,7 +154,7 @@ pub fn infer_mutable_ranges(func: &mut HIRFunction) {
     let mut frozen_ids: std::collections::HashSet<IdentifierId> = std::collections::HashSet::new();
 
     // Pass 1: Collect creation points and mutation points
-    for (bid, block) in &func.body.blocks {
+    for (_bid, block) in &func.body.blocks {
         let phi_id = block
             .instructions
             .first()
@@ -440,11 +440,13 @@ fn build_name_lookup(func: &HIRFunction) -> HashMap<IdentifierId, String> {
                         load_global_name_for_hook_detection(binding),
                     );
                 }
-                InstructionValue::Primitive { value, .. } => {
-                    if let PrimitiveValue::String(name) = value {
-                        id_to_name.insert(instr.lvalue.identifier.id, name.clone());
-                    }
+                InstructionValue::Primitive {
+                    value: PrimitiveValue::String(name),
+                    ..
+                } => {
+                    id_to_name.insert(instr.lvalue.identifier.id, name.clone());
                 }
+                InstructionValue::Primitive { .. } => {}
                 InstructionValue::PropertyLoad {
                     property: PropertyLiteral::String(name),
                     ..
@@ -557,13 +559,6 @@ fn is_hook_name_str(name: &str) -> bool {
 fn normalize_hook_name(name: &str) -> &str {
     let tail = name.rsplit_once('.').map_or(name, |(_, tail)| tail);
     tail.rsplit_once('$').map_or(tail, |(_, tail)| tail)
-}
-
-fn is_macro_like_name(name: &str) -> bool {
-    matches!(
-        name.rsplit_once('.').map_or(name, |(_, tail)| tail),
-        "fbt" | "fbs" | "idx"
-    )
 }
 
 fn load_global_name_for_hook_detection(binding: &NonLocalBinding) -> String {
@@ -1236,9 +1231,9 @@ fn find_disjoint_mutable_values(func: &HIRFunction) -> DisjointSet {
                             shape_id: Some(ref s)
                         } if s == "BuiltInJsx"
                     );
-                    let consequent_is_primitive =
+                    let _consequent_is_primitive =
                         matches!(consequent.identifier.type_, Type::Primitive);
-                    let alternate_is_primitive =
+                    let _alternate_is_primitive =
                         matches!(alternate.identifier.type_, Type::Primitive);
                     // Keep JSX ternary co-mutation for expression-position ternaries
                     // (e.g. JSX children/attrs), but avoid assignment-position
@@ -1778,7 +1773,8 @@ fn infer_reactive_scope_variables_impl(func: &mut HIRFunction, use_aliasing_rang
 
     if std::env::var("DEBUG_INFER_SCOPE_VARIABLES").is_ok() {
         let id_to_name = build_name_lookup(func);
-        let mut by_scope: BTreeMap<u32, Vec<(u32, u32, String, u32, u32)>> = BTreeMap::new();
+        type ScopeDebugEntry = (u32, u32, String, u32, u32);
+        let mut by_scope: BTreeMap<u32, Vec<ScopeDebugEntry>> = BTreeMap::new();
 
         for (id, scope) in &id_to_scope {
             let ident_range = id_ranges.get(id).cloned().unwrap_or(MutableRange {

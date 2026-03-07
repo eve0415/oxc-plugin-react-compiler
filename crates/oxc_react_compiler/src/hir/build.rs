@@ -56,31 +56,85 @@ pub struct LowerResult {
     pub func: hir::HIRFunction,
 }
 
+pub struct LoweringContext<'a> {
+    pub semantic: &'a Semantic<'a>,
+    pub source: &'a str,
+    pub env: crate::environment::Environment,
+    pub binding_name_counters: Option<Rc<RefCell<HashMap<String, u32>>>>,
+}
+
+impl<'a> LoweringContext<'a> {
+    pub fn new(
+        semantic: &'a Semantic<'a>,
+        source: &'a str,
+        env: crate::environment::Environment,
+    ) -> Self {
+        Self {
+            semantic,
+            source,
+            env,
+            binding_name_counters: None,
+        }
+    }
+
+    pub fn with_binding_name_counters(
+        mut self,
+        binding_name_counters: Rc<RefCell<HashMap<String, u32>>>,
+    ) -> Self {
+        self.binding_name_counters = Some(binding_name_counters);
+        self
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct LowerFunctionOptions<'a> {
+    pub func_id: Option<&'a str>,
+    pub func_span: Span,
+    pub is_generator: bool,
+    pub is_async: bool,
+    pub is_expression_arrow: bool,
+}
+
+impl<'a> LowerFunctionOptions<'a> {
+    pub fn function(
+        func_id: Option<&'a str>,
+        func_span: Span,
+        is_generator: bool,
+        is_async: bool,
+    ) -> Self {
+        Self {
+            func_id,
+            func_span,
+            is_generator,
+            is_async,
+            is_expression_arrow: false,
+        }
+    }
+
+    pub fn arrow(
+        func_id: Option<&'a str>,
+        func_span: Span,
+        is_async: bool,
+        is_expression_arrow: bool,
+    ) -> Self {
+        Self {
+            func_id,
+            func_span,
+            is_generator: false,
+            is_async,
+            is_expression_arrow,
+        }
+    }
+}
+
 /// Lower a function body and params to HIR.
 pub fn lower_function<'a>(
     func_body: &js::FunctionBody<'a>,
     func_params: &js::FormalParameters<'a>,
-    func_id: Option<&str>,
-    func_span: Span,
-    is_generator: bool,
-    is_async: bool,
-    semantic: &Semantic<'a>,
-    source: &str,
-    env: crate::environment::Environment,
+    cx: LoweringContext<'a>,
+    options: LowerFunctionOptions<'a>,
 ) -> Result<LowerResult, String> {
-    lower_function_inner(
-        func_body,
-        func_params,
-        func_id,
-        func_span,
-        is_generator,
-        is_async,
-        semantic,
-        source,
-        false,
-        env,
-        None,
-    )
+    lower_function_inner(func_body, func_params, cx, options)
 }
 
 /// Lower an arrow function expression body.
@@ -89,42 +143,31 @@ pub fn lower_function<'a>(
 pub fn lower_arrow_expression<'a>(
     func_body: &js::FunctionBody<'a>,
     func_params: &js::FormalParameters<'a>,
-    func_id: Option<&str>,
-    func_span: Span,
-    is_async: bool,
-    semantic: &Semantic<'a>,
-    source: &str,
-    is_expression: bool,
-    env: crate::environment::Environment,
+    cx: LoweringContext<'a>,
+    options: LowerFunctionOptions<'a>,
 ) -> Result<LowerResult, String> {
-    lower_function_inner(
-        func_body,
-        func_params,
-        func_id,
-        func_span,
-        false,
-        is_async,
-        semantic,
-        source,
-        is_expression,
-        env,
-        None,
-    )
+    lower_function_inner(func_body, func_params, cx, options)
 }
 
 fn lower_function_inner<'a>(
     func_body: &js::FunctionBody<'a>,
     func_params: &js::FormalParameters<'a>,
-    func_id: Option<&str>,
-    func_span: Span,
-    is_generator: bool,
-    is_async: bool,
-    semantic: &Semantic<'a>,
-    source: &str,
-    is_expression_arrow: bool,
-    env: crate::environment::Environment,
-    binding_name_counters: Option<Rc<RefCell<HashMap<String, u32>>>>,
+    cx: LoweringContext<'a>,
+    options: LowerFunctionOptions<'a>,
 ) -> Result<LowerResult, String> {
+    let LoweringContext {
+        semantic,
+        source,
+        env,
+        binding_name_counters,
+    } = cx;
+    let LowerFunctionOptions {
+        func_id,
+        func_span,
+        is_generator,
+        is_async,
+        is_expression_arrow,
+    } = options;
     let _line_map_guard = install_source_line_starts(source);
     let mut builder = if let Some(counters) = binding_name_counters {
         HIRBuilder::new_with_binding_name_counters(env, counters)
@@ -1834,15 +1877,14 @@ fn lower_nested_func<'a>(
         match lower_function_inner(
             body,
             &func.params,
-            func.id.as_ref().map(|id| id.name.as_str()),
-            func.span,
-            func.generator,
-            func.r#async,
-            semantic,
-            source,
-            false,
-            env,
-            Some(builder.binding_name_counters()),
+            LoweringContext::new(semantic, source, env)
+                .with_binding_name_counters(builder.binding_name_counters()),
+            LowerFunctionOptions::function(
+                func.id.as_ref().map(|id| id.name.as_str()),
+                func.span,
+                func.generator,
+                func.r#async,
+            ),
         ) {
             Ok(result) => hir::LoweredFunction { func: result.func },
             Err(e) => {
@@ -5366,15 +5408,9 @@ fn lower_arrow<'a>(
     match lower_function_inner(
         &arrow.body,
         &arrow.params,
-        None,
-        arrow.span,
-        false,
-        arrow.r#async,
-        semantic,
-        source,
-        arrow.expression,
-        env,
-        Some(builder.binding_name_counters()),
+        LoweringContext::new(semantic, source, env)
+            .with_binding_name_counters(builder.binding_name_counters()),
+        LowerFunctionOptions::arrow(None, arrow.span, arrow.r#async, arrow.expression),
     ) {
         Ok(result) => hir::LoweredFunction { func: result.func },
         Err(e) => {

@@ -134,6 +134,16 @@ struct PendingRender {
     identifier_id: IdentifierId,
 }
 
+struct MutationRequest<'a> {
+    index: usize,
+    start: IdentifierId,
+    end: Option<InstructionId>,
+    transitive: bool,
+    start_kind: MutationKind,
+    loc: &'a SourceLocation,
+    reason: Option<MutationReason>,
+}
+
 // ---------------------------------------------------------------------------
 // AliasingState
 // ---------------------------------------------------------------------------
@@ -251,15 +261,18 @@ impl AliasingState {
     /// records reachability via `last_mutated` but does not extend ranges.
     fn mutate(
         &mut self,
-        index: usize,
-        start: IdentifierId,
-        end: Option<InstructionId>,
-        transitive: bool,
-        start_kind: MutationKind,
-        loc: &SourceLocation,
-        reason: Option<MutationReason>,
+        request: MutationRequest<'_>,
         errors: &mut Vec<crate::error::CompilerDiagnostic>,
     ) {
+        let MutationRequest {
+            index,
+            start,
+            end,
+            transitive,
+            start_kind,
+            loc,
+            reason,
+        } = request;
         let debug_mutate = std::env::var("DEBUG_RANGES_MUTATE_TRACE").is_ok();
         if debug_mutate {
             eprintln!(
@@ -362,10 +375,11 @@ impl AliasingState {
                 }
                 node.last_mutated = node.last_mutated.max(index);
                 // Propagate inner function errors before this node gets marked as mutated
-                if let NodeValue::Function { ref effects } = node.value {
-                    if node.transitive.is_none() && node.local.is_none() {
-                        append_function_errors(errors, effects);
-                    }
+                if let NodeValue::Function { ref effects } = node.value
+                    && node.transitive.is_none()
+                    && node.local.is_none()
+                {
+                    append_function_errors(errors, effects);
                 }
                 if let Some(end_id) = end {
                     let previous_end = node.mutable_range_end;
@@ -999,13 +1013,15 @@ pub fn infer_mutation_aliasing_ranges(
         // PendingMutation, use Generated. The upstream uses `mutation.place.loc`.
         let loc = SourceLocation::Generated;
         state.mutate(
-            mutation.index,
-            mutation.identifier_id,
-            Some(end),
-            mutation.transitive,
-            mutation.kind,
-            &loc,
-            mutation.reason,
+            MutationRequest {
+                index: mutation.index,
+                start: mutation.identifier_id,
+                end: Some(end),
+                transitive: mutation.transitive,
+                start_kind: mutation.kind,
+                loc: &loc,
+                reason: mutation.reason,
+            },
             &mut error_diagnostics,
         );
     }
@@ -1093,13 +1109,15 @@ pub fn infer_mutation_aliasing_ranges(
         let mutation_index = index;
         index += 1;
         state.mutate(
-            mutation_index,
-            into.identifier.id,
-            None, // simulated mutation — no range extension
-            true, // transitive
-            MutationKind::Conditional,
-            &into.loc,
-            None,
+            MutationRequest {
+                index: mutation_index,
+                start: into.identifier.id,
+                end: None, // simulated mutation — no range extension
+                transitive: true,
+                start_kind: MutationKind::Conditional,
+                loc: &into.loc,
+                reason: None,
+            },
             &mut ignored_errors,
         );
         for from in &tracked {

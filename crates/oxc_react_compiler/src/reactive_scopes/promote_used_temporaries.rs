@@ -135,25 +135,6 @@ fn promote_identifier(identifier: &mut Identifier, state: &mut PromoteState) {
 // Helpers for iterating instruction value lvalues and pattern operands
 // ---------------------------------------------------------------------------
 
-/// Yields the lvalue places inside an instruction value (StoreLocal, StoreContext,
-/// DeclareLocal, DeclareContext, Destructure, PrefixUpdate, PostfixUpdate).
-fn each_instruction_value_lvalue(value: &InstructionValue) -> Vec<&Place> {
-    match value {
-        InstructionValue::DeclareContext { lvalue, .. }
-        | InstructionValue::StoreContext { lvalue, .. }
-        | InstructionValue::DeclareLocal { lvalue, .. }
-        | InstructionValue::StoreLocal { lvalue, .. } => {
-            vec![&lvalue.place]
-        }
-        InstructionValue::Destructure { lvalue, .. } => each_pattern_operand(&lvalue.pattern),
-        InstructionValue::PostfixUpdate { lvalue, .. }
-        | InstructionValue::PrefixUpdate { lvalue, .. } => {
-            vec![lvalue]
-        }
-        _ => vec![],
-    }
-}
-
 /// Yields all places from a destructuring pattern.
 fn each_pattern_operand(pattern: &Pattern) -> Vec<&Place> {
     let mut result = Vec::new();
@@ -1708,7 +1689,7 @@ mod tests {
     #[test]
     fn test_promote_scope_declarations() {
         // A scope with an unnamed declaration should get promoted.
-        let mut declarations = HashMap::new();
+        let mut declarations = indexmap::IndexMap::new();
         declarations.insert(
             IdentifierId(2),
             ScopeDeclaration {
@@ -1958,19 +1939,19 @@ mod tests {
         promote_used_temporaries(&mut func);
 
         // The LoadLocal's place should also be promoted.
-        if let ReactiveStatement::Instruction(instr) = &func.body[1] {
-            if let InstructionValue::LoadLocal { place, .. } = &instr.value {
-                assert!(
-                    place.identifier.name.is_some(),
-                    "LoadLocal place should be promoted"
-                );
-                let name = place.identifier.name.as_ref().unwrap();
-                assert!(
-                    matches!(name, IdentifierName::Promoted(s) if s == "#t1"),
-                    "Expected #t1, got {:?}",
-                    name
-                );
-            }
+        if let ReactiveStatement::Instruction(instr) = &func.body[1]
+            && let InstructionValue::LoadLocal { place, .. } = &instr.value
+        {
+            assert!(
+                place.identifier.name.is_some(),
+                "LoadLocal place should be promoted"
+            );
+            let name = place.identifier.name.as_ref().unwrap();
+            assert!(
+                matches!(name, IdentifierName::Promoted(s) if s == "#t1"),
+                "Expected #t1, got {:?}",
+                name
+            );
         }
     }
 
@@ -1979,7 +1960,7 @@ mod tests {
         // A pruned scope declaration used in a DIFFERENT scope should be promoted.
         // The detection compares active scope stacks, so usage must be in a
         // different parent scope than the pruned scope's parent.
-        let mut declarations = HashMap::new();
+        let mut declarations = indexmap::IndexMap::new();
         declarations.insert(
             IdentifierId(1),
             ScopeDeclaration {
@@ -2059,14 +2040,14 @@ mod tests {
         promote_used_temporaries(&mut func);
 
         // Check the pruned scope's declaration was promoted.
-        if let ReactiveStatement::Scope(outer) = &func.body[0] {
-            if let ReactiveStatement::PrunedScope(pruned) = &outer.instructions[0] {
-                let decl = pruned.scope.declarations.get(&IdentifierId(1)).unwrap();
-                assert!(
-                    decl.identifier.name.is_some(),
-                    "Pruned scope declaration used outside should be promoted"
-                );
-            }
+        if let ReactiveStatement::Scope(outer) = &func.body[0]
+            && let ReactiveStatement::PrunedScope(pruned) = &outer.instructions[0]
+        {
+            let decl = pruned.scope.declarations.get(&IdentifierId(1)).unwrap();
+            assert!(
+                decl.identifier.name.is_some(),
+                "Pruned scope declaration used outside should be promoted"
+            );
         }
     }
 }

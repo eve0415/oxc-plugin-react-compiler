@@ -133,7 +133,7 @@ fn main() {
 
     eprintln!("=== Failure Analysis ===");
     eprintln!("Total failing: {}", total_fail);
-    eprintln!("");
+    eprintln!();
     eprintln!("Categories:");
     eprintln!("  no_transform (expected _c but we skip): {}", no_transform);
     eprintln!(
@@ -152,7 +152,7 @@ fn main() {
         eprintln!("    off by {:+}: {} fixtures", diff, count);
     }
     eprintln!("  body_diff (same cache size): {}", body_diff);
-    eprintln!("");
+    eprintln!();
     eprintln!("Body diff patterns:");
     eprintln!("  wrong property (.unknown): {}", has_wrong_property_access);
     eprintln!("  missing ternary: {}", has_missing_ternary);

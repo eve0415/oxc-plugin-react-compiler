@@ -23,21 +23,17 @@ use crate::hir::types::*;
 type PropertyPathNodeId = usize;
 
 /// A node in the property path trie. Stored in a `Vec` arena and referenced by
-/// index (`PropertyPathNodeId`). Root nodes have `parent: None` and `root: Some(id)`.
+/// index (`PropertyPathNodeId`).
 #[derive(Debug, Clone)]
 struct PropertyPathNode {
     /// Non-optional child properties: property string -> node index.
     properties: HashMap<String, PropertyPathNodeId>,
     /// Optional child properties: property string -> node index.
     optional_properties: HashMap<String, PropertyPathNodeId>,
-    /// Parent node index, `None` for root nodes.
-    parent: Option<PropertyPathNodeId>,
     /// The full dependency path from root to this node.
     full_path: ReactiveScopeDependency,
     /// Whether any segment on the path from root to this node is optional.
     has_optional: bool,
-    /// For root nodes only: the `IdentifierId` of the root identifier.
-    root: Option<IdentifierId>,
 }
 
 // ---------------------------------------------------------------------------
@@ -72,13 +68,11 @@ impl PropertyPathRegistry {
         self.nodes.push(PropertyPathNode {
             properties: HashMap::new(),
             optional_properties: HashMap::new(),
-            parent: None,
             full_path: ReactiveScopeDependency {
                 identifier: identifier.clone(),
                 path: Vec::new(),
             },
             has_optional: false,
-            root: Some(identifier.id),
         });
         self.roots.insert(identifier.id, node_id);
         node_id
@@ -118,13 +112,11 @@ impl PropertyPathRegistry {
         self.nodes.push(PropertyPathNode {
             properties: HashMap::new(),
             optional_properties: HashMap::new(),
-            parent: Some(parent_id),
             full_path: ReactiveScopeDependency {
                 identifier: parent_full_path.identifier,
                 path: new_path,
             },
             has_optional: parent_has_optional || entry.optional,
-            root: None,
         });
 
         if entry.optional {
@@ -176,9 +168,6 @@ struct CollectContext<'a> {
     nested_fn_immutable_context: Option<HashSet<IdentifierId>>,
     /// Functions which are assumed to be eventually called.
     assumed_invoked_fns: HashSet<LoweredFunctionPtr>,
-    /// Config flags from environment (passed separately since HIRFunction
-    /// does not carry an `env` field in the Rust port).
-    enable_treat_function_deps_as_conditional: bool,
     enable_preserve_existing_memoization_guarantees: bool,
 }
 
@@ -267,12 +256,9 @@ fn collect_conditionally_evaluated_identifier_ids(func: &HIRFunction) -> HashSet
     let mut conditional_ids = HashSet::new();
     for (_, block) in &func.body.blocks {
         for instr in &block.instructions {
-            match &instr.value {
-                InstructionValue::LogicalExpression { right, .. } => {
-                    let mut seen = HashSet::new();
-                    collect_from_place(right, &definitions, &mut conditional_ids, &mut seen);
-                }
-                _ => {}
+            if let InstructionValue::LogicalExpression { right, .. } = &instr.value {
+                let mut seen = HashSet::new();
+                collect_from_place(right, &definitions, &mut conditional_ids, &mut seen);
             }
         }
     }
@@ -348,11 +334,12 @@ fn collect_non_nulls_in_blocks(
     // Known non-null objects such as functional component props can be safely
     // read from any block.
     let mut known_non_null_identifiers: HashSet<PropertyPathNodeId> = HashSet::new();
-    if func.fn_type == ReactFunctionType::Component && !func.params.is_empty() {
-        if let Argument::Place(ref place) = func.params[0] {
-            let node_id = ctx.registry.get_or_create_identifier(&place.identifier);
-            known_non_null_identifiers.insert(node_id);
-        }
+    if func.fn_type == ReactFunctionType::Component
+        && !func.params.is_empty()
+        && let Argument::Place(ref place) = func.params[0]
+    {
+        let node_id = ctx.registry.get_or_create_identifier(&place.identifier);
+        known_non_null_identifiers.insert(node_id);
     }
 
     let mut nodes: HashMap<BlockId, BlockInfo> = HashMap::new();
@@ -413,28 +400,27 @@ fn collect_non_nulls_in_blocks(
             }
 
             // Handle StartMemoize with deps (when enablePreserveExistingMemoizationGuarantees).
-            if ctx.enable_preserve_existing_memoization_guarantees {
-                if let InstructionValue::StartMemoize {
+            if ctx.enable_preserve_existing_memoization_guarantees
+                && let InstructionValue::StartMemoize {
                     deps: Some(deps), ..
                 } = &instr.value
-                {
-                    for dep in deps {
-                        if let ManualMemoRoot::NamedLocal(ref place) = dep.root {
-                            if !is_immutable_at_instr(&place.identifier, instr.id, ctx) {
-                                continue;
+            {
+                for dep in deps {
+                    if let ManualMemoRoot::NamedLocal(ref place) = dep.root {
+                        if !is_immutable_at_instr(&place.identifier, instr.id, ctx) {
+                            continue;
+                        }
+                        for i in 0..dep.path.len() {
+                            let path_entry = &dep.path[i];
+                            if path_entry.optional {
+                                break;
                             }
-                            for i in 0..dep.path.len() {
-                                let path_entry = &dep.path[i];
-                                if path_entry.optional {
-                                    break;
-                                }
-                                let sub_dep = ReactiveScopeDependency {
-                                    identifier: place.identifier.clone(),
-                                    path: dep.path[..i].to_vec(),
-                                };
-                                let dep_node = ctx.registry.get_or_create_property(&sub_dep);
-                                assumed_non_null_objects.insert(dep_node);
-                            }
+                            let sub_dep = ReactiveScopeDependency {
+                                identifier: place.identifier.clone(),
+                                path: dep.path[..i].to_vec(),
+                            };
+                            let dep_node = ctx.registry.get_or_create_property(&sub_dep);
+                            assumed_non_null_objects.insert(dep_node);
                         }
                     }
                 }
@@ -801,10 +787,10 @@ fn get_assumed_invoked_functions_impl(
                     } else if maybe_hook {
                         // Assume arguments to all hooks are safe to invoke.
                         for arg in args {
-                            if let Argument::Place(place) = arg {
-                                if let Some(entry) = temporaries.get(&place.identifier.id) {
-                                    hoistable_functions.insert(entry.0);
-                                }
+                            if let Argument::Place(place) = arg
+                                && let Some(entry) = temporaries.get(&place.identifier.id)
+                            {
+                                hoistable_functions.insert(entry.0);
                             }
                         }
                     }
@@ -846,10 +832,10 @@ fn get_assumed_invoked_functions_impl(
         }
 
         // Check return terminals for directly returned functions.
-        if let Terminal::Return { ref value, .. } = block.terminal {
-            if let Some(entry) = temporaries.get(&value.identifier.id) {
-                hoistable_functions.insert(entry.0);
-            }
+        if let Terminal::Return { ref value, .. } = block.terminal
+            && let Some(entry) = temporaries.get(&value.identifier.id)
+        {
+            hoistable_functions.insert(entry.0);
         }
     }
 
@@ -951,7 +937,6 @@ pub fn collect_hoistable_property_loads(
         registry: PropertyPathRegistry::new(),
         nested_fn_immutable_context: None,
         assumed_invoked_fns,
-        enable_treat_function_deps_as_conditional: false,
         enable_preserve_existing_memoization_guarantees: false,
     };
 
@@ -988,7 +973,6 @@ pub fn collect_hoistable_property_loads_with_config(
         registry: PropertyPathRegistry::new(),
         nested_fn_immutable_context: None,
         assumed_invoked_fns,
-        enable_treat_function_deps_as_conditional,
         enable_preserve_existing_memoization_guarantees,
     };
 
@@ -1026,7 +1010,6 @@ pub fn collect_hoistable_property_loads_in_inner_fn(
         registry: PropertyPathRegistry::new(),
         nested_fn_immutable_context: None,
         assumed_invoked_fns,
-        enable_treat_function_deps_as_conditional,
         enable_preserve_existing_memoization_guarantees: false,
     };
 
@@ -1064,10 +1047,9 @@ pub fn key_by_scope_id(
             block: scope_block,
             ..
         } = &block.terminal
+            && let Some(info) = source.get(scope_block)
         {
-            if let Some(info) = source.get(scope_block) {
-                keyed_by_scope_id.insert(scope.id, info.clone());
-            }
+            keyed_by_scope_id.insert(scope.id, info.clone());
         }
     }
 
@@ -1114,7 +1096,6 @@ pub fn collect_hoistable_property_loads_for_scopes(
         registry: PropertyPathRegistry::new(),
         nested_fn_immutable_context: None,
         assumed_invoked_fns,
-        enable_treat_function_deps_as_conditional,
         enable_preserve_existing_memoization_guarantees,
     };
 
@@ -1188,15 +1169,14 @@ pub fn collect_hoistable_property_loads_for_scopes(
             block: scope_block,
             ..
         } = &block.terminal
+            && let Some(info) = raw_block_infos.get(scope_block)
         {
-            if let Some(info) = raw_block_infos.get(scope_block) {
-                let resolved: Vec<ReactiveScopeDependency> = info
-                    .assumed_non_null_objects
-                    .iter()
-                    .map(|&node_id| ctx.registry.nodes[node_id].full_path.clone())
-                    .collect();
-                result.insert(scope.id, resolved);
-            }
+            let resolved: Vec<ReactiveScopeDependency> = info
+                .assumed_non_null_objects
+                .iter()
+                .map(|&node_id| ctx.registry.nodes[node_id].full_path.clone())
+                .collect();
+            result.insert(scope.id, resolved);
         }
     }
     result
@@ -1254,7 +1234,7 @@ mod tests {
 
         let root = registry.get_or_create_identifier(&ident);
         assert_eq!(root, 0);
-        assert!(registry.nodes[root].root.is_some());
+        assert_eq!(registry.nodes[root].full_path.identifier.id, ident.id);
         assert_eq!(registry.nodes[root].full_path.path.len(), 0);
 
         // Create a.b path.

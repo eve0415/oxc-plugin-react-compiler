@@ -72,7 +72,6 @@ pub fn validate_no_jsx_in_try_statement(func: &HIRFunction) -> Result<(), Compil
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::types::*;
     use std::collections::HashSet;
 
     fn make_test_place(id: u32, name: Option<&str>) -> Place {

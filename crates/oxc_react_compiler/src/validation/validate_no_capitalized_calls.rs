@@ -223,7 +223,6 @@ fn get_default_global_names() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::types::*;
 
     fn make_test_place(id: u32, name: Option<&str>) -> Place {
         Place {

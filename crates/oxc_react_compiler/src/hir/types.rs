@@ -47,16 +47,11 @@ define_id!(TypeId);
 
 /// Represents a location in source code. `Generated` means the code was
 /// synthesized by the compiler and has no single source location.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
 pub enum SourceLocation {
     Source(SourceRange),
+    #[default]
     Generated,
-}
-
-impl Default for SourceLocation {
-    fn default() -> Self {
-        Self::Generated
-    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -75,7 +70,7 @@ pub struct SourcePosition {
 // Types (port of Types.ts)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum Type {
     Primitive,
     Function {
@@ -89,6 +84,7 @@ pub enum Type {
     TypeVar {
         id: TypeId,
     },
+    #[default]
     Poly,
     Phi {
         operands: Vec<Type>,
@@ -101,12 +97,6 @@ pub enum Type {
     ObjectMethod,
 }
 
-impl Default for Type {
-    fn default() -> Self {
-        Self::Poly
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum PropertyName {
     Literal(PropertyLiteral),
@@ -117,8 +107,9 @@ pub enum PropertyName {
 // Effect
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Effect {
+    #[default]
     Unknown,
     Freeze,
     Read,
@@ -127,12 +118,6 @@ pub enum Effect {
     ConditionallyMutate,
     Mutate,
     Store,
-}
-
-impl Default for Effect {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 // ---------------------------------------------------------------------------

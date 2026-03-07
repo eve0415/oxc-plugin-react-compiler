@@ -376,7 +376,7 @@ mod tests {
             id: ScopeId(id),
             range: MutableRange::default(),
             dependencies: vec![],
-            declarations: std::collections::HashMap::new(),
+            declarations: indexmap::IndexMap::new(),
             reassignments: vec![],
             merged_id: None,
             early_return_value: None,

@@ -97,7 +97,7 @@ fn main() {
     }
 
     let mut sorted: Vec<_> = patterns.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     for (cat, count) in sorted.iter().take(25) {
         let exs = &examples[cat];
         let show: Vec<_> = exs.iter().take(3).cloned().collect();

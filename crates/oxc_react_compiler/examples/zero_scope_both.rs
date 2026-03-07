@@ -61,7 +61,7 @@ fn main() {
         let cat = if actual.contains("_c(") != expected.contains("_c(") {
             "cache_diff".to_string()
         } else if a_lines.len() != e_lines.len() {
-            let diff = (a_lines.len() as i64 - e_lines.len() as i64);
+            let diff = a_lines.len() as i64 - e_lines.len() as i64;
             if diff.abs() <= 3 {
                 format!("lines_off_by_{}", diff)
             } else {
@@ -87,7 +87,7 @@ fn main() {
     }
 
     let mut sorted: Vec<_> = categories.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     for (cat, count) in &sorted {
         eprintln!("{:>4} {}", count, cat);
     }

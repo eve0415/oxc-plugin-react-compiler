@@ -144,16 +144,16 @@ fn find_temporaries_used_outside_declaring_scope(
             });
 
             // Handle lvalue: record declarations
-            if let Some(scope_id) = current_scope {
-                if !pruned_scopes.contains(&scope_id) {
-                    match &instr.value {
-                        InstructionValue::LoadLocal { .. }
-                        | InstructionValue::LoadContext { .. }
-                        | InstructionValue::PropertyLoad { .. } => {
-                            declarations.insert(instr.lvalue.identifier.declaration_id, scope_id);
-                        }
-                        _ => {}
+            if let Some(scope_id) = current_scope
+                && !pruned_scopes.contains(&scope_id)
+            {
+                match &instr.value {
+                    InstructionValue::LoadLocal { .. }
+                    | InstructionValue::LoadContext { .. }
+                    | InstructionValue::PropertyLoad { .. } => {
+                        declarations.insert(instr.lvalue.identifier.declaration_id, scope_id);
                     }
+                    _ => {}
                 }
             }
         }
@@ -453,32 +453,32 @@ fn collect_temporaries_impl(
                         .as_ref()
                         .is_some_and(|scope| effective_instr_id >= scope.range.end);
                     let track_inner_load_context = is_inner_fn && !inner_fn_has_try_catch;
-                    if track_inner_load_context || is_past_mutable_range {
-                        if !is_inner_fn
+                    if (track_inner_load_context || is_past_mutable_range)
+                        && (!is_inner_fn
                             || func
                                 .context
                                 .iter()
-                                .any(|ctx| ctx.identifier.id == place.identifier.id)
-                        {
-                            if std::env::var("DEBUG_TEMP_SIDEMAP").is_ok() {
-                                eprintln!(
-                                    "[TEMP_SIDEMAP] context lvalue id={} decl={} <- base id={} decl={} name={:?}",
-                                    instr.lvalue.identifier.id.0,
-                                    instr.lvalue.identifier.declaration_id.0,
-                                    place.identifier.id.0,
-                                    place.identifier.declaration_id.0,
-                                    place.identifier.name
-                                );
-                            }
-                            let resolved = temporaries
+                                .any(|ctx| ctx.identifier.id == place.identifier.id))
+                    {
+                        if std::env::var("DEBUG_TEMP_SIDEMAP").is_ok() {
+                            eprintln!(
+                                "[TEMP_SIDEMAP] context lvalue id={} decl={} <- base id={} decl={} name={:?}",
+                                instr.lvalue.identifier.id.0,
+                                instr.lvalue.identifier.declaration_id.0,
+                                place.identifier.id.0,
+                                place.identifier.declaration_id.0,
+                                place.identifier.name
+                            );
+                        }
+                        let resolved =
+                            temporaries
                                 .get(&place.identifier.id)
                                 .cloned()
                                 .unwrap_or(ResolvedDep {
                                     identifier: place.identifier.clone(),
                                     path: Vec::new(),
                                 });
-                            temporaries.insert(instr.lvalue.identifier.id, resolved);
-                        }
+                        temporaries.insert(instr.lvalue.identifier.id, resolved);
                     }
                 }
                 InstructionValue::StoreLocal { lvalue, value, .. }
@@ -677,8 +677,6 @@ struct DependencyCollectionContext {
 
     /// Temporaries sidemap.
     temporaries: HashMap<IdentifierId, ResolvedDep>,
-    /// Temporaries used outside declaring scope.
-    used_outside: HashSet<DeclarationId>,
     /// Instructions/terminals processed by collectOptionalChainSidemap — skip these.
     processed_instrs_in_optional: HashSet<ProcessedOptionalNode>,
     /// Active lowered-function identity stack for optional deferred-node lookups.
@@ -702,7 +700,6 @@ struct DependencyCollectionContext {
 impl DependencyCollectionContext {
     fn new(
         temporaries: HashMap<IdentifierId, ResolvedDep>,
-        used_outside: HashSet<DeclarationId>,
         processed_instrs_in_optional: HashSet<ProcessedOptionalNode>,
         enable_treat_ref_like_identifiers_as_refs: bool,
         component_props_param_decl: Option<DeclarationId>,
@@ -716,7 +713,6 @@ impl DependencyCollectionContext {
             scope_decls: HashMap::new(),
             scope_reassignments: HashMap::new(),
             temporaries,
-            used_outside,
             processed_instrs_in_optional,
             fn_key_stack: Vec::new(),
             in_inner_fn: false,
@@ -751,17 +747,15 @@ impl DependencyCollectionContext {
         // Propagate deps upward: child scope deps become parent scope deps
         // if they're valid in the parent context
         for dep in &scope_deps {
-            if self.check_valid_dependency(dep) {
-                if let Some(parent_deps) = self.dep_stack.last_mut() {
-                    parent_deps.push(dep.clone());
-                }
+            if self.check_valid_dependency(dep)
+                && let Some(parent_deps) = self.dep_stack.last_mut()
+            {
+                parent_deps.push(dep.clone());
             }
         }
 
-        if !pruned {
-            if let Some(scope) = &exiting_scope {
-                self.scope_deps.insert(scope.id, scope_deps);
-            }
+        if !pruned && let Some(scope) = &exiting_scope {
+            self.scope_deps.insert(scope.id, scope_deps);
         }
     }
 
@@ -1010,27 +1004,25 @@ impl DependencyCollectionContext {
             .declarations
             .get(&dep.identifier.declaration_id)
             .cloned();
-        if let Some(decl) = original_decl {
-            if !decl.scope_stack_snapshot.is_empty() {
-                // The innermost (most recently entered) scope at declaration time.
-                // This is `originalDeclaration.scope.value!` in upstream.
-                let innermost_scope = decl.scope_stack_snapshot.last().unwrap().clone();
+        if let Some(decl) = original_decl
+            && !decl.scope_stack_snapshot.is_empty()
+        {
+            // The innermost (most recently entered) scope at declaration time.
+            // This is `originalDeclaration.scope.value!` in upstream.
+            let innermost_scope = decl.scope_stack_snapshot.last().unwrap().clone();
 
-                // For each scope that was active when this value was declared,
-                // check if it's still active. If not, the value escapes that scope
-                // and should be registered as a scope declaration (output).
-                for scope in &decl.scope_stack_snapshot {
-                    let is_active = self.scope_stack.iter().any(|s| s.id == scope.id);
-                    if !is_active {
-                        let scope_decls = self.scope_decls.entry(scope.id).or_default();
-                        if let indexmap::map::Entry::Vacant(e) =
-                            scope_decls.entry(dep.identifier.id)
-                        {
-                            e.insert(ScopeDeclaration {
-                                identifier: dep.identifier.clone(),
-                                scope: innermost_scope.clone(),
-                            });
-                        }
+            // For each scope that was active when this value was declared,
+            // check if it's still active. If not, the value escapes that scope
+            // and should be registered as a scope declaration (output).
+            for scope in &decl.scope_stack_snapshot {
+                let is_active = self.scope_stack.iter().any(|s| s.id == scope.id);
+                if !is_active {
+                    let scope_decls = self.scope_decls.entry(scope.id).or_default();
+                    if let indexmap::map::Entry::Vacant(e) = scope_decls.entry(dep.identifier.id) {
+                        e.insert(ScopeDeclaration {
+                            identifier: dep.identifier.clone(),
+                            scope: innermost_scope.clone(),
+                        });
                     }
                 }
             }
@@ -1201,7 +1193,6 @@ pub fn propagate_scope_dependencies_hir(func: &mut HIRFunction) {
 
     let mut ctx = DependencyCollectionContext::new(
         temporaries,
-        used_outside,
         processed_instrs,
         func.env.config().enable_treat_ref_like_identifiers_as_refs,
         if matches!(func.fn_type, ReactFunctionType::Component) {
@@ -1350,7 +1341,6 @@ pub(crate) fn infer_minimal_dependencies_for_inner_fn(
 
     let mut ctx = DependencyCollectionContext::new(
         temporaries,
-        used_outside,
         optional_sidemap.processed_instrs_in_optional,
         lowered
             .env
@@ -1389,7 +1379,7 @@ pub(crate) fn infer_minimal_dependencies_for_inner_fn(
         .iter()
         .map(|dep| dep.identifier.id)
         .collect();
-    let mut filtered: Vec<ReactiveScopeDependency> = unfiltered
+    let filtered: Vec<ReactiveScopeDependency> = unfiltered
         .into_iter()
         .filter(|dep| fn_context_ids.contains(&dep.identifier.id))
         .collect();
@@ -1434,7 +1424,7 @@ pub(crate) fn infer_minimal_dependencies_for_inner_fn(
         hoistable_to_entry.clone(),
     );
     for dep in &filtered {
-        tree.add_dependency(&dep);
+        tree.add_dependency(dep);
     }
     let mut minimal = tree.derive_minimal_dependencies();
 
@@ -1465,96 +1455,6 @@ fn sort_reactive_scope_dependency_for_inner_fn(
         })
 }
 
-fn augment_inner_fn_context_load_temporaries(
-    func: &HIRFunction,
-    used_outside: &HashSet<DeclarationId>,
-    temporaries: &mut HashMap<IdentifierId, ResolvedDep>,
-) {
-    let debug_effect_deps = std::env::var("DEBUG_INFER_EFFECT_DEPS").is_ok();
-    for (_, block) in &func.body.blocks {
-        for instr in &block.instructions {
-            let InstructionValue::LoadContext { place, .. } = &instr.value else {
-                continue;
-            };
-            if instr.lvalue.identifier.name.is_some()
-                || place.identifier.name.is_none()
-                || used_outside.contains(&instr.lvalue.identifier.declaration_id)
-            {
-                continue;
-            }
-            if let Some(ctx_ident) = func
-                .context
-                .iter()
-                .find(|ctx_place| {
-                    ctx_place.identifier.id == place.identifier.id
-                        || ctx_place.identifier.declaration_id == place.identifier.declaration_id
-                })
-                .map(|ctx_place| ctx_place.identifier.clone())
-            {
-                temporaries
-                    .entry(instr.lvalue.identifier.id)
-                    .or_insert(ResolvedDep {
-                        identifier: ctx_ident,
-                        path: Vec::new(),
-                    });
-                if debug_effect_deps {
-                    eprintln!(
-                        "[INFER_EFFECT_DEPS] augment temp loadcontext lvalue={} decl={} -> ident={} decl={}",
-                        instr.lvalue.identifier.id.0,
-                        instr.lvalue.identifier.declaration_id.0,
-                        temporaries[&instr.lvalue.identifier.id].identifier.id.0,
-                        temporaries[&instr.lvalue.identifier.id]
-                            .identifier
-                            .declaration_id
-                            .0
-                    );
-                }
-            }
-        }
-    }
-}
-
-fn normalize_temporaries_for_inner_fn(temporaries: &mut HashMap<IdentifierId, ResolvedDep>) {
-    loop {
-        let mut changed = false;
-        let keys: Vec<IdentifierId> = temporaries.keys().copied().collect();
-        for key in keys {
-            let Some(dep) = temporaries.get(&key).cloned() else {
-                continue;
-            };
-            let Some(base) = temporaries.get(&dep.identifier.id).cloned() else {
-                continue;
-            };
-            if dep.identifier.id == base.identifier.id && base.path.is_empty() {
-                continue;
-            }
-
-            let mut next_path = base.path.clone();
-            next_path.extend(dep.path.clone());
-            let same_path = dep.path.len() == next_path.len()
-                && dep
-                    .path
-                    .iter()
-                    .zip(next_path.iter())
-                    .all(|(a, b)| a.property == b.property && a.optional == b.optional);
-            let should_update = dep.identifier.id != base.identifier.id || !same_path;
-            if should_update {
-                temporaries.insert(
-                    key,
-                    ResolvedDep {
-                        identifier: base.identifier,
-                        path: next_path,
-                    },
-                );
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-}
-
 /// Walk the HIR function and collect dependencies.
 fn collect_deps_from_function(
     func: &HIRFunction,
@@ -1564,15 +1464,15 @@ fn collect_deps_from_function(
     ctx.enter_function(func);
     for (block_id, block) in &func.body.blocks {
         // Check for scope begin/end at this block
-        if !ctx.in_inner_fn {
-            if let Some(info) = scope_infos.get(block_id) {
-                match info {
-                    ScopeBlockInfo::Begin { scope, .. } => {
-                        ctx.enter_scope(scope.clone());
-                    }
-                    ScopeBlockInfo::End { scope, pruned } => {
-                        ctx.exit_scope(scope, *pruned);
-                    }
+        if !ctx.in_inner_fn
+            && let Some(info) = scope_infos.get(block_id)
+        {
+            match info {
+                ScopeBlockInfo::Begin { scope, .. } => {
+                    ctx.enter_scope(scope.clone());
+                }
+                ScopeBlockInfo::End { scope, pruned } => {
+                    ctx.exit_scope(scope, *pruned);
                 }
             }
         }
@@ -2145,40 +2045,6 @@ mod tests {
     fn make_place(id: u32, name: Option<&str>) -> Place {
         Place {
             identifier: make_identifier(id, name),
-            effect: Effect::Unknown,
-            reactive: false,
-            loc: SourceLocation::Generated,
-        }
-    }
-
-    fn make_place_with_scope(
-        id: u32,
-        name: Option<&str>,
-        scope_id: u32,
-        range_start: u32,
-        range_end: u32,
-    ) -> Place {
-        Place {
-            identifier: Identifier {
-                id: IdentifierId(id),
-                declaration_id: DeclarationId(id),
-                name: name.map(|n| IdentifierName::Named(n.to_string())),
-                mutable_range: MutableRange::default(),
-                scope: Some(Box::new(ReactiveScope {
-                    id: ScopeId(scope_id),
-                    range: MutableRange {
-                        start: InstructionId(range_start),
-                        end: InstructionId(range_end),
-                    },
-                    dependencies: vec![],
-                    declarations: IndexMap::new(),
-                    reassignments: vec![],
-                    merged_id: None,
-                    early_return_value: None,
-                })),
-                type_: Type::Poly,
-                loc: SourceLocation::Generated,
-            },
             effect: Effect::Unknown,
             reactive: false,
             loc: SourceLocation::Generated,

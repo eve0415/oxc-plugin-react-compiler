@@ -360,7 +360,6 @@ fn transform_terminal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn make_identifier(id: u32, name: Option<IdentifierName>) -> Identifier {
         Identifier {

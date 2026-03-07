@@ -1219,7 +1219,7 @@ fn scope_is_eligible_for_merging(scope_block: &ReactiveScopeBlock) -> bool {
         scope: scope_block.scope.clone(),
         instructions: vec![],
     }));
-    data.map_or(false, |sd| is_scope_data_eligible_for_merging(&sd))
+    data.is_some_and(|sd| is_scope_data_eligible_for_merging(&sd))
 }
 
 /// Mirrors upstream `scopeIsEligibleForMerging`:
@@ -1270,13 +1270,13 @@ fn handle_instruction_for_merge(
             // in the merge-safe instruction subset. Our lowering can leave these
             // as `LoadLocal`; treat them equivalently here.
             if context_declaration_ids.contains(&place.identifier.declaration_id) {
-                if let Some(from) = current_from.take() {
-                    if *_current_to > from + 1 {
-                        merged.push(MergedScope {
-                            from,
-                            to: *_current_to,
-                        });
-                    }
+                if let Some(from) = current_from.take()
+                    && *_current_to > from + 1
+                {
+                    merged.push(MergedScope {
+                        from,
+                        to: *_current_to,
+                    });
                 }
                 current_lvalues.clear();
                 if debug_scope_merge {
@@ -1575,16 +1575,6 @@ fn are_equal_dependencies(a: &[ReactiveScopeDependency], b: &[ReactiveScopeDepen
     a_keys == b_keys
 }
 
-/// Check if two dependency paths are equal.
-///
-/// Mirrors upstream `areEqualPaths`.
-fn are_equal_paths(a: &[DependencyPathEntry], b: &[DependencyPathEntry]) -> bool {
-    a.len() == b.len()
-        && a.iter()
-            .zip(b.iter())
-            .all(|(ai, bi)| ai.property == bi.property && ai.optional == bi.optional)
-}
-
 // ---------------------------------------------------------------------------
 // Helper: scope merging eligibility
 // ---------------------------------------------------------------------------
@@ -1594,19 +1584,14 @@ fn are_equal_paths(a: &[DependencyPathEntry], b: &[DependencyPathEntry]) -> bool
 /// Mirrors upstream `isAlwaysInvalidatingType`.
 pub fn is_always_invalidating_type(ty: &Type) -> bool {
     match ty {
-        Type::Object { shape_id } => {
-            if let Some(id) = shape_id {
-                matches!(
-                    id.as_str(),
-                    s if s == BUILT_IN_ARRAY_ID
-                        || s == BUILT_IN_OBJECT_ID
-                        || s == BUILT_IN_FUNCTION_ID
-                        || s == BUILT_IN_JSX_ID
-                )
-            } else {
-                false
-            }
-        }
+        Type::Object { shape_id: Some(id) } => matches!(
+            id.as_str(),
+            s if s == BUILT_IN_ARRAY_ID
+                || s == BUILT_IN_OBJECT_ID
+                || s == BUILT_IN_FUNCTION_ID
+                || s == BUILT_IN_JSX_ID
+        ),
+        Type::Object { shape_id: None } => false,
         Type::Function { .. } => true,
         _ => false,
     }
@@ -2216,14 +2201,13 @@ mod tests {
     #[test]
     fn test_can_merge_scope_data_with_temporary_dependency_mapping() {
         let mut current = ScopeData {
-            id: ScopeId(1),
             dependencies: vec![make_dep(1)],
-            declarations: Default::default(),
+            declarations: Vec::new(),
             has_reassignments: false,
             range_start: 10,
             range_end: 20,
         };
-        current.declarations.insert(
+        current.declarations.push((
             IdentifierId(10),
             ScopeDeclaration {
                 identifier: make_identifier_with_type(
@@ -2234,10 +2218,9 @@ mod tests {
                 ),
                 scope: make_declaration_scope(ScopeId(1)),
             },
-        );
+        ));
 
         let next = ScopeData {
-            id: ScopeId(2),
             dependencies: vec![ReactiveScopeDependency {
                 identifier: make_identifier_with_type(
                     20,

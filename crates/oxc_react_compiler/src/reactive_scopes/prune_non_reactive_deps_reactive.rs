@@ -836,27 +836,6 @@ fn visit_and_prune_block(
     }
 }
 
-fn should_retain_multi_source_deps_for_scope(
-    preceding: &[ReactiveStatement],
-    reactive_ids: &HashSet<IdentifierId>,
-    reactive_decls: &HashSet<DeclarationId>,
-) -> bool {
-    for stmt in preceding.iter().rev() {
-        match stmt {
-            ReactiveStatement::Instruction(_) => continue,
-            ReactiveStatement::Terminal(term_stmt) => {
-                return terminal_allows_multi_source_dep_fallback(
-                    &term_stmt.terminal,
-                    reactive_ids,
-                    reactive_decls,
-                );
-            }
-            ReactiveStatement::Scope(_) | ReactiveStatement::PrunedScope(_) => return false,
-        }
-    }
-    false
-}
-
 fn should_retain_reassigned_deps_for_scope(
     preceding: &[ReactiveStatement],
     reactive_ids: &HashSet<IdentifierId>,
@@ -876,32 +855,6 @@ fn should_retain_reassigned_deps_for_scope(
         }
     }
     false
-}
-
-fn terminal_allows_multi_source_dep_fallback(
-    terminal: &ReactiveTerminal,
-    reactive_ids: &HashSet<IdentifierId>,
-    reactive_decls: &HashSet<DeclarationId>,
-) -> bool {
-    match terminal {
-        ReactiveTerminal::DoWhile { .. }
-        | ReactiveTerminal::While { .. }
-        | ReactiveTerminal::For { .. }
-        | ReactiveTerminal::ForOf { .. }
-        | ReactiveTerminal::ForIn { .. } => true,
-        ReactiveTerminal::If { test, .. } => {
-            is_identifier_reactive(&test.identifier, reactive_ids, reactive_decls)
-        }
-        ReactiveTerminal::Switch { test, cases, .. } => {
-            is_identifier_reactive(&test.identifier, reactive_ids, reactive_decls)
-                || cases.iter().any(|case| {
-                    case.test.as_ref().is_some_and(|case_test| {
-                        is_identifier_reactive(&case_test.identifier, reactive_ids, reactive_decls)
-                    })
-                })
-        }
-        _ => false,
-    }
 }
 
 fn terminal_allows_reassigned_dep_fallback(
@@ -1384,7 +1337,6 @@ fn propagate_reactivity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn make_identifier(id: u32, name: Option<IdentifierName>) -> Identifier {
         Identifier {

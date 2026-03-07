@@ -505,7 +505,7 @@ mod tests {
             id: ScopeId(id),
             range: MutableRange::default(),
             dependencies: vec![],
-            declarations: std::collections::HashMap::new(),
+            declarations: indexmap::IndexMap::new(),
             reassignments: vec![],
             merged_id: None,
             early_return_value: None,
@@ -538,7 +538,7 @@ mod tests {
             directives: vec![],
         };
 
-        prune_hoisted_contexts(&mut func);
+        prune_hoisted_contexts(&mut func).unwrap();
         assert!(
             func.body.is_empty(),
             "Hoisted DeclareContext should be removed"
@@ -571,7 +571,7 @@ mod tests {
             directives: vec![],
         };
 
-        prune_hoisted_contexts(&mut func);
+        prune_hoisted_contexts(&mut func).unwrap();
         assert_eq!(
             func.body.len(),
             1,
@@ -619,7 +619,7 @@ mod tests {
             directives: vec![],
         };
 
-        prune_hoisted_contexts(&mut func);
+        prune_hoisted_contexts(&mut func).unwrap();
 
         if let ReactiveStatement::Scope(scope_block) = &func.body[0] {
             if let ReactiveStatement::Instruction(instr) = &scope_block.instructions[0] {

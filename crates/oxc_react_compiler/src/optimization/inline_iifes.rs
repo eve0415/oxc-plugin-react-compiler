@@ -528,10 +528,10 @@ fn collect_locally_declared_names(func: &HIRFunction) -> HashSet<String> {
                 | InstructionValue::DeclareContext { lvalue, .. }
                 | InstructionValue::StoreLocal { lvalue, .. }
                 | InstructionValue::StoreContext { lvalue, .. } => {
-                    if lvalue.kind != InstructionKind::Reassign {
-                        if let Some(name) = identifier_name_str(&lvalue.place.identifier) {
-                            names.insert(name.to_string());
-                        }
+                    if lvalue.kind != InstructionKind::Reassign
+                        && let Some(name) = identifier_name_str(&lvalue.place.identifier)
+                    {
+                        names.insert(name.to_string());
                     }
                 }
                 InstructionValue::Destructure { lvalue, .. } => {
@@ -633,7 +633,7 @@ fn identifier_name_str(identifier: &Identifier) -> Option<&str> {
 
 fn source_loc_position(loc: &SourceLocation) -> (u32, u32) {
     match loc {
-        SourceLocation::Source(range) => (range.start.line as u32, range.start.column as u32),
+        SourceLocation::Source(range) => (range.start.line, range.start.column),
         SourceLocation::Generated => (0, 0),
     }
 }

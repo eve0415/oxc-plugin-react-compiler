@@ -67,6 +67,12 @@ struct ScopeInfo {
     range: MutableRange,
 }
 
+type ScopeDependencyMaps = (
+    HashMap<ScopeId, Vec<ReactiveScopeDependency>>,
+    HashMap<ScopeId, IndexMap<IdentifierId, ScopeDeclaration>>,
+    HashMap<ScopeId, Vec<Identifier>>,
+);
+
 /// Collect all unique scopes from identifiers in the function.
 fn collect_scopes(func: &HIRFunction) -> Vec<ScopeInfo> {
     let mut seen: HashSet<ScopeId> = HashSet::new();
@@ -233,11 +239,7 @@ fn collect_dependencies(
     func: &HIRFunction,
     scopes: &[ScopeInfo],
     temporaries: &HashMap<IdentifierId, ResolvedDep>,
-) -> (
-    HashMap<ScopeId, Vec<ReactiveScopeDependency>>,
-    HashMap<ScopeId, IndexMap<IdentifierId, ScopeDeclaration>>,
-    HashMap<ScopeId, Vec<Identifier>>,
-) {
+) -> ScopeDependencyMaps {
     let mut scope_deps: HashMap<ScopeId, Vec<ReactiveScopeDependency>> = HashMap::new();
     let mut scope_decls: HashMap<ScopeId, IndexMap<IdentifierId, ScopeDeclaration>> =
         HashMap::new();

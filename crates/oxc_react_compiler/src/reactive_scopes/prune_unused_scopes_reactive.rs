@@ -88,10 +88,9 @@ fn transform_block(block: &mut ReactiveBlock) {
                             .collect();
                         decl_scopes.sort_by_key(|(id, _, _)| *id);
                         eprintln!(
-                            "[SCOPE_PRUNE_REASON] scope={} pass=prune_unused_scopes_reactive state has_return={} has_optional_dep={} reassignments={} declarations={} has_own_decl={} decl_scope_pairs={:?}",
+                            "[SCOPE_PRUNE_REASON] scope={} pass=prune_unused_scopes_reactive state has_return={} has_optional_dep=false reassignments={} declarations={} has_own_decl={} decl_scope_pairs={:?}",
                             scope_block.scope.id.0,
                             state.has_return_statement,
-                            false,
                             scope_block.scope.reassignments.len(),
                             scope_block.scope.declarations.len(),
                             has_own_decl,
@@ -166,10 +165,9 @@ fn transform_block_with_state(block: &mut ReactiveBlock, state: &mut ScopeState)
                             .collect();
                         decl_scopes.sort_by_key(|(id, _, _)| *id);
                         eprintln!(
-                            "[SCOPE_PRUNE_REASON] scope={} pass=prune_unused_scopes_reactive state has_return={} has_optional_dep={} reassignments={} declarations={} has_own_decl={} decl_scope_pairs={:?}",
+                            "[SCOPE_PRUNE_REASON] scope={} pass=prune_unused_scopes_reactive state has_return={} has_optional_dep=false reassignments={} declarations={} has_own_decl={} decl_scope_pairs={:?}",
                             scope_block.scope.id.0,
                             scope_state.has_return_statement,
-                            false,
                             scope_block.scope.reassignments.len(),
                             scope_block.scope.declarations.len(),
                             has_own_decl,
@@ -341,7 +339,6 @@ fn has_own_declaration(block: &ReactiveScopeBlock) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn make_scope(id: u32) -> ReactiveScope {
         ReactiveScope {

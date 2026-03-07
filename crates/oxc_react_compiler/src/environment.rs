@@ -180,8 +180,10 @@ mod tests {
 
     #[test]
     fn test_matches_hook_pattern_custom() {
-        let mut config = EnvironmentConfig::default();
-        config.hook_pattern = Some("React$".to_string());
+        let config = EnvironmentConfig {
+            hook_pattern: Some("React$".to_string()),
+            ..EnvironmentConfig::default()
+        };
         let env = Environment::new(config);
 
         assert!(env.matches_hook_pattern("React$useState"));

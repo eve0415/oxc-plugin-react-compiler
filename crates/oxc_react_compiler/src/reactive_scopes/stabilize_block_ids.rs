@@ -227,23 +227,6 @@ fn get_or_insert(mappings: &mut HashMap<BlockId, BlockId>, id: BlockId) -> Block
 mod tests {
     use super::*;
 
-    fn make_place(id: u32) -> Place {
-        Place {
-            identifier: Identifier {
-                id: IdentifierId(id),
-                declaration_id: DeclarationId(id),
-                name: None,
-                mutable_range: MutableRange::default(),
-                scope: None,
-                type_: Type::Poly,
-                loc: SourceLocation::Generated,
-            },
-            effect: Effect::Unknown,
-            reactive: false,
-            loc: SourceLocation::Generated,
-        }
-    }
-
     #[test]
     fn test_stabilize_block_ids_sequential() {
         let mut func = ReactiveFunction {
@@ -294,12 +277,11 @@ mod tests {
         if let ReactiveStatement::Terminal(term) = &func.body[0] {
             assert_eq!(term.label.as_ref().unwrap().id, BlockId(0));
             // Break target should also be remapped to 0
-            if let ReactiveTerminal::Label { block, .. } = &term.terminal {
-                if let ReactiveStatement::Terminal(inner) = &block[0] {
-                    if let ReactiveTerminal::Break { target, .. } = &inner.terminal {
-                        assert_eq!(*target, BlockId(0));
-                    }
-                }
+            if let ReactiveTerminal::Label { block, .. } = &term.terminal
+                && let ReactiveStatement::Terminal(inner) = &block[0]
+                && let ReactiveTerminal::Break { target, .. } = &inner.terminal
+            {
+                assert_eq!(*target, BlockId(0));
             }
         }
 
