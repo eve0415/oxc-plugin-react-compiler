@@ -11,6 +11,21 @@ pub(crate) fn emit_module(
     args: ModuleEmitArgs<'_>,
     compiled: Vec<CompiledFunction>,
 ) -> CompileResult {
+    let compiled = compiled
+        .into_iter()
+        .map(|mut compiled_function| {
+            if !compiled_function.needs_cache_import
+                && compiled_function.outlined_functions.is_empty()
+                && let Some(hir_function) = compiled_function.hir_function.as_ref()
+                && let Some(lowered_body) =
+                    super::hir_to_ast::try_lower_function_body(hir_function)
+            {
+                compiled_function.generated_body = lowered_body;
+            }
+            compiled_function
+        })
+        .collect();
+
     let raw_result = super::raw::emit_module(args, compiled);
     if !raw_result.transformed {
         return raw_result;
