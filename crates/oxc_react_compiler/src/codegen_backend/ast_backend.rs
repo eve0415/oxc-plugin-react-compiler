@@ -1,8 +1,9 @@
 use oxc_allocator::{Allocator, CloneIn};
-use oxc_ast::{AstBuilder, ast};
+use oxc_ast::{AstBuilder, NONE, ast};
 use oxc_codegen::{Codegen, CodegenOptions, IndentChar};
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SPAN, SourceType};
+use oxc_syntax::identifier::is_identifier_name;
 
 use crate::CompileResult;
 
@@ -19,9 +20,20 @@ struct AstRenderState {
     lower_context_access_ident: String,
     lower_context_access_imported: String,
     gating_local_name: Option<String>,
-    imports_to_insert: Vec<String>,
+    imports_to_insert: Vec<InsertedImport>,
     runtime_import_merge_plan: Option<crate::pipeline::RuntimeImportMergePlan>,
     instrument_source_path: String,
+}
+
+struct InsertedImport {
+    source: String,
+    specs: Vec<InsertedImportSpec>,
+    is_script: bool,
+}
+
+struct InsertedImportSpec {
+    imported: String,
+    local: String,
 }
 
 struct RenderedCompiledFunction {
@@ -89,13 +101,11 @@ fn try_emit_module(
 
     let mut body = builder.vec();
     let mut rendered_prefix = String::new();
-    for import_src in &state.imports_to_insert {
-        body.extend(parse_statements(
-            &allocator,
-            state.source_type,
-            allocator.alloc_str(import_src),
-        )?);
-        rendered_prefix.push_str(import_src);
+    for import_plan in &state.imports_to_insert {
+        let statement = build_inserted_import_statement(builder, import_plan);
+        let statement_source = codegen_statement_source(&allocator, state.source_type, &statement);
+        body.push(statement);
+        rendered_prefix.push_str(statement_source.trim_end_matches('\n'));
         rendered_prefix.push('\n');
     }
 
@@ -175,7 +185,8 @@ fn try_emit_module(
             && stmt_compiled[0].end == span.end
             && let Some(statement) = try_lower_compiled_statement_ast(builder, stmt_compiled[0])
         {
-            let statement_source = codegen_statement_source(&allocator, state.source_type, &statement);
+            let statement_source =
+                codegen_statement_source(&allocator, state.source_type, &statement);
             body.push(statement);
             rendered_prefix.push_str(statement_source.trim_end_matches('\n'));
             rendered_prefix.push('\n');
@@ -207,7 +218,8 @@ fn try_emit_module(
                 && let Some(statement) =
                     super::hir_to_ast::try_lower_function_declaration_ast(builder, hir_function)
             {
-                let statement_source = codegen_statement_source(&allocator, state.source_type, &statement);
+                let statement_source =
+                    codegen_statement_source(&allocator, state.source_type, &statement);
                 body.push(statement);
                 rendered_prefix.push_str(statement_source.trim_end_matches('\n'));
             } else {
@@ -352,86 +364,50 @@ fn build_render_state(args: ModuleEmitArgs<'_>, compiled: &[CompiledFunction]) -
             .unwrap_or(args.filename)
     );
 
-    let runtime_import = if is_script {
-        match (needs_cache_import, needs_fire_import) {
-            (true, true) => format!(
-                "const {{ c: {}, useFire }} = require(\"react/compiler-runtime\")",
-                cache_import_name
-            ),
-            (true, false) => format!(
-                "const {{ c: {} }} = require(\"react/compiler-runtime\")",
-                cache_import_name
-            ),
-            (false, true) => "const { useFire } = require(\"react/compiler-runtime\")".to_string(),
-            (false, false) => String::new(),
-        }
-    } else {
-        match (needs_cache_import, needs_fire_import) {
-            (true, true) => format!(
-                "import {{ c as {}, useFire }} from \"react/compiler-runtime\";",
-                cache_import_name
-            ),
-            (true, false) => format!(
-                "import {{ c as {} }} from \"react/compiler-runtime\";",
-                cache_import_name
-            ),
-            (false, true) => "import { useFire } from \"react/compiler-runtime\";".to_string(),
-            (false, false) => String::new(),
-        }
-    };
-
     let mut gating_local_name = None;
     let mut imports_to_insert = Vec::new();
-    let mut runtime_support_specs: Vec<(&str, &str)> = Vec::new();
+    let mut runtime_support_specs: Vec<InsertedImportSpec> = Vec::new();
     if needs_freeze_import {
-        runtime_support_specs.push(("makeReadOnly", &make_read_only_ident));
+        runtime_support_specs.push(InsertedImportSpec {
+            imported: "makeReadOnly".to_string(),
+            local: make_read_only_ident.clone(),
+        });
     }
     if needs_instrument_import {
-        runtime_support_specs.push(("shouldInstrument", &should_instrument_ident));
-        runtime_support_specs.push(("useRenderCounter", &use_render_counter_ident));
+        runtime_support_specs.push(InsertedImportSpec {
+            imported: "shouldInstrument".to_string(),
+            local: should_instrument_ident.clone(),
+        });
+        runtime_support_specs.push(InsertedImportSpec {
+            imported: "useRenderCounter".to_string(),
+            local: use_render_counter_ident.clone(),
+        });
     }
     if needs_hook_guard_import {
-        runtime_support_specs.push(("$dispatcherGuard", &hook_guard_ident));
+        runtime_support_specs.push(InsertedImportSpec {
+            imported: "$dispatcherGuard".to_string(),
+            local: hook_guard_ident.clone(),
+        });
     }
     if needs_structural_check_import {
-        runtime_support_specs.push(("$structuralCheck", &structural_check_ident));
+        runtime_support_specs.push(InsertedImportSpec {
+            imported: "$structuralCheck".to_string(),
+            local: structural_check_ident.clone(),
+        });
     }
     if needs_lower_context_access_import && lower_context_access_module == "react-compiler-runtime"
     {
-        runtime_support_specs.push((&lower_context_access_imported, &lower_context_access_ident));
+        runtime_support_specs.push(InsertedImportSpec {
+            imported: lower_context_access_imported.clone(),
+            local: lower_context_access_ident.clone(),
+        });
     }
     if !runtime_support_specs.is_empty() {
-        let support_import = if is_script {
-            let specs = runtime_support_specs
-                .iter()
-                .map(|(imported, local)| {
-                    if imported == local {
-                        (*imported).to_string()
-                    } else {
-                        format!("{}: {}", imported, local)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!(
-                "const {{ {} }} = require(\"react-compiler-runtime\");",
-                specs
-            )
-        } else {
-            let specs = runtime_support_specs
-                .iter()
-                .map(|(imported, local)| {
-                    if imported == local {
-                        (*imported).to_string()
-                    } else {
-                        format!("{} as {}", imported, local)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("import {{ {} }} from \"react-compiler-runtime\";", specs)
-        };
-        imports_to_insert.push(support_import);
+        imports_to_insert.push(InsertedImport {
+            source: "react-compiler-runtime".to_string(),
+            specs: runtime_support_specs,
+            is_script,
+        });
     }
 
     let runtime_import_covered_by_existing =
@@ -440,41 +416,38 @@ fn build_render_state(args: ModuleEmitArgs<'_>, compiled: &[CompiledFunction]) -
                 && (!needs_fire_import || plan.has_use_fire_after)
         });
     if (needs_cache_import || needs_fire_import) && !runtime_import_covered_by_existing {
-        imports_to_insert.push(runtime_import);
+        let mut runtime_import_specs = Vec::new();
+        if needs_cache_import {
+            runtime_import_specs.push(InsertedImportSpec {
+                imported: "c".to_string(),
+                local: cache_import_name.clone(),
+            });
+        }
+        if needs_fire_import {
+            runtime_import_specs.push(InsertedImportSpec {
+                imported: "useFire".to_string(),
+                local: "useFire".to_string(),
+            });
+        }
+        imports_to_insert.push(InsertedImport {
+            source: "react/compiler-runtime".to_string(),
+            specs: runtime_import_specs,
+            is_script,
+        });
     }
 
     if needs_lower_context_access_import
         && !lower_context_access_module.is_empty()
         && lower_context_access_module != "react-compiler-runtime"
     {
-        let lower_context_import = if is_script {
-            if lower_context_access_imported == lower_context_access_ident {
-                format!(
-                    "const {{ {} }} = require(\"{}\");",
-                    lower_context_access_imported, lower_context_access_module
-                )
-            } else {
-                format!(
-                    "const {{ {}: {} }} = require(\"{}\");",
-                    lower_context_access_imported,
-                    lower_context_access_ident,
-                    lower_context_access_module
-                )
-            }
-        } else if lower_context_access_imported == lower_context_access_ident {
-            format!(
-                "import {{ {} }} from \"{}\";",
-                lower_context_access_imported, lower_context_access_module
-            )
-        } else {
-            format!(
-                "import {{ {} as {} }} from \"{}\";",
-                lower_context_access_imported,
-                lower_context_access_ident,
-                lower_context_access_module
-            )
-        };
-        imports_to_insert.push(lower_context_import);
+        imports_to_insert.push(InsertedImport {
+            source: lower_context_access_module.clone(),
+            specs: vec![InsertedImportSpec {
+                imported: lower_context_access_imported.clone(),
+                local: lower_context_access_ident.clone(),
+            }],
+            is_script,
+        });
     }
 
     if let Some((source_mod, base)) = args
@@ -503,24 +476,14 @@ fn build_render_state(args: ModuleEmitArgs<'_>, compiled: &[CompiledFunction]) -
         };
         gating_local_name = Some(local.clone());
         if needs_cache_import {
-            let gate_import = if is_script {
-                if local == base {
-                    format!("const {{ {} }} = require(\"{}\");", base, source_mod)
-                } else {
-                    format!(
-                        "const {{ {}: {} }} = require(\"{}\");",
-                        base, local, source_mod
-                    )
-                }
-            } else if local == base {
-                format!("import {{ {} }} from \"{}\";", base, source_mod)
-            } else {
-                format!(
-                    "import {{ {} as {} }} from \"{}\";",
-                    base, local, source_mod
-                )
-            };
-            imports_to_insert.push(gate_import);
+            imports_to_insert.push(InsertedImport {
+                source: source_mod.to_string(),
+                specs: vec![InsertedImportSpec {
+                    imported: base.to_string(),
+                    local,
+                }],
+                is_script,
+            });
         }
     }
 
@@ -850,6 +813,82 @@ fn can_emit_compiled_statement_ast(cf: &CompiledFunction) -> bool {
 
 fn maybe_gate_entrypoint_source(source: String, gate_name: &str) -> String {
     crate::pipeline::gate_fixture_entrypoint_arrows(source, gate_name)
+}
+
+fn build_inserted_import_statement<'a>(
+    builder: AstBuilder<'a>,
+    import_plan: &InsertedImport,
+) -> ast::Statement<'a> {
+    if import_plan.is_script {
+        let mut properties = builder.vec();
+        for spec in &import_plan.specs {
+            let pattern =
+                builder.binding_pattern_binding_identifier(SPAN, builder.ident(&spec.local));
+            let key = if is_identifier_name(&spec.imported) {
+                builder.property_key_static_identifier(SPAN, builder.ident(&spec.imported))
+            } else {
+                ast::PropertyKey::from(builder.expression_string_literal(
+                    SPAN,
+                    builder.atom(&spec.imported),
+                    None,
+                ))
+            };
+            properties.push(builder.binding_property(
+                SPAN,
+                key,
+                pattern,
+                spec.imported == spec.local && is_identifier_name(&spec.imported),
+                false,
+            ));
+        }
+        let object_pattern = builder.binding_pattern_object_pattern(SPAN, properties, NONE);
+        let require_call = builder.expression_call(
+            SPAN,
+            builder.expression_identifier(SPAN, builder.ident("require")),
+            NONE,
+            builder.vec1(ast::Argument::from(builder.expression_string_literal(
+                SPAN,
+                builder.atom(&import_plan.source),
+                None,
+            ))),
+            false,
+        );
+        ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+            SPAN,
+            ast::VariableDeclarationKind::Const,
+            builder.vec1(builder.variable_declarator(
+                SPAN,
+                ast::VariableDeclarationKind::Const,
+                object_pattern,
+                NONE,
+                Some(require_call),
+                false,
+            )),
+            false,
+        ))
+    } else {
+        let specifiers = builder.vec_from_iter(import_plan.specs.iter().map(|spec| {
+            let imported = if is_identifier_name(&spec.imported) {
+                builder.module_export_name_identifier_name(SPAN, builder.atom(&spec.imported))
+            } else {
+                builder.module_export_name_string_literal(SPAN, builder.atom(&spec.imported), None)
+            };
+            builder.import_declaration_specifier_import_specifier(
+                SPAN,
+                imported,
+                builder.binding_identifier(SPAN, builder.atom(&spec.local)),
+                ast::ImportOrExportKind::Value,
+            )
+        }));
+        ast::Statement::ImportDeclaration(builder.alloc_import_declaration(
+            SPAN,
+            Some(specifiers),
+            builder.string_literal(SPAN, builder.atom(&import_plan.source), None),
+            None,
+            NONE,
+            ast::ImportOrExportKind::Value,
+        ))
+    }
 }
 
 fn parse_statements<'a>(
