@@ -24,6 +24,17 @@ enum BackendMode {
     Compare,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct FixtureSuiteOptions {
+    fixture_timeout: std::time::Duration,
+    run_skipped: bool,
+    strict_output: bool,
+    parallel: bool,
+    verbose: bool,
+    backend_mode: BackendMode,
+    capture_generated_code: bool,
+}
+
 impl BackendMode {
     fn from_args(args: &[String]) -> Self {
         match args
@@ -109,35 +120,41 @@ fn main() {
     let results_raw: Vec<FixtureResult> = if backend_mode == BackendMode::Compare {
         let raw_results = run_fixture_suite(
             &fixtures,
-            fixture_timeout,
-            run_skipped,
-            strict_output,
-            parallel,
-            verbose,
-            BackendMode::Raw,
-            true,
+            FixtureSuiteOptions {
+                fixture_timeout,
+                run_skipped,
+                strict_output,
+                parallel,
+                verbose,
+                backend_mode: BackendMode::Raw,
+                capture_generated_code: true,
+            },
         );
         let ast_results = run_fixture_suite(
             &fixtures,
-            fixture_timeout,
-            run_skipped,
-            strict_output,
-            parallel,
-            verbose,
-            BackendMode::Ast,
-            true,
+            FixtureSuiteOptions {
+                fixture_timeout,
+                run_skipped,
+                strict_output,
+                parallel,
+                verbose,
+                backend_mode: BackendMode::Ast,
+                capture_generated_code: true,
+            },
         );
         compare_backend_results(&fixtures, raw_results, ast_results)
     } else {
         run_fixture_suite(
             &fixtures,
-            fixture_timeout,
-            run_skipped,
-            strict_output,
-            parallel,
-            verbose,
-            backend_mode,
-            false,
+            FixtureSuiteOptions {
+                fixture_timeout,
+                run_skipped,
+                strict_output,
+                parallel,
+                verbose,
+                backend_mode,
+                capture_generated_code: false,
+            },
         )
     };
     let results: Vec<FixtureResult> = results_raw
@@ -633,33 +650,24 @@ fn main() {
     }
 }
 
-fn run_fixture_suite(
-    fixtures: &[Fixture],
-    fixture_timeout: std::time::Duration,
-    run_skipped: bool,
-    strict_output: bool,
-    parallel: bool,
-    verbose: bool,
-    backend_mode: BackendMode,
-    capture_generated_code: bool,
-) -> Vec<FixtureResult> {
-    with_codegen_backend_env(backend_mode, || {
-        if parallel {
+fn run_fixture_suite(fixtures: &[Fixture], options: FixtureSuiteOptions) -> Vec<FixtureResult> {
+    with_codegen_backend_env(options.backend_mode, || {
+        if options.parallel {
             fixtures
                 .par_iter()
                 .map(|fixture| {
-                    if verbose {
+                    if options.verbose {
                         println!("Running {}", fixture.name);
                     }
                     let res = run_fixture_with_timeout(
                         fixture,
-                        fixture_timeout,
-                        run_skipped,
-                        strict_output,
-                        backend_mode,
-                        capture_generated_code,
+                        options.fixture_timeout,
+                        options.run_skipped,
+                        options.strict_output,
+                        options.backend_mode,
+                        options.capture_generated_code,
                     );
-                    if verbose {
+                    if options.verbose {
                         println!("Finished {}", fixture.name);
                     }
                     res
@@ -669,18 +677,18 @@ fn run_fixture_suite(
             fixtures
                 .iter()
                 .map(|fixture| {
-                    if verbose {
+                    if options.verbose {
                         println!("Running {}", fixture.name);
                     }
                     let res = run_fixture_with_timeout(
                         fixture,
-                        fixture_timeout,
-                        run_skipped,
-                        strict_output,
-                        backend_mode,
-                        capture_generated_code,
+                        options.fixture_timeout,
+                        options.run_skipped,
+                        options.strict_output,
+                        options.backend_mode,
+                        options.capture_generated_code,
                     );
-                    if verbose {
+                    if options.verbose {
                         println!("Finished {}", fixture.name);
                     }
                     res
@@ -5514,6 +5522,11 @@ fn normalize_trailing_sequence_null(code: &str) -> String {
     result.join("\n")
 }
 
+fn trailing_comma_before_brace_regex() -> &'static regex::Regex {
+    static REGEX: OnceLock<regex::Regex> = OnceLock::new();
+    REGEX.get_or_init(|| regex::Regex::new(r",\s*}").unwrap())
+}
+
 fn normalize_compare_multiline_brace_literals(code: &str) -> String {
     let lines: Vec<&str> = code.lines().collect();
     let mut result = Vec::new();
@@ -5563,8 +5576,7 @@ fn normalize_compare_multiline_brace_literals(code: &str) -> String {
                 let total_len: usize = parts.iter().map(|p| p.len()).sum::<usize>() + parts.len();
                 if is_fixture_entrypoint || total_len <= 200 {
                     let joined = parts.join(" ");
-                    let cleaned = regex::Regex::new(r",\s*}")
-                        .unwrap()
+                    let cleaned = trailing_comma_before_brace_regex()
                         .replace_all(&joined.replace("  ", " "), " }")
                         .to_string();
                     result.push(cleaned);
@@ -5600,8 +5612,7 @@ fn normalize_compare_multiline_imports(code: &str) -> String {
                     j += 1;
                 }
                 let joined = parts.join(" ");
-                let cleaned = regex::Regex::new(r",\s*}")
-                    .unwrap()
+                let cleaned = trailing_comma_before_brace_regex()
                     .replace_all(&joined.replace("  ", " "), " }")
                     .to_string();
                 result.push(cleaned);

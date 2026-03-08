@@ -344,8 +344,10 @@ pub(crate) fn emit_module(
             body = crate::pipeline::insert_param_destructurings(&body, &pruned);
         }
         if !cf.preserved_body_statements.is_empty() {
-            body =
-                crate::pipeline::insert_preserved_body_statements(&body, &cf.preserved_body_statements);
+            body = crate::pipeline::insert_preserved_body_statements(
+                &body,
+                &cf.preserved_body_statements,
+            );
         }
         if !cf.directives.is_empty() {
             body = crate::pipeline::strip_directive_lines(&body, &cf.directives);
@@ -556,12 +558,14 @@ pub(crate) fn emit_module(
     }
 
     if (last_end as usize) < source.len() {
-        output.push_str(&crate::pipeline::rewrite_source_segment_with_runtime_import_merge(
-            source,
-            last_end as usize,
-            source.len(),
-            runtime_import_merge_plan.as_ref(),
-        ));
+        output.push_str(
+            &crate::pipeline::rewrite_source_segment_with_runtime_import_merge(
+                source,
+                last_end as usize,
+                source.len(),
+                runtime_import_merge_plan.as_ref(),
+            ),
+        );
     }
 
     if let Some(gate_name) = gating_local_name.as_ref().filter(|_| needs_cache_import) {

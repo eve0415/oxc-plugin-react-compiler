@@ -1085,14 +1085,14 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                     optional,
                     ..
                 } if same_place(object, receiver) => {
-                    return Some(lower_property_load(
+                    return lower_property_load(
                         self.builder,
                         receiver,
                         property,
                         receiver_optional || *optional,
                         |place, visiting| self.lower_place(place, visiting),
                         visiting,
-                    )?);
+                    );
                 }
                 InstructionValue::ComputedLoad {
                     object,
