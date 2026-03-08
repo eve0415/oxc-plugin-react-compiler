@@ -2506,10 +2506,11 @@ fn normalize_bailout_text(code: &str) -> String {
 
 fn normalize_shared_cosmetic_equivalences(code: &str) -> String {
     let mut normalized = code.to_string();
-    let steps: [fn(&str) -> String; 9] = [
+    let steps: [fn(&str) -> String; 10] = [
         normalize_compare_multiline_brace_literals,
         normalize_compare_multiline_imports,
         normalize_compare_trailing_sequence_null,
+        normalize_multiline_trailing_commas_before_closers,
         normalize_labeled_switch_breaks,
         normalize_switch_case_braces,
         normalize_multiline_switch_cases,
@@ -2521,6 +2522,13 @@ fn normalize_shared_cosmetic_equivalences(code: &str) -> String {
         normalized = step(&normalized);
     }
     normalized
+}
+
+fn normalize_multiline_trailing_commas_before_closers(code: &str) -> String {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r",\n([ \t]*[}\]])").unwrap())
+        .replace_all(code, "\n$1")
+        .into_owned()
 }
 
 fn single_param_arrow_paren_re() -> &'static regex::Regex {
@@ -8193,6 +8201,16 @@ mod tests {
         let actual = "if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) { x = [];";
         let expected =
             "if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) { ((x = []), null);";
+        assert_eq!(
+            normalize_shared_cosmetic_equivalences(actual),
+            normalize_shared_cosmetic_equivalences(expected)
+        );
+    }
+
+    #[test]
+    fn normalize_shared_cosmetic_equivalences_drops_multiline_trailing_enum_commas() {
+        let actual = "enum Bool {\nTrue = \"true\",\nFalse = \"false\"\n}";
+        let expected = "enum Bool {\nTrue = \"true\",\nFalse = \"false\",\n}";
         assert_eq!(
             normalize_shared_cosmetic_equivalences(actual),
             normalize_shared_cosmetic_equivalences(expected)
