@@ -32,7 +32,9 @@ struct RenderedCompiledFunction {
 }
 
 struct RenderedOutlinedFunction {
-    source: String,
+    name: String,
+    params: String,
+    body: String,
     hir_function: Option<crate::hir::types::HIRFunction>,
 }
 
@@ -205,15 +207,22 @@ fn try_emit_module(
                 && let Some(statement) =
                     super::hir_to_ast::try_lower_function_declaration_ast(builder, hir_function)
             {
+                let statement_source = codegen_statement_source(&allocator, state.source_type, &statement);
                 body.push(statement);
+                rendered_prefix.push_str(statement_source.trim_end_matches('\n'));
             } else {
+                let source = format_outlined_function_source(
+                    &outlined.name,
+                    &outlined.params,
+                    &outlined.body,
+                );
                 body.extend(parse_statements(
                     &allocator,
                     state.source_type,
-                    allocator.alloc_str(&outlined.source),
+                    allocator.alloc_str(&source),
                 )?);
+                rendered_prefix.push_str(&source);
             }
-            rendered_prefix.push_str(&outlined.source);
             rendered_prefix.push('\n');
         }
     }
@@ -799,15 +808,10 @@ fn render_compiled_function(
                 .iter()
                 .find(|(outlined_name, _)| outlined_name == fn_name)
                 .map(|(_, hir_function)| hir_function.clone());
-            let body_src = fn_body.as_str();
-            let trimmed = body_src.trim();
-            let source = if trimmed.is_empty() {
-                format!("function {}({}) {{}}", fn_name, fn_params)
-            } else {
-                format!("function {}({}) {{\n{}\n}}", fn_name, fn_params, trimmed)
-            };
             RenderedOutlinedFunction {
-                source,
+                name: fn_name.clone(),
+                params: fn_params.clone(),
+                body: fn_body.clone(),
                 hir_function,
             }
         })
@@ -888,6 +892,15 @@ fn codegen_statement_source(
         builder.vec1(statement.clone_in(allocator)),
     );
     codegen_program(&program)
+}
+
+fn format_outlined_function_source(name: &str, params: &str, body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        format!("function {}({}) {{}}", name, params)
+    } else {
+        format!("function {}({}) {{\n{}\n}}", name, params, trimmed)
+    }
 }
 
 #[cfg(test)]
