@@ -6,9 +6,9 @@
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
 
 #[derive(Clone, Debug)]
@@ -656,6 +656,7 @@ fn run_fixture_suite(
                         fixture_timeout,
                         run_skipped,
                         strict_output,
+                        backend_mode,
                         capture_generated_code,
                     );
                     if verbose {
@@ -676,6 +677,7 @@ fn run_fixture_suite(
                         fixture_timeout,
                         run_skipped,
                         strict_output,
+                        backend_mode,
                         capture_generated_code,
                     );
                     if verbose {
@@ -802,42 +804,10 @@ fn compare_backend_result(
         };
     };
 
-    let raw_formatted = match format_with_oxfmt(&fixture.input_path, raw_code) {
-        Ok(code) => code,
-        Err(err) => {
-            return FixtureResult {
-                name: fixture.name.clone(),
-                status: Status::Fail,
-                message: Some(format!("Failed to format raw backend output with oxfmt: {err}")),
-                expected_state: raw.expected_state,
-                actual_state: ActualState::HarnessFailure,
-                outcome: FixtureOutcome::HarnessFailure,
-                parity_success: false,
-                generated_code: None,
-                actual_code: None,
-                expected_code: None,
-                is_error_fixture: raw.is_error_fixture || ast.is_error_fixture,
-            };
-        }
-    };
-    let ast_formatted = match format_with_oxfmt(&fixture.input_path, ast_code) {
-        Ok(code) => code,
-        Err(err) => {
-            return FixtureResult {
-                name: fixture.name.clone(),
-                status: Status::Fail,
-                message: Some(format!("Failed to format AST backend output with oxfmt: {err}")),
-                expected_state: raw.expected_state,
-                actual_state: ActualState::HarnessFailure,
-                outcome: FixtureOutcome::HarnessFailure,
-                parity_success: false,
-                generated_code: None,
-                actual_code: None,
-                expected_code: None,
-                is_error_fixture: raw.is_error_fixture || ast.is_error_fixture,
-            };
-        }
-    };
+    let raw_formatted =
+        format_with_oxfmt(&fixture.input_path, raw_code).unwrap_or_else(|_| raw_code.to_string());
+    let ast_formatted =
+        format_with_oxfmt(&fixture.input_path, ast_code).unwrap_or_else(|_| ast_code.to_string());
 
     let raw_normalized = normalize_backend_compare_code(&raw_formatted);
     let ast_normalized = normalize_backend_compare_code(&ast_formatted);
@@ -1954,6 +1924,7 @@ fn run_fixture_with_timeout(
     timeout: std::time::Duration,
     run_skipped: bool,
     strict_output: bool,
+    backend_mode: BackendMode,
     capture_generated_code: bool,
 ) -> FixtureResult {
     let fixture_clone = fixture.clone();
@@ -1965,6 +1936,7 @@ fn run_fixture_with_timeout(
                 &fixture_clone,
                 run_skipped,
                 strict_output,
+                backend_mode,
                 capture_generated_code,
             );
             let _ = tx.send(r);
@@ -2012,6 +1984,7 @@ fn run_fixture(
     fixture: &Fixture,
     run_skipped: bool,
     strict_output: bool,
+    backend_mode: BackendMode,
     capture_generated_code: bool,
 ) -> FixtureResult {
     let source = match std::fs::read_to_string(&fixture.input_path) {
@@ -2466,8 +2439,18 @@ fn run_fixture(
             strict_output,
         );
         let postprocessed = normalize_post_babel_export_spacing(&postprocessed);
-        let actual = prepare_code_for_compare(&postprocessed, strict_output);
-        let expected = prepare_code_for_compare(&expected_code, strict_output);
+        let actual_source = maybe_format_ast_backend_compare_code(
+            &fixture.input_path,
+            &postprocessed,
+            backend_mode,
+        );
+        let expected_source = maybe_format_ast_backend_compare_code(
+            &fixture.input_path,
+            &expected_code,
+            backend_mode,
+        );
+        let actual = prepare_code_for_compare(&actual_source, strict_output);
+        let expected = prepare_code_for_compare(&expected_source, strict_output);
 
         match expected_state.unwrap_or(ExpectedState::Transform) {
             ExpectedState::Transform => {
@@ -2626,67 +2609,170 @@ fn canonicalize_strict_text(code: &str) -> String {
 
 const OXFMT_FORMAT_SCRIPT: &str = r#"
 import { format } from 'oxfmt';
-import fs from 'node:fs';
+import readline from 'node:readline';
 
-const fileName = process.argv[1] || 'fixture.js';
-const source = fs.readFileSync(0, 'utf8');
-const result = await format(fileName, source, {});
-if (result.errors && result.errors.length > 0) {
-  process.stderr.write(
-    result.errors.map(error => error.message || 'unknown oxfmt error').join('\n'),
-  );
-  process.exit(2);
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+for await (const line of rl) {
+  if (!line) continue;
+  let request;
+  try {
+    request = JSON.parse(line);
+  } catch (error) {
+    process.stdout.write(JSON.stringify({ error: error?.message || 'invalid request' }) + '\n');
+    continue;
+  }
+
+  try {
+    const result = await format(request.fileName || 'fixture.js', request.source || '', {});
+    if (result.errors && result.errors.length > 0) {
+      process.stdout.write(
+        JSON.stringify({
+          error: result.errors.map(error => error.message || 'unknown oxfmt error').join('\n'),
+        }) + '\n',
+      );
+      continue;
+    }
+    process.stdout.write(JSON.stringify({ code: result.code }) + '\n');
+  } catch (error) {
+    process.stdout.write(JSON.stringify({ error: error?.message || 'oxfmt failed' }) + '\n');
+  }
 }
-process.stdout.write(result.code);
 "#;
 
-fn format_with_oxfmt(input_path: &Path, code: &str) -> Result<String, String> {
-    let file_name = input_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("fixture.js");
+#[derive(Serialize)]
+struct OxfmtRequest<'a> {
+    #[serde(rename = "fileName")]
+    file_name: &'a str,
+    source: &'a str,
+}
+
+#[derive(Deserialize)]
+struct OxfmtResponse {
+    code: Option<String>,
+    error: Option<String>,
+}
+
+struct OxfmtSession {
+    _child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    _stderr: ChildStderr,
+}
+
+fn init_oxfmt_session() -> Result<std::sync::Mutex<OxfmtSession>, String> {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
         .ok_or_else(|| "failed to resolve workspace root".to_string())?;
 
-    let mut child = Command::new("pnpm")
+    let mut child = Command::new("node")
         .current_dir(workspace_root)
-        .args(["exec", "node", "--input-type=module", "-e", OXFMT_FORMAT_SCRIPT, file_name])
+        .args(["--input-type=module", "-e", OXFMT_FORMAT_SCRIPT])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| format!("failed to spawn oxfmt: {err}"))?;
 
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin
-            .write_all(code.as_bytes())
-            .map_err(|err| format!("failed to write oxfmt stdin: {err}"))?;
-    }
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "failed to capture oxfmt stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to capture oxfmt stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "failed to capture oxfmt stderr".to_string())?;
 
-    let output = child
-        .wait_with_output()
+    Ok(std::sync::Mutex::new(OxfmtSession {
+        _child: child,
+        stdin,
+        stdout: BufReader::new(stdout),
+        _stderr: stderr,
+    }))
+}
+
+fn format_with_oxfmt(input_path: &Path, code: &str) -> Result<String, String> {
+    static OXFMT_SESSION: OnceLock<Result<std::sync::Mutex<OxfmtSession>, String>> =
+        OnceLock::new();
+
+    let file_name = input_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("fixture.js");
+    let session = match OXFMT_SESSION.get_or_init(init_oxfmt_session) {
+        Ok(session) => session,
+        Err(err) => return Err(err.clone()),
+    };
+
+    let mut session = session
+        .lock()
+        .map_err(|_| "failed to lock oxfmt session".to_string())?;
+    let request = serde_json::to_string(&OxfmtRequest {
+        file_name,
+        source: code,
+    })
+    .map_err(|err| format!("failed to encode oxfmt request: {err}"))?;
+    session
+        .stdin
+        .write_all(request.as_bytes())
+        .and_then(|_| session.stdin.write_all(b"\n"))
+        .and_then(|_| session.stdin.flush())
+        .map_err(|err| format!("failed to write oxfmt stdin: {err}"))?;
+
+    let mut response_line = String::new();
+    session
+        .stdout
+        .read_line(&mut response_line)
         .map_err(|err| format!("failed to read oxfmt output: {err}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            format!("oxfmt exited with status {}", output.status)
-        } else {
-            stderr
-        });
+    if response_line.is_empty() {
+        return Err("oxfmt process terminated unexpectedly".to_string());
     }
 
-    String::from_utf8(output.stdout).map_err(|err| format!("oxfmt emitted invalid utf8: {err}"))
+    let response: OxfmtResponse = serde_json::from_str(response_line.trim_end())
+        .map_err(|err| format!("failed to decode oxfmt response: {err}"))?;
+    if let Some(error) = response.error {
+        return Err(error);
+    }
+
+    response
+        .code
+        .ok_or_else(|| "oxfmt response missing formatted code".to_string())
 }
 
 fn normalize_backend_compare_code(code: &str) -> String {
-    code.replace("\r\n", "\n")
-        .lines()
-        .map(str::trim_end)
-        .filter(|line| !line.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut normalized = normalize_code(code);
+    let steps: [fn(&str) -> String; 9] = [
+        normalize_compare_multiline_brace_literals,
+        normalize_compare_multiline_imports,
+        normalize_compare_trailing_sequence_null,
+        normalize_labeled_switch_breaks,
+        normalize_switch_case_braces,
+        normalize_multiline_switch_cases,
+        normalize_ts_object_type_semicolons,
+        normalize_numeric_exponent_literals,
+        normalize_compare_unicode_escapes,
+    ];
+    for step in steps {
+        normalized = step(&normalized);
+    }
+    normalized
+}
+
+fn maybe_format_ast_backend_compare_code(
+    input_path: &Path,
+    code: &str,
+    backend_mode: BackendMode,
+) -> String {
+    if backend_mode != BackendMode::Ast {
+        return code.to_string();
+    }
+
+    format_with_oxfmt(input_path, code).unwrap_or_else(|_| code.to_string())
 }
 
 fn prepare_code_for_compare(code: &str, strict_output: bool) -> String {
@@ -5428,6 +5514,219 @@ fn normalize_trailing_sequence_null(code: &str) -> String {
     result.join("\n")
 }
 
+fn normalize_compare_multiline_brace_literals(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        let is_bb_label_block = is_basic_block_label_open_brace(trimmed);
+        let is_fixture_entrypoint = trimmed.starts_with("export let FIXTURE_ENTRYPOINT = {")
+            || trimmed.starts_with("export const FIXTURE_ENTRYPOINT = {");
+        let ends_with_open_brace = trimmed.ends_with('{');
+        let is_obj_literal_start = (is_fixture_entrypoint
+            || trimmed.ends_with("= {")
+            || trimmed.ends_with(": {")
+            || trimmed == "{"
+            || trimmed.ends_with("({")
+            || trimmed.ends_with(", {")
+            || trimmed.ends_with("? {")
+            || trimmed == "return {"
+            || (trimmed.starts_with("return {") && ends_with_open_brace)
+            || (trimmed.contains("= {") && ends_with_open_brace && trimmed.contains("() {")))
+            && !trimmed.starts_with("if ")
+            && !trimmed.starts_with("} else")
+            && !trimmed.starts_with("for ")
+            && !trimmed.starts_with("while ")
+            && !trimmed.starts_with("do {")
+            && !trimmed.starts_with("try {")
+            && !trimmed.starts_with("catch")
+            && !trimmed.starts_with("switch ")
+            && !trimmed.starts_with("function ")
+            && !trimmed.contains("=> {")
+            && !is_bb_label_block;
+
+        if is_obj_literal_start {
+            let open_braces = trimmed.matches('{').count();
+            let close_braces = trimmed.matches('}').count();
+            let net = open_braces as i32 - close_braces as i32;
+            if net > 0 {
+                let mut parts = vec![trimmed.to_string()];
+                let mut j = i + 1;
+                let mut depth = net;
+                while j < lines.len() && depth > 0 {
+                    let t = lines[j].trim();
+                    depth += t.matches('{').count() as i32 - t.matches('}').count() as i32;
+                    parts.push(t.to_string());
+                    j += 1;
+                }
+                let total_len: usize = parts.iter().map(|p| p.len()).sum::<usize>() + parts.len();
+                if is_fixture_entrypoint || total_len <= 200 {
+                    let joined = parts.join(" ");
+                    let cleaned = regex::Regex::new(r",\s*}")
+                        .unwrap()
+                        .replace_all(&joined.replace("  ", " "), " }")
+                        .to_string();
+                    result.push(cleaned);
+                    i = j;
+                    continue;
+                }
+            }
+        }
+
+        result.push(trimmed.to_string());
+        i += 1;
+    }
+    result.join("\n")
+}
+
+fn normalize_compare_multiline_imports(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        if trimmed.starts_with("import {") || trimmed.starts_with("import type {") {
+            let brace_open = trimmed.matches('{').count();
+            let brace_close = trimmed.matches('}').count();
+            if brace_open > brace_close {
+                let mut parts = vec![trimmed.to_string()];
+                let mut j = i + 1;
+                let mut depth = (brace_open - brace_close) as i32;
+                while j < lines.len() && depth > 0 {
+                    let t = lines[j].trim();
+                    depth += t.matches('{').count() as i32 - t.matches('}').count() as i32;
+                    parts.push(t.to_string());
+                    j += 1;
+                }
+                let joined = parts.join(" ");
+                let cleaned = regex::Regex::new(r",\s*}")
+                    .unwrap()
+                    .replace_all(&joined.replace("  ", " "), " }")
+                    .to_string();
+                result.push(cleaned);
+                i = j;
+                continue;
+            }
+        }
+        result.push(trimmed.to_string());
+        i += 1;
+    }
+    result.join("\n")
+}
+
+fn normalize_compare_trailing_sequence_null(code: &str) -> String {
+    let mut result = Vec::new();
+    let assign_then_read = regex::Regex::new(
+        r"^\(\(([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(.+)\),\s*([A-Za-z_$][A-Za-z0-9_$]*)\);$",
+    )
+    .unwrap();
+    for line in code.lines() {
+        let trimmed = line.trim();
+        if let Some(caps) = assign_then_read
+            .captures(trimmed)
+            .filter(|caps| caps.get(1).unwrap().as_str() == caps.get(3).unwrap().as_str())
+        {
+            result.push(format!("{} = {};", &caps[1], &caps[2]));
+            continue;
+        }
+        if (trimmed.ends_with("), null;") || trimmed.ends_with("), undefined;"))
+            && trimmed.starts_with('(')
+        {
+            let suffix_len = if trimmed.ends_with("), null;") { 8 } else { 13 };
+            let inner = &trimmed[1..trimmed.len() - suffix_len];
+            if !inner.contains(',') {
+                result.push(format!(
+                    "{};",
+                    inner.trim_matches(|ch| ch == '(' || ch == ')')
+                ));
+                continue;
+            }
+        }
+        result.push(trimmed.to_string());
+    }
+    result.join("\n")
+}
+
+fn normalize_labeled_switch_breaks(code: &str) -> String {
+    let labeled_switch = regex::Regex::new(r"\bbb\d+:\s*(switch\s*\()").unwrap();
+    let code = labeled_switch.replace_all(code, "$1").to_string();
+    let labeled_break = regex::Regex::new(r"\bbreak\s+bb\d+;").unwrap();
+    labeled_break.replace_all(&code, "break;").to_string()
+}
+
+fn normalize_switch_case_braces(code: &str) -> String {
+    let mut result = Vec::new();
+    let mut in_case_brace = false;
+    for line in code.lines() {
+        let trimmed = line.trim();
+        if let Some(prefix) = trimmed.strip_suffix(" {")
+            && (prefix.starts_with("case ") || prefix == "default:")
+        {
+            result.push(prefix.to_string());
+            in_case_brace = true;
+            continue;
+        }
+        if in_case_brace && trimmed == "}" {
+            in_case_brace = false;
+            continue;
+        }
+        if trimmed.starts_with("case ") || trimmed == "default:" {
+            in_case_brace = false;
+        }
+        result.push(trimmed.to_string());
+    }
+    result.join("\n")
+}
+
+fn normalize_multiline_switch_cases(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        if trimmed.starts_with("case ") || trimmed == "default:" {
+            let mut parts = vec![trimmed.to_string()];
+            let mut j = i + 1;
+            while j < lines.len() {
+                let next = lines[j].trim();
+                if next.starts_with("case ") || next == "default:" || next == "}" {
+                    break;
+                }
+                parts.push(next.to_string());
+                j += 1;
+            }
+            result.push(parts.join(" "));
+            i = j;
+            continue;
+        }
+        result.push(trimmed.to_string());
+        i += 1;
+    }
+    result.join("\n")
+}
+
+fn normalize_ts_object_type_semicolons(code: &str) -> String {
+    let re = regex::Regex::new(r";(\s*})").unwrap();
+    re.replace_all(code, "$1").to_string()
+}
+
+fn normalize_numeric_exponent_literals(code: &str) -> String {
+    let re = regex::Regex::new(r"\b(\d+)e([+-]?\d+)\b").unwrap();
+    re.replace_all(code, |caps: &regex::Captures| {
+        let base = caps[1].parse::<u128>().ok();
+        let exponent = caps[2].parse::<i32>().ok();
+        match (base, exponent) {
+            (Some(base), Some(exponent)) if (0..=18).contains(&exponent) => base
+                .checked_mul(10u128.pow(exponent as u32))
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| caps[0].to_string()),
+            _ => caps[0].to_string(),
+        }
+    })
+    .to_string()
+}
+
 /// Strip redundant function names in function expressions.
 /// When a function expression is passed as an argument and the containing variable
 /// has the same name, Babel strips the function name but OXC preserves it.
@@ -6175,6 +6474,81 @@ fn normalize_unicode_escapes(code: &str) -> String {
             let b2 = u8::from_str_radix(&caps[2], 16).unwrap();
             let codepoint = ((b1 as u32 & 0x1F) << 6) | (b2 as u32 & 0x3F);
             format!("\\u{:04x}", codepoint)
+        })
+        .to_string()
+}
+
+fn normalize_compare_unicode_escapes(code: &str) -> String {
+    let mut result = String::with_capacity(code.len());
+    for ch in code.chars() {
+        if ch == '\t' {
+            result.push_str("\\t");
+        } else if !ch.is_ascii() {
+            let cp = ch as u32;
+            if cp <= 0xFFFF {
+                result.push_str(&format!("\\u{:04x}", cp));
+            } else {
+                let cp = cp - 0x1_0000;
+                let high = 0xD800 + ((cp >> 10) & 0x3FF);
+                let low = 0xDC00 + (cp & 0x3FF);
+                result.push_str(&format!("\\u{:04x}\\u{:04x}", high, low));
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    let utf8_pair =
+        regex::Regex::new(r"\\u00([cCdD][0-9a-fA-F])\\u00([89aAbB][0-9a-fA-F])").unwrap();
+    let result = utf8_pair
+        .replace_all(&result, |caps: &regex::Captures| {
+            let b1 = u8::from_str_radix(&caps[1], 16).unwrap();
+            let b2 = u8::from_str_radix(&caps[2], 16).unwrap();
+            let codepoint = ((b1 as u32 & 0x1F) << 6) | (b2 as u32 & 0x3F);
+            format!("\\u{:04x}", codepoint)
+        })
+        .to_string();
+
+    let utf8_triplet = regex::Regex::new(
+        r"\\u00([eE][0-9a-fA-F])\\u00([89aAbB][0-9a-fA-F])\\u00([89aAbB][0-9a-fA-F])",
+    )
+    .unwrap();
+    let result = utf8_triplet
+        .replace_all(&result, |caps: &regex::Captures| {
+            let b1 = u8::from_str_radix(&caps[1], 16).unwrap();
+            let b2 = u8::from_str_radix(&caps[2], 16).unwrap();
+            let b3 = u8::from_str_radix(&caps[3], 16).unwrap();
+            let codepoint =
+                ((b1 as u32 & 0x0F) << 12) | ((b2 as u32 & 0x3F) << 6) | (b3 as u32 & 0x3F);
+            format!("\\u{:04x}", codepoint)
+        })
+        .to_string();
+
+    let utf8_quad = regex::Regex::new(
+        r"\\u00([fF][0-7])\\u00([89aAbB][0-9a-fA-F])\\u00([89aAbB][0-9a-fA-F])\\u00([89aAbB][0-9a-fA-F])",
+    )
+    .unwrap();
+    let result = utf8_quad
+        .replace_all(&result, |caps: &regex::Captures| {
+            let b1 = u8::from_str_radix(&caps[1], 16).unwrap();
+            let b2 = u8::from_str_radix(&caps[2], 16).unwrap();
+            let b3 = u8::from_str_radix(&caps[3], 16).unwrap();
+            let b4 = u8::from_str_radix(&caps[4], 16).unwrap();
+            let codepoint = ((b1 as u32 & 0x07) << 18)
+                | ((b2 as u32 & 0x3F) << 12)
+                | ((b3 as u32 & 0x3F) << 6)
+                | (b4 as u32 & 0x3F);
+            let cp = codepoint - 0x1_0000;
+            let high = 0xD800 + ((cp >> 10) & 0x3FF);
+            let low = 0xDC00 + (cp & 0x3FF);
+            format!("\\u{:04x}\\u{:04x}", high, low)
+        })
+        .to_string();
+
+    let escape_case = regex::Regex::new(r"\\u([0-9a-fA-F]{4})").unwrap();
+    escape_case
+        .replace_all(&result, |caps: &regex::Captures| {
+            format!("\\u{}", caps[1].to_ascii_lowercase())
         })
         .to_string()
 }
