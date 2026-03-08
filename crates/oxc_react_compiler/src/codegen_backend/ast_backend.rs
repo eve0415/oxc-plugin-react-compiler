@@ -6,7 +6,7 @@ use oxc_span::{GetSpan, SPAN, SourceType};
 
 use crate::CompileResult;
 
-use super::{CompiledFunction, ModuleEmitArgs};
+use super::{CompiledBodyPayload, CompiledFunction, ModuleEmitArgs};
 
 struct AstRenderState {
     source_type: SourceType,
@@ -38,8 +38,7 @@ pub(crate) fn emit_module(
     let compiled = compiled
         .into_iter()
         .map(|mut compiled_function| {
-            if !compiled_function.needs_cache_import
-                && compiled_function.outlined_functions.is_empty()
+            if compiled_function.body_payload == CompiledBodyPayload::LowerFromFinalHir
                 && let Some(hir_function) = compiled_function.hir_function.as_ref()
                 && let Some(lowered_body) = super::hir_to_ast::try_lower_function_body(hir_function)
             {

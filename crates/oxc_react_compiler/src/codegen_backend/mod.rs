@@ -15,6 +15,12 @@ pub(crate) enum CodegenBackend {
     Compare,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompiledBodyPayload {
+    GeneratedString,
+    LowerFromFinalHir,
+}
+
 impl CodegenBackend {
     pub(crate) fn from_env() -> Self {
         match std::env::var("OXC_REACT_CODEGEN_BACKEND").ok().as_deref() {
@@ -31,6 +37,7 @@ pub(crate) struct CompiledFunction {
     pub(crate) start: u32,
     pub(crate) end: u32,
     pub(crate) generated_body: String,
+    pub(crate) body_payload: CompiledBodyPayload,
     pub(crate) needs_cache_import: bool,
     pub(crate) params_str: String,
     pub(crate) original_params_str: String,

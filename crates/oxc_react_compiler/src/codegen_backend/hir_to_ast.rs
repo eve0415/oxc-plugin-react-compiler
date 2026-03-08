@@ -19,7 +19,10 @@ use crate::hir::types::{
     PrimitiveValue, Terminal,
 };
 
-pub(crate) fn try_lower_function_body(hir_function: &HIRFunction) -> Option<String> {
+pub(crate) fn try_lower_function_body_ast<'a>(
+    builder: AstBuilder<'a>,
+    hir_function: &HIRFunction,
+) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
     let instruction_map = hir_function
         .body
         .blocks
@@ -43,8 +46,6 @@ pub(crate) fn try_lower_function_body(hir_function: &HIRFunction) -> Option<Stri
         return None;
     }
 
-    let allocator = Allocator::default();
-    let builder = AstBuilder::new(&allocator);
     let block_map = hir_function
         .body
         .blocks
@@ -54,7 +55,13 @@ pub(crate) fn try_lower_function_body(hir_function: &HIRFunction) -> Option<Stri
     let state = LoweringState::new(builder, &block_map, &instruction_map, used_temps);
     let body =
         state.lower_block_sequence(hir_function.body.entry, None, &mut HashSet::new(), None)?;
-    let body = strip_trailing_empty_return(body);
+    Some(strip_trailing_empty_return(body))
+}
+
+pub(crate) fn try_lower_function_body(hir_function: &HIRFunction) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let body = try_lower_function_body_ast(builder, hir_function)?;
     let program = builder.program(
         SPAN,
         SourceType::mjs(),

@@ -20,7 +20,9 @@ use oxc_span::GetSpan;
 use sha2::Sha256;
 
 use crate::CompileResult;
-use crate::codegen_backend::{CodegenBackend, CompiledFunction, ModuleEmitArgs};
+use crate::codegen_backend::{
+    CodegenBackend, CompiledBodyPayload, CompiledFunction, ModuleEmitArgs,
+};
 use crate::error::CompilerError;
 use crate::hir::build;
 use crate::hir::types::HIRFunction;
@@ -6256,12 +6258,20 @@ fn try_compile_function<'a>(
         vec![]
     };
 
+    let needs_cache_import = codegen_result.needs_cache_import || synthesized_param_default_cache;
+    let body_payload = if !needs_cache_import && outlined.is_empty() {
+        CompiledBodyPayload::LowerFromFinalHir
+    } else {
+        CompiledBodyPayload::GeneratedString
+    };
+
     Ok(Some(CompiledFunction {
         name: name.to_string(),
         start: func.span.start,
         end: func.span.end,
         generated_body,
-        needs_cache_import: codegen_result.needs_cache_import || synthesized_param_default_cache,
+        body_payload,
+        needs_cache_import,
         params_str: params_result.params_str,
         original_params_str: func_params_to_string(&func.params, source),
         param_destructurings,
@@ -6431,12 +6441,20 @@ fn try_compile_function_with_name<'a>(
         vec![]
     };
 
+    let needs_cache_import = codegen_result.needs_cache_import || synthesized_param_default_cache;
+    let body_payload = if !needs_cache_import && outlined.is_empty() {
+        CompiledBodyPayload::LowerFromFinalHir
+    } else {
+        CompiledBodyPayload::GeneratedString
+    };
+
     Ok(Some(CompiledFunction {
         name: name.to_string(),
         start: func.span.start,
         end: func.span.end,
         generated_body,
-        needs_cache_import: codegen_result.needs_cache_import || synthesized_param_default_cache,
+        body_payload,
+        needs_cache_import,
         params_str: params_result.params_str,
         original_params_str: func_params_to_string(&func.params, source),
         param_destructurings,
@@ -6614,12 +6632,20 @@ fn try_compile_arrow<'a>(
         vec![]
     };
 
+    let needs_cache_import = codegen_result.needs_cache_import || synthesized_param_default_cache;
+    let body_payload = if !needs_cache_import && outlined.is_empty() {
+        CompiledBodyPayload::LowerFromFinalHir
+    } else {
+        CompiledBodyPayload::GeneratedString
+    };
+
     Ok(Some(CompiledFunction {
         name: name.to_string(),
         start: arrow.span.start,
         end: arrow.span.end,
         generated_body,
-        needs_cache_import: codegen_result.needs_cache_import || synthesized_param_default_cache,
+        body_payload,
+        needs_cache_import,
         params_str: params_result.params_str,
         original_params_str: arrow_params_to_string(&arrow.params, source),
         param_destructurings,
