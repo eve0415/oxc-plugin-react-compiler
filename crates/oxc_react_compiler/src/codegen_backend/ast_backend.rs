@@ -44,6 +44,7 @@ pub(crate) fn emit_module(
         .into_iter()
         .map(|mut compiled_function| {
             if compiled_function.body_payload == CompiledBodyPayload::LowerFromFinalHir
+                && !can_emit_compiled_statement_ast(&compiled_function)
                 && let Some(hir_function) = compiled_function.hir_function.as_ref()
                 && let Some(lowered_body) = super::hir_to_ast::try_lower_function_body(hir_function)
             {
@@ -824,20 +825,23 @@ fn try_lower_compiled_statement_ast<'a>(
     builder: AstBuilder<'a>,
     cf: &CompiledFunction,
 ) -> Option<ast::Statement<'a>> {
-    if cf.body_payload != CompiledBodyPayload::LowerFromFinalHir
-        || !cf.is_function_declaration
-        || cf.needs_cache_import
-        || !cf.param_destructurings.is_empty()
-        || !cf.preserved_body_statements.is_empty()
-        || cf.needs_instrument_forget
-        || cf.needs_emit_freeze
-        || cf.needs_hook_guards
-        || cf.needs_structural_check_import
-        || cf.needs_lower_context_access
-    {
+    if !can_emit_compiled_statement_ast(cf) {
         return None;
     }
     super::hir_to_ast::try_lower_function_declaration_ast(builder, cf.hir_function.as_ref()?)
+}
+
+fn can_emit_compiled_statement_ast(cf: &CompiledFunction) -> bool {
+    cf.body_payload == CompiledBodyPayload::LowerFromFinalHir
+        && cf.is_function_declaration
+        && !cf.needs_cache_import
+        && cf.param_destructurings.is_empty()
+        && cf.preserved_body_statements.is_empty()
+        && !cf.needs_instrument_forget
+        && !cf.needs_emit_freeze
+        && !cf.needs_hook_guards
+        && !cf.needs_structural_check_import
+        && !cf.needs_lower_context_access
 }
 
 fn maybe_gate_entrypoint_source(source: String, gate_name: &str) -> String {
