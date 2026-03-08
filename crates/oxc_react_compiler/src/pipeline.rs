@@ -6261,6 +6261,15 @@ fn try_compile_function<'a>(
     } else {
         CompiledBodyPayload::GeneratedString
     };
+    let hir_outlined_functions = pipeline_output
+        .hir_outlined
+        .iter()
+        .map(|of| {
+            let mut hir_function = of.func.clone();
+            hir_function.id = Some(of.name.clone());
+            (of.name.clone(), hir_function)
+        })
+        .collect();
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -6284,6 +6293,7 @@ fn try_compile_function<'a>(
         needs_instrument_forget,
         needs_emit_freeze,
         outlined_functions: outlined,
+        hir_outlined_functions,
         has_fire_rewrite: pipeline_output.has_fire_rewrite,
         needs_hook_guards: codegen_result.needs_hook_guards,
         needs_structural_check_import: codegen_result.needs_structural_check_import,
@@ -6444,6 +6454,15 @@ fn try_compile_function_with_name<'a>(
     } else {
         CompiledBodyPayload::GeneratedString
     };
+    let hir_outlined_functions = pipeline_output
+        .hir_outlined
+        .iter()
+        .map(|of| {
+            let mut hir_function = of.func.clone();
+            hir_function.id = Some(of.name.clone());
+            (of.name.clone(), hir_function)
+        })
+        .collect();
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -6467,6 +6486,7 @@ fn try_compile_function_with_name<'a>(
         needs_instrument_forget,
         needs_emit_freeze,
         outlined_functions: outlined,
+        hir_outlined_functions,
         has_fire_rewrite: pipeline_output.has_fire_rewrite,
         needs_hook_guards: codegen_result.needs_hook_guards,
         needs_structural_check_import: codegen_result.needs_structural_check_import,
@@ -6635,6 +6655,15 @@ fn try_compile_arrow<'a>(
     } else {
         CompiledBodyPayload::GeneratedString
     };
+    let hir_outlined_functions = pipeline_output
+        .hir_outlined
+        .iter()
+        .map(|of| {
+            let mut hir_function = of.func.clone();
+            hir_function.id = Some(of.name.clone());
+            (of.name.clone(), hir_function)
+        })
+        .collect();
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -6658,6 +6687,7 @@ fn try_compile_arrow<'a>(
         needs_instrument_forget,
         needs_emit_freeze,
         outlined_functions: outlined,
+        hir_outlined_functions,
         has_fire_rewrite: pipeline_output.has_fire_rewrite,
         needs_hook_guards: codegen_result.needs_hook_guards,
         needs_structural_check_import: codegen_result.needs_structural_check_import,

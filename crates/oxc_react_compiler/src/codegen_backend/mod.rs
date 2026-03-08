@@ -38,6 +38,7 @@ pub(crate) struct CompiledFunction {
     pub(crate) needs_instrument_forget: bool,
     pub(crate) needs_emit_freeze: bool,
     pub(crate) outlined_functions: Vec<(String, String, String)>,
+    pub(crate) hir_outlined_functions: Vec<(String, crate::hir::types::HIRFunction)>,
     pub(crate) has_fire_rewrite: bool,
     pub(crate) needs_hook_guards: bool,
     pub(crate) needs_structural_check_import: bool,
@@ -55,6 +56,9 @@ pub(crate) struct ModuleEmitArgs<'a> {
     pub(crate) dynamic_gate_ident: Option<&'a str>,
 }
 
-pub(crate) fn emit_module(args: ModuleEmitArgs<'_>, compiled: Vec<CompiledFunction>) -> CompileResult {
+pub(crate) fn emit_module(
+    args: ModuleEmitArgs<'_>,
+    compiled: Vec<CompiledFunction>,
+) -> CompileResult {
     ast_backend::emit_module(args, compiled)
 }

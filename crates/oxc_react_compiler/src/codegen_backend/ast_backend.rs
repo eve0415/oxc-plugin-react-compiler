@@ -28,7 +28,12 @@ struct RenderedCompiledFunction {
     before_emit: String,
     replacement_src: String,
     next_source_start: u32,
-    outlined_sources: Vec<String>,
+    outlined_functions: Vec<RenderedOutlinedFunction>,
+}
+
+struct RenderedOutlinedFunction {
+    source: String,
+    hir_function: Option<crate::hir::types::HIRFunction>,
 }
 
 pub(crate) fn emit_module(
@@ -162,7 +167,7 @@ fn try_emit_module(
             continue;
         }
 
-        let (rewritten_stmt, outlined_sources) = rewrite_statement_source(
+        let (rewritten_stmt, outlined_functions) = rewrite_statement_source(
             span.start as usize,
             span.end as usize,
             &stmt_compiled,
@@ -182,13 +187,20 @@ fn try_emit_module(
         )?);
         rendered_prefix.push_str(&rewritten_stmt);
         rendered_prefix.push('\n');
-        for outlined_src in outlined_sources {
-            body.extend(parse_statements(
-                &allocator,
-                state.source_type,
-                allocator.alloc_str(&outlined_src),
-            )?);
-            rendered_prefix.push_str(&outlined_src);
+        for outlined in outlined_functions {
+            if let Some(hir_function) = outlined.hir_function.as_ref()
+                && let Some(statement) =
+                    super::hir_to_ast::try_lower_function_declaration_ast(builder, hir_function)
+            {
+                body.push(statement);
+            } else {
+                body.extend(parse_statements(
+                    &allocator,
+                    state.source_type,
+                    allocator.alloc_str(&outlined.source),
+                )?);
+            }
+            rendered_prefix.push_str(&outlined.source);
             rendered_prefix.push('\n');
         }
     }
@@ -514,10 +526,10 @@ fn rewrite_statement_source(
     global_prefix: &str,
     source: &str,
     state: &AstRenderState,
-) -> Result<(String, Vec<String>), String> {
+) -> Result<(String, Vec<RenderedOutlinedFunction>), String> {
     let mut rewritten = String::new();
     let mut last_end = stmt_start;
-    let mut outlined_sources = Vec::new();
+    let mut outlined_functions = Vec::new();
 
     for cf in compiled {
         if (cf.start as usize) < last_end || (cf.end as usize) > stmt_end {
@@ -536,11 +548,11 @@ fn rewrite_statement_source(
         } else {
             rendered.next_source_start as usize
         };
-        outlined_sources.extend(rendered.outlined_sources);
+        outlined_functions.extend(rendered.outlined_functions);
     }
 
     rewritten.push_str(&source[last_end..stmt_end]);
-    Ok((rewritten, outlined_sources))
+    Ok((rewritten, outlined_functions))
 }
 
 fn render_compiled_function(
@@ -765,15 +777,25 @@ fn render_compiled_function(
         }
     }
 
-    let outlined_sources = cf
+    let outlined_functions = cf
         .outlined_functions
         .iter()
         .map(|(fn_name, fn_params, fn_body)| {
-            let trimmed = fn_body.trim();
-            if trimmed.is_empty() {
+            let hir_function = cf
+                .hir_outlined_functions
+                .iter()
+                .find(|(outlined_name, _)| outlined_name == fn_name)
+                .map(|(_, hir_function)| hir_function.clone());
+            let body_src = fn_body.as_str();
+            let trimmed = body_src.trim();
+            let source = if trimmed.is_empty() {
                 format!("function {}({}) {{}}", fn_name, fn_params)
             } else {
                 format!("function {}({}) {{\n{}\n}}", fn_name, fn_params, trimmed)
+            };
+            RenderedOutlinedFunction {
+                source,
+                hir_function,
             }
         })
         .collect();
@@ -782,7 +804,7 @@ fn render_compiled_function(
         before_emit,
         replacement_src,
         next_source_start,
-        outlined_sources,
+        outlined_functions,
     }
 }
 

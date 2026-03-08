@@ -79,6 +79,71 @@ pub(crate) fn try_lower_function_body(hir_function: &HIRFunction) -> Option<Stri
     Some(Codegen::new().with_options(options).build(&program).code)
 }
 
+pub(crate) fn try_lower_function_declaration_ast<'a>(
+    builder: AstBuilder<'a>,
+    hir_function: &HIRFunction,
+) -> Option<ast::Statement<'a>> {
+    let name = hir_function.id.as_deref()?;
+    let params = lower_function_params(builder, hir_function)?;
+    let body = try_lower_function_body_ast(builder, hir_function)?;
+    let mut directives = builder.vec();
+    for directive in &hir_function.directives {
+        directives.push(builder.directive(
+            SPAN,
+            builder.string_literal(SPAN, builder.atom(directive), None),
+            builder.atom(directive),
+        ));
+    }
+    let declaration = builder.declaration_function(
+        SPAN,
+        ast::FunctionType::FunctionDeclaration,
+        Some(builder.binding_identifier(SPAN, builder.atom(name))),
+        hir_function.generator,
+        hir_function.async_,
+        false,
+        NONE,
+        NONE,
+        builder.alloc(params),
+        NONE,
+        Some(builder.alloc(builder.function_body(SPAN, directives, body))),
+    );
+    match declaration {
+        ast::Declaration::FunctionDeclaration(function) => {
+            Some(ast::Statement::FunctionDeclaration(function))
+        }
+        _ => None,
+    }
+}
+
+fn lower_function_params<'a>(
+    builder: AstBuilder<'a>,
+    hir_function: &HIRFunction,
+) -> Option<ast::FormalParameters<'a>> {
+    let mut items = builder.vec();
+    let mut rest = None;
+
+    for param in &hir_function.params {
+        let (place, is_spread) = match param {
+            types::Argument::Place(place) => (place, false),
+            types::Argument::Spread(place) => (place, true),
+        };
+        let name = place_name(place)?;
+        let pattern = builder.binding_pattern_binding_identifier(SPAN, builder.ident(name));
+        if is_spread {
+            rest = Some(builder.alloc_formal_parameter_rest(
+                SPAN,
+                builder.vec(),
+                builder.binding_rest_element(SPAN, pattern),
+                NONE,
+            ));
+        } else {
+            items.push(builder.plain_formal_parameter(SPAN, pattern));
+        }
+    }
+
+    Some(builder.formal_parameters(SPAN, ast::FormalParameterKind::FormalParameter, items, rest))
+}
+
 struct LoweringState<'a, 'hir> {
     builder: AstBuilder<'a>,
     block_map: &'hir HashMap<types::BlockId, &'hir types::BasicBlock>,
@@ -1892,6 +1957,11 @@ fn variable_declaration_kind(kind: InstructionKind) -> Option<ast::VariableDecla
 mod tests {
     use std::collections::HashSet;
 
+    use oxc_allocator::Allocator;
+    use oxc_ast::AstBuilder;
+    use oxc_codegen::{Codegen, CodegenOptions, IndentChar};
+    use oxc_span::{SPAN, SourceType};
+
     use crate::{
         environment::Environment,
         hir::types::{
@@ -1903,7 +1973,7 @@ mod tests {
         options::EnvironmentConfig,
     };
 
-    use super::try_lower_function_body;
+    use super::{try_lower_function_body, try_lower_function_declaration_ast};
 
     #[test]
     fn lowers_straight_line_temp_return() {
@@ -3429,6 +3499,120 @@ mod tests {
             try_lower_function_body(&hir).as_deref(),
             Some("let value;\nfor (let key in obj) {\n  value = key;\n}\nreturn value;\n")
         );
+    }
+
+    #[test]
+    fn lowers_function_declaration_with_named_params() {
+        let arg = named_place(230, 230, "arg");
+        let rest = named_place(231, 231, "rest");
+
+        let mut hir = hir_function(
+            vec![],
+            Terminal::Return {
+                value: arg.clone(),
+                return_variant: types::ReturnVariant::Explicit,
+                id: InstructionId::new(232),
+                loc: SourceLocation::Generated,
+            },
+            arg,
+        );
+        hir.id = Some("outlined".to_string());
+        hir.params = vec![types::Argument::Place(named_place(233, 233, "arg"))];
+        hir.params.push(types::Argument::Spread(rest));
+
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        let statement =
+            try_lower_function_declaration_ast(builder, &hir).expect("should lower declaration");
+        let program = builder.program(
+            SPAN,
+            SourceType::mjs(),
+            "",
+            builder.vec(),
+            None,
+            builder.vec(),
+            builder.vec1(statement),
+        );
+        let code = Codegen::new()
+            .with_options(CodegenOptions {
+                indent_char: IndentChar::Space,
+                indent_width: 2,
+                ..CodegenOptions::default()
+            })
+            .build(&program)
+            .code;
+
+        assert_eq!(
+            code,
+            "function outlined(arg, ...rest) {\n  return arg;\n}\n"
+        );
+    }
+
+    #[test]
+    fn lowers_function_declaration_with_directives() {
+        let value = named_place(234, 234, "value");
+
+        let mut hir = hir_function(
+            vec![],
+            Terminal::Return {
+                value: value.clone(),
+                return_variant: types::ReturnVariant::Explicit,
+                id: InstructionId::new(235),
+                loc: SourceLocation::Generated,
+            },
+            value,
+        );
+        hir.id = Some("outlined".to_string());
+        hir.directives = vec!["worklet".to_string()];
+
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        let statement =
+            try_lower_function_declaration_ast(builder, &hir).expect("should lower declaration");
+        let program = builder.program(
+            SPAN,
+            SourceType::mjs(),
+            "",
+            builder.vec(),
+            None,
+            builder.vec(),
+            builder.vec1(statement),
+        );
+        let code = Codegen::new()
+            .with_options(CodegenOptions {
+                indent_char: IndentChar::Space,
+                indent_width: 2,
+                ..CodegenOptions::default()
+            })
+            .build(&program)
+            .code;
+
+        assert_eq!(
+            code,
+            "function outlined() {\n  \"worklet\";\n  return value;\n}\n"
+        );
+    }
+
+    #[test]
+    fn rejects_function_declaration_with_unnamed_params() {
+        let temp = temporary_place(240);
+
+        let mut hir = hir_function(
+            vec![],
+            Terminal::Return {
+                value: temp.clone(),
+                return_variant: types::ReturnVariant::Explicit,
+                id: InstructionId::new(241),
+                loc: SourceLocation::Generated,
+            },
+            temp,
+        );
+        hir.id = Some("outlined".to_string());
+        hir.params = vec![types::Argument::Place(temporary_place(242))];
+
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        assert!(try_lower_function_declaration_ast(builder, &hir).is_none());
     }
 
     fn hir_function(
