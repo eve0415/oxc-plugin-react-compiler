@@ -49,7 +49,11 @@ pub(crate) fn emit_module(
         .collect::<Vec<_>>();
 
     if compiled.is_empty() {
-        return super::raw::emit_module(args, compiled);
+        return CompileResult {
+            transformed: false,
+            code: args.source_untransformed.to_string(),
+            map: None,
+        };
     }
 
     let raw_result = super::raw::emit_module(args, compiled.clone());
