@@ -3638,7 +3638,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
     // If JS/JSX parsing has errors, try again as TypeScript (some upstream fixtures
     // use TypeScript syntax in .js files, e.g. type annotations on parameters).
     // If that also fails, do a best-effort Flow signature type stripping fallback.
-    let (program, _source_type_used) = if !parser_ret.errors.is_empty()
+    let (program, source_type_used) = if !parser_ret.errors.is_empty()
         && !source_type.is_typescript()
     {
         let ts_type = oxc_span::SourceType::tsx();
@@ -3931,6 +3931,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
             filename,
             source,
             source_untransformed: &source_untransformed,
+            source_type: source_type_used,
             program: &program,
             options,
             dynamic_gate_ident: dynamic_gate_ident.as_deref(),

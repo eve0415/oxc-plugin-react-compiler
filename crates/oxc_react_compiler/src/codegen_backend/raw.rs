@@ -10,6 +10,7 @@ pub(crate) fn emit_module(
         filename,
         source,
         source_untransformed,
+        source_type: _,
         program,
         options,
         dynamic_gate_ident,

@@ -1,4 +1,5 @@
 use oxc_ast::ast;
+use oxc_span::SourceType;
 
 use crate::CompileResult;
 use crate::options::PluginOptions;
@@ -48,6 +49,7 @@ pub(crate) struct ModuleEmitArgs<'a> {
     pub(crate) filename: &'a str,
     pub(crate) source: &'a str,
     pub(crate) source_untransformed: &'a str,
+    pub(crate) source_type: SourceType,
     pub(crate) program: &'a ast::Program<'a>,
     pub(crate) options: &'a PluginOptions,
     pub(crate) dynamic_gate_ident: Option<&'a str>,

@@ -491,7 +491,7 @@ fn build_render_state(args: ModuleEmitArgs<'_>, compiled: &[CompiledFunction]) -
     }
 
     AstRenderState {
-        source_type: source_type_for_filename(args.filename),
+        source_type: args.source_type,
         cache_import_name,
         make_read_only_ident,
         should_instrument_ident,
@@ -814,6 +814,7 @@ fn codegen_program(program: &ast::Program<'_>) -> String {
     Codegen::new().with_options(options).build(program).code
 }
 
+#[cfg(test)]
 fn source_type_for_filename(filename: &str) -> SourceType {
     if filename.ends_with(".tsx") {
         SourceType::tsx()
