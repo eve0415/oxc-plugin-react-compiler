@@ -200,8 +200,8 @@ fn try_emit_module(
         body,
     );
     let code = codegen_program(&program);
-    let transformed = super::raw::normalize_for_transform_flag(&code)
-        != super::raw::normalize_for_transform_flag(args.source_untransformed);
+    let transformed = super::shared::normalize_for_transform_flag(&code)
+        != super::shared::normalize_for_transform_flag(args.source_untransformed);
 
     Ok(CompileResult {
         transformed,
@@ -650,7 +650,7 @@ fn render_compiled_function(
     let original_src_raw = source[cf.start as usize..cf.end as usize]
         .trim()
         .to_string();
-    let preserve_original = super::raw::should_preserve_original_layout_for_equivalent_output(
+    let preserve_original = super::shared::should_preserve_original_layout_for_equivalent_output(
         cf,
         &compiled_fn_src,
         &original_src_raw,
@@ -669,7 +669,7 @@ fn render_compiled_function(
     {
         let gate_call = format!("{}()", gate_name);
         let has_parenthesized_arrow_body = cf.is_arrow && original_src_raw.contains("=> (");
-        let original_src = super::raw::gated_uncompiled_function_source(source, cf);
+        let original_src = super::shared::gated_uncompiled_function_source(source, cf);
         let before_trimmed_owned = before_emit.trim_end().to_string();
         let before_trimmed = before_trimmed_owned.as_str();
         let export_default_ctx = before_trimmed.ends_with("export default");
