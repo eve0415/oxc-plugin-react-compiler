@@ -8,7 +8,9 @@ use oxc_syntax::{
     identifier::is_identifier_name,
     number::NumberBase,
     operator::{
-        AssignmentOperator, BinaryOperator as AstBinaryOperator, UnaryOperator as AstUnaryOperator,
+        AssignmentOperator, BinaryOperator as AstBinaryOperator,
+        LogicalOperator as AstLogicalOperator, UnaryOperator as AstUnaryOperator,
+        UpdateOperator as AstUpdateOperator,
     },
 };
 
@@ -452,7 +454,14 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
             }
             InstructionValue::CallExpression { .. }
             | InstructionValue::MethodCall { .. }
-            | InstructionValue::NewExpression { .. } => {
+            | InstructionValue::NewExpression { .. }
+            | InstructionValue::StoreGlobal { .. }
+            | InstructionValue::PropertyStore { .. }
+            | InstructionValue::ComputedStore { .. }
+            | InstructionValue::PropertyDelete { .. }
+            | InstructionValue::ComputedDelete { .. }
+            | InstructionValue::PrefixUpdate { .. }
+            | InstructionValue::PostfixUpdate { .. } => {
                 if instruction.lvalue.identifier.name.is_some()
                     || self.used_temps.contains(&instruction.lvalue.identifier.id)
                 {
@@ -465,6 +474,9 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                     ),
                 ))
             }
+            InstructionValue::Debugger { .. } => Some(Some(ast::Statement::DebuggerStatement(
+                self.builder.alloc_debugger_statement(SPAN),
+            ))),
             _ => {
                 if instruction.lvalue.identifier.name.is_some() {
                     None
@@ -618,6 +630,28 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 lower_unary_operator(*operator),
                 self.lower_place(value, visiting)?,
             )),
+            InstructionValue::LogicalExpression {
+                operator,
+                left,
+                right,
+                ..
+            } => Some(self.builder.expression_logical(
+                SPAN,
+                self.lower_place(left, visiting)?,
+                lower_logical_operator(*operator),
+                self.lower_place(right, visiting)?,
+            )),
+            InstructionValue::Ternary {
+                test,
+                consequent,
+                alternate,
+                ..
+            } => Some(self.builder.expression_conditional(
+                SPAN,
+                self.lower_place(test, visiting)?,
+                self.lower_place(consequent, visiting)?,
+                self.lower_place(alternate, visiting)?,
+            )),
             InstructionValue::CallExpression {
                 callee,
                 args,
@@ -689,6 +723,100 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 self.lower_place(property, visiting)?,
                 *optional,
             ))),
+            InstructionValue::PropertyStore {
+                object,
+                property,
+                value,
+                ..
+            } => Some(self.builder.expression_assignment(
+                SPAN,
+                AssignmentOperator::Assign,
+                lower_property_assignment_target(
+                    self.builder,
+                    object,
+                    property,
+                    |place, visiting| self.lower_place(place, visiting),
+                    visiting,
+                )?,
+                self.lower_place(value, visiting)?,
+            )),
+            InstructionValue::ComputedStore {
+                object,
+                property,
+                value,
+                ..
+            } => Some(self.builder.expression_assignment(
+                SPAN,
+                AssignmentOperator::Assign,
+                ast::AssignmentTarget::from(ast::SimpleAssignmentTarget::from(
+                    self.builder.member_expression_computed(
+                        SPAN,
+                        self.lower_place(object, visiting)?,
+                        self.lower_place(property, visiting)?,
+                        false,
+                    ),
+                )),
+                self.lower_place(value, visiting)?,
+            )),
+            InstructionValue::PropertyDelete {
+                object, property, ..
+            } => Some(self.builder.expression_unary(
+                SPAN,
+                AstUnaryOperator::Delete,
+                lower_property_load(
+                    self.builder,
+                    object,
+                    property,
+                    false,
+                    |place, visiting| self.lower_place(place, visiting),
+                    visiting,
+                )?,
+            )),
+            InstructionValue::ComputedDelete {
+                object, property, ..
+            } => Some(self.builder.expression_unary(
+                SPAN,
+                AstUnaryOperator::Delete,
+                ast::Expression::from(self.builder.member_expression_computed(
+                    SPAN,
+                    self.lower_place(object, visiting)?,
+                    self.lower_place(property, visiting)?,
+                    false,
+                )),
+            )),
+            InstructionValue::StoreGlobal { name, value, .. } => {
+                Some(self.builder.expression_assignment(
+                    SPAN,
+                    AssignmentOperator::Assign,
+                    ast::AssignmentTarget::from(
+                        self.builder.simple_assignment_target_assignment_target_identifier(
+                            SPAN,
+                            self.builder.ident(name),
+                        ),
+                    ),
+                    self.lower_place(value, visiting)?,
+                ))
+            }
+            InstructionValue::PrefixUpdate {
+                lvalue,
+                operation,
+                ..
+            } => Some(self.builder.expression_update(
+                SPAN,
+                lower_update_operator(*operation),
+                true,
+                self.lower_simple_assignment_target(lvalue, visiting)?,
+            )),
+            InstructionValue::PostfixUpdate {
+                lvalue,
+                operation,
+                ..
+            } => Some(self.builder.expression_update(
+                SPAN,
+                lower_update_operator(*operation),
+                false,
+                self.lower_simple_assignment_target(lvalue, visiting)?,
+            )),
             InstructionValue::MetaProperty { meta, property, .. } => Some(
                 self.builder.expression_meta_property(
                     SPAN,
@@ -718,6 +846,15 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
             }
         }
         Some(self.builder.vec_from_iter(lowered))
+    }
+
+    fn lower_simple_assignment_target(
+        &self,
+        place: &Place,
+        visiting: &mut HashSet<IdentifierId>,
+    ) -> Option<ast::SimpleAssignmentTarget<'a>> {
+        let expression = self.lower_place(place, visiting)?;
+        expression_to_simple_assignment_target(self.builder, expression)
     }
 
     fn lower_array_elements(
@@ -943,6 +1080,20 @@ where
     }
 }
 
+fn lower_property_assignment_target<'a, F>(
+    builder: AstBuilder<'a>,
+    object: &Place,
+    property: &types::PropertyLiteral,
+    lower_place: F,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<ast::AssignmentTarget<'a>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>>,
+{
+    let expression = lower_property_load(builder, object, property, false, lower_place, visiting)?;
+    expression_to_assignment_target(builder, expression)
+}
+
 fn collect_used_temps(hir_function: &HIRFunction) -> HashSet<IdentifierId> {
     let mut used = HashSet::new();
     for (_, block) in &hir_function.body.blocks {
@@ -999,12 +1150,50 @@ fn collect_instruction_uses(instruction: &Instruction, used: &mut HashSet<Identi
             record_argument_uses(args, used);
         }
         InstructionValue::PropertyLoad { object, .. } => record_temp_use(object, used),
+        InstructionValue::PropertyStore { object, value, .. } => {
+            record_temp_use(object, used);
+            record_temp_use(value, used);
+        }
+        InstructionValue::PropertyDelete { object, .. } => record_temp_use(object, used),
         InstructionValue::ComputedLoad {
             object, property, ..
         } => {
             record_temp_use(object, used);
             record_temp_use(property, used);
         }
+        InstructionValue::ComputedStore {
+            object,
+            property,
+            value,
+            ..
+        } => {
+            record_temp_use(object, used);
+            record_temp_use(property, used);
+            record_temp_use(value, used);
+        }
+        InstructionValue::ComputedDelete {
+            object, property, ..
+        } => {
+            record_temp_use(object, used);
+            record_temp_use(property, used);
+        }
+        InstructionValue::StoreGlobal { value, .. } => record_temp_use(value, used),
+        InstructionValue::LogicalExpression { left, right, .. } => {
+            record_temp_use(left, used);
+            record_temp_use(right, used);
+        }
+        InstructionValue::Ternary {
+            test,
+            consequent,
+            alternate,
+            ..
+        } => {
+            record_temp_use(test, used);
+            record_temp_use(consequent, used);
+            record_temp_use(alternate, used);
+        }
+        InstructionValue::PrefixUpdate { lvalue, .. }
+        | InstructionValue::PostfixUpdate { lvalue, .. } => record_temp_use(lvalue, used),
         _ => {}
     }
 }
@@ -1098,6 +1287,60 @@ fn lower_unary_operator(operator: types::UnaryOperator) -> AstUnaryOperator {
         types::UnaryOperator::TypeOf => AstUnaryOperator::Typeof,
         types::UnaryOperator::Void => AstUnaryOperator::Void,
     }
+}
+
+fn lower_logical_operator(operator: types::LogicalOperator) -> AstLogicalOperator {
+    match operator {
+        types::LogicalOperator::And => AstLogicalOperator::And,
+        types::LogicalOperator::Or => AstLogicalOperator::Or,
+        types::LogicalOperator::NullishCoalescing => AstLogicalOperator::Coalesce,
+    }
+}
+
+fn lower_update_operator(operator: types::UpdateOperator) -> AstUpdateOperator {
+    match operator {
+        types::UpdateOperator::Increment => AstUpdateOperator::Increment,
+        types::UpdateOperator::Decrement => AstUpdateOperator::Decrement,
+    }
+}
+
+fn expression_to_simple_assignment_target<'a>(
+    builder: AstBuilder<'a>,
+    expression: ast::Expression<'a>,
+) -> Option<ast::SimpleAssignmentTarget<'a>> {
+    match expression {
+        ast::Expression::Identifier(identifier) => Some(
+            builder.simple_assignment_target_assignment_target_identifier(
+                SPAN,
+                identifier.name,
+            ),
+        ),
+        ast::Expression::ComputedMemberExpression(member) => {
+            Some(ast::SimpleAssignmentTarget::from(
+                ast::MemberExpression::ComputedMemberExpression(member),
+            ))
+        }
+        ast::Expression::StaticMemberExpression(member) => {
+            Some(ast::SimpleAssignmentTarget::from(
+                ast::MemberExpression::StaticMemberExpression(member),
+            ))
+        }
+        ast::Expression::PrivateFieldExpression(member) => {
+            Some(ast::SimpleAssignmentTarget::from(
+                ast::MemberExpression::PrivateFieldExpression(member),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn expression_to_assignment_target<'a>(
+    builder: AstBuilder<'a>,
+    expression: ast::Expression<'a>,
+) -> Option<ast::AssignmentTarget<'a>> {
+    Some(ast::AssignmentTarget::from(
+        expression_to_simple_assignment_target(builder, expression)?,
+    ))
 }
 
 fn place_name(place: &Place) -> Option<&str> {
@@ -2163,6 +2406,129 @@ mod tests {
         assert_eq!(
             try_lower_function_body(&hir).as_deref(),
             Some("let value;\nswitch (tag) {\n  case 1:\n    value = 2;\n    break;\n  default:\n    value = 3;\n    break;\n}\nreturn value;\n")
+        );
+    }
+
+    #[test]
+    fn lowers_logical_and_ternary_expressions() {
+        let flag_place = named_place(160, 160, "flag");
+        let other_place = named_place(161, 161, "other");
+        let one = temporary_place(162);
+        let two = temporary_place(163);
+        let logical = temporary_place(164);
+        let ternary = temporary_place(165);
+
+        let hir = hir_function(
+            vec![
+                instruction(
+                    166,
+                    one.clone(),
+                    types::InstructionValue::Primitive {
+                        value: types::PrimitiveValue::Number(1.0),
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    167,
+                    two.clone(),
+                    types::InstructionValue::Primitive {
+                        value: types::PrimitiveValue::Number(2.0),
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    168,
+                    logical.clone(),
+                    types::InstructionValue::LogicalExpression {
+                        operator: types::LogicalOperator::And,
+                        left: flag_place,
+                        right: other_place,
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    169,
+                    ternary.clone(),
+                    types::InstructionValue::Ternary {
+                        test: logical,
+                        consequent: one,
+                        alternate: two,
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+            ],
+            Terminal::Return {
+                value: ternary,
+                return_variant: types::ReturnVariant::Explicit,
+                id: InstructionId::new(170),
+                loc: SourceLocation::Generated,
+            },
+            temporary_place(171),
+        );
+
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("return flag && other ? 1 : 2;\n")
+        );
+    }
+
+    #[test]
+    fn lowers_side_effecting_mutation_statements() {
+        let index_place = named_place(180, 180, "i");
+        let object_place = named_place(181, 181, "obj");
+        let key_place = named_place(182, 182, "key");
+
+        let hir = hir_function(
+            vec![
+                instruction(
+                    183,
+                    temporary_place(184),
+                    types::InstructionValue::PrefixUpdate {
+                        lvalue: index_place.clone(),
+                        operation: types::UpdateOperator::Increment,
+                        value: index_place.clone(),
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    185,
+                    temporary_place(186),
+                    types::InstructionValue::ComputedStore {
+                        object: object_place.clone(),
+                        property: key_place,
+                        value: index_place.clone(),
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    187,
+                    temporary_place(188),
+                    types::InstructionValue::PropertyDelete {
+                        object: object_place,
+                        property: types::PropertyLiteral::String("value".to_string()),
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    189,
+                    temporary_place(190),
+                    types::InstructionValue::Debugger {
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+            ],
+            Terminal::Return {
+                value: index_place,
+                return_variant: types::ReturnVariant::Explicit,
+                id: InstructionId::new(191),
+                loc: SourceLocation::Generated,
+            },
+            temporary_place(192),
+        );
+
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("++i;\nobj[key] = i;\ndelete obj.value;\ndebugger;\nreturn i;\n")
         );
     }
 
