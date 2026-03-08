@@ -167,6 +167,18 @@ fn try_emit_module(
             continue;
         }
 
+        if stmt_compiled.len() == 1
+            && stmt_compiled[0].start == span.start
+            && stmt_compiled[0].end == span.end
+            && let Some(statement) = try_lower_compiled_statement_ast(builder, stmt_compiled[0])
+        {
+            let statement_source = codegen_statement_source(&allocator, state.source_type, &statement);
+            body.push(statement);
+            rendered_prefix.push_str(statement_source.trim_end_matches('\n'));
+            rendered_prefix.push('\n');
+            continue;
+        }
+
         let (rewritten_stmt, outlined_functions) = rewrite_statement_source(
             span.start as usize,
             span.end as usize,
@@ -808,6 +820,26 @@ fn render_compiled_function(
     }
 }
 
+fn try_lower_compiled_statement_ast<'a>(
+    builder: AstBuilder<'a>,
+    cf: &CompiledFunction,
+) -> Option<ast::Statement<'a>> {
+    if cf.body_payload != CompiledBodyPayload::LowerFromFinalHir
+        || !cf.is_function_declaration
+        || cf.needs_cache_import
+        || !cf.param_destructurings.is_empty()
+        || !cf.preserved_body_statements.is_empty()
+        || cf.needs_instrument_forget
+        || cf.needs_emit_freeze
+        || cf.needs_hook_guards
+        || cf.needs_structural_check_import
+        || cf.needs_lower_context_access
+    {
+        return None;
+    }
+    super::hir_to_ast::try_lower_function_declaration_ast(builder, cf.hir_function.as_ref()?)
+}
+
 fn maybe_gate_entrypoint_source(source: String, gate_name: &str) -> String {
     crate::pipeline::gate_fixture_entrypoint_arrows(source, gate_name)
 }
@@ -834,6 +866,24 @@ fn codegen_program(program: &ast::Program<'_>) -> String {
         ..CodegenOptions::default()
     };
     Codegen::new().with_options(options).build(program).code
+}
+
+fn codegen_statement_source(
+    allocator: &Allocator,
+    source_type: SourceType,
+    statement: &ast::Statement<'_>,
+) -> String {
+    let builder = AstBuilder::new(allocator);
+    let program = builder.program(
+        SPAN,
+        source_type,
+        "",
+        builder.vec(),
+        None,
+        builder.vec(),
+        builder.vec1(statement.clone_in(allocator)),
+    );
+    codegen_program(&program)
 }
 
 #[cfg(test)]
