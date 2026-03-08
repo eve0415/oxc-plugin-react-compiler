@@ -1,17 +1,20 @@
 use std::collections::{HashMap, HashSet};
 
 use oxc_allocator::Allocator;
-use oxc_ast::{AstBuilder, ast};
+use oxc_ast::{AstBuilder, NONE, ast};
 use oxc_codegen::{Codegen, CodegenOptions, IndentChar};
 use oxc_span::{SPAN, SourceType};
 use oxc_syntax::{
     identifier::is_identifier_name,
     number::NumberBase,
-    operator::{BinaryOperator as AstBinaryOperator, UnaryOperator as AstUnaryOperator},
+    operator::{
+        AssignmentOperator, BinaryOperator as AstBinaryOperator, UnaryOperator as AstUnaryOperator,
+    },
 };
 
 use crate::hir::types::{
-    self, HIRFunction, IdentifierId, Instruction, InstructionValue, Place, PrimitiveValue, Terminal,
+    self, HIRFunction, IdentifierId, Instruction, InstructionKind, InstructionValue, Place,
+    PrimitiveValue, Terminal,
 };
 
 pub(crate) fn try_lower_function_body(hir_function: &HIRFunction) -> Option<String> {
@@ -22,17 +25,6 @@ pub(crate) fn try_lower_function_body(hir_function: &HIRFunction) -> Option<Stri
     if !entry_block.phis.is_empty() {
         return None;
     }
-    if entry_block
-        .instructions
-        .iter()
-        .any(|instruction| instruction.lvalue.identifier.name.is_some())
-    {
-        return None;
-    }
-
-    let Terminal::Return { value, .. } = &entry_block.terminal else {
-        return None;
-    };
 
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
@@ -41,13 +33,18 @@ pub(crate) fn try_lower_function_body(hir_function: &HIRFunction) -> Option<Stri
         .iter()
         .map(|instruction| (instruction.lvalue.identifier.id, instruction))
         .collect::<HashMap<_, _>>();
-
-    let return_expression = lower_place(
+    let state = LoweringState::new(
         builder,
-        value,
         &instruction_map,
-        &mut HashSet::new(),
-    )?;
+        collect_used_temps(&entry_block.instructions, &entry_block.terminal),
+    );
+    let mut body = builder.vec();
+    for instruction in &entry_block.instructions {
+        if let Some(statement) = state.lower_instruction_to_statement(instruction)? {
+            body.push(statement);
+        }
+    }
+    body.push(state.lower_terminal(&entry_block.terminal)?);
     let program = builder.program(
         SPAN,
         SourceType::mjs(),
@@ -55,7 +52,7 @@ pub(crate) fn try_lower_function_body(hir_function: &HIRFunction) -> Option<Stri
         builder.vec(),
         None,
         builder.vec(),
-        builder.vec1(builder.statement_return(SPAN, Some(return_expression))),
+        body,
     );
     let options = CodegenOptions {
         indent_char: IndentChar::Space,
@@ -65,128 +62,320 @@ pub(crate) fn try_lower_function_body(hir_function: &HIRFunction) -> Option<Stri
     Some(Codegen::new().with_options(options).build(&program).code)
 }
 
-fn lower_place<'a>(
+struct LoweringState<'a, 'hir> {
     builder: AstBuilder<'a>,
-    place: &Place,
-    instruction_map: &HashMap<IdentifierId, &Instruction>,
-    visiting: &mut HashSet<IdentifierId>,
-) -> Option<ast::Expression<'a>> {
-    if let Some(name) = place_name(place) {
-        return Some(builder.expression_identifier(SPAN, builder.ident(name)));
-    }
-
-    let identifier_id = place.identifier.id;
-    if !visiting.insert(identifier_id) {
-        return None;
-    }
-    let instruction = instruction_map.get(&identifier_id)?;
-    let expression = lower_instruction_value(builder, &instruction.value, instruction_map, visiting);
-    visiting.remove(&identifier_id);
-    expression
+    instruction_map: &'hir HashMap<IdentifierId, &'hir Instruction>,
+    used_temps: HashSet<IdentifierId>,
 }
 
-fn lower_instruction_value<'a>(
-    builder: AstBuilder<'a>,
-    value: &InstructionValue,
-    instruction_map: &HashMap<IdentifierId, &Instruction>,
-    visiting: &mut HashSet<IdentifierId>,
-) -> Option<ast::Expression<'a>> {
-    match value {
-        InstructionValue::LoadLocal { place, .. } | InstructionValue::LoadContext { place, .. } => {
-            lower_place(builder, place, instruction_map, visiting)
-        }
-        InstructionValue::Primitive { value, .. } => Some(lower_primitive(builder, value)),
-        InstructionValue::BinaryExpression {
-            operator,
-            left,
-            right,
-            ..
-        } => Some(builder.expression_binary(
-            SPAN,
-            lower_place(builder, left, instruction_map, visiting)?,
-            lower_binary_operator(*operator),
-            lower_place(builder, right, instruction_map, visiting)?,
-        )),
-        InstructionValue::UnaryExpression {
-            operator, value, ..
-        } => Some(builder.expression_unary(
-            SPAN,
-            lower_unary_operator(*operator),
-            lower_place(builder, value, instruction_map, visiting)?,
-        )),
-        InstructionValue::PropertyLoad {
-            object,
-            property,
-            optional,
-            ..
-        } => Some(lower_property_load(
+impl<'a, 'hir> LoweringState<'a, 'hir> {
+    fn new(
+        builder: AstBuilder<'a>,
+        instruction_map: &'hir HashMap<IdentifierId, &'hir Instruction>,
+        used_temps: HashSet<IdentifierId>,
+    ) -> Self {
+        Self {
             builder,
-            object,
-            property,
-            *optional,
             instruction_map,
-            visiting,
-        )?),
-        InstructionValue::ComputedLoad {
-            object,
-            property,
-            optional,
-            ..
-        } => Some(ast::Expression::from(builder.member_expression_computed(
-            SPAN,
-            lower_place(builder, object, instruction_map, visiting)?,
-            lower_place(builder, property, instruction_map, visiting)?,
-            *optional,
-        ))),
-        InstructionValue::CallExpression {
-            callee,
-            args,
-            optional,
-            ..
-        } => Some(builder.expression_call(
-            SPAN,
-            lower_place(builder, callee, instruction_map, visiting)?,
-            None::<oxc_allocator::Box<'a, ast::TSTypeParameterInstantiation<'a>>>,
-            lower_arguments(builder, args, instruction_map, visiting)?,
-            *optional,
-        )),
-        _ => None,
-    }
-}
-
-fn lower_arguments<'a>(
-    builder: AstBuilder<'a>,
-    args: &[types::Argument],
-    instruction_map: &HashMap<IdentifierId, &Instruction>,
-    visiting: &mut HashSet<IdentifierId>,
-) -> Option<oxc_allocator::Vec<'a, ast::Argument<'a>>> {
-    let mut lowered = Vec::with_capacity(args.len());
-    for arg in args {
-        match arg {
-            types::Argument::Place(place) => lowered.push(ast::Argument::from(lower_place(
-                builder,
-                place,
-                instruction_map,
-                visiting,
-            )?)),
-            types::Argument::Spread(place) => lowered.push(builder.argument_spread_element(
-                SPAN,
-                lower_place(builder, place, instruction_map, visiting)?,
-            )),
+            used_temps,
         }
     }
-    Some(builder.vec_from_iter(lowered))
+
+    fn lower_terminal(&self, terminal: &Terminal) -> Option<ast::Statement<'a>> {
+        match terminal {
+            Terminal::Return { value, .. } => Some(
+                self.builder
+                    .statement_return(SPAN, Some(self.lower_place(value, &mut HashSet::new())?)),
+            ),
+            Terminal::Throw { value, .. } => {
+                Some(self.builder.statement_throw(SPAN, self.lower_place(value, &mut HashSet::new())?))
+            }
+            _ => None,
+        }
+    }
+
+    fn lower_instruction_to_statement(
+        &self,
+        instruction: &Instruction,
+    ) -> Option<Option<ast::Statement<'a>>> {
+        match &instruction.value {
+            InstructionValue::DeclareLocal { lvalue, .. }
+            | InstructionValue::DeclareContext { lvalue, .. } => {
+                if lvalue.kind == InstructionKind::Catch {
+                    return Some(None);
+                }
+                let name = place_name(&lvalue.place)?;
+                Some(Some(self.variable_declaration_statement(name, ast::VariableDeclarationKind::Let, None)))
+            }
+            InstructionValue::StoreLocal { lvalue, value, .. }
+            | InstructionValue::StoreContext { lvalue, value, .. } => {
+                let value = self.lower_place(value, &mut HashSet::new())?;
+                if let Some(name) = place_name(&lvalue.place) {
+                    Some(Some(self.lower_named_store(name, lvalue.kind, value)))
+                } else {
+                    Some(None)
+                }
+            }
+            InstructionValue::CallExpression { .. }
+            | InstructionValue::MethodCall { .. }
+            | InstructionValue::NewExpression { .. } => {
+                if instruction.lvalue.identifier.name.is_some()
+                    || self.used_temps.contains(&instruction.lvalue.identifier.id)
+                {
+                    return Some(None);
+                }
+                Some(Some(
+                    self.builder.statement_expression(
+                        SPAN,
+                        self.lower_instruction_value(&instruction.value, &mut HashSet::new())?,
+                    ),
+                ))
+            }
+            _ => {
+                if instruction.lvalue.identifier.name.is_some() {
+                    None
+                } else {
+                    Some(None)
+                }
+            }
+        }
+    }
+
+    fn lower_named_store(
+        &self,
+        name: &str,
+        kind: InstructionKind,
+        value: ast::Expression<'a>,
+    ) -> ast::Statement<'a> {
+        let declaration_kind = match kind {
+            InstructionKind::Const | InstructionKind::HoistedConst => {
+                Some(ast::VariableDeclarationKind::Const)
+            }
+            InstructionKind::Let | InstructionKind::HoistedLet | InstructionKind::Catch => {
+                Some(ast::VariableDeclarationKind::Let)
+            }
+            InstructionKind::Reassign | InstructionKind::Function | InstructionKind::HoistedFunction => {
+                None
+            }
+        };
+
+        if let Some(kind) = declaration_kind {
+            let init = if is_undefined_expression(&value) {
+                None
+            } else {
+                Some(value)
+            };
+            let decl_kind = if init.is_some() {
+                kind
+            } else {
+                ast::VariableDeclarationKind::Let
+            };
+            self.variable_declaration_statement(name, decl_kind, init)
+        } else {
+            self.builder.statement_expression(
+                SPAN,
+                self.builder.expression_assignment(
+                    SPAN,
+                    AssignmentOperator::Assign,
+                    ast::AssignmentTarget::from(
+                        self.builder.simple_assignment_target_assignment_target_identifier(
+                            SPAN,
+                            self.builder.ident(name),
+                        ),
+                    ),
+                    value,
+                ),
+            )
+        }
+    }
+
+    fn variable_declaration_statement(
+        &self,
+        name: &str,
+        kind: ast::VariableDeclarationKind,
+        init: Option<ast::Expression<'a>>,
+    ) -> ast::Statement<'a> {
+        ast::Statement::VariableDeclaration(self.builder.alloc_variable_declaration(
+            SPAN,
+            kind,
+            self.builder.vec1(self.builder.variable_declarator(
+                SPAN,
+                kind,
+                self.builder
+                    .binding_pattern_binding_identifier(SPAN, self.builder.ident(name)),
+                NONE,
+                init,
+                false,
+            )),
+            false,
+        ))
+    }
+
+    fn lower_place(
+        &self,
+        place: &Place,
+        visiting: &mut HashSet<IdentifierId>,
+    ) -> Option<ast::Expression<'a>> {
+        if let Some(name) = place_name(place) {
+            return Some(
+                self.builder
+                    .expression_identifier(SPAN, self.builder.ident(name)),
+            );
+        }
+
+        let identifier_id = place.identifier.id;
+        if !visiting.insert(identifier_id) {
+            return None;
+        }
+        let instruction = self.instruction_map.get(&identifier_id)?;
+        let expression = self.lower_instruction_value(&instruction.value, visiting);
+        visiting.remove(&identifier_id);
+        expression
+    }
+
+    fn lower_instruction_value(
+        &self,
+        value: &InstructionValue,
+        visiting: &mut HashSet<IdentifierId>,
+    ) -> Option<ast::Expression<'a>> {
+        match value {
+            InstructionValue::LoadLocal { place, .. }
+            | InstructionValue::LoadContext { place, .. } => self.lower_place(place, visiting),
+            InstructionValue::StoreLocal { value, .. } | InstructionValue::StoreContext { value, .. } => {
+                self.lower_place(value, visiting)
+            }
+            InstructionValue::LoadGlobal { binding, .. } => Some(
+                self.builder
+                    .expression_identifier(SPAN, self.builder.ident(binding.name())),
+            ),
+            InstructionValue::Primitive { value, .. } => Some(lower_primitive(self.builder, value)),
+            InstructionValue::BinaryExpression {
+                operator,
+                left,
+                right,
+                ..
+            } => Some(self.builder.expression_binary(
+                SPAN,
+                self.lower_place(left, visiting)?,
+                lower_binary_operator(*operator),
+                self.lower_place(right, visiting)?,
+            )),
+            InstructionValue::UnaryExpression {
+                operator, value, ..
+            } => Some(self.builder.expression_unary(
+                SPAN,
+                lower_unary_operator(*operator),
+                self.lower_place(value, visiting)?,
+            )),
+            InstructionValue::CallExpression {
+                callee,
+                args,
+                optional,
+                ..
+            } => Some(self.builder.expression_call(
+                SPAN,
+                self.lower_place(callee, visiting)?,
+                NONE,
+                self.lower_arguments(args, visiting)?,
+                *optional,
+            )),
+            InstructionValue::NewExpression { callee, args, .. } => Some(self.builder.expression_new(
+                SPAN,
+                self.lower_place(callee, visiting)?,
+                NONE,
+                self.lower_arguments(args, visiting)?,
+            )),
+            InstructionValue::MethodCall {
+                receiver,
+                property,
+                args,
+                receiver_optional,
+                call_optional,
+                ..
+            } => {
+                let callee = ast::Expression::from(self.builder.member_expression_computed(
+                    SPAN,
+                    self.lower_place(receiver, visiting)?,
+                    self.lower_place(property, visiting)?,
+                    *receiver_optional,
+                ));
+                Some(self.builder.expression_call(
+                    SPAN,
+                    callee,
+                    NONE,
+                    self.lower_arguments(args, visiting)?,
+                    *call_optional,
+                ))
+            }
+            InstructionValue::TypeCastExpression { value, .. } => self.lower_place(value, visiting),
+            InstructionValue::PropertyLoad {
+                object,
+                property,
+                optional,
+                ..
+            } => Some(lower_property_load(
+                self.builder,
+                object,
+                property,
+                *optional,
+                |place, visiting| self.lower_place(place, visiting),
+                visiting,
+            )?),
+            InstructionValue::ComputedLoad {
+                object,
+                property,
+                optional,
+                ..
+            } => Some(ast::Expression::from(self.builder.member_expression_computed(
+                SPAN,
+                self.lower_place(object, visiting)?,
+                self.lower_place(property, visiting)?,
+                *optional,
+            ))),
+            InstructionValue::MetaProperty { meta, property, .. } => Some(
+                self.builder.expression_meta_property(
+                    SPAN,
+                    self.builder.identifier_name(SPAN, self.builder.ident(meta)),
+                    self.builder.identifier_name(SPAN, self.builder.ident(property)),
+                ),
+            ),
+            _ => None,
+        }
+    }
+
+    fn lower_arguments(
+        &self,
+        args: &[types::Argument],
+        visiting: &mut HashSet<IdentifierId>,
+    ) -> Option<oxc_allocator::Vec<'a, ast::Argument<'a>>> {
+        let mut lowered = Vec::with_capacity(args.len());
+        for arg in args {
+            match arg {
+                types::Argument::Place(place) => lowered.push(ast::Argument::from(
+                    self.lower_place(place, visiting)?,
+                )),
+                types::Argument::Spread(place) => lowered.push(
+                    self.builder
+                        .argument_spread_element(SPAN, self.lower_place(place, visiting)?),
+                ),
+            }
+        }
+        Some(self.builder.vec_from_iter(lowered))
+    }
 }
 
-fn lower_property_load<'a>(
+fn lower_property_load<'a, F>(
     builder: AstBuilder<'a>,
     object: &Place,
     property: &types::PropertyLiteral,
     optional: bool,
-    instruction_map: &HashMap<IdentifierId, &Instruction>,
+    lower_place: F,
     visiting: &mut HashSet<IdentifierId>,
-) -> Option<ast::Expression<'a>> {
-    let object = lower_place(builder, object, instruction_map, visiting)?;
+) -> Option<ast::Expression<'a>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>>,
+{
+    let object = lower_place(object, visiting)?;
     match property {
         types::PropertyLiteral::String(name) if is_identifier_name(name) => Some(
             ast::Expression::from(builder.member_expression_static(
@@ -213,6 +402,88 @@ fn lower_property_load<'a>(
             ),
         )),
     }
+}
+
+fn collect_used_temps(
+    instructions: &[Instruction],
+    terminal: &Terminal,
+) -> HashSet<IdentifierId> {
+    let mut used = HashSet::new();
+    for instruction in instructions {
+        collect_instruction_uses(instruction, &mut used);
+    }
+    match terminal {
+        Terminal::Return { value, .. } | Terminal::Throw { value, .. } => {
+            record_temp_use(value, &mut used);
+        }
+        _ => {}
+    }
+    used
+}
+
+fn collect_instruction_uses(instruction: &Instruction, used: &mut HashSet<IdentifierId>) {
+    match &instruction.value {
+        InstructionValue::LoadLocal { place, .. } | InstructionValue::LoadContext { place, .. } => {
+            record_temp_use(place, used);
+        }
+        InstructionValue::StoreLocal { value, .. } | InstructionValue::StoreContext { value, .. } => {
+            record_temp_use(value, used);
+        }
+        InstructionValue::BinaryExpression { left, right, .. } => {
+            record_temp_use(left, used);
+            record_temp_use(right, used);
+        }
+        InstructionValue::UnaryExpression { value, .. }
+        | InstructionValue::TypeCastExpression { value, .. } => {
+            record_temp_use(value, used);
+        }
+        InstructionValue::CallExpression { callee, args, .. }
+        | InstructionValue::NewExpression { callee, args, .. } => {
+            record_temp_use(callee, used);
+            record_argument_uses(args, used);
+        }
+        InstructionValue::MethodCall {
+            receiver,
+            property,
+            args,
+            ..
+        } => {
+            record_temp_use(receiver, used);
+            record_temp_use(property, used);
+            record_argument_uses(args, used);
+        }
+        InstructionValue::PropertyLoad { object, .. } => record_temp_use(object, used),
+        InstructionValue::ComputedLoad {
+            object, property, ..
+        } => {
+            record_temp_use(object, used);
+            record_temp_use(property, used);
+        }
+        _ => {}
+    }
+}
+
+fn record_argument_uses(args: &[types::Argument], used: &mut HashSet<IdentifierId>) {
+    for arg in args {
+        match arg {
+            types::Argument::Place(place) | types::Argument::Spread(place) => {
+                record_temp_use(place, used);
+            }
+        }
+    }
+}
+
+fn record_temp_use(place: &Place, used: &mut HashSet<IdentifierId>) {
+    if place.identifier.name.is_none() {
+        used.insert(place.identifier.id);
+    }
+}
+
+fn is_undefined_expression(expression: &ast::Expression<'_>) -> bool {
+    matches!(
+        expression,
+        ast::Expression::Identifier(identifier) if identifier.name == "undefined"
+    )
 }
 
 fn lower_primitive<'a>(builder: AstBuilder<'a>, value: &PrimitiveValue) -> ast::Expression<'a> {
@@ -281,7 +552,8 @@ mod tests {
         environment::Environment,
         hir::types::{
             self, BasicBlock, BlockId, DeclarationId, Effect, HIR, HIRFunction, Identifier,
-            IdentifierId, IdentifierName, Instruction, InstructionId, MutableRange, Place,
+            IdentifierId, IdentifierName, Instruction, InstructionId, InstructionKind,
+            MutableRange, Place,
             ReactFunctionType, SourceLocation, Terminal, Type, make_temporary_identifier,
         },
         options::EnvironmentConfig,
@@ -397,6 +669,49 @@ mod tests {
         );
 
         assert_eq!(try_lower_function_body(&hir), None);
+    }
+
+    #[test]
+    fn lowers_named_store_statements() {
+        let temp = temporary_place(30);
+        let named = named_place(31, 31, "value");
+
+        let hir = hir_function(
+            vec![
+                instruction(
+                    30,
+                    temp.clone(),
+                    types::InstructionValue::Primitive {
+                        value: types::PrimitiveValue::Number(1.0),
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    31,
+                    temporary_place(32),
+                    types::InstructionValue::StoreLocal {
+                        lvalue: types::LValue {
+                            place: named.clone(),
+                            kind: InstructionKind::Const,
+                        },
+                        value: temp,
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+            ],
+            Terminal::Return {
+                value: named,
+                return_variant: types::ReturnVariant::Explicit,
+                id: InstructionId::new(33),
+                loc: SourceLocation::Generated,
+            },
+            temporary_place(34),
+        );
+
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("const value = 1;\nreturn value;\n")
+        );
     }
 
     fn hir_function(
