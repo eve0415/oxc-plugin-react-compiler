@@ -7,7 +7,7 @@ use oxc_syntax::identifier::is_identifier_name;
 
 use crate::CompileResult;
 
-use super::{CompiledBodyPayload, CompiledFunction, ModuleEmitArgs};
+use super::{CompiledBodyPayload, CompiledFunction, CompiledParam, ModuleEmitArgs};
 
 struct AstRenderState {
     source_type: SourceType,
@@ -572,18 +572,20 @@ fn try_rewrite_compiled_statement_ast<'a>(
     if state.gating_local_name.is_some() && cf.needs_cache_import {
         return None;
     }
-    if cf.params_str != cf.original_params_str || !cf.param_destructurings.is_empty() {
+    if cf.compiled_params.is_none() || !cf.param_destructurings.is_empty() {
         return None;
     }
 
     let body_source = render_compiled_body_source(cf, state);
     let function_body = parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?;
+    let compiled_params = cf.compiled_params.as_deref()?;
     let mut rewritten_stmt = stmt.clone_in(allocator);
     if !replace_compiled_function_in_statement(
         builder,
         allocator,
         &mut rewritten_stmt,
         cf,
+        compiled_params,
         &function_body,
     ) {
         return None;
@@ -615,12 +617,19 @@ fn replace_compiled_function_in_statement<'a>(
     allocator: &'a Allocator,
     statement: &mut ast::Statement<'a>,
     cf: &CompiledFunction,
+    compiled_params: &[CompiledParam],
     function_body: &ast::FunctionBody<'a>,
 ) -> bool {
     match statement {
         ast::Statement::FunctionDeclaration(function)
             if function.span.start == cf.start && function.span.end == cf.end =>
         {
+            strip_compiled_function_signature_types(function);
+            function.params = make_compiled_formal_params(
+                builder,
+                function.params.kind,
+                compiled_params,
+            );
             function.body = Some(make_function_body(builder, allocator, function_body));
             true
         }
@@ -632,6 +641,7 @@ fn replace_compiled_function_in_statement<'a>(
                 allocator,
                 declarator,
                 cf,
+                compiled_params,
                 function_body,
             )),
         ast::Statement::ExportNamedDeclaration(export_named) => export_named
@@ -643,6 +653,7 @@ fn replace_compiled_function_in_statement<'a>(
                     allocator,
                     declaration,
                     cf,
+                    compiled_params,
                     function_body,
                 )
             }),
@@ -652,6 +663,7 @@ fn replace_compiled_function_in_statement<'a>(
                 allocator,
                 export_default,
                 cf,
+                compiled_params,
                 function_body,
             )
         }
@@ -664,12 +676,19 @@ fn replace_compiled_function_in_declaration<'a>(
     allocator: &'a Allocator,
     declaration: &mut ast::Declaration<'a>,
     cf: &CompiledFunction,
+    compiled_params: &[CompiledParam],
     function_body: &ast::FunctionBody<'a>,
 ) -> bool {
     match declaration {
         ast::Declaration::FunctionDeclaration(function)
             if function.span.start == cf.start && function.span.end == cf.end =>
         {
+            strip_compiled_function_signature_types(function);
+            function.params = make_compiled_formal_params(
+                builder,
+                function.params.kind,
+                compiled_params,
+            );
             function.body = Some(make_function_body(builder, allocator, function_body));
             true
         }
@@ -681,6 +700,7 @@ fn replace_compiled_function_in_declaration<'a>(
                 allocator,
                 declarator,
                 cf,
+                compiled_params,
                 function_body,
             )),
         _ => false,
@@ -692,24 +712,40 @@ fn replace_compiled_function_in_export_default<'a>(
     allocator: &'a Allocator,
     export_default: &mut ast::ExportDefaultDeclaration<'a>,
     cf: &CompiledFunction,
+    compiled_params: &[CompiledParam],
     function_body: &ast::FunctionBody<'a>,
 ) -> bool {
     match &mut export_default.declaration {
         ast::ExportDefaultDeclarationKind::FunctionDeclaration(function)
             if function.span.start == cf.start && function.span.end == cf.end =>
         {
+            strip_compiled_function_signature_types(function);
+            function.params = make_compiled_formal_params(
+                builder,
+                function.params.kind,
+                compiled_params,
+            );
             function.body = Some(make_function_body(builder, allocator, function_body));
             true
         }
         ast::ExportDefaultDeclarationKind::FunctionExpression(function)
             if function.span.start == cf.start && function.span.end == cf.end =>
         {
+            strip_compiled_function_signature_types(function);
+            function.params = make_compiled_formal_params(
+                builder,
+                function.params.kind,
+                compiled_params,
+            );
             function.body = Some(make_function_body(builder, allocator, function_body));
             true
         }
         ast::ExportDefaultDeclarationKind::ArrowFunctionExpression(arrow)
             if arrow.span.start == cf.start && arrow.span.end == cf.end =>
         {
+            strip_compiled_arrow_signature_types(arrow);
+            arrow.params =
+                make_compiled_formal_params(builder, arrow.params.kind, compiled_params);
             arrow.expression = false;
             arrow.body = make_function_body(builder, allocator, function_body);
             true
@@ -723,12 +759,20 @@ fn replace_compiled_function_in_declarator<'a>(
     allocator: &'a Allocator,
     declarator: &mut ast::VariableDeclarator<'a>,
     cf: &CompiledFunction,
+    compiled_params: &[CompiledParam],
     function_body: &ast::FunctionBody<'a>,
 ) -> bool {
     let Some(init) = declarator.init.as_mut() else {
         return false;
     };
-    replace_compiled_function_in_expression(builder, allocator, init, cf, function_body)
+    replace_compiled_function_in_expression(
+        builder,
+        allocator,
+        init,
+        cf,
+        compiled_params,
+        function_body,
+    )
 }
 
 fn replace_compiled_function_in_expression<'a>(
@@ -736,24 +780,68 @@ fn replace_compiled_function_in_expression<'a>(
     allocator: &'a Allocator,
     expression: &mut ast::Expression<'a>,
     cf: &CompiledFunction,
+    compiled_params: &[CompiledParam],
     function_body: &ast::FunctionBody<'a>,
 ) -> bool {
     match expression {
         ast::Expression::FunctionExpression(function)
             if function.span.start == cf.start && function.span.end == cf.end =>
         {
+            strip_compiled_function_signature_types(function);
+            function.params = make_compiled_formal_params(
+                builder,
+                function.params.kind,
+                compiled_params,
+            );
             function.body = Some(make_function_body(builder, allocator, function_body));
             true
         }
         ast::Expression::ArrowFunctionExpression(arrow)
             if arrow.span.start == cf.start && arrow.span.end == cf.end =>
         {
+            strip_compiled_arrow_signature_types(arrow);
+            arrow.params =
+                make_compiled_formal_params(builder, arrow.params.kind, compiled_params);
             arrow.expression = false;
             arrow.body = make_function_body(builder, allocator, function_body);
             true
         }
         _ => false,
     }
+}
+
+fn strip_compiled_function_signature_types(function: &mut ast::Function<'_>) {
+    function.type_parameters = None;
+    function.this_param = None;
+    function.return_type = None;
+}
+
+fn strip_compiled_arrow_signature_types(arrow: &mut ast::ArrowFunctionExpression<'_>) {
+    arrow.type_parameters = None;
+    arrow.return_type = None;
+}
+
+fn make_compiled_formal_params<'a>(
+    builder: AstBuilder<'a>,
+    kind: ast::FormalParameterKind,
+    compiled_params: &[CompiledParam],
+) -> oxc_allocator::Box<'a, ast::FormalParameters<'a>> {
+    let mut items = builder.vec();
+    let mut rest = None;
+    for param in compiled_params {
+        let pattern = builder.binding_pattern_binding_identifier(SPAN, builder.ident(&param.name));
+        if param.is_rest {
+            rest = Some(builder.alloc_formal_parameter_rest(
+                SPAN,
+                builder.vec(),
+                builder.binding_rest_element(SPAN, pattern),
+                NONE,
+            ));
+        } else {
+            items.push(builder.plain_formal_parameter(SPAN, pattern));
+        }
+    }
+    builder.alloc(builder.formal_parameters(SPAN, kind, items, rest))
 }
 
 fn make_function_body<'a>(

@@ -15,6 +15,12 @@ pub(crate) enum CompiledBodyPayload {
     LowerFromFinalHir,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompiledParam {
+    pub(crate) name: String,
+    pub(crate) is_rest: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CompiledFunction {
     pub(crate) name: String,
@@ -24,6 +30,7 @@ pub(crate) struct CompiledFunction {
     pub(crate) body_payload: CompiledBodyPayload,
     pub(crate) needs_cache_import: bool,
     pub(crate) params_str: String,
+    pub(crate) compiled_params: Option<Vec<CompiledParam>>,
     pub(crate) original_params_str: String,
     pub(crate) param_destructurings: Vec<String>,
     pub(crate) is_async: bool,

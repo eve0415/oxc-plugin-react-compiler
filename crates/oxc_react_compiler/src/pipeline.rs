@@ -20,7 +20,9 @@ use oxc_span::GetSpan;
 use sha2::Sha256;
 
 use crate::CompileResult;
-use crate::codegen_backend::{CompiledBodyPayload, CompiledFunction, ModuleEmitArgs};
+use crate::codegen_backend::{
+    CompiledBodyPayload, CompiledFunction, CompiledParam, ModuleEmitArgs,
+};
 use crate::error::CompilerError;
 use crate::hir::build;
 use crate::hir::types::HIRFunction;
@@ -6285,6 +6287,7 @@ fn try_compile_function<'a>(
         body_payload,
         needs_cache_import,
         params_str: params_result.params_str,
+        compiled_params: params_result.compiled_params,
         original_params_str: func_params_to_string(&func.params, source),
         param_destructurings,
         is_async: func.r#async,
@@ -6480,6 +6483,7 @@ fn try_compile_function_with_name<'a>(
         body_payload,
         needs_cache_import,
         params_str: params_result.params_str,
+        compiled_params: params_result.compiled_params,
         original_params_str: func_params_to_string(&func.params, source),
         param_destructurings,
         is_async: func.r#async,
@@ -6683,6 +6687,7 @@ fn try_compile_arrow<'a>(
         body_payload,
         needs_cache_import,
         params_str: params_result.params_str,
+        compiled_params: params_result.compiled_params,
         original_params_str: arrow_params_to_string(&arrow.params, source),
         param_destructurings,
         is_async: arrow.r#async,
@@ -6709,6 +6714,8 @@ fn try_compile_arrow<'a>(
 struct ParamsResult {
     /// The parameter string for the function signature.
     params_str: String,
+    /// Structured rewritten params when they are plain identifiers/rest identifiers.
+    compiled_params: Option<Vec<CompiledParam>>,
     /// Destructuring statements to emit at the top of the function body.
     destructurings: Vec<String>,
     /// Outlined functions from default parameter values.
@@ -6937,6 +6944,7 @@ fn params_to_result(
     temp_counter: &mut usize,
 ) -> ParamsResult {
     let mut param_strs: Vec<String> = Vec::new();
+    let mut compiled_params: Option<Vec<CompiledParam>> = Some(Vec::new());
     let mut destructurings: Vec<String> = Vec::new();
     let mut outlined_functions: Vec<(String, String, String)> = Vec::new();
     let mut outline_counter: usize = 0;
@@ -6947,6 +6955,12 @@ fn params_to_result(
             let temp_name = format!("t{}", *temp_counter);
             *temp_counter += 1;
             param_strs.push(temp_name.clone());
+            if let Some(params) = compiled_params.as_mut() {
+                params.push(CompiledParam {
+                    name: temp_name.clone(),
+                    is_rest: false,
+                });
+            }
 
             let default_start = initializer.span().start as usize;
             let default_end = initializer.span().end as usize;
@@ -7043,11 +7057,23 @@ fn params_to_result(
         match &param.pattern {
             ast::BindingPattern::BindingIdentifier(ident) => {
                 param_strs.push(ident.name.to_string());
+                if let Some(params) = compiled_params.as_mut() {
+                    params.push(CompiledParam {
+                        name: ident.name.to_string(),
+                        is_rest: false,
+                    });
+                }
             }
             ast::BindingPattern::ObjectPattern(obj_pattern) => {
                 let temp_name = format!("t{}", *temp_counter);
                 *temp_counter += 1;
                 param_strs.push(temp_name.clone());
+                if let Some(params) = compiled_params.as_mut() {
+                    params.push(CompiledParam {
+                        name: temp_name.clone(),
+                        is_rest: false,
+                    });
+                }
 
                 // Build the destructuring pattern from the object pattern.
                 // Properties with defaults are extracted into separate conditional
@@ -7064,6 +7090,12 @@ fn params_to_result(
                 let temp_name = format!("t{}", *temp_counter);
                 *temp_counter += 1;
                 param_strs.push(temp_name.clone());
+                if let Some(params) = compiled_params.as_mut() {
+                    params.push(CompiledParam {
+                        name: temp_name.clone(),
+                        is_rest: false,
+                    });
+                }
 
                 // Build the destructuring pattern from the array pattern.
                 // Elements with defaults are extracted into separate conditional
@@ -7081,6 +7113,12 @@ fn params_to_result(
                 let temp_name = format!("t{}", *temp_counter);
                 *temp_counter += 1;
                 param_strs.push(temp_name.clone());
+                if let Some(params) = compiled_params.as_mut() {
+                    params.push(CompiledParam {
+                        name: temp_name.clone(),
+                        is_rest: false,
+                    });
+                }
 
                 match &assign_pattern.left {
                     ast::BindingPattern::ObjectPattern(_)
@@ -7116,11 +7154,23 @@ fn params_to_result(
         match &rest.rest.argument {
             ast::BindingPattern::BindingIdentifier(ident) => {
                 param_strs.push(format!("...{}", ident.name));
+                if let Some(params) = compiled_params.as_mut() {
+                    params.push(CompiledParam {
+                        name: ident.name.to_string(),
+                        is_rest: true,
+                    });
+                }
             }
             ast::BindingPattern::ArrayPattern(arr_pattern) => {
                 let temp_name = format!("t{}", *temp_counter);
                 *temp_counter += 1;
                 param_strs.push(format!("...{}", temp_name));
+                if let Some(params) = compiled_params.as_mut() {
+                    params.push(CompiledParam {
+                        name: temp_name.clone(),
+                        is_rest: true,
+                    });
+                }
                 build_array_destructuring(
                     arr_pattern,
                     &temp_name,
@@ -7133,6 +7183,12 @@ fn params_to_result(
                 let temp_name = format!("t{}", *temp_counter);
                 *temp_counter += 1;
                 param_strs.push(format!("...{}", temp_name));
+                if let Some(params) = compiled_params.as_mut() {
+                    params.push(CompiledParam {
+                        name: temp_name.clone(),
+                        is_rest: true,
+                    });
+                }
                 build_object_destructuring(
                     obj_pattern,
                     &temp_name,
@@ -7145,12 +7201,14 @@ fn params_to_result(
                 let rest_start = rest.span.start as usize;
                 let rest_end = rest.span.end as usize;
                 param_strs.push(source[rest_start..rest_end].to_string());
+                compiled_params = None;
             }
         }
     }
 
     ParamsResult {
         params_str: param_strs.join(", "),
+        compiled_params,
         destructurings,
         outlined_functions,
     }
