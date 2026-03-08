@@ -5643,6 +5643,9 @@ fn normalize_compare_trailing_sequence_null(code: &str) -> String {
     let assign_then_read =
         regex::Regex::new(r"\(\(([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(.+?)\),\s*([A-Za-z_$][A-Za-z0-9_$]*)\);")
             .unwrap();
+    let assign_then_discard =
+        regex::Regex::new(r"\(\(([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(.+?)\),\s*(?:null|undefined)\);")
+            .unwrap();
     for line in code.lines() {
         let trimmed = line.trim();
         let rewritten = assign_then_read
@@ -5652,6 +5655,11 @@ fn normalize_compare_trailing_sequence_null(code: &str) -> String {
                 } else {
                     caps.get(0).unwrap().as_str().to_string()
                 }
+            })
+            .to_string();
+        let rewritten = assign_then_discard
+            .replace_all(&rewritten, |caps: &regex::Captures| {
+                format!("{} = {};", &caps[1], &caps[2])
             })
             .to_string();
         let trimmed = rewritten.trim();
@@ -8478,6 +8486,17 @@ mod tests {
     fn normalize_shared_cosmetic_equivalences_collapses_inline_assign_then_read_stmt() {
         let actual = "if ($[2] !== arr2 || $[3] !== x) { y = x.concat(arr2);";
         let expected = "if ($[2] !== arr2 || $[3] !== x) { ((y = x.concat(arr2)), y);";
+        assert_eq!(
+            normalize_shared_cosmetic_equivalences(actual),
+            normalize_shared_cosmetic_equivalences(expected)
+        );
+    }
+
+    #[test]
+    fn normalize_shared_cosmetic_equivalences_collapses_inline_assign_then_discard_stmt() {
+        let actual = "if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) { x = [];";
+        let expected =
+            "if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) { ((x = []), null);";
         assert_eq!(
             normalize_shared_cosmetic_equivalences(actual),
             normalize_shared_cosmetic_equivalences(expected)
