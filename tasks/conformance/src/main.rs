@@ -2753,22 +2753,7 @@ fn format_with_oxfmt(input_path: &Path, code: &str) -> Result<String, String> {
 }
 
 fn normalize_backend_compare_code(code: &str) -> String {
-    let mut normalized = normalize_code(code);
-    let steps: [fn(&str) -> String; 9] = [
-        normalize_compare_multiline_brace_literals,
-        normalize_compare_multiline_imports,
-        normalize_compare_trailing_sequence_null,
-        normalize_labeled_switch_breaks,
-        normalize_switch_case_braces,
-        normalize_multiline_switch_cases,
-        normalize_ts_object_type_semicolons,
-        normalize_numeric_exponent_literals,
-        normalize_compare_unicode_escapes,
-    ];
-    for step in steps {
-        normalized = step(&normalized);
-    }
-    normalized
+    normalize_shared_cosmetic_equivalences(&normalize_code(code))
 }
 
 fn maybe_format_ast_backend_compare_code(
@@ -2813,6 +2798,25 @@ fn normalize_bailout_text(code: &str) -> String {
     trailing_comma_before_closer_re()
         .replace_all(&normalized_arrows, "$1")
         .into_owned()
+}
+
+fn normalize_shared_cosmetic_equivalences(code: &str) -> String {
+    let mut normalized = code.to_string();
+    let steps: [fn(&str) -> String; 9] = [
+        normalize_compare_multiline_brace_literals,
+        normalize_compare_multiline_imports,
+        normalize_compare_trailing_sequence_null,
+        normalize_labeled_switch_breaks,
+        normalize_switch_case_braces,
+        normalize_multiline_switch_cases,
+        normalize_ts_object_type_semicolons,
+        normalize_numeric_exponent_literals,
+        normalize_compare_unicode_escapes,
+    ];
+    for step in steps {
+        normalized = step(&normalized);
+    }
+    normalized
 }
 
 fn single_param_arrow_paren_re() -> &'static regex::Regex {
