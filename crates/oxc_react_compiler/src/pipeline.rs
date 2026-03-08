@@ -20,6 +20,7 @@ use oxc_span::GetSpan;
 use sha2::Sha256;
 
 use crate::CompileResult;
+use crate::codegen_backend::{CodegenBackend, CompiledFunction, ModuleEmitArgs};
 use crate::error::CompilerError;
 use crate::hir::build;
 use crate::hir::types::HIRFunction;
@@ -1442,6 +1443,7 @@ fn dedupe_outlined_functions(outlined: &mut Vec<(String, String, String)>) {
 /// Result of running the HIR pipeline.
 struct PipelineOutput {
     codegen_result: codegen_reactive::CodegenResult,
+    final_hir_snapshot: HIRFunction,
     hir_outlined: Vec<optimization::outline_functions::OutlinedFunction>,
     reserved_removed_names: std::collections::HashSet<String>,
     has_fire_rewrite: bool,
@@ -1952,6 +1954,7 @@ fn run_hir_pipeline(
     // Capture feature flags before consuming the HIR function.
     let has_fire_rewrite = hir_func.env.has_fire_rewrite();
     let has_inferred_effect = hir_func.env.has_inferred_effect();
+    let final_hir_snapshot = hir_func.clone();
     let post_hir_named_identifiers = collect_named_identifiers_hir(&hir_func);
     let mut reserved_removed_names: std::collections::HashSet<String> = pre_dce_named_identifiers;
     reserved_removed_names.retain(|name| !post_hir_named_identifiers.contains(name));
@@ -1971,6 +1974,7 @@ fn run_hir_pipeline(
 
     Ok(PipelineOutput {
         codegen_result,
+        final_hir_snapshot,
         hir_outlined,
         reserved_removed_names,
         has_fire_rewrite,
@@ -3010,16 +3014,16 @@ fn has_memo_cache_import(program: &ast::Program<'_>) -> bool {
     false
 }
 
-struct RuntimeImportMergePlan {
-    start: u32,
-    end: u32,
-    replacement: Option<String>,
-    cache_local_name: Option<String>,
-    has_cache_after: bool,
-    has_use_fire_after: bool,
+pub(crate) struct RuntimeImportMergePlan {
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    pub(crate) replacement: Option<String>,
+    pub(crate) cache_local_name: Option<String>,
+    pub(crate) has_cache_after: bool,
+    pub(crate) has_use_fire_after: bool,
 }
 
-fn rewrite_source_segment_with_runtime_import_merge(
+pub(crate) fn rewrite_source_segment_with_runtime_import_merge(
     source: &str,
     start: usize,
     end: usize,
@@ -3055,7 +3059,7 @@ fn rewrite_source_segment_with_runtime_import_merge(
     rewritten
 }
 
-fn plan_runtime_import_merge(
+pub(crate) fn plan_runtime_import_merge(
     program: &ast::Program<'_>,
     needs_cache_import: bool,
     needs_fire_import: bool,
@@ -3572,114 +3576,6 @@ fn is_react_api_callee(callee: &ast::Expression<'_>, name: &str) -> bool {
     }
 }
 
-/// Info about a compiled function to be replaced in the output.
-struct CompiledFunction {
-    /// Name of the function.
-    name: String,
-    /// Byte start offset in source.
-    start: u32,
-    /// Byte end offset in source.
-    end: u32,
-    /// Generated function body code.
-    generated_body: String,
-    /// Whether this needs the cache import.
-    needs_cache_import: bool,
-    /// Original function params as string.
-    params_str: String,
-    /// Source params string before any lowering/rewrite.
-    original_params_str: String,
-    /// Destructuring statements to prepend to the function body.
-    /// e.g., `const { x, y } = t0;`
-    param_destructurings: Vec<String>,
-    /// Whether it's async.
-    is_async: bool,
-    /// Whether it's a generator.
-    is_generator: bool,
-    /// Whether this was originally an arrow function.
-    is_arrow: bool,
-    /// Whether this was originally a function declaration.
-    is_function_declaration: bool,
-    /// Span start of the function body block (`{ ... }`) in original source.
-    body_start: u32,
-    /// Span end of the function body block (`{ ... }`) in original source.
-    body_end: u32,
-    /// Function body directives to preserve (e.g., "use strict", custom directives).
-    /// Excludes opt-out directives like "use no memo".
-    directives: Vec<String>,
-    /// Leading local enum declarations that upstream preserves as unsupported nodes.
-    preserved_body_statements: Vec<String>,
-    /// Whether this function should emit forget instrumentation.
-    needs_instrument_forget: bool,
-    /// Whether this function should wrap memoized outputs with makeReadOnly.
-    needs_emit_freeze: bool,
-    /// Outlined functions: (name, params_str, body_str).
-    /// Emitted as top-level `function _name(params) { body }` after the main function.
-    outlined_functions: Vec<(String, String, String)>,
-    /// Whether this function has a fire rewrite (needs useFire import).
-    has_fire_rewrite: bool,
-    /// Whether this function emitted runtime hook guards.
-    needs_hook_guards: bool,
-    /// Whether this function emitted `$structuralCheck` calls.
-    needs_structural_check_import: bool,
-    /// Whether this function rewrote useContext through lowerContextAccess.
-    needs_lower_context_access: bool,
-}
-
-fn gated_uncompiled_function_source(source: &str, cf: &CompiledFunction) -> String {
-    let original_src = source[cf.start as usize..cf.end as usize]
-        .trim()
-        .to_string();
-    if !cf.is_function_declaration {
-        return original_src;
-    }
-
-    let body_start = cf.body_start as usize;
-    let body_end = cf.body_end as usize;
-    let Some(body_src) = source.get(body_start..body_end).map(str::trim) else {
-        return original_src;
-    };
-    if body_src.is_empty() {
-        return original_src;
-    }
-
-    let async_prefix = if cf.is_async { "async " } else { "" };
-    let gen_prefix = if cf.is_generator { "*" } else { "" };
-    if cf.name.is_empty() {
-        return original_src;
-    }
-
-    format!(
-        "{}function {}{}({}) {}",
-        async_prefix, gen_prefix, cf.name, cf.original_params_str, body_src
-    )
-}
-
-fn non_empty_trimmed_lines(src: &str) -> Vec<&str> {
-    src.lines()
-        .map(str::trim_end)
-        .filter(|line| !line.trim().is_empty())
-        .collect()
-}
-
-fn should_preserve_original_layout_for_equivalent_output(
-    cf: &CompiledFunction,
-    compiled_src: &str,
-    original_src: &str,
-) -> bool {
-    if cf.needs_cache_import
-        || cf.needs_instrument_forget
-        || cf.needs_emit_freeze
-        || !cf.outlined_functions.is_empty()
-        || cf.has_fire_rewrite
-        || cf.needs_hook_guards
-        || cf.needs_structural_check_import
-        || cf.needs_lower_context_access
-    {
-        return false;
-    }
-    non_empty_trimmed_lines(compiled_src) == non_empty_trimmed_lines(original_src)
-}
-
 /// Compile a single source file.
 ///
 /// Parses the source, identifies compilable functions (components/hooks),
@@ -4030,628 +3926,22 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
         };
     }
 
-    // Reconstruct source with compiled functions replaced
-    let needs_cache_import = compiled.iter().any(|c| c.needs_cache_import);
-    let needs_fire_import = compiled.iter().any(|c| c.has_fire_rewrite);
-    let top_level_bindings = collect_top_level_bindings(&program);
-    let mut output = String::new();
-
-    // Detect @script directive to use CJS require() instead of ESM import
-    let is_script = source.contains("// @script") || source.contains("/* @script");
-
-    // Generate a unique name for the cache import that doesn't conflict with
-    // any existing bindings in the program (including inner function scopes).
-    // Follows Babel's generateUid pattern: _c, _c2, _c3, etc.
-    let mut all_bindings = collect_all_program_bindings(&program);
-    let mut cache_import_name = generate_unique_name("_c", &all_bindings);
-    let runtime_import_merge_plan = if !is_script && (needs_cache_import || needs_fire_import) {
-        plan_runtime_import_merge(
-            &program,
-            needs_cache_import,
-            needs_fire_import,
-            &cache_import_name,
-        )
-    } else {
-        None
-    };
-    if needs_cache_import {
-        if let Some(existing_cache_local) = runtime_import_merge_plan
-            .as_ref()
-            .filter(|plan| plan.has_cache_after)
-            .and_then(|plan| plan.cache_local_name.as_ref())
-        {
-            cache_import_name = existing_cache_local.clone();
-        }
-        all_bindings.insert(cache_import_name.clone());
-    }
-
-    let needs_freeze_import =
-        options.environment.enable_emit_freeze && compiled.iter().any(|c| c.needs_emit_freeze);
-    let mut make_read_only_ident = String::new();
-    if needs_freeze_import {
-        make_read_only_ident = generate_unique_import_binding("makeReadOnly", &all_bindings);
-        all_bindings.insert(make_read_only_ident.clone());
-    }
-
-    let needs_instrument_import = options.environment.enable_emit_instrument_forget
-        && compiled.iter().any(|c| c.needs_instrument_forget);
-    let mut should_instrument_ident = String::new();
-    let mut use_render_counter_ident = String::new();
-    if needs_instrument_import {
-        should_instrument_ident = generate_unique_import_binding("shouldInstrument", &all_bindings);
-        all_bindings.insert(should_instrument_ident.clone());
-        use_render_counter_ident =
-            generate_unique_import_binding("useRenderCounter", &all_bindings);
-        all_bindings.insert(use_render_counter_ident.clone());
-    }
-    let needs_hook_guard_import =
-        options.environment.enable_emit_hook_guards && compiled.iter().any(|c| c.needs_hook_guards);
-    let mut hook_guard_ident = String::new();
-    if needs_hook_guard_import {
-        hook_guard_ident = generate_unique_import_binding("$dispatcherGuard", &all_bindings);
-        all_bindings.insert(hook_guard_ident.clone());
-    }
-    let needs_structural_check_import = options.environment.enable_change_detection_for_debugging
-        && compiled.iter().any(|c| c.needs_structural_check_import);
-    let mut structural_check_ident = String::new();
-    if needs_structural_check_import {
-        structural_check_ident = generate_unique_import_binding("$structuralCheck", &all_bindings);
-        all_bindings.insert(structural_check_ident.clone());
-    }
-    let lower_context_access_config = options.environment.lower_context_access.as_ref();
-    let needs_lower_context_access_import = lower_context_access_config.is_some()
-        && compiled.iter().any(|c| c.needs_lower_context_access);
-    let mut lower_context_access_ident = String::new();
-    let mut lower_context_access_imported = String::new();
-    let mut lower_context_access_module = String::new();
-    if let Some(config) = lower_context_access_config.filter(|_| needs_lower_context_access_import)
-    {
-        lower_context_access_ident =
-            generate_unique_import_binding(&config.imported_name, &all_bindings);
-        all_bindings.insert(lower_context_access_ident.clone());
-        lower_context_access_imported = config.imported_name.clone();
-        lower_context_access_module = config
-            .module
-            .trim()
-            .trim_matches(|c: char| {
-                c.is_whitespace() || c == '"' || c == '\'' || c == '{' || c == '}'
-            })
-            .to_string();
-    }
-    let instrument_source_path = format!(
-        "/{}.ts",
-        filename
-            .rsplit_once('.')
-            .map(|(stem, _)| stem)
-            .unwrap_or(filename)
-    );
-
-    // Build imports to insert.
-    let runtime_import = if is_script {
-        match (needs_cache_import, needs_fire_import) {
-            (true, true) => format!(
-                "const {{ c: {}, useFire }} = require(\"react/compiler-runtime\")",
-                cache_import_name
-            ),
-            (true, false) => format!(
-                "const {{ c: {} }} = require(\"react/compiler-runtime\")",
-                cache_import_name
-            ),
-            (false, true) => "const { useFire } = require(\"react/compiler-runtime\")".to_string(),
-            (false, false) => String::new(),
-        }
-    } else {
-        match (needs_cache_import, needs_fire_import) {
-            (true, true) => format!(
-                "import {{ c as {}, useFire }} from \"react/compiler-runtime\"",
-                cache_import_name
-            ),
-            (true, false) => format!(
-                "import {{ c as {} }} from \"react/compiler-runtime\"",
-                cache_import_name
-            ),
-            (false, true) => "import { useFire } from \"react/compiler-runtime\"".to_string(),
-            (false, false) => String::new(),
-        }
-    };
-    let mut gating_local_name: Option<String> = None;
-    let mut imports_to_insert: Vec<String> = Vec::new();
-    let mut runtime_import_index: Option<usize> = None;
-    let mut runtime_support_specs: Vec<(&str, &str)> = Vec::new();
-    if needs_freeze_import {
-        runtime_support_specs.push(("makeReadOnly", &make_read_only_ident));
-    }
-    if needs_instrument_import {
-        runtime_support_specs.push(("shouldInstrument", &should_instrument_ident));
-        runtime_support_specs.push(("useRenderCounter", &use_render_counter_ident));
-    }
-    if needs_hook_guard_import {
-        runtime_support_specs.push(("$dispatcherGuard", &hook_guard_ident));
-    }
-    if needs_structural_check_import {
-        runtime_support_specs.push(("$structuralCheck", &structural_check_ident));
-    }
-    if needs_lower_context_access_import && lower_context_access_module == "react-compiler-runtime"
-    {
-        runtime_support_specs.push((&lower_context_access_imported, &lower_context_access_ident));
-    }
-    if !runtime_support_specs.is_empty() {
-        let support_import = if is_script {
-            let specs = runtime_support_specs
-                .iter()
-                .map(|(imported, local)| {
-                    if imported == local {
-                        (*imported).to_string()
-                    } else {
-                        format!("{}: {}", imported, local)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!(
-                "const {{ {} }} = require(\"react-compiler-runtime\")",
-                specs
-            )
-        } else {
-            let specs = runtime_support_specs
-                .iter()
-                .map(|(imported, local)| {
-                    if imported == local {
-                        (*imported).to_string()
-                    } else {
-                        format!("{} as {}", imported, local)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("import {{ {} }} from \"react-compiler-runtime\"", specs)
-        };
-        imports_to_insert.push(support_import);
-    }
-    let runtime_import_covered_by_existing =
-        runtime_import_merge_plan.as_ref().is_some_and(|plan| {
-            (!needs_cache_import || plan.has_cache_after)
-                && (!needs_fire_import || plan.has_use_fire_after)
-        });
-    if (needs_cache_import || needs_fire_import) && !runtime_import_covered_by_existing {
-        runtime_import_index = Some(imports_to_insert.len());
-        imports_to_insert.push(runtime_import);
-    }
-    if needs_lower_context_access_import
-        && !lower_context_access_module.is_empty()
-        && lower_context_access_module != "react-compiler-runtime"
-    {
-        let lower_context_import = if is_script {
-            if lower_context_access_imported == lower_context_access_ident {
-                format!(
-                    "const {{ {} }} = require(\"{}\")",
-                    lower_context_access_imported, lower_context_access_module
-                )
-            } else {
-                format!(
-                    "const {{ {}: {} }} = require(\"{}\")",
-                    lower_context_access_imported,
-                    lower_context_access_ident,
-                    lower_context_access_module
-                )
-            }
-        } else if lower_context_access_imported == lower_context_access_ident {
-            format!(
-                "import {{ {} }} from \"{}\"",
-                lower_context_access_imported, lower_context_access_module
-            )
-        } else {
-            format!(
-                "import {{ {} as {} }} from \"{}\"",
-                lower_context_access_imported,
-                lower_context_access_ident,
-                lower_context_access_module
-            )
-        };
-        imports_to_insert.push(lower_context_import);
-    }
-    if let Some((source_mod, base)) = options
-        .gating
-        .as_ref()
-        .map(|g| (g.source.as_str(), g.import_specifier_name.as_str()))
-        .or_else(|| {
-            dynamic_gate_ident
-                .as_deref()
-                .zip(options.dynamic_gating.as_ref().map(|g| g.source.as_str()))
-                .map(|(ident, source)| (source, ident))
-        })
-    {
-        let source_mod = source_mod.trim().trim_matches(|c: char| {
-            c.is_whitespace() || c == '"' || c == '\'' || c == '{' || c == '}'
-        });
-        let local = if top_level_bindings.contains(base) {
-            format!("_{}", base)
-        } else {
-            base.to_string()
-        };
-        gating_local_name = Some(local.clone());
-        let gate_import = if is_script {
-            if local == base {
-                format!("const {{ {} }} = require(\"{}\")", base, source_mod)
-            } else {
-                format!(
-                    "const {{ {}: {} }} = require(\"{}\")",
-                    base, local, source_mod
-                )
-            }
-        } else if local == base {
-            format!("import {{ {} }} from \"{}\"", base, source_mod)
-        } else {
-            format!("import {{ {} as {} }} from \"{}\"", base, local, source_mod)
-        };
-        if needs_cache_import {
-            imports_to_insert.push(gate_import);
-        }
-    }
-
-    // When inserting imports, merge any leading comment onto the gating import line
-    // when present (otherwise onto the first inserted import), matching upstream.
-    let mut source_skip = 0usize;
-    if !imports_to_insert.is_empty() {
-        let mut leading_comment: Option<String> = None;
-        let trimmed = source.trim_start();
-        if trimmed.starts_with("//") {
-            // Single-line comment: merge onto import line (but skip @flow directives)
-            if let Some(nl) = trimmed.find('\n') {
-                let comment = trimmed[..nl].trim();
-                let comment_start = source.len() - trimmed.len();
-                if comment.starts_with("// @flow") {
-                    // Strip @flow comment entirely (Babel removes these)
-                    source_skip = comment_start + nl + 1;
-                } else {
-                    leading_comment = Some(comment.to_string());
-                    source_skip = comment_start + nl + 1;
-                }
-            } else {
-                leading_comment = Some(trimmed.trim().to_string());
-            }
-        } else if trimmed.starts_with("/*") {
-            // Multi-line comment: find closing */ and merge onto import line
-            if let Some(end_idx) = trimmed.find("*/") {
-                let comment = &trimmed[..end_idx + 2];
-                leading_comment = Some(comment.to_string());
-                let comment_start = source.len() - trimmed.len();
-                source_skip = comment_start + end_idx + 2;
-                // Skip trailing newline if present
-                if source_skip < source.len() && source.as_bytes()[source_skip] == b'\n' {
-                    source_skip += 1;
-                }
-            }
-        }
-
-        let comment_target = if gating_local_name.is_some() {
-            imports_to_insert.len().saturating_sub(1)
-        } else {
-            runtime_import_index.unwrap_or(0)
-        };
-        for (idx, import_str) in imports_to_insert.iter().enumerate() {
-            if let Some(comment) = leading_comment.as_ref().filter(|_| idx == comment_target) {
-                output.push_str(&format!("{}; {}\n", import_str, comment));
-            } else {
-                output.push_str(&format!("{};\n", import_str));
-            }
-        }
-    }
-
-    // Rebuild the source, replacing compiled function bodies
-    let mut last_end = source_skip as u32;
-    // Sort by start position
-    let mut compiled_sorted = compiled;
-    compiled_sorted.sort_by_key(|c| c.start);
-
-    for cf in &compiled_sorted {
-        // Copy source before this function
-        let before_rewritten = rewrite_source_segment_with_runtime_import_merge(
+    let backend = CodegenBackend::from_env();
+    crate::codegen_backend::emit_module(
+        backend,
+        ModuleEmitArgs {
+            filename,
             source,
-            last_end as usize,
-            cf.start as usize,
-            runtime_import_merge_plan.as_ref(),
-        );
-
-        if std::env::var("DEBUG_CODEGEN").is_ok() {
-            eprintln!(
-                "[CODEGEN] Function: {} needs_cache={} body_empty={} body='{}'",
-                cf.name,
-                cf.needs_cache_import,
-                cf.generated_body.trim().is_empty(),
-                cf.generated_body
-                    .trim()
-                    .chars()
-                    .take(200)
-                    .collect::<String>()
-            );
-        }
-
-        // If the function doesn't need memoization, use the generated body
-        // (which still applies let->const promotion, DCE, and other cleanups).
-        if !cf.needs_cache_import {
-            // Use generated body without memoization wrapper (may be empty after DCE)
-        }
-
-        // Build the function body, inserting directives + param destructurings.
-        let mut body = cf.generated_body.clone();
-
-        // Replace hardcoded _c( with the actual unique cache import name if different
-        if cache_import_name != "_c" {
-            body = body.replacen("_c(", &format!("{}(", cache_import_name), 1);
-        }
-
-        // Insert param destructurings after `const $ = _c()` if needed
-        if !cf.param_destructurings.is_empty() && !body.contains("=== undefined ?") {
-            // Prune unused properties from object destructurings.
-            // Include subsequent destructurings as context so inter-dependencies are preserved
-            // (e.g., `let { a: t1 } = t0;` is used by `let a = t1 === undefined ? 2 : t1;`).
-            let pruned: Vec<String> = cf
-                .param_destructurings
-                .iter()
-                .enumerate()
-                .map(|(i, d)| {
-                    // Build context: body + all destructurings AFTER this one
-                    let after: String = cf.param_destructurings[i + 1..].join("\n");
-                    let context = format!("{}\n{}", body, after);
-                    prune_unused_destructuring(d, &context)
-                })
-                .collect();
-            body = insert_param_destructurings(&body, &pruned);
-        }
-        if !cf.preserved_body_statements.is_empty() {
-            body = insert_preserved_body_statements(&body, &cf.preserved_body_statements);
-        }
-
-        // Prepend preserved directives (e.g., "use strict", custom directives)
-        if !cf.directives.is_empty() {
-            body = strip_directive_lines(&body, &cf.directives);
-        }
-
-        let mut prologue = String::new();
-        if !cf.directives.is_empty() {
-            let directives_str: String = cf
-                .directives
-                .iter()
-                .map(|d| format!("  {};\n", d))
-                .collect();
-            prologue.push_str(&directives_str);
-        }
-        if cf.needs_instrument_forget {
-            let rendered_name = if cf.name.is_empty() {
-                "<anonymous>"
-            } else {
-                cf.name.as_str()
-            };
-            prologue.push_str(&format!(
-                "  if (DEV && {})\n    {}(\"{}\", \"{}\");\n",
-                should_instrument_ident,
-                use_render_counter_ident,
-                rendered_name,
-                instrument_source_path
-            ));
-        }
-        if !prologue.is_empty() {
-            body = format!("{}{}", prologue, body);
-        }
-        if cf.needs_emit_freeze {
-            let freeze_name = if cf.name.is_empty() {
-                "<anonymous>"
-            } else {
-                cf.name.as_str()
-            };
-            body =
-                maybe_apply_emit_freeze_to_cache_stores(&body, &make_read_only_ident, freeze_name);
-        }
-        if cf.needs_hook_guards {
-            body = maybe_align_hook_guard_name(&body, &hook_guard_ident);
-        }
-        if cf.needs_structural_check_import {
-            body = maybe_align_structural_check_name(&body, &structural_check_ident);
-        }
-        if cf.needs_lower_context_access && !lower_context_access_ident.is_empty() {
-            body = maybe_align_lower_context_access_name(
-                &body,
-                &lower_context_access_imported,
-                &lower_context_access_ident,
-            );
-        }
-        body = insert_blank_lines_for_guarded_cache_init(&body);
-        if !body.is_empty() && !body.ends_with('\n') {
-            body.push('\n');
-        }
-
-        // Emit the compiled function.
-        let body_for_emit = body.trim_end_matches('\n');
-        let compiled_fn_src = if cf.is_arrow {
-            let async_prefix = if cf.is_async { "async " } else { "" };
-            format!(
-                "{}({}) => {{\n{}\n}}",
-                async_prefix, cf.params_str, body_for_emit
-            )
-        } else {
-            let async_prefix = if cf.is_async { "async " } else { "" };
-            let gen_prefix = if cf.is_generator { "*" } else { "" };
-            format!(
-                "{}function {}{}({}) {{\n{}\n}}",
-                async_prefix, gen_prefix, cf.name, cf.params_str, body_for_emit
-            )
-        };
-
-        let original_src_raw = source[cf.start as usize..cf.end as usize]
-            .trim()
-            .to_string();
-        let preserve_original = should_preserve_original_layout_for_equivalent_output(
-            cf,
-            &compiled_fn_src,
-            &original_src_raw,
-        );
-        let mut before_emit = before_rewritten;
-        let mut replacement_src = if preserve_original {
-            original_src_raw.clone()
-        } else {
-            compiled_fn_src.clone()
-        };
-        let mut next_source_start = cf.end;
-        if let Some(gate_name) = gating_local_name.as_ref().filter(|_| cf.needs_cache_import) {
-            let gate_call = format!("{}()", gate_name);
-            let has_parenthesized_arrow_body = cf.is_arrow && original_src_raw.contains("=> (");
-            let original_src = gated_uncompiled_function_source(source, cf);
-            let before_trimmed_owned = before_emit.trim_end().to_string();
-            let before_trimmed = before_trimmed_owned.as_str();
-            let export_default_ctx = before_trimmed.ends_with("export default");
-            let expression_ctx = cf.is_arrow || is_expression_context(before_trimmed);
-            let before_ends_with_open_paren = before_trimmed.ends_with('(');
-
-            replacement_src = if export_default_ctx && !cf.is_arrow && !cf.name.is_empty() {
-                let prefix = &before_trimmed[..before_trimmed.len() - "export default".len()];
-                before_emit = prefix.to_string();
-                format!(
-                    "const {} = {} ? {} : {};\nexport default {};",
-                    cf.name, gate_call, compiled_fn_src, original_src, cf.name
-                )
-            } else if expression_ctx || export_default_ctx {
-                format!("{} ? {} : {}", gate_call, compiled_fn_src, original_src)
-            } else {
-                let referenced_before_decl = has_early_binding_reference(&before_emit, &cf.name);
-                if referenced_before_decl && !cf.name.is_empty() {
-                    let gate_result_name = format!("{}_result", gate_name);
-                    let optimized_name = format!("{}_optimized", cf.name);
-                    let unoptimized_name = format!("{}_unoptimized", cf.name);
-                    let optimized_fn = rename_function_declaration_name(
-                        &compiled_fn_src,
-                        &cf.name,
-                        &optimized_name,
-                    );
-                    let unoptimized_fn = rename_function_declaration_name(
-                        &original_src_raw,
-                        &cf.name,
-                        &unoptimized_name,
-                    );
-                    let param_count = count_param_slots(&cf.params_str);
-                    let wrapper_params = (0..param_count)
-                        .map(|i| format!("arg{}", i))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let wrapper_args = wrapper_params.clone();
-                    format!(
-                        "const {} = {};\n{}\n{}\nfunction {}({}) {{\nif ({}) return {}({});\nelse return {}({});\n}}",
-                        gate_result_name,
-                        gate_call,
-                        optimized_fn,
-                        unoptimized_fn,
-                        cf.name,
-                        wrapper_params,
-                        gate_result_name,
-                        optimized_name,
-                        wrapper_args,
-                        unoptimized_name,
-                        wrapper_args
-                    )
-                } else {
-                    // For function declarations in statement position, emit a gated const.
-                    format!(
-                        "const {} = {} ? {} : {};",
-                        cf.name, gate_call, compiled_fn_src, original_src
-                    )
-                }
-            };
-
-            // Upstream Babel print for replaced declarations does not preserve
-            // preceding blank separator lines from original source.
-            if !expression_ctx {
-                if before_emit.trim().is_empty() {
-                    before_emit.clear();
-                } else {
-                    before_emit = trim_trailing_blank_lines(&before_emit);
-                }
-            }
-
-            // When replacing a function expression argument inside a call like
-            // `forwardRef(function ...)`, oxc spans can consume the trailing `)`.
-            // Preserve call balance by re-adding a closing paren in that context.
-            let has_closing_paren_after = source[cf.end as usize..].trim_start().starts_with(')');
-            if expression_ctx
-                && before_ends_with_open_paren
-                && !replacement_src.ends_with(')')
-                && !has_closing_paren_after
-            {
-                replacement_src.push(')');
-            }
-
-            if cf.is_arrow && has_parenthesized_arrow_body {
-                let trailing = &source[cf.end as usize..];
-                if trailing.starts_with(";\n\nexport default")
-                    || trailing.starts_with(";\n\nexport const FIXTURE_ENTRYPOINT")
-                {
-                    if !replacement_src.ends_with(';') {
-                        replacement_src.push(';');
-                    }
-                    if (cf.end as usize) + 2 <= source.len() {
-                        next_source_start = cf.end + 2;
-                    }
-                }
-            }
-        }
-        output.push_str(&before_emit);
-        output.push_str(&replacement_src);
-
-        // Emit outlined functions after the main function
-        if !cf.outlined_functions.is_empty() {
-            for (fn_name, fn_params, fn_body) in &cf.outlined_functions {
-                let trimmed = fn_body.trim();
-                if trimmed.is_empty() {
-                    output.push_str(&format!("\nfunction {}({}) {{}}", fn_name, fn_params));
-                } else {
-                    output.push_str(&format!(
-                        "\nfunction {}({}) {{\n{}\n}}",
-                        fn_name, fn_params, trimmed
-                    ));
-                }
-            }
-        }
-
-        last_end = next_source_start;
-    }
-
-    // Copy remaining source after the last function
-    if (last_end as usize) < source.len() {
-        output.push_str(&rewrite_source_segment_with_runtime_import_merge(
-            source,
-            last_end as usize,
-            source.len(),
-            runtime_import_merge_plan.as_ref(),
-        ));
-    }
-
-    if let Some(gate_name) = gating_local_name.as_ref().filter(|_| needs_cache_import) {
-        output = gate_fixture_entrypoint_arrows(output, gate_name);
-    }
-
-    // Parity-facing transformed state is based on emitted output, not on
-    // whether the compiler internally analyzed/recompiled a function.
-    let transformed = normalize_for_transform_flag(&output)
-        != normalize_for_transform_flag(&source_untransformed);
-    CompileResult {
-        transformed,
-        code: output,
-        map: None,
-    }
+            source_untransformed: &source_untransformed,
+            program: &program,
+            options,
+            dynamic_gate_ident: dynamic_gate_ident.as_deref(),
+        },
+        compiled,
+    )
 }
 
-fn normalize_for_transform_flag(code: &str) -> String {
-    let compact: String = code
-        .replace("\r\n", "\n")
-        .trim_end()
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
-        .collect();
-    let normalized_quotes = compact.replace('\'', "\"");
-    let normalized_arrows = strip_single_param_arrow_parens_for_transform_flag(&normalized_quotes);
-    strip_trailing_commas_before_closer_for_transform_flag(&normalized_arrows)
-}
-
-fn strip_single_param_arrow_parens_for_transform_flag(input: &str) -> String {
+pub(crate) fn strip_single_param_arrow_parens_for_transform_flag(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut out = String::with_capacity(input.len());
     let mut i = 0usize;
@@ -4681,7 +3971,7 @@ fn strip_single_param_arrow_parens_for_transform_flag(input: &str) -> String {
     out
 }
 
-fn strip_trailing_commas_before_closer_for_transform_flag(input: &str) -> String {
+pub(crate) fn strip_trailing_commas_before_closer_for_transform_flag(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut out = String::with_capacity(input.len());
     let mut i = 0usize;
@@ -4707,7 +3997,7 @@ fn is_ident_continue_byte_for_transform_flag(byte: u8) -> bool {
     byte == b'_' || byte == b'$' || (byte as char).is_ascii_alphanumeric()
 }
 
-fn trim_trailing_blank_lines(text: &str) -> String {
+pub(crate) fn trim_trailing_blank_lines(text: &str) -> String {
     let mut out = text.to_string();
     while out.ends_with("\r\n\r\n") {
         out.truncate(out.len() - 2);
@@ -4718,7 +4008,7 @@ fn trim_trailing_blank_lines(text: &str) -> String {
     out
 }
 
-fn insert_blank_lines_for_guarded_cache_init(body: &str) -> String {
+pub(crate) fn insert_blank_lines_for_guarded_cache_init(body: &str) -> String {
     let lines: Vec<&str> = body.lines().collect();
     if lines.len() < 5 {
         return body.to_string();
@@ -4803,7 +4093,7 @@ fn ensure_trailing_comma_in_enum_members(rendered: &str) -> String {
     lines.join("\n")
 }
 
-fn insert_preserved_body_statements(body: &str, statements: &[String]) -> String {
+pub(crate) fn insert_preserved_body_statements(body: &str, statements: &[String]) -> String {
     let non_empty: Vec<&String> = statements
         .iter()
         .filter(|stmt| !stmt.trim().is_empty())
@@ -4934,21 +4224,24 @@ fn parse_temp_token_index(name: &str) -> Option<u32> {
     digits.parse::<u32>().ok()
 }
 
-fn maybe_align_hook_guard_name(body: &str, hook_guard_ident: &str) -> String {
+pub(crate) fn maybe_align_hook_guard_name(body: &str, hook_guard_ident: &str) -> String {
     if hook_guard_ident == "$dispatcherGuard" {
         return body.to_string();
     }
     replace_identifier_token(body, "$dispatcherGuard", hook_guard_ident)
 }
 
-fn maybe_align_structural_check_name(body: &str, structural_check_ident: &str) -> String {
+pub(crate) fn maybe_align_structural_check_name(
+    body: &str,
+    structural_check_ident: &str,
+) -> String {
     if structural_check_ident.is_empty() || structural_check_ident == "$structuralCheck" {
         return body.to_string();
     }
     replace_identifier_token(body, "$structuralCheck", structural_check_ident)
 }
 
-fn maybe_align_lower_context_access_name(
+pub(crate) fn maybe_align_lower_context_access_name(
     body: &str,
     imported_name: &str,
     lower_context_access_ident: &str,
@@ -5012,7 +4305,7 @@ fn parse_cache_access(expr: &str) -> Option<(&str, u32)> {
     Some((cache_name, slot))
 }
 
-fn maybe_apply_emit_freeze_to_cache_stores(
+pub(crate) fn maybe_apply_emit_freeze_to_cache_stores(
     body: &str,
     freeze_ident: &str,
     function_name: &str,
@@ -5073,7 +4366,9 @@ fn maybe_apply_emit_freeze_to_cache_stores(
     if changed { output } else { body.to_string() }
 }
 
-fn collect_top_level_bindings(program: &ast::Program<'_>) -> std::collections::HashSet<String> {
+pub(crate) fn collect_top_level_bindings(
+    program: &ast::Program<'_>,
+) -> std::collections::HashSet<String> {
     let mut names = std::collections::HashSet::new();
     for stmt in &program.body {
         collect_top_level_statement_bindings(stmt, &mut names);
@@ -5767,7 +5062,10 @@ fn collect_binding_pattern_names_owned(
 
 /// Generate a unique identifier name that doesn't collide with any existing names.
 /// Follows Babel's `generateUid` pattern: tries `name`, then `name2`, `name3`, etc.
-fn generate_unique_name(base: &str, existing: &std::collections::HashSet<String>) -> String {
+pub(crate) fn generate_unique_name(
+    base: &str,
+    existing: &std::collections::HashSet<String>,
+) -> String {
     if !existing.contains(base) {
         return base.to_string();
     }
@@ -5783,7 +5081,7 @@ fn generate_unique_name(base: &str, existing: &std::collections::HashSet<String>
 
 /// Generate a unique import binding name mirroring Babel's uid style:
 /// `name` (if free) otherwise `_name`, `_name2`, `_name3`, ...
-fn generate_unique_import_binding(
+pub(crate) fn generate_unique_import_binding(
     base: &str,
     existing: &std::collections::HashSet<String>,
 ) -> String {
@@ -5806,7 +5104,9 @@ fn generate_unique_import_binding(
 
 /// Collect all binding names from the entire program (including inner function scopes).
 /// This is used to detect naming conflicts for generated imports like `_c`.
-fn collect_all_program_bindings(program: &ast::Program<'_>) -> std::collections::HashSet<String> {
+pub(crate) fn collect_all_program_bindings(
+    program: &ast::Program<'_>,
+) -> std::collections::HashSet<String> {
     let mut names = std::collections::HashSet::new();
     for stmt in &program.body {
         collect_all_statement_bindings(stmt, &mut names);
@@ -5986,7 +5286,7 @@ fn conflicting_global_bailout(name: &str) -> CompilerError {
     })
 }
 
-fn is_expression_context(before_trimmed: &str) -> bool {
+pub(crate) fn is_expression_context(before_trimmed: &str) -> bool {
     before_trimmed.ends_with('=')
         || before_trimmed.ends_with('(')
         || before_trimmed.ends_with(',')
@@ -5996,7 +5296,11 @@ fn is_expression_context(before_trimmed: &str) -> bool {
         || before_trimmed.ends_with("=>")
 }
 
-fn rename_function_declaration_name(source: &str, old_name: &str, new_name: &str) -> String {
+pub(crate) fn rename_function_declaration_name(
+    source: &str,
+    old_name: &str,
+    new_name: &str,
+) -> String {
     if old_name.is_empty() || new_name.is_empty() {
         return source.to_string();
     }
@@ -6013,7 +5317,7 @@ fn rename_function_declaration_name(source: &str, old_name: &str, new_name: &str
     source.to_string()
 }
 
-fn count_param_slots(params_str: &str) -> usize {
+pub(crate) fn count_param_slots(params_str: &str) -> usize {
     params_str
         .split(',')
         .map(str::trim)
@@ -6021,7 +5325,7 @@ fn count_param_slots(params_str: &str) -> usize {
         .count()
 }
 
-fn has_early_binding_reference(before: &str, ident: &str) -> bool {
+pub(crate) fn has_early_binding_reference(before: &str, ident: &str) -> bool {
     if ident.is_empty() {
         return false;
     }
@@ -6058,7 +5362,7 @@ fn has_early_binding_reference(before: &str, ident: &str) -> bool {
     false
 }
 
-fn strip_directive_lines(body: &str, directives: &[String]) -> String {
+pub(crate) fn strip_directive_lines(body: &str, directives: &[String]) -> String {
     if directives.is_empty() {
         return body.to_string();
     }
@@ -6149,7 +5453,7 @@ fn parse_dynamic_gating_identifier(source: &str) -> Option<String> {
     }
 }
 
-fn gate_fixture_entrypoint_arrows(mut code: String, gate_name: &str) -> String {
+pub(crate) fn gate_fixture_entrypoint_arrows(mut code: String, gate_name: &str) -> String {
     let gated_empty_arrow = format!("{gate_name}() ? () =>{{}} : () =>{{}}");
     code = code.replace("fn: () =>{}", &format!("fn: {}", gated_empty_arrow));
     code = code.replace("fn: () => {}", &format!("fn: {}", gated_empty_arrow));
@@ -6969,6 +6273,7 @@ fn try_compile_function<'a>(
         body_end: body.span.end,
         directives,
         preserved_body_statements,
+        hir_function: Some(pipeline_output.final_hir_snapshot),
         needs_instrument_forget,
         needs_emit_freeze,
         outlined_functions: outlined,
@@ -7143,6 +6448,7 @@ fn try_compile_function_with_name<'a>(
         body_end: body.span.end,
         directives,
         preserved_body_statements,
+        hir_function: Some(pipeline_output.final_hir_snapshot),
         needs_instrument_forget,
         needs_emit_freeze,
         outlined_functions: outlined,
@@ -7325,6 +6631,7 @@ fn try_compile_arrow<'a>(
         body_end: arrow.span.end,
         directives,
         preserved_body_statements,
+        hir_function: Some(pipeline_output.final_hir_snapshot),
         needs_instrument_forget,
         needs_emit_freeze,
         outlined_functions: outlined,
@@ -8269,7 +7576,7 @@ fn build_array_destructuring(
 /// Convert a binding pattern to a parameter string, stripping type annotations.
 /// Insert parameter destructuring statements into the generated function body.
 /// They go right after the `const $ = _c(N);` line.
-fn insert_param_destructurings(body: &str, destructurings: &[String]) -> String {
+pub(crate) fn insert_param_destructurings(body: &str, destructurings: &[String]) -> String {
     // Find the first newline after "const $ = _c(" — insert after that line
     let non_empty: Vec<&String> = destructurings.iter().filter(|d| !d.is_empty()).collect();
     if non_empty.is_empty() {
@@ -8304,7 +7611,7 @@ fn insert_param_destructurings(body: &str, destructurings: &[String]) -> String 
 /// Prune unused properties from an object destructuring statement.
 /// Given `const { a, b, c: d } = t0;` and a body that only uses `a`,
 /// returns `const { a } = t0;`.
-fn prune_unused_destructuring(destr: &str, body: &str) -> String {
+pub(crate) fn prune_unused_destructuring(destr: &str, body: &str) -> String {
     // Only handle object destructuring: `const { ... } = ...;`
     let trimmed = destr.trim();
     if !trimmed.starts_with("const {") && !trimmed.starts_with("let {") {
