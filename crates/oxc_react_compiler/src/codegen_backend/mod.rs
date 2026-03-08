@@ -9,26 +9,9 @@ pub(crate) mod raw;
 pub(crate) mod shared;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CodegenBackend {
-    Raw,
-    Ast,
-    Compare,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CompiledBodyPayload {
     GeneratedString,
     LowerFromFinalHir,
-}
-
-impl CodegenBackend {
-    pub(crate) fn from_env() -> Self {
-        match std::env::var("OXC_REACT_CODEGEN_BACKEND").ok().as_deref() {
-            Some("ast") => Self::Ast,
-            Some("compare") => Self::Compare,
-            _ => Self::Raw,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -70,34 +53,6 @@ pub(crate) struct ModuleEmitArgs<'a> {
     pub(crate) dynamic_gate_ident: Option<&'a str>,
 }
 
-pub(crate) fn emit_module(
-    backend: CodegenBackend,
-    args: ModuleEmitArgs<'_>,
-    compiled: Vec<CompiledFunction>,
-) -> CompileResult {
-    match backend {
-        CodegenBackend::Raw => raw::emit_module(args, compiled),
-        CodegenBackend::Ast => ast_backend::emit_module(args, compiled),
-        CodegenBackend::Compare => {
-            let raw_result = raw::emit_module(args, compiled.clone());
-            let ast_result = ast_backend::emit_module(args, compiled);
-            if normalize_backend_compare(&raw_result.code)
-                != normalize_backend_compare(&ast_result.code)
-            {
-                eprintln!(
-                    "[OXC_REACT_CODEGEN_BACKEND=compare] raw and ast outputs differ for {}",
-                    args.filename
-                );
-            }
-            raw_result
-        }
-    }
-}
-
-fn normalize_backend_compare(code: &str) -> String {
-    code.replace("\r\n", "\n")
-        .lines()
-        .map(str::trim_end)
-        .collect::<Vec<_>>()
-        .join("\n")
+pub(crate) fn emit_module(args: ModuleEmitArgs<'_>, compiled: Vec<CompiledFunction>) -> CompileResult {
+    ast_backend::emit_module(args, compiled)
 }

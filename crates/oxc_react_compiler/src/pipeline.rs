@@ -20,9 +20,7 @@ use oxc_span::GetSpan;
 use sha2::Sha256;
 
 use crate::CompileResult;
-use crate::codegen_backend::{
-    CodegenBackend, CompiledBodyPayload, CompiledFunction, ModuleEmitArgs,
-};
+use crate::codegen_backend::{CompiledBodyPayload, CompiledFunction, ModuleEmitArgs};
 use crate::error::CompilerError;
 use crate::hir::build;
 use crate::hir::types::HIRFunction;
@@ -3928,9 +3926,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
         };
     }
 
-    let backend = CodegenBackend::from_env();
     crate::codegen_backend::emit_module(
-        backend,
         ModuleEmitArgs {
             filename,
             source,

@@ -17,13 +17,6 @@ struct JsRuntime {
     run_as_node: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BackendMode {
-    Raw,
-    Ast,
-    Compare,
-}
-
 #[derive(Clone, Copy, Debug)]
 struct FixtureSuiteOptions {
     fixture_timeout: std::time::Duration,
@@ -31,37 +24,10 @@ struct FixtureSuiteOptions {
     strict_output: bool,
     parallel: bool,
     verbose: bool,
-    backend_mode: BackendMode,
-    capture_generated_code: bool,
-}
-
-impl BackendMode {
-    fn from_args(args: &[String]) -> Self {
-        match args
-            .iter()
-            .position(|a| a == "--backend")
-            .and_then(|i| args.get(i + 1))
-            .map(String::as_str)
-        {
-            Some("ast") => Self::Ast,
-            Some("compare") => Self::Compare,
-            _ => Self::Raw,
-        }
-    }
-
-    fn env_value(self) -> Option<&'static str> {
-        match self {
-            Self::Raw => Some("raw"),
-            Self::Ast => Some("ast"),
-            Self::Compare => None,
-        }
-    }
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let backend_mode = BackendMode::from_args(&args);
-    let compare_is_diagnostic = backend_mode == BackendMode::Compare;
     let filter = args
         .iter()
         .position(|a| a == "--filter")
@@ -100,11 +66,6 @@ fn main() {
     let fixtures = collect_fixtures(&fixture_dir, filter.map(String::as_str));
 
     println!("Found {} fixtures", fixtures.len());
-    if compare_is_diagnostic {
-        eprintln!(
-            "[INFO] --backend compare is diagnostic-only; parity mismatches do not fail the run"
-        );
-    }
 
     let mut parity_success: usize = 0;
     let mut parity_failure: usize = 0;
@@ -123,46 +84,16 @@ fn main() {
         .unwrap_or(10);
     let fixture_timeout = std::time::Duration::from_secs(fixture_timeout_secs);
 
-    let results_raw: Vec<FixtureResult> = if backend_mode == BackendMode::Compare {
-        let raw_results = run_fixture_suite(
-            &fixtures,
-            FixtureSuiteOptions {
-                fixture_timeout,
-                run_skipped,
-                strict_output,
-                parallel,
-                verbose,
-                backend_mode: BackendMode::Raw,
-                capture_generated_code: true,
-            },
-        );
-        let ast_results = run_fixture_suite(
-            &fixtures,
-            FixtureSuiteOptions {
-                fixture_timeout,
-                run_skipped,
-                strict_output,
-                parallel,
-                verbose,
-                backend_mode: BackendMode::Ast,
-                capture_generated_code: true,
-            },
-        );
-        compare_backend_results(&fixtures, raw_results, ast_results)
-    } else {
-        run_fixture_suite(
-            &fixtures,
-            FixtureSuiteOptions {
-                fixture_timeout,
-                run_skipped,
-                strict_output,
-                parallel,
-                verbose,
-                backend_mode,
-                capture_generated_code: false,
-            },
-        )
-    };
+    let results_raw: Vec<FixtureResult> = run_fixture_suite(
+        &fixtures,
+        FixtureSuiteOptions {
+            fixture_timeout,
+            run_skipped,
+            strict_output,
+            parallel,
+            verbose,
+        },
+    );
     let results: Vec<FixtureResult> = results_raw
         .into_iter()
         .map(|mut result| {
@@ -651,209 +582,50 @@ fn main() {
         }
     }
 
-    if parity_failure > 0 && !compare_is_diagnostic {
+    if parity_failure > 0 {
         std::process::exit(1);
     }
 }
 
 fn run_fixture_suite(fixtures: &[Fixture], options: FixtureSuiteOptions) -> Vec<FixtureResult> {
-    with_codegen_backend_env(options.backend_mode, || {
-        if options.parallel {
-            fixtures
-                .par_iter()
-                .map(|fixture| {
-                    if options.verbose {
-                        println!("Running {}", fixture.name);
-                    }
-                    let res = run_fixture_with_timeout(
-                        fixture,
-                        options.fixture_timeout,
-                        options.run_skipped,
-                        options.strict_output,
-                        options.backend_mode,
-                        options.capture_generated_code,
-                    );
-                    if options.verbose {
-                        println!("Finished {}", fixture.name);
-                    }
-                    res
-                })
-                .collect()
-        } else {
-            fixtures
-                .iter()
-                .map(|fixture| {
-                    if options.verbose {
-                        println!("Running {}", fixture.name);
-                    }
-                    let res = run_fixture_with_timeout(
-                        fixture,
-                        options.fixture_timeout,
-                        options.run_skipped,
-                        options.strict_output,
-                        options.backend_mode,
-                        options.capture_generated_code,
-                    );
-                    if options.verbose {
-                        println!("Finished {}", fixture.name);
-                    }
-                    res
-                })
-                .collect()
-        }
-    })
-}
-
-fn with_codegen_backend_env<T>(backend_mode: BackendMode, f: impl FnOnce() -> T) -> T {
-    let previous = std::env::var("OXC_REACT_CODEGEN_BACKEND").ok();
-    match backend_mode.env_value() {
-        Some(value) => unsafe { std::env::set_var("OXC_REACT_CODEGEN_BACKEND", value) },
-        None => unsafe { std::env::remove_var("OXC_REACT_CODEGEN_BACKEND") },
-    }
-    let result = f();
-    match previous {
-        Some(value) => unsafe { std::env::set_var("OXC_REACT_CODEGEN_BACKEND", value) },
-        None => unsafe { std::env::remove_var("OXC_REACT_CODEGEN_BACKEND") },
-    }
-    result
-}
-
-fn compare_backend_results(
-    fixtures: &[Fixture],
-    raw_results: Vec<FixtureResult>,
-    ast_results: Vec<FixtureResult>,
-) -> Vec<FixtureResult> {
-    fixtures
-        .iter()
-        .zip(raw_results)
-        .zip(ast_results)
-        .map(|((fixture, raw), ast)| compare_backend_result(fixture, raw, ast))
-        .collect()
-}
-
-fn compare_backend_result(
-    fixture: &Fixture,
-    raw: FixtureResult,
-    ast: FixtureResult,
-) -> FixtureResult {
-    if raw.name != ast.name {
-        return FixtureResult {
-            name: fixture.name.clone(),
-            status: Status::Fail,
-            message: Some("Raw/AST result ordering mismatch".to_string()),
-            expected_state: raw.expected_state,
-            actual_state: ActualState::HarnessFailure,
-            outcome: FixtureOutcome::HarnessFailure,
-            parity_success: false,
-            generated_code: None,
-            actual_code: None,
-            expected_code: None,
-            is_error_fixture: raw.is_error_fixture || ast.is_error_fixture,
-        };
-    }
-
-    if raw.actual_state != ast.actual_state {
-        return FixtureResult {
-            name: fixture.name.clone(),
-            status: Status::Fail,
-            message: Some(format!(
-                "Backend state mismatch: raw={:?}, ast={:?}",
-                raw.actual_state, ast.actual_state
-            )),
-            expected_state: raw.expected_state,
-            actual_state: ast.actual_state,
-            outcome: FixtureOutcome::Mismatch,
-            parity_success: false,
-            generated_code: ast.generated_code.clone(),
-            actual_code: ast.generated_code,
-            expected_code: raw.generated_code,
-            is_error_fixture: raw.is_error_fixture || ast.is_error_fixture,
-        };
-    }
-
-    if raw.actual_state != ActualState::Transformed {
-        return FixtureResult {
-            name: fixture.name.clone(),
-            status: Status::Pass,
-            message: None,
-            expected_state: raw.expected_state,
-            actual_state: raw.actual_state,
-            outcome: raw.outcome,
-            parity_success: true,
-            generated_code: None,
-            actual_code: None,
-            expected_code: None,
-            is_error_fixture: raw.is_error_fixture || ast.is_error_fixture,
-        };
-    }
-
-    let Some(raw_code) = raw.generated_code.as_deref() else {
-        return FixtureResult {
-            name: fixture.name.clone(),
-            status: Status::Fail,
-            message: Some("Missing raw backend generated code".to_string()),
-            expected_state: raw.expected_state,
-            actual_state: ActualState::HarnessFailure,
-            outcome: FixtureOutcome::HarnessFailure,
-            parity_success: false,
-            generated_code: None,
-            actual_code: None,
-            expected_code: None,
-            is_error_fixture: raw.is_error_fixture || ast.is_error_fixture,
-        };
-    };
-    let Some(ast_code) = ast.generated_code.as_deref() else {
-        return FixtureResult {
-            name: fixture.name.clone(),
-            status: Status::Fail,
-            message: Some("Missing AST backend generated code".to_string()),
-            expected_state: raw.expected_state,
-            actual_state: ActualState::HarnessFailure,
-            outcome: FixtureOutcome::HarnessFailure,
-            parity_success: false,
-            generated_code: None,
-            actual_code: None,
-            expected_code: None,
-            is_error_fixture: raw.is_error_fixture || ast.is_error_fixture,
-        };
-    };
-
-    let raw_formatted =
-        format_with_oxfmt(&fixture.input_path, raw_code).unwrap_or_else(|_| raw_code.to_string());
-    let ast_formatted =
-        format_with_oxfmt(&fixture.input_path, ast_code).unwrap_or_else(|_| ast_code.to_string());
-
-    let raw_normalized = normalize_backend_compare_code(&raw_formatted);
-    let ast_normalized = normalize_backend_compare_code(&ast_formatted);
-
-    if raw_normalized == ast_normalized {
-        FixtureResult {
-            name: fixture.name.clone(),
-            status: Status::Pass,
-            message: None,
-            expected_state: raw.expected_state,
-            actual_state: ActualState::Transformed,
-            outcome: FixtureOutcome::TransformedMatch,
-            parity_success: true,
-            generated_code: Some(ast_code.to_string()),
-            actual_code: None,
-            expected_code: None,
-            is_error_fixture: raw.is_error_fixture || ast.is_error_fixture,
-        }
+    if options.parallel {
+        fixtures
+            .par_iter()
+            .map(|fixture| {
+                if options.verbose {
+                    println!("Running {}", fixture.name);
+                }
+                let res = run_fixture_with_timeout(
+                    fixture,
+                    options.fixture_timeout,
+                    options.run_skipped,
+                    options.strict_output,
+                );
+                if options.verbose {
+                    println!("Finished {}", fixture.name);
+                }
+                res
+            })
+            .collect()
     } else {
-        FixtureResult {
-            name: fixture.name.clone(),
-            status: Status::Fail,
-            message: Some("Raw and AST backends differ after oxfmt normalization".to_string()),
-            expected_state: raw.expected_state,
-            actual_state: ActualState::Transformed,
-            outcome: FixtureOutcome::Mismatch,
-            parity_success: false,
-            generated_code: Some(ast_code.to_string()),
-            actual_code: Some(ast_normalized),
-            expected_code: Some(raw_normalized),
-            is_error_fixture: raw.is_error_fixture || ast.is_error_fixture,
-        }
+        fixtures
+            .iter()
+            .map(|fixture| {
+                if options.verbose {
+                    println!("Running {}", fixture.name);
+                }
+                let res = run_fixture_with_timeout(
+                    fixture,
+                    options.fixture_timeout,
+                    options.run_skipped,
+                    options.strict_output,
+                );
+                if options.verbose {
+                    println!("Finished {}", fixture.name);
+                }
+                res
+            })
+            .collect()
     }
 }
 
@@ -1270,7 +1042,6 @@ struct FixtureResult {
     actual_state: ActualState,
     outcome: FixtureOutcome,
     parity_success: bool,
-    generated_code: Option<String>,
     actual_code: Option<String>,
     expected_code: Option<String>,
     is_error_fixture: bool,
@@ -1938,8 +1709,6 @@ fn run_fixture_with_timeout(
     timeout: std::time::Duration,
     run_skipped: bool,
     strict_output: bool,
-    backend_mode: BackendMode,
-    capture_generated_code: bool,
 ) -> FixtureResult {
     let fixture_clone = fixture.clone();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -1950,8 +1719,6 @@ fn run_fixture_with_timeout(
                 &fixture_clone,
                 run_skipped,
                 strict_output,
-                backend_mode,
-                capture_generated_code,
             );
             let _ = tx.send(r);
         })
@@ -1969,7 +1736,6 @@ fn run_fixture_with_timeout(
                 actual_state: ActualState::Timeout,
                 outcome: FixtureOutcome::Timeout,
                 parity_success: false,
-                generated_code: None,
                 actual_code: None,
                 expected_code: None,
                 is_error_fixture: matches!(expected_state, Some(ExpectedState::Error)),
@@ -1985,7 +1751,6 @@ fn run_fixture_with_timeout(
                 actual_state: ActualState::HarnessFailure,
                 outcome: FixtureOutcome::HarnessFailure,
                 parity_success: false,
-                generated_code: None,
                 actual_code: None,
                 expected_code: None,
                 is_error_fixture: matches!(expected_state, Some(ExpectedState::Error)),
@@ -1998,8 +1763,6 @@ fn run_fixture(
     fixture: &Fixture,
     run_skipped: bool,
     strict_output: bool,
-    backend_mode: BackendMode,
-    capture_generated_code: bool,
 ) -> FixtureResult {
     let source = match std::fs::read_to_string(&fixture.input_path) {
         Ok(s) => s,
@@ -2012,7 +1775,6 @@ fn run_fixture(
                 actual_state: ActualState::HarnessFailure,
                 outcome: FixtureOutcome::HarnessFailure,
                 parity_success: false,
-                generated_code: None,
                 actual_code: None,
                 expected_code: None,
                 is_error_fixture: false,
@@ -2031,7 +1793,6 @@ fn run_fixture(
                 actual_state: ActualState::HarnessFailure,
                 outcome: FixtureOutcome::HarnessFailure,
                 parity_success: false,
-                generated_code: None,
                 actual_code: None,
                 expected_code: None,
                 is_error_fixture: false,
@@ -2106,7 +1867,6 @@ fn run_fixture(
             actual_state: ActualState::HarnessFailure,
             outcome: FixtureOutcome::HarnessFailure,
             parity_success: false,
-            generated_code: None,
             actual_code: None,
             expected_code: None,
             is_error_fixture: matches!(expected_state, Some(ExpectedState::Error)),
@@ -2122,7 +1882,6 @@ fn run_fixture(
             actual_state: ActualState::Skipped,
             outcome: FixtureOutcome::ExpectedSkipMatch,
             parity_success: true,
-            generated_code: None,
             actual_code: None,
             expected_code: None,
             is_error_fixture: false,
@@ -2416,7 +2175,6 @@ fn run_fixture(
                 actual_state: ActualState::Error,
                 outcome: FixtureOutcome::ExpectedErrorMatch,
                 parity_success: true,
-                generated_code: None,
                 actual_code: None,
                 expected_code: None,
                 is_error_fixture: true,
@@ -2433,11 +2191,6 @@ fn run_fixture(
                 actual_state: ActualState::Transformed,
                 outcome: FixtureOutcome::Mismatch,
                 parity_success: false,
-                generated_code: if capture_generated_code {
-                    Some(result.code.clone())
-                } else {
-                    None
-                },
                 actual_code: Some(canonicalize_strict_text(&result.code)),
                 expected_code: expected_error.map(|s| canonicalize_strict_text(&s)),
                 is_error_fixture: true,
@@ -2453,18 +2206,10 @@ fn run_fixture(
             strict_output,
         );
         let postprocessed = normalize_post_babel_export_spacing(&postprocessed);
-        let actual_source = maybe_format_ast_backend_compare_code(
-            &fixture.input_path,
-            &postprocessed,
-            backend_mode,
-        );
-        let expected_source = maybe_format_ast_backend_compare_code(
-            &fixture.input_path,
-            &expected_code,
-            backend_mode,
-        );
-        let actual = prepare_code_for_compare(&actual_source, strict_output, backend_mode);
-        let expected = prepare_code_for_compare(&expected_source, strict_output, backend_mode);
+        let actual_source = format_code_for_compare(&fixture.input_path, &postprocessed);
+        let expected_source = format_code_for_compare(&fixture.input_path, &expected_code);
+        let actual = prepare_code_for_compare(&actual_source, strict_output);
+        let expected = prepare_code_for_compare(&expected_source, strict_output);
 
         match expected_state.unwrap_or(ExpectedState::Transform) {
             ExpectedState::Transform => {
@@ -2480,11 +2225,6 @@ fn run_fixture(
                         actual_state: ActualState::Bailout,
                         outcome: FixtureOutcome::UnexpectedSkip,
                         parity_success: false,
-                        generated_code: if capture_generated_code {
-                            Some(result.code.clone())
-                        } else {
-                            None
-                        },
                         actual_code: Some(actual),
                         expected_code: Some(expected),
                         is_error_fixture: false,
@@ -2498,11 +2238,6 @@ fn run_fixture(
                         actual_state: ActualState::Transformed,
                         outcome: FixtureOutcome::TransformedMatch,
                         parity_success: true,
-                        generated_code: if capture_generated_code {
-                            Some(result.code.clone())
-                        } else {
-                            None
-                        },
                         actual_code: None,
                         expected_code: None,
                         is_error_fixture: false,
@@ -2516,11 +2251,6 @@ fn run_fixture(
                         actual_state: ActualState::Transformed,
                         outcome: FixtureOutcome::Mismatch,
                         parity_success: false,
-                        generated_code: if capture_generated_code {
-                            Some(result.code.clone())
-                        } else {
-                            None
-                        },
                         actual_code: Some(actual),
                         expected_code: Some(expected),
                         is_error_fixture: false,
@@ -2537,11 +2267,6 @@ fn run_fixture(
                         actual_state: ActualState::Bailout,
                         outcome: FixtureOutcome::ExpectedBailoutMatch,
                         parity_success: true,
-                        generated_code: if capture_generated_code {
-                            Some(result.code.clone())
-                        } else {
-                            None
-                        },
                         actual_code: None,
                         expected_code: None,
                         is_error_fixture: false,
@@ -2558,11 +2283,6 @@ fn run_fixture(
                         actual_state: ActualState::Transformed,
                         outcome: FixtureOutcome::Mismatch,
                         parity_success: false,
-                        generated_code: if capture_generated_code {
-                            Some(result.code.clone())
-                        } else {
-                            None
-                        },
                         actual_code: Some(actual),
                         expected_code: Some(expected),
                         is_error_fixture: false,
@@ -2583,11 +2303,6 @@ fn run_fixture(
                 },
                 outcome: FixtureOutcome::Mismatch,
                 parity_success: false,
-                generated_code: if capture_generated_code {
-                    Some(result.code.clone())
-                } else {
-                    None
-                },
                 actual_code: Some(actual),
                 expected_code: Some(expected),
                 is_error_fixture: false,
@@ -2604,11 +2319,6 @@ fn run_fixture(
                 },
                 outcome: FixtureOutcome::HarnessFailure,
                 parity_success: false,
-                generated_code: if capture_generated_code {
-                    Some(result.code.clone())
-                } else {
-                    None
-                },
                 actual_code: Some(actual),
                 expected_code: Some(expected),
                 is_error_fixture: false,
@@ -2758,29 +2468,15 @@ fn format_with_oxfmt(input_path: &Path, code: &str) -> Result<String, String> {
         .ok_or_else(|| "oxfmt response missing formatted code".to_string())
 }
 
-fn normalize_backend_compare_code(code: &str) -> String {
-    normalize_shared_cosmetic_equivalences(&normalize_code(code))
-}
-
-fn maybe_format_ast_backend_compare_code(
-    input_path: &Path,
-    code: &str,
-    backend_mode: BackendMode,
-) -> String {
-    if backend_mode != BackendMode::Ast {
-        return code.to_string();
-    }
-
+fn format_code_for_compare(input_path: &Path, code: &str) -> String {
     format_with_oxfmt(input_path, code).unwrap_or_else(|_| code.to_string())
 }
 
-fn prepare_code_for_compare(code: &str, strict_output: bool, backend_mode: BackendMode) -> String {
+fn prepare_code_for_compare(code: &str, strict_output: bool) -> String {
     if strict_output {
         canonicalize_strict_text(code)
-    } else if backend_mode == BackendMode::Ast {
-        normalize_shared_cosmetic_equivalences(&normalize_code(code))
     } else {
-        normalize_code(code)
+        normalize_shared_cosmetic_equivalences(&normalize_code(code))
     }
 }
 
