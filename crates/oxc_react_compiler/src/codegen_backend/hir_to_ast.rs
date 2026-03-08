@@ -275,6 +275,50 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 }
                 Some(statements)
             }
+            Terminal::Try {
+                block,
+                handler_binding,
+                handler,
+                fallthrough,
+                ..
+            } => {
+                let try_body = self.lower_block_sequence(
+                    *block,
+                    Some(*fallthrough),
+                    &mut visiting_blocks.clone(),
+                    loop_context,
+                )?;
+                let handler_body = self.lower_block_sequence(
+                    *handler,
+                    Some(*fallthrough),
+                    &mut visiting_blocks.clone(),
+                    loop_context,
+                )?;
+                let catch_param = handler_binding
+                    .as_ref()
+                    .and_then(|binding| self.lower_catch_parameter(binding));
+                let mut statements = self.builder.vec1(ast::Statement::TryStatement(
+                    self.builder.alloc_try_statement(
+                        SPAN,
+                        self.builder.alloc_block_statement(SPAN, try_body),
+                        Some(self.builder.alloc_catch_clause(
+                            SPAN,
+                            catch_param,
+                            self.builder.alloc_block_statement(SPAN, handler_body),
+                        )),
+                        None::<oxc_allocator::Box<'a, ast::BlockStatement<'a>>>,
+                    ),
+                ));
+                if Some(*fallthrough) != stop_at {
+                    statements.extend(self.lower_block_sequence(
+                        *fallthrough,
+                        stop_at,
+                        visiting_blocks,
+                        loop_context,
+                    )?);
+                }
+                Some(statements)
+            }
             Terminal::Sequence {
                 block, fallthrough, ..
             }
@@ -456,6 +500,16 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 false,
             )),
             false,
+        ))
+    }
+
+    fn lower_catch_parameter(&self, place: &Place) -> Option<ast::CatchParameter<'a>> {
+        let name = place_name(place)?;
+        Some(self.builder.catch_parameter(
+            SPAN,
+            self.builder
+                .binding_pattern_binding_identifier(SPAN, self.builder.ident(name)),
+            NONE,
         ))
     }
 
@@ -1763,6 +1817,141 @@ mod tests {
         assert_eq!(
             try_lower_function_body(&hir).as_deref(),
             Some("let sum;\nfor (let i = 0; i < 3; i = i + 1) {\n  sum = sum + i;\n}\nreturn sum;\n")
+        );
+    }
+
+    #[test]
+    fn lowers_try_catch() {
+        let value_place = named_place(120, 120, "value");
+        let catch_place = named_place(121, 121, "err");
+        let one = temporary_place(122);
+        let two = temporary_place(123);
+
+        let hir = HIRFunction {
+            env: Environment::new(EnvironmentConfig::default()),
+            loc: SourceLocation::Generated,
+            id: None,
+            fn_type: ReactFunctionType::Other,
+            params: vec![],
+            returns: value_place.clone(),
+            context: vec![],
+            body: HIR {
+                entry: BlockId::new(0),
+                blocks: vec![
+                    (
+                        BlockId::new(0),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(0),
+                            instructions: vec![instruction(
+                                124,
+                                temporary_place(125),
+                                types::InstructionValue::DeclareLocal {
+                                    lvalue: types::LValue {
+                                        place: value_place.clone(),
+                                        kind: InstructionKind::Let,
+                                    },
+                                    loc: SourceLocation::Generated,
+                                },
+                            )],
+                            terminal: Terminal::Try {
+                                block: BlockId::new(1),
+                                handler_binding: Some(catch_place),
+                                handler: BlockId::new(2),
+                                fallthrough: BlockId::new(3),
+                                id: InstructionId::new(126),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(1),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(1),
+                            instructions: vec![instruction(
+                                127,
+                                one.clone(),
+                                types::InstructionValue::Primitive {
+                                    value: types::PrimitiveValue::Number(1.0),
+                                    loc: SourceLocation::Generated,
+                                },
+                            )],
+                            terminal: Terminal::Throw {
+                                value: one,
+                                id: InstructionId::new(128),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(2),
+                        BasicBlock {
+                            kind: types::BlockKind::Catch,
+                            id: BlockId::new(2),
+                            instructions: vec![
+                                instruction(
+                                    129,
+                                    two.clone(),
+                                    types::InstructionValue::Primitive {
+                                        value: types::PrimitiveValue::Number(2.0),
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                                instruction(
+                                    130,
+                                    temporary_place(131),
+                                    types::InstructionValue::StoreLocal {
+                                        lvalue: types::LValue {
+                                            place: value_place.clone(),
+                                            kind: InstructionKind::Reassign,
+                                        },
+                                        value: two,
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                            ],
+                            terminal: Terminal::Goto {
+                                block: BlockId::new(3),
+                                variant: types::GotoVariant::Try,
+                                id: InstructionId::new(132),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(3),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(3),
+                            instructions: vec![],
+                            terminal: Terminal::Return {
+                                value: value_place,
+                                return_variant: types::ReturnVariant::Explicit,
+                                id: InstructionId::new(133),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                ],
+            },
+            generator: false,
+            async_: false,
+            directives: vec![],
+            aliasing_effects: None,
+        };
+
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("let value;\ntry {\n  throw 1;\n} catch (err) {\n  value = 2;\n}\nreturn value;\n")
         );
     }
 
