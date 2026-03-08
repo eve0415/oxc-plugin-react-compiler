@@ -43,6 +43,7 @@ pub(crate) fn try_lower_function_body(hir_function: &HIRFunction) -> Option<Stri
         hir_function.body.entry,
         None,
         &mut HashSet::new(),
+        None,
     )?;
     let program = builder.program(
         SPAN,
@@ -68,6 +69,12 @@ struct LoweringState<'a, 'hir> {
     used_temps: HashSet<IdentifierId>,
 }
 
+#[derive(Clone, Copy)]
+struct LoopContext {
+    continue_target: types::BlockId,
+    break_target: types::BlockId,
+}
+
 impl<'a, 'hir> LoweringState<'a, 'hir> {
     fn new(
         builder: AstBuilder<'a>,
@@ -88,6 +95,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         terminal: &Terminal,
         stop_at: Option<types::BlockId>,
         visiting_blocks: &mut HashSet<types::BlockId>,
+        loop_context: Option<LoopContext>,
     ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
         match terminal {
             Terminal::Return { value, .. } => Some(self.builder.vec1(
@@ -99,6 +107,14 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                     .statement_throw(SPAN, self.lower_place(value, &mut HashSet::new())?),
             )),
             Terminal::Goto { block, .. } => {
+                if let Some(loop_context) = loop_context {
+                    if *block == loop_context.continue_target {
+                        return Some(self.builder.vec1(self.builder.statement_continue(SPAN, None)));
+                    }
+                    if *block == loop_context.break_target {
+                        return Some(self.builder.vec1(self.builder.statement_break(SPAN, None)));
+                    }
+                }
                 if Some(*block) == stop_at {
                     Some(self.builder.vec())
                 } else {
@@ -123,6 +139,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                     *consequent,
                     Some(*fallthrough),
                     &mut visiting_blocks.clone(),
+                    loop_context,
                 )?;
                 let consequent = self.wrap_block(consequent);
                 let alternate = if *alternate == *fallthrough {
@@ -132,6 +149,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                         *alternate,
                         Some(*fallthrough),
                         &mut visiting_blocks.clone(),
+                        loop_context,
                     )?))
                 };
                 let mut statements = self.builder.vec1(self.builder.statement_if(
@@ -145,6 +163,71 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                         *fallthrough,
                         stop_at,
                         visiting_blocks,
+                        loop_context,
+                    )?);
+                }
+                Some(statements)
+            }
+            Terminal::While {
+                test,
+                loop_block,
+                fallthrough,
+                ..
+            } => {
+                let test_expr = self.lower_test_block_expr(*test)?;
+                let mut body = self.lower_block_sequence(
+                    *loop_block,
+                    Some(*test),
+                    &mut visiting_blocks.clone(),
+                    Some(LoopContext {
+                        continue_target: *test,
+                        break_target: *fallthrough,
+                    }),
+                )?;
+                trim_trailing_loop_continue(&mut body);
+                let mut statements = self.builder.vec1(self.builder.statement_while(
+                    SPAN,
+                    test_expr,
+                    self.wrap_block(body),
+                ));
+                if Some(*fallthrough) != stop_at {
+                    statements.extend(self.lower_block_sequence(
+                        *fallthrough,
+                        stop_at,
+                        visiting_blocks,
+                        loop_context,
+                    )?);
+                }
+                Some(statements)
+            }
+            Terminal::DoWhile {
+                loop_block,
+                test,
+                fallthrough,
+                ..
+            } => {
+                let test_expr = self.lower_test_block_expr(*test)?;
+                let mut body = self.lower_block_sequence(
+                    *loop_block,
+                    Some(*test),
+                    &mut visiting_blocks.clone(),
+                    Some(LoopContext {
+                        continue_target: *test,
+                        break_target: *fallthrough,
+                    }),
+                )?;
+                trim_trailing_loop_continue(&mut body);
+                let mut statements = self.builder.vec1(self.builder.statement_do_while(
+                    SPAN,
+                    self.wrap_block(body),
+                    test_expr,
+                ));
+                if Some(*fallthrough) != stop_at {
+                    statements.extend(self.lower_block_sequence(
+                        *fallthrough,
+                        stop_at,
+                        visiting_blocks,
+                        loop_context,
                     )?);
                 }
                 Some(statements)
@@ -162,12 +245,18 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 block, fallthrough, ..
             } => {
                 let mut statements =
-                    self.lower_block_sequence(*block, Some(*fallthrough), visiting_blocks)?;
+                    self.lower_block_sequence(
+                        *block,
+                        Some(*fallthrough),
+                        visiting_blocks,
+                        loop_context,
+                    )?;
                 if Some(*fallthrough) != stop_at {
                     statements.extend(self.lower_block_sequence(
                         *fallthrough,
                         stop_at,
                         visiting_blocks,
+                        loop_context,
                     )?);
                 }
                 Some(statements)
@@ -181,6 +270,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         block_id: types::BlockId,
         stop_at: Option<types::BlockId>,
         visiting_blocks: &mut HashSet<types::BlockId>,
+        loop_context: Option<LoopContext>,
     ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
         if Some(block_id) == stop_at {
             return Some(self.builder.vec());
@@ -199,7 +289,12 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 statements.push(statement);
             }
         }
-        statements.extend(self.lower_terminal(&block.terminal, stop_at, visiting_blocks)?);
+        statements.extend(self.lower_terminal(
+            &block.terminal,
+            stop_at,
+            visiting_blocks,
+            loop_context,
+        )?);
         visiting_blocks.remove(&block_id);
         Some(statements)
     }
@@ -592,6 +687,29 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
             }
         }
     }
+
+    fn lower_test_block_expr(&self, block_id: types::BlockId) -> Option<ast::Expression<'a>> {
+        let block = self.block_map.get(&block_id)?;
+        if !block.phis.is_empty() {
+            return None;
+        }
+        if block.instructions.iter().any(|instruction| {
+            matches!(
+                instruction.value,
+                InstructionValue::StoreLocal { lvalue: types::LValue { kind: InstructionKind::Reassign, .. }, .. }
+                    | InstructionValue::StoreContext { lvalue: types::LValue { kind: InstructionKind::Reassign, .. }, .. }
+            )
+        }) {
+            return None;
+        }
+        let expr_instruction = block.instructions.iter().rev().find(|instruction| {
+            instruction.lvalue.identifier.name.is_none()
+                && self
+                    .lower_instruction_value(&instruction.value, &mut HashSet::new())
+                    .is_some()
+        })?;
+        self.lower_instruction_value(&expr_instruction.value, &mut HashSet::new())
+    }
 }
 
 fn lower_property_load<'a, F>(
@@ -721,6 +839,12 @@ fn is_undefined_expression(expression: &ast::Expression<'_>) -> bool {
         expression,
         ast::Expression::Identifier(identifier) if identifier.name == "undefined"
     )
+}
+
+fn trim_trailing_loop_continue(statements: &mut oxc_allocator::Vec<'_, ast::Statement<'_>>) {
+    if matches!(statements.last(), Some(ast::Statement::ContinueStatement(_))) {
+        statements.pop();
+    }
 }
 
 fn lower_primitive<'a>(builder: AstBuilder<'a>, value: &PrimitiveValue) -> ast::Expression<'a> {
@@ -1158,6 +1282,141 @@ mod tests {
         assert_eq!(
             try_lower_function_body(&hir).as_deref(),
             Some("let value;\nif (flag) {\n  value = 1;\n} else {\n  value = 2;\n}\nreturn value;\n")
+        );
+    }
+
+    #[test]
+    fn lowers_simple_while_loop() {
+        let flag = named_place(70, 70, "flag");
+        let value_place = named_place(71, 71, "value");
+        let test_temp = temporary_place(72);
+        let body_value = temporary_place(73);
+
+        let hir = HIRFunction {
+            env: Environment::new(EnvironmentConfig::default()),
+            loc: SourceLocation::Generated,
+            id: None,
+            fn_type: ReactFunctionType::Other,
+            params: vec![],
+            returns: value_place.clone(),
+            context: vec![],
+            body: HIR {
+                entry: BlockId::new(0),
+                blocks: vec![
+                    (
+                        BlockId::new(0),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(0),
+                            instructions: vec![instruction(
+                                74,
+                                temporary_place(75),
+                                types::InstructionValue::DeclareLocal {
+                                    lvalue: types::LValue {
+                                        place: value_place.clone(),
+                                        kind: InstructionKind::Let,
+                                    },
+                                    loc: SourceLocation::Generated,
+                                },
+                            )],
+                            terminal: Terminal::While {
+                                test: BlockId::new(1),
+                                loop_block: BlockId::new(2),
+                                fallthrough: BlockId::new(3),
+                                id: InstructionId::new(76),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(1),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(1),
+                            instructions: vec![instruction(
+                                77,
+                                test_temp.clone(),
+                                types::InstructionValue::LoadLocal {
+                                    place: flag,
+                                    loc: SourceLocation::Generated,
+                                },
+                            )],
+                            terminal: Terminal::Goto {
+                                block: BlockId::new(2),
+                                variant: types::GotoVariant::Continue,
+                                id: InstructionId::new(78),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(2),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(2),
+                            instructions: vec![
+                                instruction(
+                                    79,
+                                    body_value.clone(),
+                                    types::InstructionValue::Primitive {
+                                        value: types::PrimitiveValue::Number(1.0),
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                                instruction(
+                                    80,
+                                    temporary_place(81),
+                                    types::InstructionValue::StoreLocal {
+                                        lvalue: types::LValue {
+                                            place: value_place.clone(),
+                                            kind: InstructionKind::Reassign,
+                                        },
+                                        value: body_value,
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                            ],
+                            terminal: Terminal::Goto {
+                                block: BlockId::new(1),
+                                variant: types::GotoVariant::Continue,
+                                id: InstructionId::new(82),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(3),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(3),
+                            instructions: vec![],
+                            terminal: Terminal::Return {
+                                value: value_place,
+                                return_variant: types::ReturnVariant::Explicit,
+                                id: InstructionId::new(83),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                ],
+            },
+            generator: false,
+            async_: false,
+            directives: vec![],
+            aliasing_effects: None,
+        };
+
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("let value;\nwhile (flag) {\n  value = 1;\n}\nreturn value;\n")
         );
     }
 
