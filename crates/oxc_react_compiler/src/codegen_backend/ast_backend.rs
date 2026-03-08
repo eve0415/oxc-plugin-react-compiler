@@ -194,6 +194,26 @@ fn try_emit_module(
             continue;
         }
 
+        if stmt_compiled.len() == 1
+            && let Some(statements) = try_rewrite_compiled_statement_ast(
+                builder,
+                &allocator,
+                state.source_type,
+                stmt,
+                stmt_compiled[0],
+                &state,
+            )
+        {
+            for statement in statements {
+                let statement_source =
+                    codegen_statement_source(&allocator, state.source_type, &statement);
+                body.push(statement);
+                rendered_prefix.push_str(statement_source.trim_end_matches('\n'));
+                rendered_prefix.push('\n');
+            }
+            continue;
+        }
+
         let (rewritten_stmt, outlined_functions) = rewrite_statement_source(
             span.start as usize,
             span.end as usize,
@@ -541,6 +561,235 @@ fn rewrite_statement_source(
     Ok((rewritten, outlined_functions))
 }
 
+fn try_rewrite_compiled_statement_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    stmt: &ast::Statement<'_>,
+    cf: &CompiledFunction,
+    state: &AstRenderState,
+) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
+    if state.gating_local_name.is_some() && cf.needs_cache_import {
+        return None;
+    }
+    if cf.params_str != cf.original_params_str || !cf.param_destructurings.is_empty() {
+        return None;
+    }
+
+    let body_source = render_compiled_body_source(cf, state);
+    let function_body = parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?;
+    let mut rewritten_stmt = stmt.clone_in(allocator);
+    if !replace_compiled_function_in_statement(
+        builder,
+        allocator,
+        &mut rewritten_stmt,
+        cf,
+        &function_body,
+    ) {
+        return None;
+    }
+
+    let mut statements = builder.vec1(rewritten_stmt);
+    for outlined in collect_rendered_outlined_functions(cf) {
+        if let Some(hir_function) = outlined.hir_function.as_ref()
+            && let Some(statement) =
+                super::hir_to_ast::try_lower_function_declaration_ast(builder, hir_function)
+        {
+            statements.push(statement);
+            continue;
+        }
+
+        let source = format_outlined_function_source(&outlined.name, &outlined.params, &outlined.body);
+        statements.extend(parse_statements(
+            allocator,
+            source_type,
+            allocator.alloc_str(&source),
+        ).ok()?);
+    }
+
+    Some(statements)
+}
+
+fn replace_compiled_function_in_statement<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    statement: &mut ast::Statement<'a>,
+    cf: &CompiledFunction,
+    function_body: &ast::FunctionBody<'a>,
+) -> bool {
+    match statement {
+        ast::Statement::FunctionDeclaration(function)
+            if function.span.start == cf.start && function.span.end == cf.end =>
+        {
+            function.body = Some(make_function_body(builder, allocator, function_body));
+            true
+        }
+        ast::Statement::VariableDeclaration(variable) => variable
+            .declarations
+            .iter_mut()
+            .any(|declarator| replace_compiled_function_in_declarator(
+                builder,
+                allocator,
+                declarator,
+                cf,
+                function_body,
+            )),
+        ast::Statement::ExportNamedDeclaration(export_named) => export_named
+            .declaration
+            .as_mut()
+            .is_some_and(|declaration| {
+                replace_compiled_function_in_declaration(
+                    builder,
+                    allocator,
+                    declaration,
+                    cf,
+                    function_body,
+                )
+            }),
+        ast::Statement::ExportDefaultDeclaration(export_default) => {
+            replace_compiled_function_in_export_default(
+                builder,
+                allocator,
+                export_default,
+                cf,
+                function_body,
+            )
+        }
+        _ => false,
+    }
+}
+
+fn replace_compiled_function_in_declaration<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    declaration: &mut ast::Declaration<'a>,
+    cf: &CompiledFunction,
+    function_body: &ast::FunctionBody<'a>,
+) -> bool {
+    match declaration {
+        ast::Declaration::FunctionDeclaration(function)
+            if function.span.start == cf.start && function.span.end == cf.end =>
+        {
+            function.body = Some(make_function_body(builder, allocator, function_body));
+            true
+        }
+        ast::Declaration::VariableDeclaration(variable) => variable
+            .declarations
+            .iter_mut()
+            .any(|declarator| replace_compiled_function_in_declarator(
+                builder,
+                allocator,
+                declarator,
+                cf,
+                function_body,
+            )),
+        _ => false,
+    }
+}
+
+fn replace_compiled_function_in_export_default<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    export_default: &mut ast::ExportDefaultDeclaration<'a>,
+    cf: &CompiledFunction,
+    function_body: &ast::FunctionBody<'a>,
+) -> bool {
+    match &mut export_default.declaration {
+        ast::ExportDefaultDeclarationKind::FunctionDeclaration(function)
+            if function.span.start == cf.start && function.span.end == cf.end =>
+        {
+            function.body = Some(make_function_body(builder, allocator, function_body));
+            true
+        }
+        ast::ExportDefaultDeclarationKind::FunctionExpression(function)
+            if function.span.start == cf.start && function.span.end == cf.end =>
+        {
+            function.body = Some(make_function_body(builder, allocator, function_body));
+            true
+        }
+        ast::ExportDefaultDeclarationKind::ArrowFunctionExpression(arrow)
+            if arrow.span.start == cf.start && arrow.span.end == cf.end =>
+        {
+            arrow.expression = false;
+            arrow.body = make_function_body(builder, allocator, function_body);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn replace_compiled_function_in_declarator<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    declarator: &mut ast::VariableDeclarator<'a>,
+    cf: &CompiledFunction,
+    function_body: &ast::FunctionBody<'a>,
+) -> bool {
+    let Some(init) = declarator.init.as_mut() else {
+        return false;
+    };
+    replace_compiled_function_in_expression(builder, allocator, init, cf, function_body)
+}
+
+fn replace_compiled_function_in_expression<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    expression: &mut ast::Expression<'a>,
+    cf: &CompiledFunction,
+    function_body: &ast::FunctionBody<'a>,
+) -> bool {
+    match expression {
+        ast::Expression::FunctionExpression(function)
+            if function.span.start == cf.start && function.span.end == cf.end =>
+        {
+            function.body = Some(make_function_body(builder, allocator, function_body));
+            true
+        }
+        ast::Expression::ArrowFunctionExpression(arrow)
+            if arrow.span.start == cf.start && arrow.span.end == cf.end =>
+        {
+            arrow.expression = false;
+            arrow.body = make_function_body(builder, allocator, function_body);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn make_function_body<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    function_body: &ast::FunctionBody<'a>,
+) -> oxc_allocator::Box<'a, ast::FunctionBody<'a>> {
+    builder.alloc(function_body.clone_in(allocator))
+}
+
+fn parse_compiled_function_body<'a>(
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    cf: &CompiledFunction,
+    body_source: &str,
+) -> Result<ast::FunctionBody<'a>, String> {
+    let async_prefix = if cf.is_async { "async " } else { "" };
+    let generator_prefix = if cf.is_generator { "*" } else { "" };
+    let wrapper = format!(
+        "{}function {}__codex_ast_body() {{\n{}\n}}",
+        async_prefix, generator_prefix, body_source
+    );
+    let mut statements = parse_statements(allocator, source_type, allocator.alloc_str(&wrapper))?;
+    let statement = statements
+        .pop()
+        .ok_or_else(|| "failed to parse wrapped function body".to_string())?;
+    let ast::Statement::FunctionDeclaration(function) = statement else {
+        return Err("wrapped body did not parse as function declaration".to_string());
+    };
+    let function = function.unbox();
+    function
+        .body
+        .map(|body| body.unbox())
+        .ok_or_else(|| "wrapped function body missing body".to_string())
+}
+
 fn render_compiled_function(
     cf: &CompiledFunction,
     mut before_emit: String,
@@ -548,86 +797,7 @@ fn render_compiled_function(
     source: &str,
     state: &AstRenderState,
 ) -> RenderedCompiledFunction {
-    let mut body = cf.generated_body.clone();
-    if state.cache_import_name != "_c" {
-        body = body.replacen("_c(", &format!("{}(", state.cache_import_name), 1);
-    }
-    if !cf.param_destructurings.is_empty() && !body.contains("=== undefined ?") {
-        let pruned: Vec<String> = cf
-            .param_destructurings
-            .iter()
-            .enumerate()
-            .map(|(i, destructuring)| {
-                let after: String = cf.param_destructurings[i + 1..].join("\n");
-                let context = format!("{}\n{}", body, after);
-                crate::pipeline::prune_unused_destructuring(destructuring, &context)
-            })
-            .collect();
-        body = crate::pipeline::insert_param_destructurings(&body, &pruned);
-    }
-    if !cf.preserved_body_statements.is_empty() {
-        body =
-            crate::pipeline::insert_preserved_body_statements(&body, &cf.preserved_body_statements);
-    }
-    if !cf.directives.is_empty() {
-        body = crate::pipeline::strip_directive_lines(&body, &cf.directives);
-    }
-
-    let mut prologue = String::new();
-    if !cf.directives.is_empty() {
-        let directives_str: String = cf
-            .directives
-            .iter()
-            .map(|d| format!("  {};\n", d))
-            .collect();
-        prologue.push_str(&directives_str);
-    }
-    if cf.needs_instrument_forget {
-        let rendered_name = if cf.name.is_empty() {
-            "<anonymous>"
-        } else {
-            cf.name.as_str()
-        };
-        prologue.push_str(&format!(
-            "  if (DEV && {})\n    {}(\"{}\", \"{}\");\n",
-            state.should_instrument_ident,
-            state.use_render_counter_ident,
-            rendered_name,
-            state.instrument_source_path
-        ));
-    }
-    if !prologue.is_empty() {
-        body = format!("{}{}", prologue, body);
-    }
-    if cf.needs_emit_freeze {
-        let freeze_name = if cf.name.is_empty() {
-            "<anonymous>"
-        } else {
-            cf.name.as_str()
-        };
-        body = crate::pipeline::maybe_apply_emit_freeze_to_cache_stores(
-            &body,
-            &state.make_read_only_ident,
-            freeze_name,
-        );
-    }
-    if cf.needs_hook_guards {
-        body = crate::pipeline::maybe_align_hook_guard_name(&body, &state.hook_guard_ident);
-    }
-    if cf.needs_structural_check_import {
-        body = crate::pipeline::maybe_align_structural_check_name(
-            &body,
-            &state.structural_check_ident,
-        );
-    }
-    if cf.needs_lower_context_access && !state.lower_context_access_ident.is_empty() {
-        body = crate::pipeline::maybe_align_lower_context_access_name(
-            &body,
-            &state.lower_context_access_imported,
-            &state.lower_context_access_ident,
-        );
-    }
-    body = crate::pipeline::insert_blank_lines_for_guarded_cache_init(&body);
+    let mut body = render_compiled_body_source(cf, state);
     if !body.is_empty() && !body.ends_with('\n') {
         body.push('\n');
     }
@@ -763,7 +933,102 @@ fn render_compiled_function(
         }
     }
 
-    let outlined_functions = cf
+    let outlined_functions = collect_rendered_outlined_functions(cf);
+
+    RenderedCompiledFunction {
+        before_emit,
+        replacement_src,
+        next_source_start,
+        outlined_functions,
+    }
+}
+
+fn render_compiled_body_source(cf: &CompiledFunction, state: &AstRenderState) -> String {
+    let mut body = cf.generated_body.clone();
+    if state.cache_import_name != "_c" {
+        body = body.replacen("_c(", &format!("{}(", state.cache_import_name), 1);
+    }
+    if !cf.param_destructurings.is_empty() && !body.contains("=== undefined ?") {
+        let pruned: Vec<String> = cf
+            .param_destructurings
+            .iter()
+            .enumerate()
+            .map(|(i, destructuring)| {
+                let after: String = cf.param_destructurings[i + 1..].join("\n");
+                let context = format!("{}\n{}", body, after);
+                crate::pipeline::prune_unused_destructuring(destructuring, &context)
+            })
+            .collect();
+        body = crate::pipeline::insert_param_destructurings(&body, &pruned);
+    }
+    if !cf.preserved_body_statements.is_empty() {
+        body =
+            crate::pipeline::insert_preserved_body_statements(&body, &cf.preserved_body_statements);
+    }
+    if !cf.directives.is_empty() {
+        body = crate::pipeline::strip_directive_lines(&body, &cf.directives);
+    }
+
+    let mut prologue = String::new();
+    if !cf.directives.is_empty() {
+        let directives_str: String = cf
+            .directives
+            .iter()
+            .map(|d| format!("  {};\n", d))
+            .collect();
+        prologue.push_str(&directives_str);
+    }
+    if cf.needs_instrument_forget {
+        let rendered_name = if cf.name.is_empty() {
+            "<anonymous>"
+        } else {
+            cf.name.as_str()
+        };
+        prologue.push_str(&format!(
+            "  if (DEV && {})\n    {}(\"{}\", \"{}\");\n",
+            state.should_instrument_ident,
+            state.use_render_counter_ident,
+            rendered_name,
+            state.instrument_source_path
+        ));
+    }
+    if !prologue.is_empty() {
+        body = format!("{}{}", prologue, body);
+    }
+    if cf.needs_emit_freeze {
+        let freeze_name = if cf.name.is_empty() {
+            "<anonymous>"
+        } else {
+            cf.name.as_str()
+        };
+        body = crate::pipeline::maybe_apply_emit_freeze_to_cache_stores(
+            &body,
+            &state.make_read_only_ident,
+            freeze_name,
+        );
+    }
+    if cf.needs_hook_guards {
+        body = crate::pipeline::maybe_align_hook_guard_name(&body, &state.hook_guard_ident);
+    }
+    if cf.needs_structural_check_import {
+        body = crate::pipeline::maybe_align_structural_check_name(
+            &body,
+            &state.structural_check_ident,
+        );
+    }
+    if cf.needs_lower_context_access && !state.lower_context_access_ident.is_empty() {
+        body = crate::pipeline::maybe_align_lower_context_access_name(
+            &body,
+            &state.lower_context_access_imported,
+            &state.lower_context_access_ident,
+        );
+    }
+    body = crate::pipeline::insert_blank_lines_for_guarded_cache_init(&body);
+    body
+}
+
+fn collect_rendered_outlined_functions(cf: &CompiledFunction) -> Vec<RenderedOutlinedFunction> {
+    cf
         .outlined_functions
         .iter()
         .map(|(fn_name, fn_params, fn_body)| {
@@ -779,14 +1044,7 @@ fn render_compiled_function(
                 hir_function,
             }
         })
-        .collect();
-
-    RenderedCompiledFunction {
-        before_emit,
-        replacement_src,
-        next_source_start,
-        outlined_functions,
-    }
+        .collect()
 }
 
 fn try_lower_compiled_statement_ast<'a>(
