@@ -119,13 +119,12 @@ fn try_emit_module(
             && import_decl.span.start == plan.start
             && import_decl.span.end == plan.end
         {
-            if let Some(replacement) = plan.replacement.as_deref() {
-                body.extend(parse_statements(
-                    &allocator,
-                    state.source_type,
-                    allocator.alloc_str(replacement),
-                )?);
-                rendered_prefix.push_str(replacement);
+            if plan.replacement.is_some() {
+                let statement = build_runtime_import_merge_statement(builder, &plan.merged_specs);
+                let statement_source =
+                    codegen_statement_source(&allocator, state.source_type, &statement);
+                body.push(statement);
+                rendered_prefix.push_str(statement_source.trim_end_matches('\n'));
                 rendered_prefix.push('\n');
             } else {
                 body.push(stmt.clone_in(&allocator));
@@ -889,6 +888,26 @@ fn build_inserted_import_statement<'a>(
             ast::ImportOrExportKind::Value,
         ))
     }
+}
+
+fn build_runtime_import_merge_statement<'a>(
+    builder: AstBuilder<'a>,
+    merged_specs: &[(String, String)],
+) -> ast::Statement<'a> {
+    build_inserted_import_statement(
+        builder,
+        &InsertedImport {
+            source: "react/compiler-runtime".to_string(),
+            specs: merged_specs
+                .iter()
+                .map(|(imported, local)| InsertedImportSpec {
+                    imported: imported.clone(),
+                    local: local.clone(),
+                })
+                .collect(),
+            is_script: false,
+        },
+    )
 }
 
 fn parse_statements<'a>(

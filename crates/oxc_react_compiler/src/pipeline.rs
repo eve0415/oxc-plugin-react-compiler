@@ -3018,6 +3018,7 @@ pub(crate) struct RuntimeImportMergePlan {
     pub(crate) start: u32,
     pub(crate) end: u32,
     pub(crate) replacement: Option<String>,
+    pub(crate) merged_specs: Vec<(String, String)>,
     pub(crate) cache_local_name: Option<String>,
     pub(crate) has_cache_after: bool,
     pub(crate) has_use_fire_after: bool,
@@ -3083,7 +3084,7 @@ pub(crate) fn plan_runtime_import_merge(
 
         // Only merge into named-import forms:
         // import { ... } from "react/compiler-runtime"
-        let mut rendered_specs: Vec<String> = Vec::new();
+        let mut merged_specs: Vec<(String, String)> = Vec::new();
         let mut has_cache = false;
         let mut has_use_fire = false;
         let mut cache_local_name: Option<String> = None;
@@ -3109,11 +3110,7 @@ pub(crate) fn plan_runtime_import_merge(
             } else if imported == "useFire" {
                 has_use_fire = true;
             }
-            rendered_specs.push(if imported == local {
-                imported.to_string()
-            } else {
-                format!("{imported} as {local}")
-            });
+            merged_specs.push((imported.to_string(), local.to_string()));
         }
 
         if !can_merge {
@@ -3122,21 +3119,27 @@ pub(crate) fn plan_runtime_import_merge(
 
         let mut changed = false;
         if needs_cache_import && !has_cache {
-            if cache_import_name == "c" {
-                rendered_specs.push("c".to_string());
-            } else {
-                rendered_specs.push(format!("c as {cache_import_name}"));
-            }
+            merged_specs.push(("c".to_string(), cache_import_name.to_string()));
             has_cache = true;
             changed = true;
         }
         if needs_fire_import && !has_use_fire {
-            rendered_specs.push("useFire".to_string());
+            merged_specs.push(("useFire".to_string(), "useFire".to_string()));
             has_use_fire = true;
             changed = true;
         }
 
         let replacement = if changed {
+            let rendered_specs = merged_specs
+                .iter()
+                .map(|(imported, local)| {
+                    if imported == local {
+                        imported.clone()
+                    } else {
+                        format!("{imported} as {local}")
+                    }
+                })
+                .collect::<Vec<_>>();
             Some(format!(
                 "import {{ {} }} from \"react/compiler-runtime\";",
                 rendered_specs.join(", ")
@@ -3149,6 +3152,7 @@ pub(crate) fn plan_runtime_import_merge(
             start: import_decl.span.start,
             end: import_decl.span.end,
             replacement,
+            merged_specs,
             cache_local_name,
             has_cache_after: has_cache,
             has_use_fire_after: has_use_fire,
