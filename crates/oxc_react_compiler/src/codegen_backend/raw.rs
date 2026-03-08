@@ -577,7 +577,7 @@ pub(crate) fn emit_module(
     }
 }
 
-fn gated_uncompiled_function_source(source: &str, cf: &CompiledFunction) -> String {
+pub(crate) fn gated_uncompiled_function_source(source: &str, cf: &CompiledFunction) -> String {
     let original_src = source[cf.start as usize..cf.end as usize]
         .trim()
         .to_string();
@@ -613,7 +613,7 @@ fn non_empty_trimmed_lines(src: &str) -> Vec<&str> {
         .collect()
 }
 
-fn should_preserve_original_layout_for_equivalent_output(
+pub(crate) fn should_preserve_original_layout_for_equivalent_output(
     cf: &CompiledFunction,
     compiled_src: &str,
     original_src: &str,
@@ -632,7 +632,7 @@ fn should_preserve_original_layout_for_equivalent_output(
     non_empty_trimmed_lines(compiled_src) == non_empty_trimmed_lines(original_src)
 }
 
-fn normalize_for_transform_flag(code: &str) -> String {
+pub(crate) fn normalize_for_transform_flag(code: &str) -> String {
     let compact: String = code
         .replace("\r\n", "\n")
         .trim_end()
