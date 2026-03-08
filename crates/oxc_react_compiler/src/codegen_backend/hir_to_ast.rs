@@ -277,6 +277,80 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 }
                 Some(statements)
             }
+            Terminal::ForOf {
+                init,
+                test,
+                loop_block,
+                fallthrough,
+                ..
+            } => {
+                let right = self.lower_for_of_right(*init)?;
+                let left = self.lower_for_in_of_left(*test)?;
+                let mut body = self.lower_block_sequence(
+                    *loop_block,
+                    Some(*init),
+                    &mut visiting_blocks.clone(),
+                    Some(ControlContext {
+                        continue_target: Some(*init),
+                        break_target: Some(*fallthrough),
+                    }),
+                )?;
+                trim_trailing_loop_continue(&mut body);
+                let mut statements = self.builder.vec1(ast::Statement::ForOfStatement(
+                    self.builder.alloc_for_of_statement(
+                        SPAN,
+                        false,
+                        left,
+                        right,
+                        self.wrap_block(body),
+                    ),
+                ));
+                if Some(*fallthrough) != stop_at {
+                    statements.extend(self.lower_block_sequence(
+                        *fallthrough,
+                        stop_at,
+                        visiting_blocks,
+                        control_context,
+                    )?);
+                }
+                Some(statements)
+            }
+            Terminal::ForIn {
+                init,
+                loop_block,
+                fallthrough,
+                ..
+            } => {
+                let right = self.lower_for_in_right(*init)?;
+                let left = self.lower_for_in_of_left(*init)?;
+                let mut body = self.lower_block_sequence(
+                    *loop_block,
+                    Some(*init),
+                    &mut visiting_blocks.clone(),
+                    Some(ControlContext {
+                        continue_target: Some(*init),
+                        break_target: Some(*fallthrough),
+                    }),
+                )?;
+                trim_trailing_loop_continue(&mut body);
+                let mut statements = self.builder.vec1(ast::Statement::ForInStatement(
+                    self.builder.alloc_for_in_statement(
+                        SPAN,
+                        left,
+                        right,
+                        self.wrap_block(body),
+                    ),
+                ));
+                if Some(*fallthrough) != stop_at {
+                    statements.extend(self.lower_block_sequence(
+                        *fallthrough,
+                        stop_at,
+                        visiting_blocks,
+                        control_context,
+                    )?);
+                }
+                Some(statements)
+            }
             Terminal::Switch {
                 test,
                 cases,
@@ -1038,6 +1112,112 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
             )),
         }
     }
+
+    fn lower_for_of_right(&self, init_block: types::BlockId) -> Option<ast::Expression<'a>> {
+        let block = self.block_map.get(&init_block)?;
+        if !block.phis.is_empty() {
+            return None;
+        }
+        let iterator_init = block.instructions.iter().find_map(|instruction| {
+            if let InstructionValue::GetIterator { collection, .. } = &instruction.value {
+                Some(collection)
+            } else {
+                None
+            }
+        })?;
+        self.lower_place(iterator_init, &mut HashSet::new())
+    }
+
+    fn lower_for_in_right(&self, init_block: types::BlockId) -> Option<ast::Expression<'a>> {
+        let block = self.block_map.get(&init_block)?;
+        if !block.phis.is_empty() {
+            return None;
+        }
+        let object = block.instructions.iter().find_map(|instruction| {
+            if let InstructionValue::NextPropertyOf { value, .. } = &instruction.value {
+                Some(value)
+            } else {
+                None
+            }
+        })?;
+        self.lower_place(object, &mut HashSet::new())
+    }
+
+    fn lower_for_in_of_left(&self, block_id: types::BlockId) -> Option<ast::ForStatementLeft<'a>> {
+        let block = self.block_map.get(&block_id)?;
+        if !block.phis.is_empty() {
+            return None;
+        }
+        for instruction in &block.instructions {
+            match &instruction.value {
+                InstructionValue::StoreLocal { lvalue, .. }
+                | InstructionValue::StoreContext { lvalue, .. } => {
+                    let name = place_name(&lvalue.place)?;
+                    let left = if lvalue.kind == InstructionKind::Reassign {
+                        ast::ForStatementLeft::from(ast::AssignmentTarget::from(
+                            self.builder
+                                .simple_assignment_target_assignment_target_identifier(
+                                    SPAN,
+                                    self.builder.ident(name),
+                                ),
+                        ))
+                    } else {
+                        self.builder.for_statement_left_variable_declaration(
+                            SPAN,
+                            variable_declaration_kind(lvalue.kind)?,
+                            self.builder.vec1(self.builder.variable_declarator(
+                                SPAN,
+                                variable_declaration_kind(lvalue.kind)?,
+                                self.builder.binding_pattern_binding_identifier(
+                                    SPAN,
+                                    self.builder.ident(name),
+                                ),
+                                NONE,
+                                None,
+                                false,
+                            )),
+                            false,
+                        )
+                    };
+                    return Some(left);
+                }
+                InstructionValue::StoreGlobal { name, .. } => {
+                    return Some(ast::ForStatementLeft::from(ast::AssignmentTarget::from(
+                        self.builder
+                            .simple_assignment_target_assignment_target_identifier(
+                                SPAN,
+                                self.builder.ident(name),
+                            ),
+                    )));
+                }
+                InstructionValue::PropertyStore {
+                    object, property, ..
+                } => {
+                    return Some(ast::ForStatementLeft::from(lower_property_assignment_target(
+                        self.builder,
+                        object,
+                        property,
+                        |place, visiting| self.lower_place(place, visiting),
+                        &mut HashSet::new(),
+                    )?));
+                }
+                InstructionValue::ComputedStore {
+                    object, property, ..
+                } => {
+                    return Some(ast::ForStatementLeft::from(ast::AssignmentTarget::from(
+                        ast::SimpleAssignmentTarget::from(self.builder.member_expression_computed(
+                            SPAN,
+                            self.lower_place(object, &mut HashSet::new())?,
+                            self.lower_place(property, &mut HashSet::new())?,
+                            false,
+                        )),
+                    )));
+                }
+                _ => {}
+            }
+        }
+        None
+    }
 }
 
 fn lower_property_load<'a, F>(
@@ -1346,6 +1526,22 @@ fn expression_to_assignment_target<'a>(
 fn place_name(place: &Place) -> Option<&str> {
     match place.identifier.name.as_ref()? {
         types::IdentifierName::Named(name) | types::IdentifierName::Promoted(name) => Some(name),
+    }
+}
+
+fn variable_declaration_kind(
+    kind: InstructionKind,
+) -> Option<ast::VariableDeclarationKind> {
+    match kind {
+        InstructionKind::Const | InstructionKind::HoistedConst => {
+            Some(ast::VariableDeclarationKind::Const)
+        }
+        InstructionKind::Let | InstructionKind::HoistedLet | InstructionKind::Catch => {
+            Some(ast::VariableDeclarationKind::Let)
+        }
+        InstructionKind::Reassign
+        | InstructionKind::Function
+        | InstructionKind::HoistedFunction => None,
     }
 }
 
@@ -2529,6 +2725,332 @@ mod tests {
         assert_eq!(
             try_lower_function_body(&hir).as_deref(),
             Some("++i;\nobj[key] = i;\ndelete obj.value;\ndebugger;\nreturn i;\n")
+        );
+    }
+
+    #[test]
+    fn lowers_basic_for_of_loop() {
+        let items_place = named_place(200, 200, "items");
+        let item_place = named_place(201, 201, "item");
+        let value_place = named_place(202, 202, "value");
+        let iterator_place = temporary_place(203);
+        let next_place = temporary_place(204);
+        let test_place = temporary_place(205);
+
+        let hir = HIRFunction {
+            env: Environment::new(EnvironmentConfig::default()),
+            loc: SourceLocation::Generated,
+            id: None,
+            fn_type: ReactFunctionType::Other,
+            params: vec![],
+            returns: value_place.clone(),
+            context: vec![],
+            body: HIR {
+                entry: BlockId::new(0),
+                blocks: vec![
+                    (
+                        BlockId::new(0),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(0),
+                            instructions: vec![instruction(
+                                206,
+                                temporary_place(207),
+                                types::InstructionValue::DeclareLocal {
+                                    lvalue: types::LValue {
+                                        place: value_place.clone(),
+                                        kind: InstructionKind::Let,
+                                    },
+                                    loc: SourceLocation::Generated,
+                                },
+                            )],
+                            terminal: Terminal::ForOf {
+                                init: BlockId::new(1),
+                                test: BlockId::new(2),
+                                loop_block: BlockId::new(3),
+                                fallthrough: BlockId::new(4),
+                                id: InstructionId::new(208),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(1),
+                        BasicBlock {
+                            kind: types::BlockKind::Loop,
+                            id: BlockId::new(1),
+                            instructions: vec![instruction(
+                                209,
+                                iterator_place.clone(),
+                                types::InstructionValue::GetIterator {
+                                    collection: items_place.clone(),
+                                    loc: SourceLocation::Generated,
+                                },
+                            )],
+                            terminal: Terminal::Goto {
+                                block: BlockId::new(2),
+                                variant: types::GotoVariant::Break,
+                                id: InstructionId::new(210),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(2),
+                        BasicBlock {
+                            kind: types::BlockKind::Loop,
+                            id: BlockId::new(2),
+                            instructions: vec![
+                                instruction(
+                                    211,
+                                    next_place.clone(),
+                                    types::InstructionValue::IteratorNext {
+                                        iterator: iterator_place,
+                                        collection: items_place,
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                                instruction(
+                                    212,
+                                    temporary_place(213),
+                                    types::InstructionValue::StoreLocal {
+                                        lvalue: types::LValue {
+                                            place: item_place.clone(),
+                                            kind: InstructionKind::Let,
+                                        },
+                                        value: next_place,
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                                instruction(
+                                    214,
+                                    test_place.clone(),
+                                    types::InstructionValue::LoadLocal {
+                                        place: item_place.clone(),
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                            ],
+                            terminal: Terminal::Branch {
+                                test: test_place,
+                                consequent: BlockId::new(3),
+                                alternate: BlockId::new(4),
+                                fallthrough: BlockId::new(4),
+                                id: InstructionId::new(215),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(3),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(3),
+                            instructions: vec![instruction(
+                                216,
+                                temporary_place(217),
+                                types::InstructionValue::StoreLocal {
+                                    lvalue: types::LValue {
+                                        place: value_place.clone(),
+                                        kind: InstructionKind::Reassign,
+                                    },
+                                    value: item_place,
+                                    loc: SourceLocation::Generated,
+                                },
+                            )],
+                            terminal: Terminal::Goto {
+                                block: BlockId::new(1),
+                                variant: types::GotoVariant::Continue,
+                                id: InstructionId::new(218),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(4),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(4),
+                            instructions: vec![],
+                            terminal: Terminal::Return {
+                                value: value_place,
+                                return_variant: types::ReturnVariant::Explicit,
+                                id: InstructionId::new(219),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                ],
+            },
+            generator: false,
+            async_: false,
+            directives: vec![],
+            aliasing_effects: None,
+        };
+
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("let value;\nfor (let item of items) {\n  value = item;\n}\nreturn value;\n")
+        );
+    }
+
+    #[test]
+    fn lowers_basic_for_in_loop() {
+        let object_place = named_place(220, 220, "obj");
+        let key_place = named_place(221, 221, "key");
+        let value_place = named_place(222, 222, "value");
+        let next_place = temporary_place(223);
+        let test_place = temporary_place(224);
+
+        let hir = HIRFunction {
+            env: Environment::new(EnvironmentConfig::default()),
+            loc: SourceLocation::Generated,
+            id: None,
+            fn_type: ReactFunctionType::Other,
+            params: vec![],
+            returns: value_place.clone(),
+            context: vec![],
+            body: HIR {
+                entry: BlockId::new(0),
+                blocks: vec![
+                    (
+                        BlockId::new(0),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(0),
+                            instructions: vec![instruction(
+                                225,
+                                temporary_place(226),
+                                types::InstructionValue::DeclareLocal {
+                                    lvalue: types::LValue {
+                                        place: value_place.clone(),
+                                        kind: InstructionKind::Let,
+                                    },
+                                    loc: SourceLocation::Generated,
+                                },
+                            )],
+                            terminal: Terminal::ForIn {
+                                init: BlockId::new(1),
+                                loop_block: BlockId::new(2),
+                                fallthrough: BlockId::new(3),
+                                id: InstructionId::new(227),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(1),
+                        BasicBlock {
+                            kind: types::BlockKind::Loop,
+                            id: BlockId::new(1),
+                            instructions: vec![
+                                instruction(
+                                    228,
+                                    next_place.clone(),
+                                    types::InstructionValue::NextPropertyOf {
+                                        value: object_place.clone(),
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                                instruction(
+                                    229,
+                                    temporary_place(230),
+                                    types::InstructionValue::StoreLocal {
+                                        lvalue: types::LValue {
+                                            place: key_place.clone(),
+                                            kind: InstructionKind::Let,
+                                        },
+                                        value: next_place,
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                                instruction(
+                                    231,
+                                    test_place.clone(),
+                                    types::InstructionValue::LoadLocal {
+                                        place: key_place.clone(),
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                            ],
+                            terminal: Terminal::Branch {
+                                test: test_place,
+                                consequent: BlockId::new(2),
+                                alternate: BlockId::new(3),
+                                fallthrough: BlockId::new(3),
+                                id: InstructionId::new(232),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(2),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(2),
+                            instructions: vec![instruction(
+                                233,
+                                temporary_place(234),
+                                types::InstructionValue::StoreLocal {
+                                    lvalue: types::LValue {
+                                        place: value_place.clone(),
+                                        kind: InstructionKind::Reassign,
+                                    },
+                                    value: key_place,
+                                    loc: SourceLocation::Generated,
+                                },
+                            )],
+                            terminal: Terminal::Goto {
+                                block: BlockId::new(1),
+                                variant: types::GotoVariant::Continue,
+                                id: InstructionId::new(235),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(3),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(3),
+                            instructions: vec![],
+                            terminal: Terminal::Return {
+                                value: value_place,
+                                return_variant: types::ReturnVariant::Explicit,
+                                id: InstructionId::new(236),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                ],
+            },
+            generator: false,
+            async_: false,
+            directives: vec![],
+            aliasing_effects: None,
+        };
+
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("let value;\nfor (let key in obj) {\n  value = key;\n}\nreturn value;\n")
         );
     }
 
