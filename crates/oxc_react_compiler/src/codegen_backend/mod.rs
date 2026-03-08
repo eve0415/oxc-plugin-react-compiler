@@ -6,6 +6,7 @@ use crate::options::PluginOptions;
 pub(crate) mod ast_backend;
 pub(crate) mod hir_to_ast;
 pub(crate) mod raw;
+pub(crate) mod shared;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CodegenBackend {
