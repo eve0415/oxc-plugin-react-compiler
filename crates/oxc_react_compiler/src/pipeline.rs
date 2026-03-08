@@ -6260,12 +6260,7 @@ fn try_compile_function<'a>(
     };
 
     let needs_cache_import = codegen_result.needs_cache_import || synthesized_param_default_cache;
-    let body_payload = if !needs_cache_import && outlined.is_empty() {
-        CompiledBodyPayload::LowerFromFinalHir
-    } else {
-        CompiledBodyPayload::GeneratedString
-    };
-    let hir_outlined_functions = pipeline_output
+    let hir_outlined_functions: Vec<(String, HIRFunction)> = pipeline_output
         .hir_outlined
         .iter()
         .map(|of| {
@@ -6274,6 +6269,13 @@ fn try_compile_function<'a>(
             (of.name.clone(), hir_function)
         })
         .collect();
+    let body_payload = if !needs_cache_import
+        && outlined_functions_are_hir_lowerable(&outlined, &hir_outlined_functions)
+    {
+        CompiledBodyPayload::LowerFromFinalHir
+    } else {
+        CompiledBodyPayload::GeneratedString
+    };
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -6453,12 +6455,7 @@ fn try_compile_function_with_name<'a>(
     };
 
     let needs_cache_import = codegen_result.needs_cache_import || synthesized_param_default_cache;
-    let body_payload = if !needs_cache_import && outlined.is_empty() {
-        CompiledBodyPayload::LowerFromFinalHir
-    } else {
-        CompiledBodyPayload::GeneratedString
-    };
-    let hir_outlined_functions = pipeline_output
+    let hir_outlined_functions: Vec<(String, HIRFunction)> = pipeline_output
         .hir_outlined
         .iter()
         .map(|of| {
@@ -6467,6 +6464,13 @@ fn try_compile_function_with_name<'a>(
             (of.name.clone(), hir_function)
         })
         .collect();
+    let body_payload = if !needs_cache_import
+        && outlined_functions_are_hir_lowerable(&outlined, &hir_outlined_functions)
+    {
+        CompiledBodyPayload::LowerFromFinalHir
+    } else {
+        CompiledBodyPayload::GeneratedString
+    };
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -6654,12 +6658,7 @@ fn try_compile_arrow<'a>(
     };
 
     let needs_cache_import = codegen_result.needs_cache_import || synthesized_param_default_cache;
-    let body_payload = if !needs_cache_import && outlined.is_empty() {
-        CompiledBodyPayload::LowerFromFinalHir
-    } else {
-        CompiledBodyPayload::GeneratedString
-    };
-    let hir_outlined_functions = pipeline_output
+    let hir_outlined_functions: Vec<(String, HIRFunction)> = pipeline_output
         .hir_outlined
         .iter()
         .map(|of| {
@@ -6668,6 +6667,13 @@ fn try_compile_arrow<'a>(
             (of.name.clone(), hir_function)
         })
         .collect();
+    let body_payload = if !needs_cache_import
+        && outlined_functions_are_hir_lowerable(&outlined, &hir_outlined_functions)
+    {
+        CompiledBodyPayload::LowerFromFinalHir
+    } else {
+        CompiledBodyPayload::GeneratedString
+    };
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -6707,6 +6713,17 @@ struct ParamsResult {
     destructurings: Vec<String>,
     /// Outlined functions from default parameter values.
     outlined_functions: Vec<(String, String, String)>,
+}
+
+fn outlined_functions_are_hir_lowerable(
+    outlined_functions: &[(String, String, String)],
+    hir_outlined_functions: &[(String, HIRFunction)],
+) -> bool {
+    outlined_functions.iter().all(|(outlined_name, _, _)| {
+        hir_outlined_functions
+            .iter()
+            .any(|(hir_name, _)| hir_name == outlined_name)
+    })
 }
 
 fn parse_simple_default_binding_line(line: &str) -> Option<(String, String, String)> {

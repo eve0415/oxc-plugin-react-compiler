@@ -182,13 +182,15 @@ fn try_emit_module(
         if stmt_compiled.len() == 1
             && stmt_compiled[0].start == span.start
             && stmt_compiled[0].end == span.end
-            && let Some(statement) = try_lower_compiled_statement_ast(builder, stmt_compiled[0])
+            && let Some(statements) = try_lower_compiled_statement_ast(builder, stmt_compiled[0])
         {
-            let statement_source =
-                codegen_statement_source(&allocator, state.source_type, &statement);
-            body.push(statement);
-            rendered_prefix.push_str(statement_source.trim_end_matches('\n'));
-            rendered_prefix.push('\n');
+            for statement in statements {
+                let statement_source =
+                    codegen_statement_source(&allocator, state.source_type, &statement);
+                body.push(statement);
+                rendered_prefix.push_str(statement_source.trim_end_matches('\n'));
+                rendered_prefix.push('\n');
+            }
             continue;
         }
 
@@ -790,11 +792,27 @@ fn render_compiled_function(
 fn try_lower_compiled_statement_ast<'a>(
     builder: AstBuilder<'a>,
     cf: &CompiledFunction,
-) -> Option<ast::Statement<'a>> {
+) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
     if !can_emit_compiled_statement_ast(cf) {
         return None;
     }
-    super::hir_to_ast::try_lower_function_declaration_ast(builder, cf.hir_function.as_ref()?)
+    let mut statements = builder.vec();
+    statements.push(super::hir_to_ast::try_lower_function_declaration_ast(
+        builder,
+        cf.hir_function.as_ref()?,
+    )?);
+    for (outlined_name, _, _) in &cf.outlined_functions {
+        let hir_function = cf
+            .hir_outlined_functions
+            .iter()
+            .find(|(hir_name, _)| hir_name == outlined_name)
+            .map(|(_, hir_function)| hir_function)?;
+        statements.push(super::hir_to_ast::try_lower_function_declaration_ast(
+            builder,
+            hir_function,
+        )?);
+    }
+    Some(statements)
 }
 
 fn can_emit_compiled_statement_ast(cf: &CompiledFunction) -> bool {
