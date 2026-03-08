@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use oxc_allocator::Allocator;
+use oxc_allocator::{Allocator, CloneIn};
 use oxc_ast::{AstBuilder, NONE, ast};
 use oxc_codegen::{Codegen, CodegenOptions, IndentChar};
 use oxc_span::{SPAN, SourceType};
@@ -221,6 +221,49 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                     SPAN,
                     self.wrap_block(body),
                     test_expr,
+                ));
+                if Some(*fallthrough) != stop_at {
+                    statements.extend(self.lower_block_sequence(
+                        *fallthrough,
+                        stop_at,
+                        visiting_blocks,
+                        loop_context,
+                    )?);
+                }
+                Some(statements)
+            }
+            Terminal::For {
+                init,
+                test,
+                update,
+                loop_block,
+                fallthrough,
+                ..
+            } => {
+                let init = self.lower_for_init(*init, *test)?;
+                let test_expr = self.lower_test_block_expr(*test)?;
+                let update_expr = if let Some(update) = update {
+                    self.lower_for_update(*update, *test)?
+                } else {
+                    None
+                };
+                let continue_target = update.unwrap_or(*test);
+                let mut body = self.lower_block_sequence(
+                    *loop_block,
+                    Some(continue_target),
+                    &mut visiting_blocks.clone(),
+                    Some(LoopContext {
+                        continue_target,
+                        break_target: *fallthrough,
+                    }),
+                )?;
+                trim_trailing_loop_continue(&mut body);
+                let mut statements = self.builder.vec1(self.builder.statement_for(
+                    SPAN,
+                    init,
+                    Some(test_expr),
+                    update_expr,
+                    self.wrap_block(body),
                 ));
                 if Some(*fallthrough) != stop_at {
                     statements.extend(self.lower_block_sequence(
@@ -710,6 +753,58 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         })?;
         self.lower_instruction_value(&expr_instruction.value, &mut HashSet::new())
     }
+
+    fn lower_for_init(
+        &self,
+        init_block: types::BlockId,
+        test_block: types::BlockId,
+    ) -> Option<Option<ast::ForStatementInit<'a>>> {
+        let statements =
+            self.lower_block_sequence(init_block, Some(test_block), &mut HashSet::new(), None)?;
+        if statements.is_empty() {
+            return Some(None);
+        }
+        let mut iter = statements.into_iter();
+        let first = iter.next()?;
+        if iter.len() != 0 {
+            return None;
+        }
+        match first {
+            ast::Statement::VariableDeclaration(declaration) => {
+                Some(Some(ast::ForStatementInit::VariableDeclaration(declaration)))
+            }
+            ast::Statement::ExpressionStatement(expression_stmt) => {
+                Some(Some(ast::ForStatementInit::from(
+                    expression_stmt.expression.clone_in(self.builder.allocator),
+                )))
+            }
+            _ => None,
+        }
+    }
+
+    fn lower_for_update(
+        &self,
+        update_block: types::BlockId,
+        test_block: types::BlockId,
+    ) -> Option<Option<ast::Expression<'a>>> {
+        let statements =
+            self.lower_block_sequence(update_block, Some(test_block), &mut HashSet::new(), None)?;
+        if statements.is_empty() {
+            return Some(None);
+        }
+        let expressions = statements
+            .into_iter()
+            .map(|statement| statement_to_expression(statement, self.builder.allocator))
+            .collect::<Option<Vec<_>>>()?;
+        match expressions.len() {
+            0 => Some(None),
+            1 => expressions.into_iter().next().map(Some),
+            _ => Some(Some(
+                self.builder
+                    .expression_sequence(SPAN, self.builder.vec_from_iter(expressions)),
+            )),
+        }
+    }
 }
 
 fn lower_property_load<'a, F>(
@@ -844,6 +939,16 @@ fn is_undefined_expression(expression: &ast::Expression<'_>) -> bool {
 fn trim_trailing_loop_continue(statements: &mut oxc_allocator::Vec<'_, ast::Statement<'_>>) {
     if matches!(statements.last(), Some(ast::Statement::ContinueStatement(_))) {
         statements.pop();
+    }
+}
+
+fn statement_to_expression<'a>(
+    statement: ast::Statement<'a>,
+    allocator: &'a Allocator,
+) -> Option<ast::Expression<'a>> {
+    match statement {
+        ast::Statement::ExpressionStatement(expr_stmt) => Some(expr_stmt.expression.clone_in(allocator)),
+        _ => None,
     }
 }
 
@@ -1417,6 +1522,247 @@ mod tests {
         assert_eq!(
             try_lower_function_body(&hir).as_deref(),
             Some("let value;\nwhile (flag) {\n  value = 1;\n}\nreturn value;\n")
+        );
+    }
+
+    #[test]
+    fn lowers_basic_for_loop() {
+        let i_place = named_place(90, 90, "i");
+        let sum_place = named_place(91, 91, "sum");
+        let zero = temporary_place(92);
+        let one = temporary_place(93);
+        let three = temporary_place(94);
+        let test_expr = temporary_place(95);
+        let add_expr = temporary_place(96);
+        let inc_expr = temporary_place(97);
+
+        let hir = HIRFunction {
+            env: Environment::new(EnvironmentConfig::default()),
+            loc: SourceLocation::Generated,
+            id: None,
+            fn_type: ReactFunctionType::Other,
+            params: vec![],
+            returns: sum_place.clone(),
+            context: vec![],
+            body: HIR {
+                entry: BlockId::new(0),
+                blocks: vec![
+                    (
+                        BlockId::new(0),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(0),
+                            instructions: vec![instruction(
+                                98,
+                                temporary_place(99),
+                                types::InstructionValue::DeclareLocal {
+                                    lvalue: types::LValue {
+                                        place: sum_place.clone(),
+                                        kind: InstructionKind::Let,
+                                    },
+                                    loc: SourceLocation::Generated,
+                                },
+                            )],
+                            terminal: Terminal::For {
+                                init: BlockId::new(1),
+                                test: BlockId::new(2),
+                                update: Some(BlockId::new(3)),
+                                loop_block: BlockId::new(4),
+                                fallthrough: BlockId::new(5),
+                                id: InstructionId::new(100),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(1),
+                        BasicBlock {
+                            kind: types::BlockKind::Loop,
+                            id: BlockId::new(1),
+                            instructions: vec![
+                                instruction(
+                                    101,
+                                    zero.clone(),
+                                    types::InstructionValue::Primitive {
+                                        value: types::PrimitiveValue::Number(0.0),
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                                instruction(
+                                    102,
+                                    temporary_place(103),
+                                    types::InstructionValue::StoreLocal {
+                                        lvalue: types::LValue {
+                                            place: i_place.clone(),
+                                            kind: InstructionKind::Let,
+                                        },
+                                        value: zero.clone(),
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                            ],
+                            terminal: Terminal::Goto {
+                                block: BlockId::new(2),
+                                variant: types::GotoVariant::Break,
+                                id: InstructionId::new(104),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(2),
+                        BasicBlock {
+                            kind: types::BlockKind::Value,
+                            id: BlockId::new(2),
+                            instructions: vec![
+                                instruction(
+                                    105,
+                                    three.clone(),
+                                    types::InstructionValue::Primitive {
+                                        value: types::PrimitiveValue::Number(3.0),
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                                instruction(
+                                    106,
+                                    test_expr.clone(),
+                                    types::InstructionValue::BinaryExpression {
+                                        operator: types::BinaryOperator::Lt,
+                                        left: i_place.clone(),
+                                        right: three,
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                            ],
+                            terminal: Terminal::Branch {
+                                test: test_expr,
+                                consequent: BlockId::new(4),
+                                alternate: BlockId::new(5),
+                                fallthrough: BlockId::new(5),
+                                id: InstructionId::new(107),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(3),
+                        BasicBlock {
+                            kind: types::BlockKind::Loop,
+                            id: BlockId::new(3),
+                            instructions: vec![
+                                instruction(
+                                    108,
+                                    one.clone(),
+                                    types::InstructionValue::Primitive {
+                                        value: types::PrimitiveValue::Number(1.0),
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                                instruction(
+                                    109,
+                                    inc_expr.clone(),
+                                    types::InstructionValue::BinaryExpression {
+                                        operator: types::BinaryOperator::Add,
+                                        left: i_place.clone(),
+                                        right: one,
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                                instruction(
+                                    110,
+                                    temporary_place(111),
+                                    types::InstructionValue::StoreLocal {
+                                        lvalue: types::LValue {
+                                            place: i_place.clone(),
+                                            kind: InstructionKind::Reassign,
+                                        },
+                                        value: inc_expr,
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                            ],
+                            terminal: Terminal::Goto {
+                                block: BlockId::new(2),
+                                variant: types::GotoVariant::Break,
+                                id: InstructionId::new(112),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(4),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(4),
+                            instructions: vec![
+                                instruction(
+                                    113,
+                                    add_expr.clone(),
+                                    types::InstructionValue::BinaryExpression {
+                                        operator: types::BinaryOperator::Add,
+                                        left: sum_place.clone(),
+                                        right: i_place.clone(),
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                                instruction(
+                                    114,
+                                    temporary_place(115),
+                                    types::InstructionValue::StoreLocal {
+                                        lvalue: types::LValue {
+                                            place: sum_place.clone(),
+                                            kind: InstructionKind::Reassign,
+                                        },
+                                        value: add_expr,
+                                        loc: SourceLocation::Generated,
+                                    },
+                                ),
+                            ],
+                            terminal: Terminal::Goto {
+                                block: BlockId::new(3),
+                                variant: types::GotoVariant::Continue,
+                                id: InstructionId::new(116),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(5),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(5),
+                            instructions: vec![],
+                            terminal: Terminal::Return {
+                                value: sum_place,
+                                return_variant: types::ReturnVariant::Explicit,
+                                id: InstructionId::new(117),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                ],
+            },
+            generator: false,
+            async_: false,
+            directives: vec![],
+            aliasing_effects: None,
+        };
+
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("let sum;\nfor (let i = 0; i < 3; i = i + 1) {\n  sum = sum + i;\n}\nreturn sum;\n")
         );
     }
 
