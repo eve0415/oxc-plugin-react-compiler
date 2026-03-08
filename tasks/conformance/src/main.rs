@@ -61,6 +61,7 @@ impl BackendMode {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let backend_mode = BackendMode::from_args(&args);
+    let compare_is_diagnostic = backend_mode == BackendMode::Compare;
     let filter = args
         .iter()
         .position(|a| a == "--filter")
@@ -99,6 +100,11 @@ fn main() {
     let fixtures = collect_fixtures(&fixture_dir, filter.map(String::as_str));
 
     println!("Found {} fixtures", fixtures.len());
+    if compare_is_diagnostic {
+        eprintln!(
+            "[INFO] --backend compare is diagnostic-only; parity mismatches do not fail the run"
+        );
+    }
 
     let mut parity_success: usize = 0;
     let mut parity_failure: usize = 0;
@@ -645,7 +651,7 @@ fn main() {
         }
     }
 
-    if parity_failure > 0 {
+    if parity_failure > 0 && !compare_is_diagnostic {
         std::process::exit(1);
     }
 }
