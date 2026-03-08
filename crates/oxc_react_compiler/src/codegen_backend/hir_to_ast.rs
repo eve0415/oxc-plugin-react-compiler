@@ -20,8 +20,6 @@ use crate::hir::types::{
 };
 
 pub(crate) fn try_lower_function_body(hir_function: &HIRFunction) -> Option<String> {
-    let allocator = Allocator::default();
-    let builder = AstBuilder::new(&allocator);
     let instruction_map = hir_function
         .body
         .blocks
@@ -29,24 +27,34 @@ pub(crate) fn try_lower_function_body(hir_function: &HIRFunction) -> Option<Stri
         .flat_map(|(_, block)| block.instructions.iter())
         .map(|instruction| (instruction.lvalue.identifier.id, instruction))
         .collect::<HashMap<_, _>>();
+    let used_temps = collect_used_temps(hir_function);
+    if hir_function.body.blocks.iter().any(|(_, block)| {
+        matches!(
+            block.terminal,
+            Terminal::Label { .. } | Terminal::Switch { .. }
+        ) || block.instructions.iter().any(|instruction| {
+            matches!(
+                instruction.value,
+                InstructionValue::TypeCastExpression { .. }
+            ) || is_self_referential_property_store(instruction, &instruction_map)
+                || is_assignment_value_sensitive_store(instruction, &used_temps)
+        })
+    }) {
+        return None;
+    }
+
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
     let block_map = hir_function
         .body
         .blocks
         .iter()
         .map(|(id, block)| (*id, block))
         .collect::<HashMap<_, _>>();
-    let state = LoweringState::new(
-        builder,
-        &block_map,
-        &instruction_map,
-        collect_used_temps(hir_function),
-    );
-    let body = state.lower_block_sequence(
-        hir_function.body.entry,
-        None,
-        &mut HashSet::new(),
-        None,
-    )?;
+    let state = LoweringState::new(builder, &block_map, &instruction_map, used_temps);
+    let body =
+        state.lower_block_sequence(hir_function.body.entry, None, &mut HashSet::new(), None)?;
+    let body = strip_trailing_empty_return(body);
     let program = builder.program(
         SPAN,
         SourceType::mjs(),
@@ -100,18 +108,31 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         control_context: Option<ControlContext>,
     ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
         match terminal {
-            Terminal::Return { value, .. } => Some(self.builder.vec1(
-                self.builder
-                    .statement_return(SPAN, Some(self.lower_place(value, &mut HashSet::new())?)),
-            )),
-            Terminal::Throw { value, .. } => Some(self.builder.vec1(
-                self.builder
-                    .statement_throw(SPAN, self.lower_place(value, &mut HashSet::new())?),
-            )),
+            Terminal::Return { value, .. } => {
+                let value = self.lower_place(value, &mut HashSet::new())?;
+                let argument = if is_undefined_expression(&value) {
+                    None
+                } else {
+                    Some(value)
+                };
+                Some(
+                    self.builder
+                        .vec1(self.builder.statement_return(SPAN, argument)),
+                )
+            }
+            Terminal::Throw { value, .. } => Some(
+                self.builder.vec1(
+                    self.builder
+                        .statement_throw(SPAN, self.lower_place(value, &mut HashSet::new())?),
+                ),
+            ),
             Terminal::Goto { block, .. } => {
                 if let Some(control_context) = control_context {
                     if control_context.continue_target == Some(*block) {
-                        return Some(self.builder.vec1(self.builder.statement_continue(SPAN, None)));
+                        return Some(
+                            self.builder
+                                .vec1(self.builder.statement_continue(SPAN, None)),
+                        );
                     }
                     if control_context.break_target == Some(*block) {
                         return Some(self.builder.vec1(self.builder.statement_break(SPAN, None)));
@@ -147,12 +168,17 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 let alternate = if *alternate == *fallthrough {
                     None
                 } else {
-                    Some(self.wrap_block(self.lower_block_sequence(
+                    let alternate = self.lower_block_sequence(
                         *alternate,
                         Some(*fallthrough),
                         &mut visiting_blocks.clone(),
                         control_context,
-                    )?))
+                    )?;
+                    if alternate.is_empty() {
+                        None
+                    } else {
+                        Some(self.wrap_block(alternate))
+                    }
                 };
                 let mut statements = self.builder.vec1(self.builder.statement_if(
                     SPAN,
@@ -334,12 +360,8 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 )?;
                 trim_trailing_loop_continue(&mut body);
                 let mut statements = self.builder.vec1(ast::Statement::ForInStatement(
-                    self.builder.alloc_for_in_statement(
-                        SPAN,
-                        left,
-                        right,
-                        self.wrap_block(body),
-                    ),
+                    self.builder
+                        .alloc_for_in_statement(SPAN, left, right, self.wrap_block(body)),
                 ));
                 if Some(*fallthrough) != stop_at {
                     statements.extend(self.lower_block_sequence(
@@ -449,13 +471,12 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
             | Terminal::Label {
                 block, fallthrough, ..
             } => {
-                let mut statements =
-                    self.lower_block_sequence(
-                        *block,
-                        Some(*fallthrough),
-                        visiting_blocks,
-                        control_context,
-                    )?;
+                let mut statements = self.lower_block_sequence(
+                    *block,
+                    Some(*fallthrough),
+                    visiting_blocks,
+                    control_context,
+                )?;
                 if Some(*fallthrough) != stop_at {
                     statements.extend(self.lower_block_sequence(
                         *fallthrough,
@@ -515,7 +536,11 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                     return Some(None);
                 }
                 let name = place_name(&lvalue.place)?;
-                Some(Some(self.variable_declaration_statement(name, ast::VariableDeclarationKind::Let, None)))
+                Some(Some(self.variable_declaration_statement(
+                    name,
+                    ast::VariableDeclarationKind::Let,
+                    None,
+                )))
             }
             InstructionValue::StoreLocal { lvalue, value, .. }
             | InstructionValue::StoreContext { lvalue, value, .. } => {
@@ -525,6 +550,16 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 } else {
                     Some(None)
                 }
+            }
+            InstructionValue::Destructure { lvalue, value, .. } => {
+                let kind = variable_declaration_kind(lvalue.kind)?;
+                let init = self.lower_place(value, &mut HashSet::new())?;
+                let pattern = self.lower_binding_pattern(&lvalue.pattern)?;
+                Some(Some(self.variable_pattern_declaration_statement(
+                    pattern,
+                    kind,
+                    Some(init),
+                )))
             }
             InstructionValue::CallExpression { .. }
             | InstructionValue::MethodCall { .. }
@@ -541,12 +576,10 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 {
                     return Some(None);
                 }
-                Some(Some(
-                    self.builder.statement_expression(
-                        SPAN,
-                        self.lower_instruction_value(&instruction.value, &mut HashSet::new())?,
-                    ),
-                ))
+                Some(Some(self.builder.statement_expression(
+                    SPAN,
+                    self.lower_instruction_value(&instruction.value, &mut HashSet::new())?,
+                )))
             }
             InstructionValue::Debugger { .. } => Some(Some(ast::Statement::DebuggerStatement(
                 self.builder.alloc_debugger_statement(SPAN),
@@ -574,9 +607,9 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
             InstructionKind::Let | InstructionKind::HoistedLet | InstructionKind::Catch => {
                 Some(ast::VariableDeclarationKind::Let)
             }
-            InstructionKind::Reassign | InstructionKind::Function | InstructionKind::HoistedFunction => {
-                None
-            }
+            InstructionKind::Reassign
+            | InstructionKind::Function
+            | InstructionKind::HoistedFunction => None,
         };
 
         if let Some(kind) = declaration_kind {
@@ -598,10 +631,11 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                     SPAN,
                     AssignmentOperator::Assign,
                     ast::AssignmentTarget::from(
-                        self.builder.simple_assignment_target_assignment_target_identifier(
-                            SPAN,
-                            self.builder.ident(name),
-                        ),
+                        self.builder
+                            .simple_assignment_target_assignment_target_identifier(
+                                SPAN,
+                                self.builder.ident(name),
+                            ),
                     ),
                     value,
                 ),
@@ -615,30 +649,161 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         kind: ast::VariableDeclarationKind,
         init: Option<ast::Expression<'a>>,
     ) -> ast::Statement<'a> {
-        ast::Statement::VariableDeclaration(self.builder.alloc_variable_declaration(
-            SPAN,
-            kind,
-            self.builder.vec1(self.builder.variable_declarator(
+        ast::Statement::VariableDeclaration(
+            self.builder.alloc_variable_declaration(
                 SPAN,
                 kind,
-                self.builder
-                    .binding_pattern_binding_identifier(SPAN, self.builder.ident(name)),
-                NONE,
-                init,
+                self.builder.vec1(
+                    self.builder.variable_declarator(
+                        SPAN,
+                        kind,
+                        self.builder
+                            .binding_pattern_binding_identifier(SPAN, self.builder.ident(name)),
+                        NONE,
+                        init,
+                        false,
+                    ),
+                ),
                 false,
-            )),
-            false,
-        ))
+            ),
+        )
+    }
+
+    fn variable_pattern_declaration_statement(
+        &self,
+        pattern: ast::BindingPattern<'a>,
+        kind: ast::VariableDeclarationKind,
+        init: Option<ast::Expression<'a>>,
+    ) -> ast::Statement<'a> {
+        ast::Statement::VariableDeclaration(
+            self.builder.alloc_variable_declaration(
+                SPAN,
+                kind,
+                self.builder.vec1(
+                    self.builder
+                        .variable_declarator(SPAN, kind, pattern, NONE, init, false),
+                ),
+                false,
+            ),
+        )
     }
 
     fn lower_catch_parameter(&self, place: &Place) -> Option<ast::CatchParameter<'a>> {
         let name = place_name(place)?;
-        Some(self.builder.catch_parameter(
-            SPAN,
+        Some(
+            self.builder.catch_parameter(
+                SPAN,
+                self.builder
+                    .binding_pattern_binding_identifier(SPAN, self.builder.ident(name)),
+                NONE,
+            ),
+        )
+    }
+
+    fn lower_binding_pattern(&self, pattern: &types::Pattern) -> Option<ast::BindingPattern<'a>> {
+        match pattern {
+            types::Pattern::Array(pattern) => {
+                let mut elements = self.builder.vec();
+                let mut rest = None;
+                for (index, element) in pattern.items.iter().enumerate() {
+                    match element {
+                        types::ArrayElement::Place(place) => {
+                            elements.push(Some(self.lower_binding_place_pattern(place)?));
+                        }
+                        types::ArrayElement::Hole => elements.push(None),
+                        types::ArrayElement::Spread(place) => {
+                            if index + 1 != pattern.items.len() {
+                                return None;
+                            }
+                            rest = Some(self.builder.alloc_binding_rest_element(
+                                SPAN,
+                                self.lower_binding_place_pattern(place)?,
+                            ));
+                        }
+                    }
+                }
+                Some(
+                    self.builder
+                        .binding_pattern_array_pattern(SPAN, elements, rest),
+                )
+            }
+            types::Pattern::Object(pattern) => {
+                let mut properties = self.builder.vec();
+                let mut rest = None;
+                for property in &pattern.properties {
+                    match property {
+                        types::ObjectPropertyOrSpread::Spread(place) => {
+                            rest = Some(self.builder.alloc_binding_rest_element(
+                                SPAN,
+                                self.lower_binding_place_pattern(place)?,
+                            ));
+                        }
+                        types::ObjectPropertyOrSpread::Property(property) => {
+                            let value = self.lower_binding_place_pattern(&property.place)?;
+                            let (key, shorthand, computed) =
+                                self.lower_binding_property_key(&property.key, &value)?;
+                            properties.push(
+                                self.builder
+                                    .binding_property(SPAN, key, value, shorthand, computed),
+                            );
+                        }
+                    }
+                }
+                Some(
+                    self.builder
+                        .binding_pattern_object_pattern(SPAN, properties, rest),
+                )
+            }
+        }
+    }
+
+    fn lower_binding_place_pattern(&self, place: &Place) -> Option<ast::BindingPattern<'a>> {
+        let name = place_name(place)?;
+        Some(
             self.builder
                 .binding_pattern_binding_identifier(SPAN, self.builder.ident(name)),
-            NONE,
-        ))
+        )
+    }
+
+    fn lower_binding_property_key(
+        &self,
+        key: &types::ObjectPropertyKey,
+        value: &ast::BindingPattern<'a>,
+    ) -> Option<(ast::PropertyKey<'a>, bool, bool)> {
+        match key {
+            types::ObjectPropertyKey::Identifier(name) => Some((
+                self.builder
+                    .property_key_static_identifier(SPAN, self.builder.ident(name)),
+                is_binding_identifier_named(value, name),
+                false,
+            )),
+            types::ObjectPropertyKey::String(name) if is_identifier_name(name) => Some((
+                self.builder
+                    .property_key_static_identifier(SPAN, self.builder.ident(name)),
+                is_binding_identifier_named(value, name),
+                false,
+            )),
+            types::ObjectPropertyKey::String(name) => Some((
+                ast::PropertyKey::from(self.builder.expression_string_literal(
+                    SPAN,
+                    self.builder.atom(name),
+                    None,
+                )),
+                false,
+                false,
+            )),
+            types::ObjectPropertyKey::Number(value) => Some((
+                ast::PropertyKey::from(self.builder.expression_numeric_literal(
+                    SPAN,
+                    *value,
+                    None,
+                    NumberBase::Decimal,
+                )),
+                false,
+                false,
+            )),
+            types::ObjectPropertyKey::Computed(_) => None,
+        }
     }
 
     fn wrap_block(
@@ -678,9 +843,8 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         match value {
             InstructionValue::LoadLocal { place, .. }
             | InstructionValue::LoadContext { place, .. } => self.lower_place(place, visiting),
-            InstructionValue::StoreLocal { value, .. } | InstructionValue::StoreContext { value, .. } => {
-                self.lower_place(value, visiting)
-            }
+            InstructionValue::StoreLocal { value, .. }
+            | InstructionValue::StoreContext { value, .. } => self.lower_place(value, visiting),
             InstructionValue::LoadGlobal { binding, .. } => Some(
                 self.builder
                     .expression_identifier(SPAN, self.builder.ident(binding.name())),
@@ -738,12 +902,14 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 self.lower_arguments(args, visiting)?,
                 *optional,
             )),
-            InstructionValue::NewExpression { callee, args, .. } => Some(self.builder.expression_new(
-                SPAN,
-                self.lower_place(callee, visiting)?,
-                NONE,
-                self.lower_arguments(args, visiting)?,
-            )),
+            InstructionValue::NewExpression { callee, args, .. } => {
+                Some(self.builder.expression_new(
+                    SPAN,
+                    self.lower_place(callee, visiting)?,
+                    NONE,
+                    self.lower_arguments(args, visiting)?,
+                ))
+            }
             InstructionValue::MethodCall {
                 receiver,
                 property,
@@ -752,12 +918,12 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 call_optional,
                 ..
             } => {
-                let callee = ast::Expression::from(self.builder.member_expression_computed(
-                    SPAN,
-                    self.lower_place(receiver, visiting)?,
-                    self.lower_place(property, visiting)?,
+                let callee = self.lower_method_call_callee(
+                    receiver,
+                    property,
                     *receiver_optional,
-                ));
+                    visiting,
+                )?;
                 Some(self.builder.expression_call(
                     SPAN,
                     callee,
@@ -767,12 +933,14 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 ))
             }
             InstructionValue::TypeCastExpression { value, .. } => self.lower_place(value, visiting),
-            InstructionValue::ArrayExpression { elements, .. } => {
-                Some(self.builder.expression_array(SPAN, self.lower_array_elements(elements, visiting)?))
-            }
-            InstructionValue::ObjectExpression { properties, .. } => {
-                Some(self.builder.expression_object(SPAN, self.lower_object_properties(properties, visiting)?))
-            }
+            InstructionValue::ArrayExpression { elements, .. } => Some(
+                self.builder
+                    .expression_array(SPAN, self.lower_array_elements(elements, visiting)?),
+            ),
+            InstructionValue::ObjectExpression { properties, .. } => Some(
+                self.builder
+                    .expression_object(SPAN, self.lower_object_properties(properties, visiting)?),
+            ),
             InstructionValue::PropertyLoad {
                 object,
                 property,
@@ -791,12 +959,14 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 property,
                 optional,
                 ..
-            } => Some(ast::Expression::from(self.builder.member_expression_computed(
-                SPAN,
-                self.lower_place(object, visiting)?,
-                self.lower_place(property, visiting)?,
-                *optional,
-            ))),
+            } => Some(ast::Expression::from(
+                self.builder.member_expression_computed(
+                    SPAN,
+                    self.lower_place(object, visiting)?,
+                    self.lower_place(property, visiting)?,
+                    *optional,
+                ),
+            )),
             InstructionValue::PropertyStore {
                 object,
                 property,
@@ -858,23 +1028,22 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                     false,
                 )),
             )),
-            InstructionValue::StoreGlobal { name, value, .. } => {
-                Some(self.builder.expression_assignment(
+            InstructionValue::StoreGlobal { name, value, .. } => Some(
+                self.builder.expression_assignment(
                     SPAN,
                     AssignmentOperator::Assign,
                     ast::AssignmentTarget::from(
-                        self.builder.simple_assignment_target_assignment_target_identifier(
-                            SPAN,
-                            self.builder.ident(name),
-                        ),
+                        self.builder
+                            .simple_assignment_target_assignment_target_identifier(
+                                SPAN,
+                                self.builder.ident(name),
+                            ),
                     ),
                     self.lower_place(value, visiting)?,
-                ))
-            }
+                ),
+            ),
             InstructionValue::PrefixUpdate {
-                lvalue,
-                operation,
-                ..
+                lvalue, operation, ..
             } => Some(self.builder.expression_update(
                 SPAN,
                 lower_update_operator(*operation),
@@ -882,9 +1051,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 self.lower_simple_assignment_target(lvalue, visiting)?,
             )),
             InstructionValue::PostfixUpdate {
-                lvalue,
-                operation,
-                ..
+                lvalue, operation, ..
             } => Some(self.builder.expression_update(
                 SPAN,
                 lower_update_operator(*operation),
@@ -895,11 +1062,65 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 self.builder.expression_meta_property(
                     SPAN,
                     self.builder.identifier_name(SPAN, self.builder.ident(meta)),
-                    self.builder.identifier_name(SPAN, self.builder.ident(property)),
+                    self.builder
+                        .identifier_name(SPAN, self.builder.ident(property)),
                 ),
             ),
             _ => None,
         }
+    }
+
+    fn lower_method_call_callee(
+        &self,
+        receiver: &Place,
+        property: &Place,
+        receiver_optional: bool,
+        visiting: &mut HashSet<IdentifierId>,
+    ) -> Option<ast::Expression<'a>> {
+        if let Some(instruction) = self.instruction_map.get(&property.identifier.id) {
+            match &instruction.value {
+                InstructionValue::PropertyLoad {
+                    object,
+                    property,
+                    optional,
+                    ..
+                } if same_place(object, receiver) => {
+                    return Some(lower_property_load(
+                        self.builder,
+                        receiver,
+                        property,
+                        receiver_optional || *optional,
+                        |place, visiting| self.lower_place(place, visiting),
+                        visiting,
+                    )?);
+                }
+                InstructionValue::ComputedLoad {
+                    object,
+                    property,
+                    optional,
+                    ..
+                } if same_place(object, receiver) => {
+                    return Some(ast::Expression::from(
+                        self.builder.member_expression_computed(
+                            SPAN,
+                            self.lower_place(receiver, visiting)?,
+                            self.lower_place(property, visiting)?,
+                            receiver_optional || *optional,
+                        ),
+                    ));
+                }
+                _ => {}
+            }
+        }
+
+        Some(ast::Expression::from(
+            self.builder.member_expression_computed(
+                SPAN,
+                self.lower_place(receiver, visiting)?,
+                self.lower_place(property, visiting)?,
+                receiver_optional,
+            ),
+        ))
     }
 
     fn lower_arguments(
@@ -910,9 +1131,9 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         let mut lowered = Vec::with_capacity(args.len());
         for arg in args {
             match arg {
-                types::Argument::Place(place) => lowered.push(ast::Argument::from(
-                    self.lower_place(place, visiting)?,
-                )),
+                types::Argument::Place(place) => {
+                    lowered.push(ast::Argument::from(self.lower_place(place, visiting)?))
+                }
                 types::Argument::Spread(place) => lowered.push(
                     self.builder
                         .argument_spread_element(SPAN, self.lower_place(place, visiting)?),
@@ -942,9 +1163,12 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 types::ArrayElement::Place(place) => {
                     ast::ArrayExpressionElement::from(self.lower_place(place, visiting)?)
                 }
-                types::ArrayElement::Spread(place) => self
-                    .builder
-                    .array_expression_element_spread_element(SPAN, self.lower_place(place, visiting)?),
+                types::ArrayElement::Spread(place) => {
+                    self.builder.array_expression_element_spread_element(
+                        SPAN,
+                        self.lower_place(place, visiting)?,
+                    )
+                }
                 types::ArrayElement::Hole => self.builder.array_expression_element_elision(SPAN),
             };
             lowered.push(element);
@@ -968,11 +1192,8 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                         return None;
                     }
                     let value = self.lower_place(&property.place, visiting)?;
-                    let (key, shorthand, computed) = self.lower_object_property_key(
-                        &property.key,
-                        &value,
-                        visiting,
-                    )?;
+                    let (key, shorthand, computed) =
+                        self.lower_object_property_key(&property.key, &value, visiting)?;
                     self.builder.object_property_kind_object_property(
                         SPAN,
                         ast::PropertyKind::Init,
@@ -1015,10 +1236,11 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 false,
             )),
             types::ObjectPropertyKey::String(name) => Some((
-                ast::PropertyKey::from(
-                    self.builder
-                        .expression_string_literal(SPAN, self.builder.atom(name), None),
-                ),
+                ast::PropertyKey::from(self.builder.expression_string_literal(
+                    SPAN,
+                    self.builder.atom(name),
+                    None,
+                )),
                 false,
                 false,
             )),
@@ -1032,9 +1254,11 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 false,
                 false,
             )),
-            types::ObjectPropertyKey::Computed(place) => {
-                Some((ast::PropertyKey::from(self.lower_place(place, visiting)?), false, true))
-            }
+            types::ObjectPropertyKey::Computed(place) => Some((
+                ast::PropertyKey::from(self.lower_place(place, visiting)?),
+                false,
+                true,
+            )),
         }
     }
 
@@ -1046,8 +1270,19 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         if block.instructions.iter().any(|instruction| {
             matches!(
                 instruction.value,
-                InstructionValue::StoreLocal { lvalue: types::LValue { kind: InstructionKind::Reassign, .. }, .. }
-                    | InstructionValue::StoreContext { lvalue: types::LValue { kind: InstructionKind::Reassign, .. }, .. }
+                InstructionValue::StoreLocal {
+                    lvalue: types::LValue {
+                        kind: InstructionKind::Reassign,
+                        ..
+                    },
+                    ..
+                } | InstructionValue::StoreContext {
+                    lvalue: types::LValue {
+                        kind: InstructionKind::Reassign,
+                        ..
+                    },
+                    ..
+                }
             )
         }) {
             return None;
@@ -1077,9 +1312,9 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
             return None;
         }
         match first {
-            ast::Statement::VariableDeclaration(declaration) => {
-                Some(Some(ast::ForStatementInit::VariableDeclaration(declaration)))
-            }
+            ast::Statement::VariableDeclaration(declaration) => Some(Some(
+                ast::ForStatementInit::VariableDeclaration(declaration),
+            )),
             ast::Statement::ExpressionStatement(expression_stmt) => {
                 Some(Some(ast::ForStatementInit::from(
                     expression_stmt.expression.clone_in(self.builder.allocator),
@@ -1106,10 +1341,10 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         match expressions.len() {
             0 => Some(None),
             1 => expressions.into_iter().next().map(Some),
-            _ => Some(Some(
-                self.builder
-                    .expression_sequence(SPAN, self.builder.vec_from_iter(expressions)),
-            )),
+            _ => Some(Some(self.builder.expression_sequence(
+                SPAN,
+                self.builder.vec_from_iter(expressions),
+            ))),
         }
     }
 
@@ -1193,13 +1428,15 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 InstructionValue::PropertyStore {
                     object, property, ..
                 } => {
-                    return Some(ast::ForStatementLeft::from(lower_property_assignment_target(
-                        self.builder,
-                        object,
-                        property,
-                        |place, visiting| self.lower_place(place, visiting),
-                        &mut HashSet::new(),
-                    )?));
+                    return Some(ast::ForStatementLeft::from(
+                        lower_property_assignment_target(
+                            self.builder,
+                            object,
+                            property,
+                            |place, visiting| self.lower_place(place, visiting),
+                            &mut HashSet::new(),
+                        )?,
+                    ));
                 }
                 InstructionValue::ComputedStore {
                     object, property, ..
@@ -1233,30 +1470,30 @@ where
 {
     let object = lower_place(object, visiting)?;
     match property {
-        types::PropertyLiteral::String(name) if is_identifier_name(name) => Some(
-            ast::Expression::from(builder.member_expression_static(
+        types::PropertyLiteral::String(name) if is_identifier_name(name) => {
+            Some(ast::Expression::from(builder.member_expression_static(
                 SPAN,
                 object,
                 builder.identifier_name(SPAN, builder.ident(name)),
                 optional,
-            )),
-        ),
-        types::PropertyLiteral::String(name) => Some(ast::Expression::from(
-            builder.member_expression_computed(
+            )))
+        }
+        types::PropertyLiteral::String(name) => {
+            Some(ast::Expression::from(builder.member_expression_computed(
                 SPAN,
                 object,
                 builder.expression_string_literal(SPAN, builder.atom(name), None),
                 optional,
-            ),
-        )),
-        types::PropertyLiteral::Number(value) => Some(ast::Expression::from(
-            builder.member_expression_computed(
+            )))
+        }
+        types::PropertyLiteral::Number(value) => {
+            Some(ast::Expression::from(builder.member_expression_computed(
                 SPAN,
                 object,
                 builder.expression_numeric_literal(SPAN, *value, None, NumberBase::Decimal),
                 optional,
-            ),
-        )),
+            )))
+        }
     }
 }
 
@@ -1285,6 +1522,85 @@ fn collect_used_temps(hir_function: &HIRFunction) -> HashSet<IdentifierId> {
     used
 }
 
+fn is_self_referential_property_store(
+    instruction: &Instruction,
+    instruction_map: &HashMap<IdentifierId, &Instruction>,
+) -> bool {
+    match &instruction.value {
+        InstructionValue::PropertyStore {
+            object,
+            property,
+            value,
+            ..
+        } => {
+            let Some(value_instruction) = instruction_map.get(&value.identifier.id) else {
+                return false;
+            };
+            let InstructionValue::BinaryExpression { left, .. } = &value_instruction.value else {
+                return false;
+            };
+            let Some(left_instruction) = instruction_map.get(&left.identifier.id) else {
+                return false;
+            };
+            matches!(
+                &left_instruction.value,
+                InstructionValue::PropertyLoad {
+                    object: left_object,
+                    property: left_property,
+                    ..
+                } if same_place(left_object, object) && left_property == property
+            )
+        }
+        InstructionValue::ComputedStore {
+            object,
+            property,
+            value,
+            ..
+        } => {
+            let Some(value_instruction) = instruction_map.get(&value.identifier.id) else {
+                return false;
+            };
+            let InstructionValue::BinaryExpression { left, .. } = &value_instruction.value else {
+                return false;
+            };
+            let Some(left_instruction) = instruction_map.get(&left.identifier.id) else {
+                return false;
+            };
+            matches!(
+                &left_instruction.value,
+                InstructionValue::ComputedLoad {
+                    object: left_object,
+                    property: left_property,
+                    ..
+                } if same_place(left_object, object) && same_place(left_property, property)
+            )
+        }
+        _ => false,
+    }
+}
+
+fn is_assignment_value_sensitive_store(
+    instruction: &Instruction,
+    used_temps: &HashSet<IdentifierId>,
+) -> bool {
+    matches!(
+        instruction.value,
+        InstructionValue::StoreLocal {
+            lvalue: types::LValue {
+                kind: InstructionKind::Reassign,
+                ..
+            },
+            ..
+        } | InstructionValue::StoreContext {
+            lvalue: types::LValue {
+                kind: InstructionKind::Reassign,
+                ..
+            },
+            ..
+        }
+    ) && used_temps.contains(&instruction.lvalue.identifier.id)
+}
+
 fn collect_terminal_uses(terminal: &Terminal, used: &mut HashSet<IdentifierId>) {
     match terminal {
         Terminal::Return { value, .. }
@@ -1303,7 +1619,8 @@ fn collect_instruction_uses(instruction: &Instruction, used: &mut HashSet<Identi
         InstructionValue::LoadLocal { place, .. } | InstructionValue::LoadContext { place, .. } => {
             record_temp_use(place, used);
         }
-        InstructionValue::StoreLocal { value, .. } | InstructionValue::StoreContext { value, .. } => {
+        InstructionValue::StoreLocal { value, .. }
+        | InstructionValue::StoreContext { value, .. } => {
             record_temp_use(value, used);
         }
         InstructionValue::BinaryExpression { left, right, .. } => {
@@ -1402,9 +1719,24 @@ fn is_undefined_expression(expression: &ast::Expression<'_>) -> bool {
 }
 
 fn trim_trailing_loop_continue(statements: &mut oxc_allocator::Vec<'_, ast::Statement<'_>>) {
-    if matches!(statements.last(), Some(ast::Statement::ContinueStatement(_))) {
+    if matches!(
+        statements.last(),
+        Some(ast::Statement::ContinueStatement(_))
+    ) {
         statements.pop();
     }
+}
+
+fn strip_trailing_empty_return<'a>(
+    mut statements: oxc_allocator::Vec<'a, ast::Statement<'a>>,
+) -> oxc_allocator::Vec<'a, ast::Statement<'a>> {
+    if matches!(
+        statements.last(),
+        Some(ast::Statement::ReturnStatement(return_stmt)) if return_stmt.argument.is_none()
+    ) {
+        statements.pop();
+    }
+    statements
 }
 
 fn statement_to_expression<'a>(
@@ -1412,7 +1744,9 @@ fn statement_to_expression<'a>(
     allocator: &'a Allocator,
 ) -> Option<ast::Expression<'a>> {
     match statement {
-        ast::Statement::ExpressionStatement(expr_stmt) => Some(expr_stmt.expression.clone_in(allocator)),
+        ast::Statement::ExpressionStatement(expr_stmt) => {
+            Some(expr_stmt.expression.clone_in(allocator))
+        }
         _ => None,
     }
 }
@@ -1490,26 +1824,19 @@ fn expression_to_simple_assignment_target<'a>(
 ) -> Option<ast::SimpleAssignmentTarget<'a>> {
     match expression {
         ast::Expression::Identifier(identifier) => Some(
-            builder.simple_assignment_target_assignment_target_identifier(
-                SPAN,
-                identifier.name,
-            ),
+            builder.simple_assignment_target_assignment_target_identifier(SPAN, identifier.name),
         ),
         ast::Expression::ComputedMemberExpression(member) => {
             Some(ast::SimpleAssignmentTarget::from(
                 ast::MemberExpression::ComputedMemberExpression(member),
             ))
         }
-        ast::Expression::StaticMemberExpression(member) => {
-            Some(ast::SimpleAssignmentTarget::from(
-                ast::MemberExpression::StaticMemberExpression(member),
-            ))
-        }
-        ast::Expression::PrivateFieldExpression(member) => {
-            Some(ast::SimpleAssignmentTarget::from(
-                ast::MemberExpression::PrivateFieldExpression(member),
-            ))
-        }
+        ast::Expression::StaticMemberExpression(member) => Some(ast::SimpleAssignmentTarget::from(
+            ast::MemberExpression::StaticMemberExpression(member),
+        )),
+        ast::Expression::PrivateFieldExpression(member) => Some(ast::SimpleAssignmentTarget::from(
+            ast::MemberExpression::PrivateFieldExpression(member),
+        )),
         _ => None,
     }
 }
@@ -1523,15 +1850,24 @@ fn expression_to_assignment_target<'a>(
     ))
 }
 
+fn is_binding_identifier_named(pattern: &ast::BindingPattern<'_>, name: &str) -> bool {
+    matches!(
+        pattern,
+        ast::BindingPattern::BindingIdentifier(identifier) if identifier.name == name
+    )
+}
+
+fn same_place(left: &Place, right: &Place) -> bool {
+    left.identifier.id == right.identifier.id
+}
+
 fn place_name(place: &Place) -> Option<&str> {
     match place.identifier.name.as_ref()? {
         types::IdentifierName::Named(name) | types::IdentifierName::Promoted(name) => Some(name),
     }
 }
 
-fn variable_declaration_kind(
-    kind: InstructionKind,
-) -> Option<ast::VariableDeclarationKind> {
+fn variable_declaration_kind(kind: InstructionKind) -> Option<ast::VariableDeclarationKind> {
     match kind {
         InstructionKind::Const | InstructionKind::HoistedConst => {
             Some(ast::VariableDeclarationKind::Const)
@@ -1554,8 +1890,8 @@ mod tests {
         hir::types::{
             self, BasicBlock, BlockId, DeclarationId, Effect, HIR, HIRFunction, Identifier,
             IdentifierId, IdentifierName, Instruction, InstructionId, InstructionKind,
-            MutableRange, Place,
-            ReactFunctionType, SourceLocation, Terminal, Type, make_temporary_identifier,
+            MutableRange, Place, ReactFunctionType, SourceLocation, Terminal, Type,
+            make_temporary_identifier,
         },
         options::EnvironmentConfig,
     };
@@ -1606,7 +1942,35 @@ mod tests {
             temp_sum,
         );
 
-        assert_eq!(try_lower_function_body(&hir).as_deref(), Some("return 1 + 2;\n"));
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("return 1 + 2;\n")
+        );
+    }
+
+    #[test]
+    fn elides_trailing_undefined_return() {
+        let temp_undefined = temporary_place(4);
+
+        let hir = hir_function(
+            vec![instruction(
+                4,
+                temp_undefined.clone(),
+                types::InstructionValue::Primitive {
+                    value: types::PrimitiveValue::Undefined,
+                    loc: SourceLocation::Generated,
+                },
+            )],
+            Terminal::Return {
+                value: temp_undefined.clone(),
+                return_variant: types::ReturnVariant::Explicit,
+                id: InstructionId::new(5),
+                loc: SourceLocation::Generated,
+            },
+            temp_undefined,
+        );
+
+        assert_eq!(try_lower_function_body(&hir).as_deref(), Some(""));
     }
 
     #[test]
@@ -1645,7 +2009,10 @@ mod tests {
             temp_call,
         );
 
-        assert_eq!(try_lower_function_body(&hir).as_deref(), Some("return foo(\"x\");\n"));
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("return foo(\"x\");\n")
+        );
     }
 
     #[test]
@@ -1921,7 +2288,9 @@ mod tests {
 
         assert_eq!(
             try_lower_function_body(&hir).as_deref(),
-            Some("let value;\nif (flag) {\n  value = 1;\n} else {\n  value = 2;\n}\nreturn value;\n")
+            Some(
+                "let value;\nif (flag) {\n  value = 1;\n} else {\n  value = 2;\n}\nreturn value;\n"
+            )
         );
     }
 
@@ -2297,7 +2666,9 @@ mod tests {
 
         assert_eq!(
             try_lower_function_body(&hir).as_deref(),
-            Some("let sum;\nfor (let i = 0; i < 3; i = i + 1) {\n  sum = sum + i;\n}\nreturn sum;\n")
+            Some(
+                "let sum;\nfor (let i = 0; i < 3; i = i + 1) {\n  sum = sum + i;\n}\nreturn sum;\n"
+            )
         );
     }
 
@@ -2432,12 +2803,14 @@ mod tests {
 
         assert_eq!(
             try_lower_function_body(&hir).as_deref(),
-            Some("let value;\ntry {\n  throw 1;\n} catch (err) {\n  value = 2;\n}\nreturn value;\n")
+            Some(
+                "let value;\ntry {\n  throw 1;\n} catch (err) {\n  value = 2;\n}\nreturn value;\n"
+            )
         );
     }
 
     #[test]
-    fn lowers_switch_with_breaks() {
+    fn falls_back_on_switch_with_breaks() {
         let tag_place = named_place(140, 140, "tag");
         let value_place = named_place(141, 141, "value");
         let one = temporary_place(142);
@@ -2599,10 +2972,7 @@ mod tests {
             aliasing_effects: None,
         };
 
-        assert_eq!(
-            try_lower_function_body(&hir).as_deref(),
-            Some("let value;\nswitch (tag) {\n  case 1:\n    value = 2;\n    break;\n  default:\n    value = 3;\n    break;\n}\nreturn value;\n")
-        );
+        assert_eq!(try_lower_function_body(&hir), None);
     }
 
     #[test]
