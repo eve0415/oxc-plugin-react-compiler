@@ -52,7 +52,14 @@ pub(crate) fn try_lower_function_body_ast<'a>(
         .iter()
         .map(|(id, block)| (*id, block))
         .collect::<HashMap<_, _>>();
-    let state = LoweringState::new(builder, &block_map, &instruction_map, used_temps);
+    let synthetic_param_names = synthetic_param_names(hir_function);
+    let state = LoweringState::new(
+        builder,
+        &block_map,
+        &instruction_map,
+        used_temps,
+        synthetic_param_names,
+    );
     let body =
         state.lower_block_sequence(hir_function.body.entry, None, &mut HashSet::new(), None)?;
     Some(strip_trailing_empty_return(body))
@@ -84,7 +91,8 @@ pub(crate) fn try_lower_function_declaration_ast<'a>(
     hir_function: &HIRFunction,
 ) -> Option<ast::Statement<'a>> {
     let name = hir_function.id.as_deref()?;
-    let params = lower_function_params(builder, hir_function)?;
+    let synthetic_param_names = synthetic_param_names(hir_function);
+    let params = lower_function_params(builder, hir_function, &synthetic_param_names)?;
     let body = try_lower_function_body_ast(builder, hir_function)?;
     let mut directives = builder.vec();
     for directive in &hir_function.directives {
@@ -118,6 +126,7 @@ pub(crate) fn try_lower_function_declaration_ast<'a>(
 fn lower_function_params<'a>(
     builder: AstBuilder<'a>,
     hir_function: &HIRFunction,
+    synthetic_param_names: &HashMap<IdentifierId, String>,
 ) -> Option<ast::FormalParameters<'a>> {
     let mut items = builder.vec();
     let mut rest = None;
@@ -127,7 +136,7 @@ fn lower_function_params<'a>(
             types::Argument::Place(place) => (place, false),
             types::Argument::Spread(place) => (place, true),
         };
-        let name = place_name(place)?;
+        let name = lowered_place_name(place, synthetic_param_names)?;
         let pattern = builder.binding_pattern_binding_identifier(SPAN, builder.ident(name));
         if is_spread {
             rest = Some(builder.alloc_formal_parameter_rest(
@@ -149,6 +158,7 @@ struct LoweringState<'a, 'hir> {
     block_map: &'hir HashMap<types::BlockId, &'hir types::BasicBlock>,
     instruction_map: &'hir HashMap<IdentifierId, &'hir Instruction>,
     used_temps: HashSet<IdentifierId>,
+    synthetic_param_names: HashMap<IdentifierId, String>,
 }
 
 #[derive(Clone, Copy)]
@@ -163,12 +173,14 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         block_map: &'hir HashMap<types::BlockId, &'hir types::BasicBlock>,
         instruction_map: &'hir HashMap<IdentifierId, &'hir Instruction>,
         used_temps: HashSet<IdentifierId>,
+        synthetic_param_names: HashMap<IdentifierId, String>,
     ) -> Self {
         Self {
             builder,
             block_map,
             instruction_map,
             used_temps,
+            synthetic_param_names,
         }
     }
 
@@ -890,7 +902,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         place: &Place,
         visiting: &mut HashSet<IdentifierId>,
     ) -> Option<ast::Expression<'a>> {
-        if let Some(name) = place_name(place) {
+        if let Some(name) = lowered_place_name(place, &self.synthetic_param_names) {
             return Some(
                 self.builder
                     .expression_identifier(SPAN, self.builder.ident(name)),
@@ -1937,6 +1949,32 @@ fn place_name(place: &Place) -> Option<&str> {
     match place.identifier.name.as_ref()? {
         types::IdentifierName::Named(name) | types::IdentifierName::Promoted(name) => Some(name),
     }
+}
+
+fn lowered_place_name<'a>(
+    place: &'a Place,
+    synthetic_param_names: &'a HashMap<IdentifierId, String>,
+) -> Option<&'a str> {
+    place_name(place).or_else(|| {
+        synthetic_param_names
+            .get(&place.identifier.id)
+            .map(String::as_str)
+    })
+}
+
+fn synthetic_param_names(hir_function: &HIRFunction) -> HashMap<IdentifierId, String> {
+    let mut names = HashMap::new();
+    let mut next_temp = 0usize;
+    for param in &hir_function.params {
+        let identifier = match param {
+            types::Argument::Place(place) | types::Argument::Spread(place) => &place.identifier,
+        };
+        if identifier.name.is_none() {
+            names.insert(identifier.id, format!("t{next_temp}"));
+            next_temp += 1;
+        }
+    }
+    names
 }
 
 fn variable_declaration_kind(kind: InstructionKind) -> Option<ast::VariableDeclarationKind> {
@@ -3594,8 +3632,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_function_declaration_with_unnamed_params() {
+    fn lowers_function_declaration_with_unnamed_params() {
         let temp = temporary_place(240);
+        let rest = temporary_place(242);
 
         let mut hir = hir_function(
             vec![],
@@ -3605,14 +3644,34 @@ mod tests {
                 id: InstructionId::new(241),
                 loc: SourceLocation::Generated,
             },
-            temp,
+            temp.clone(),
         );
         hir.id = Some("outlined".to_string());
-        hir.params = vec![types::Argument::Place(temporary_place(242))];
+        hir.params = vec![types::Argument::Place(temp.clone()), types::Argument::Spread(rest)];
 
         let allocator = Allocator::default();
         let builder = AstBuilder::new(&allocator);
-        assert!(try_lower_function_declaration_ast(builder, &hir).is_none());
+        let statement =
+            try_lower_function_declaration_ast(builder, &hir).expect("should lower declaration");
+        let program = builder.program(
+            SPAN,
+            SourceType::mjs(),
+            "",
+            builder.vec(),
+            None,
+            builder.vec(),
+            builder.vec1(statement),
+        );
+        let code = Codegen::new()
+            .with_options(CodegenOptions {
+                indent_char: IndentChar::Space,
+                indent_width: 2,
+                ..CodegenOptions::default()
+            })
+            .build(&program)
+            .code;
+
+        assert_eq!(code, "function outlined(t0, ...t1) {\n  return t0;\n}\n");
     }
 
     fn hir_function(
