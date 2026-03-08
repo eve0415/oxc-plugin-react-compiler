@@ -2457,8 +2457,8 @@ fn run_fixture(
             &expected_code,
             backend_mode,
         );
-        let actual = prepare_code_for_compare(&actual_source, strict_output);
-        let expected = prepare_code_for_compare(&expected_source, strict_output);
+        let actual = prepare_code_for_compare(&actual_source, strict_output, backend_mode);
+        let expected = prepare_code_for_compare(&expected_source, strict_output, backend_mode);
 
         match expected_state.unwrap_or(ExpectedState::Transform) {
             ExpectedState::Transform => {
@@ -2768,9 +2768,11 @@ fn maybe_format_ast_backend_compare_code(
     format_with_oxfmt(input_path, code).unwrap_or_else(|_| code.to_string())
 }
 
-fn prepare_code_for_compare(code: &str, strict_output: bool) -> String {
+fn prepare_code_for_compare(code: &str, strict_output: bool, backend_mode: BackendMode) -> String {
     if strict_output {
         canonicalize_strict_text(code)
+    } else if backend_mode == BackendMode::Ast {
+        normalize_shared_cosmetic_equivalences(&normalize_code(code))
     } else {
         normalize_code(code)
     }
@@ -5632,19 +5634,21 @@ fn normalize_compare_multiline_imports(code: &str) -> String {
 
 fn normalize_compare_trailing_sequence_null(code: &str) -> String {
     let mut result = Vec::new();
-    let assign_then_read = regex::Regex::new(
-        r"^\(\(([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(.+)\),\s*([A-Za-z_$][A-Za-z0-9_$]*)\);$",
-    )
-    .unwrap();
+    let assign_then_read =
+        regex::Regex::new(r"\(\(([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(.+?)\),\s*([A-Za-z_$][A-Za-z0-9_$]*)\);")
+            .unwrap();
     for line in code.lines() {
         let trimmed = line.trim();
-        if let Some(caps) = assign_then_read
-            .captures(trimmed)
-            .filter(|caps| caps.get(1).unwrap().as_str() == caps.get(3).unwrap().as_str())
-        {
-            result.push(format!("{} = {};", &caps[1], &caps[2]));
-            continue;
-        }
+        let rewritten = assign_then_read
+            .replace_all(trimmed, |caps: &regex::Captures| {
+                if caps.get(1).unwrap().as_str() == caps.get(3).unwrap().as_str() {
+                    format!("{} = {};", &caps[1], &caps[2])
+                } else {
+                    caps.get(0).unwrap().as_str().to_string()
+                }
+            })
+            .to_string();
+        let trimmed = rewritten.trim();
         if (trimmed.ends_with("), null;") || trimmed.ends_with("), undefined;"))
             && trimmed.starts_with('(')
         {
@@ -8365,6 +8369,7 @@ mod tests {
         normalize_multiline_object_method_bodies, normalize_multiline_optional_chain_calls,
         normalize_object_shorthand_pairs, normalize_promote_temps,
         normalize_react_memo_closing_paren, normalize_shadowed_temp_decls,
+        normalize_shared_cosmetic_equivalences,
         normalize_simple_alias_return_tail, normalize_simple_jsx_attr_brace_spacing,
         normalize_sort_simple_let_decl_runs, normalize_strip_inline_comments,
         normalize_tail_return_from_cache_alias, normalize_temp_alpha_renaming,
@@ -8461,6 +8466,16 @@ mod tests {
         let actual = r#"if ($[0] !== apples || $[1] !== bananas) { t1 = <div>{fbt._({ "*": { "*": "{number of apples} apples and {number of bananas} bananas" }, _1: { _1: "{number of apples} apple and 1 banana" } }, [fbt._plural(apples), fbt._plural(bananas, "number of bananas"), fbt._param("number of apples", apples)], { hk: "__FBT_HK__" })}</div>;"#;
         let expected = r#"if ($[0] !== apples || $[1] !== bananas) { t1 = <div>{fbt._({"*": { "*": "{number of apples} apples and {number of bananas} bananas" }, _1: { _1: "{number of apples} apple and 1 banana" } }, [fbt._plural(apples), fbt._plural(bananas, "number of bananas"), fbt._param("number of apples", apples)], { hk: "__FBT_HK__" })}</div>;"#;
         assert_eq!(normalize_code(actual), normalize_code(expected));
+    }
+
+    #[test]
+    fn normalize_shared_cosmetic_equivalences_collapses_inline_assign_then_read_stmt() {
+        let actual = "if ($[2] !== arr2 || $[3] !== x) { y = x.concat(arr2);";
+        let expected = "if ($[2] !== arr2 || $[3] !== x) { ((y = x.concat(arr2)), y);";
+        assert_eq!(
+            normalize_shared_cosmetic_equivalences(actual),
+            normalize_shared_cosmetic_equivalences(expected)
+        );
     }
 
     #[test]
