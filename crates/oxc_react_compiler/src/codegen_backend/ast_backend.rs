@@ -572,7 +572,7 @@ fn try_rewrite_compiled_statement_ast<'a>(
     if state.gating_local_name.is_some() && cf.needs_cache_import {
         return None;
     }
-    if cf.compiled_params.is_none() || !cf.param_destructurings.is_empty() {
+    if cf.compiled_params.is_none() {
         return None;
     }
 
