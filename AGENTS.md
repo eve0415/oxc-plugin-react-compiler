@@ -131,3 +131,15 @@ Each Rust module corresponds to an upstream TypeScript file. When debugging a pa
 - `codegen_reactive.rs` uses raw string building; this will be migrated to OXC's AstBuilder for proper AST-based codegen
 - Fixture pragmas (first line comments like `// @flow`, `// @compilationMode "all"`) control per-fixture compiler options
 - The conformance runner's normalization layer compensates for cosmetic differences (whitespace, semicolons, trailing commas) between Rust string codegen and Babel output
+
+## Pre-commit Checks
+
+Before committing or when implementation is complete, always run formatting and linting:
+
+```bash
+# Format all code
+cargo fmt --all
+
+# Lint with all warnings as errors
+cargo clippy --workspace --all-features --all-targets -- -D warnings
+```
