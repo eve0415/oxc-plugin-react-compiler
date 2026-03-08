@@ -308,6 +308,12 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 ))
             }
             InstructionValue::TypeCastExpression { value, .. } => self.lower_place(value, visiting),
+            InstructionValue::ArrayExpression { elements, .. } => {
+                Some(self.builder.expression_array(SPAN, self.lower_array_elements(elements, visiting)?))
+            }
+            InstructionValue::ObjectExpression { properties, .. } => {
+                Some(self.builder.expression_object(SPAN, self.lower_object_properties(properties, visiting)?))
+            }
             InstructionValue::PropertyLoad {
                 object,
                 property,
@@ -361,6 +367,113 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
             }
         }
         Some(self.builder.vec_from_iter(lowered))
+    }
+
+    fn lower_array_elements(
+        &self,
+        elements: &[types::ArrayElement],
+        visiting: &mut HashSet<IdentifierId>,
+    ) -> Option<oxc_allocator::Vec<'a, ast::ArrayExpressionElement<'a>>> {
+        let mut lowered = Vec::with_capacity(elements.len());
+        for element in elements {
+            let element = match element {
+                types::ArrayElement::Place(place) => {
+                    ast::ArrayExpressionElement::from(self.lower_place(place, visiting)?)
+                }
+                types::ArrayElement::Spread(place) => self
+                    .builder
+                    .array_expression_element_spread_element(SPAN, self.lower_place(place, visiting)?),
+                types::ArrayElement::Hole => self.builder.array_expression_element_elision(SPAN),
+            };
+            lowered.push(element);
+        }
+        Some(self.builder.vec_from_iter(lowered))
+    }
+
+    fn lower_object_properties(
+        &self,
+        properties: &[types::ObjectPropertyOrSpread],
+        visiting: &mut HashSet<IdentifierId>,
+    ) -> Option<oxc_allocator::Vec<'a, ast::ObjectPropertyKind<'a>>> {
+        let mut lowered = Vec::with_capacity(properties.len());
+        for property in properties {
+            let property = match property {
+                types::ObjectPropertyOrSpread::Spread(place) => self
+                    .builder
+                    .object_property_kind_spread_property(SPAN, self.lower_place(place, visiting)?),
+                types::ObjectPropertyOrSpread::Property(property) => {
+                    if property.type_ != types::ObjectPropertyType::Property {
+                        return None;
+                    }
+                    let value = self.lower_place(&property.place, visiting)?;
+                    let (key, shorthand, computed) = self.lower_object_property_key(
+                        &property.key,
+                        &value,
+                        visiting,
+                    )?;
+                    self.builder.object_property_kind_object_property(
+                        SPAN,
+                        ast::PropertyKind::Init,
+                        key,
+                        value,
+                        false,
+                        shorthand,
+                        computed,
+                    )
+                }
+            };
+            lowered.push(property);
+        }
+        Some(self.builder.vec_from_iter(lowered))
+    }
+
+    fn lower_object_property_key(
+        &self,
+        key: &types::ObjectPropertyKey,
+        value: &ast::Expression<'a>,
+        visiting: &mut HashSet<IdentifierId>,
+    ) -> Option<(ast::PropertyKey<'a>, bool, bool)> {
+        match key {
+            types::ObjectPropertyKey::Identifier(name) => {
+                let shorthand = matches!(
+                    value,
+                    ast::Expression::Identifier(identifier) if identifier.name == name.as_str()
+                );
+                Some((
+                    self.builder
+                        .property_key_static_identifier(SPAN, self.builder.ident(name)),
+                    shorthand,
+                    false,
+                ))
+            }
+            types::ObjectPropertyKey::String(name) if is_identifier_name(name) => Some((
+                self.builder
+                    .property_key_static_identifier(SPAN, self.builder.ident(name)),
+                false,
+                false,
+            )),
+            types::ObjectPropertyKey::String(name) => Some((
+                ast::PropertyKey::from(
+                    self.builder
+                        .expression_string_literal(SPAN, self.builder.atom(name), None),
+                ),
+                false,
+                false,
+            )),
+            types::ObjectPropertyKey::Number(value) => Some((
+                ast::PropertyKey::from(self.builder.expression_numeric_literal(
+                    SPAN,
+                    *value,
+                    None,
+                    NumberBase::Decimal,
+                )),
+                false,
+                false,
+            )),
+            types::ObjectPropertyKey::Computed(place) => {
+                Some((ast::PropertyKey::from(self.lower_place(place, visiting)?), false, true))
+            }
+        }
     }
 }
 
@@ -711,6 +824,66 @@ mod tests {
         assert_eq!(
             try_lower_function_body(&hir).as_deref(),
             Some("const value = 1;\nreturn value;\n")
+        );
+    }
+
+    #[test]
+    fn lowers_array_and_object_literals() {
+        let one = temporary_place(40);
+        let spread = named_place(41, 41, "rest");
+        let array = temporary_place(42);
+        let object = temporary_place(43);
+
+        let hir = hir_function(
+            vec![
+                instruction(
+                    40,
+                    one.clone(),
+                    types::InstructionValue::Primitive {
+                        value: types::PrimitiveValue::Number(1.0),
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    42,
+                    array.clone(),
+                    types::InstructionValue::ArrayExpression {
+                        elements: vec![
+                            types::ArrayElement::Place(one.clone()),
+                            types::ArrayElement::Hole,
+                            types::ArrayElement::Spread(spread.clone()),
+                        ],
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    43,
+                    object.clone(),
+                    types::InstructionValue::ObjectExpression {
+                        properties: vec![
+                            types::ObjectPropertyOrSpread::Property(types::ObjectProperty {
+                                key: types::ObjectPropertyKey::Identifier("array".to_string()),
+                                type_: types::ObjectPropertyType::Property,
+                                place: array.clone(),
+                            }),
+                            types::ObjectPropertyOrSpread::Spread(spread),
+                        ],
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+            ],
+            Terminal::Return {
+                value: object,
+                return_variant: types::ReturnVariant::Explicit,
+                id: InstructionId::new(44),
+                loc: SourceLocation::Generated,
+            },
+            temporary_place(45),
+        );
+
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("return {\n  array: [\n    1,\n    ,\n    ...rest\n  ],\n  ...rest\n};\n")
         );
     }
 
