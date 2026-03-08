@@ -1,10 +1,13 @@
 # oxc-plugin-react-compiler
 
-⚠️ **WARNING: Early Development Phase** ⚠️
-This project is in its very early stages and is **NOT** ready for production use.
+> [!WARNING]
+> **Early Development Phase**: This project is in its very early stages and is **NOT** ready for production use.
 
 ## About the Project
 `oxc-plugin-react-compiler` is an experimental project aiming to port the original [`babel-plugin-react-compiler`](https://github.com/facebook/react/tree/main/compiler) to a Rust-based implementation on top of the [OXC](https://github.com/oxc-project/oxc) toolchain. 
+
+> [!NOTE]
+> **Disclaimer:** This is a community-driven project (still very new!). It is **not** an official project from the React team or OXC, and we are not affiliated with Meta, the React core team, or the OXC project.
 
 The primary goal is to achieve **exact behavior** alignment with the original React Compiler implementation while leveraging the performance benefits of Rust. 
 
