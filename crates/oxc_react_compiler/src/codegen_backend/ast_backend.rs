@@ -3635,7 +3635,7 @@ function Component(props) {
         end: u32,
         generated_body: &str,
         params: &[&str],
-        is_arrow: bool,
+        _is_arrow: bool,
     ) -> CompiledFunction {
         CompiledFunction {
             name: name.to_string(),
@@ -3654,14 +3654,10 @@ function Component(props) {
                     })
                     .collect(),
             ),
-            original_params_str: params.join(", "),
             param_destructurings: vec![],
             is_async: false,
             is_generator: false,
-            is_arrow,
             is_function_declaration: false,
-            body_start: start,
-            body_end: end,
             directives: vec![],
             preserved_body_statements: vec![],
             hir_function: None,

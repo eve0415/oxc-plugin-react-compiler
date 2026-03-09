@@ -3026,42 +3026,6 @@ pub(crate) struct RuntimeImportMergePlan {
     pub(crate) has_use_fire_after: bool,
 }
 
-pub(crate) fn rewrite_source_segment_with_runtime_import_merge(
-    source: &str,
-    start: usize,
-    end: usize,
-    plan: Option<&RuntimeImportMergePlan>,
-) -> String {
-    if start >= end {
-        return String::new();
-    }
-    let Some(plan) = plan else {
-        return source[start..end].to_string();
-    };
-    let merge_start = plan.start as usize;
-    let merge_end = plan.end as usize;
-    if merge_start >= end || merge_end <= start {
-        return source[start..end].to_string();
-    }
-    // Import spans should be copied atomically in one chunk; if not, fall back.
-    if merge_start < start || merge_end > end {
-        return source[start..end].to_string();
-    }
-
-    let mut rewritten =
-        String::with_capacity((end - start) + plan.replacement.as_ref().map_or(0, String::len));
-    if merge_start > start {
-        rewritten.push_str(&source[start..merge_start]);
-    }
-    if let Some(replacement) = plan.replacement.as_ref() {
-        rewritten.push_str(replacement);
-    }
-    if merge_end < end {
-        rewritten.push_str(&source[merge_end..end]);
-    }
-    rewritten
-}
-
 pub(crate) fn plan_runtime_import_merge(
     program: &ast::Program<'_>,
     needs_cache_import: bool,
@@ -4000,17 +3964,6 @@ fn is_ident_start_byte_for_transform_flag(byte: u8) -> bool {
 
 fn is_ident_continue_byte_for_transform_flag(byte: u8) -> bool {
     byte == b'_' || byte == b'$' || (byte as char).is_ascii_alphanumeric()
-}
-
-pub(crate) fn trim_trailing_blank_lines(text: &str) -> String {
-    let mut out = text.to_string();
-    while out.ends_with("\r\n\r\n") {
-        out.truncate(out.len() - 2);
-    }
-    while out.ends_with("\n\n") || out.ends_with("\r\r") {
-        out.pop();
-    }
-    out
 }
 
 pub(crate) fn insert_blank_lines_for_guarded_cache_init(body: &str) -> String {
@@ -5291,37 +5244,6 @@ fn conflicting_global_bailout(name: &str) -> CompilerError {
     })
 }
 
-pub(crate) fn is_expression_context(before_trimmed: &str) -> bool {
-    before_trimmed.ends_with('=')
-        || before_trimmed.ends_with('(')
-        || before_trimmed.ends_with(',')
-        || before_trimmed.ends_with(':')
-        || before_trimmed.ends_with('?')
-        || before_trimmed.ends_with("return")
-        || before_trimmed.ends_with("=>")
-}
-
-pub(crate) fn rename_function_declaration_name(
-    source: &str,
-    old_name: &str,
-    new_name: &str,
-) -> String {
-    if old_name.is_empty() || new_name.is_empty() {
-        return source.to_string();
-    }
-    let needle = format!("function {}", old_name);
-    if let Some(start) = source.find(&needle) {
-        let name_start = start + "function ".len();
-        let name_end = name_start + old_name.len();
-        let mut output = String::with_capacity(source.len() + new_name.len());
-        output.push_str(&source[..name_start]);
-        output.push_str(new_name);
-        output.push_str(&source[name_end..]);
-        return output;
-    }
-    source.to_string()
-}
-
 pub(crate) fn count_param_slots(params_str: &str) -> usize {
     params_str
         .split(',')
@@ -6288,14 +6210,10 @@ fn try_compile_function<'a>(
         needs_cache_import,
         params_str: params_result.params_str,
         compiled_params: params_result.compiled_params,
-        original_params_str: func_params_to_string(&func.params, source),
         param_destructurings,
         is_async: func.r#async,
         is_generator: func.generator,
-        is_arrow: false,
         is_function_declaration,
-        body_start: body.span.start,
-        body_end: body.span.end,
         directives,
         preserved_body_statements,
         hir_function: Some(pipeline_output.final_hir_snapshot),
@@ -6484,14 +6402,10 @@ fn try_compile_function_with_name<'a>(
         needs_cache_import,
         params_str: params_result.params_str,
         compiled_params: params_result.compiled_params,
-        original_params_str: func_params_to_string(&func.params, source),
         param_destructurings,
         is_async: func.r#async,
         is_generator: func.generator,
-        is_arrow: false,
         is_function_declaration: false,
-        body_start: body.span.start,
-        body_end: body.span.end,
         directives,
         preserved_body_statements,
         hir_function: Some(pipeline_output.final_hir_snapshot),
@@ -6688,14 +6602,10 @@ fn try_compile_arrow<'a>(
         needs_cache_import,
         params_str: params_result.params_str,
         compiled_params: params_result.compiled_params,
-        original_params_str: arrow_params_to_string(&arrow.params, source),
         param_destructurings,
         is_async: arrow.r#async,
         is_generator: false,
-        is_arrow: true,
         is_function_declaration: false,
-        body_start: arrow.span.start,
-        body_end: arrow.span.end,
         directives,
         preserved_body_statements,
         hir_function: Some(pipeline_output.final_hir_snapshot),
