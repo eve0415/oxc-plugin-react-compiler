@@ -645,6 +645,7 @@ fn try_rewrite_compiled_statement_ast<'a>(
         let body_source = render_compiled_body_source(cf, state);
         let mut function_body =
             parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?;
+        apply_preserved_directives(builder, &mut function_body, cf);
         prepend_compiled_body_prefix_statements(
             builder,
             allocator,
@@ -728,6 +729,7 @@ fn try_build_gated_function_declaration_statements<'a>(
     let body_source = render_compiled_body_source(cf, state);
     let mut function_body =
         parse_compiled_function_body(allocator, state.source_type, cf, &body_source).ok()?;
+    apply_preserved_directives(builder, &mut function_body, cf);
     prepend_compiled_body_prefix_statements(
         builder,
         allocator,
@@ -3244,15 +3246,6 @@ fn render_compiled_body_source(cf: &CompiledFunction, state: &AstRenderState) ->
     if !cf.directives.is_empty() {
         body = crate::pipeline::strip_directive_lines(&body, &cf.directives);
     }
-
-    if !cf.directives.is_empty() {
-        let directives_prefix: String = cf
-            .directives
-            .iter()
-            .map(|d| format!("  {};\n", d))
-            .collect();
-        body = format!("{}{}", directives_prefix, body);
-    }
     if cf.needs_emit_freeze {
         let freeze_name = if cf.name.is_empty() {
             "<anonymous>"
@@ -3283,6 +3276,45 @@ fn render_compiled_body_source(cf: &CompiledFunction, state: &AstRenderState) ->
     }
     body = crate::pipeline::insert_blank_lines_for_guarded_cache_init(&body);
     body
+}
+
+fn apply_preserved_directives<'a>(
+    builder: AstBuilder<'a>,
+    body: &mut ast::FunctionBody<'a>,
+    cf: &CompiledFunction,
+) {
+    if cf.directives.is_empty() {
+        return;
+    }
+    body.directives = builder.vec_from_iter(
+        cf.directives
+            .iter()
+            .filter_map(|directive| build_directive(builder, directive)),
+    );
+}
+
+fn build_directive<'a>(
+    builder: AstBuilder<'a>,
+    directive: &str,
+) -> Option<ast::Directive<'a>> {
+    let value = parse_directive_literal_value(directive)?;
+    Some(builder.directive(
+        SPAN,
+        builder.string_literal(SPAN, builder.atom(value), None),
+        builder.atom(value),
+    ))
+}
+
+fn parse_directive_literal_value(directive: &str) -> Option<&str> {
+    let directive = directive.trim();
+    if directive.len() < 2 {
+        return None;
+    }
+    let quote = directive.chars().next()?;
+    if !matches!(quote, '"' | '\'') || !directive.ends_with(quote) {
+        return None;
+    }
+    Some(&directive[quote.len_utf8()..directive.len() - quote.len_utf8()])
 }
 
 fn prepend_compiled_body_prefix_statements<'a>(
@@ -3837,6 +3869,28 @@ function Component(props) {
         assert!(rewritten.contains("const value = props.value;"));
         assert!(rewritten.contains("track(value);"));
         assert!(rewritten.contains("return props;"));
+    }
+
+    #[test]
+    fn rewrites_preserved_directives_as_ast() {
+        let source = r#"function Worklet(value) {
+  return value;
+}"#;
+        let mut compiled_function = make_test_compiled_function(
+            "Worklet",
+            0,
+            source.len() as u32,
+            "return value;",
+            &["value"],
+            false,
+        );
+        compiled_function.directives = vec!["\"worklet\"".to_string()];
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("\"worklet\";"));
+        assert!(rewritten.contains("return value;"));
     }
 
     fn make_test_compiled_function(
