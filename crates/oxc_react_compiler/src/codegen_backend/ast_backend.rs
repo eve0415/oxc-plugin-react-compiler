@@ -644,20 +644,8 @@ fn try_rewrite_compiled_statement_ast<'a>(
             return None;
         }
 
-        let body_source = render_compiled_body_source(cf, state);
-        let mut function_body =
-            parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?;
-        apply_preserved_directives(builder, &mut function_body, cf);
-        prepend_compiled_body_prefix_statements(
-            builder,
-            allocator,
-            source_type,
-            &mut function_body,
-            cf,
-            Some(&state.cache_import_name),
-        )?;
-        prepend_instrument_forget_statement(builder, allocator, &mut function_body, cf, state);
-        align_runtime_identifier_references(builder, &mut function_body, cf, state);
+        let function_body =
+            build_compiled_function_body(builder, allocator, source_type, cf, state)?;
         let compiled_params = cf.compiled_params.as_deref()?;
         let rewritten = if let Some(gate_name) = state
             .gating_local_name
@@ -729,20 +717,8 @@ fn try_build_gated_function_declaration_statements<'a>(
         &cf.name,
     );
 
-    let body_source = render_compiled_body_source(cf, state);
-    let mut function_body =
-        parse_compiled_function_body(allocator, state.source_type, cf, &body_source).ok()?;
-    apply_preserved_directives(builder, &mut function_body, cf);
-    prepend_compiled_body_prefix_statements(
-        builder,
-        allocator,
-        state.source_type,
-        &mut function_body,
-        cf,
-        Some(&state.cache_import_name),
-    )?;
-    prepend_instrument_forget_statement(builder, allocator, &mut function_body, cf, state);
-    align_runtime_identifier_references(builder, &mut function_body, cf, state);
+    let function_body =
+        build_compiled_function_body(builder, allocator, state.source_type, cf, state)?;
     let compiled_params = cf.compiled_params.as_deref()?;
 
     match stmt {
@@ -2851,6 +2827,70 @@ fn make_function_body<'a>(
     builder.alloc(function_body.clone_in(allocator))
 }
 
+fn build_compiled_function_body<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    cf: &CompiledFunction,
+    state: &AstRenderState,
+) -> Option<ast::FunctionBody<'a>> {
+    let mut function_body = if let Some(function_body) =
+        try_build_compiled_function_body_from_hir(builder, cf, state)
+    {
+        function_body
+    } else {
+        let body_source = render_compiled_body_source(cf, state);
+        parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?
+    };
+
+    apply_preserved_directives(builder, &mut function_body, cf);
+    prepend_compiled_body_prefix_statements(
+        builder,
+        allocator,
+        source_type,
+        &mut function_body,
+        cf,
+        Some(&state.cache_import_name),
+    )?;
+    prepend_instrument_forget_statement(builder, allocator, &mut function_body, cf, state);
+    align_runtime_identifier_references(builder, &mut function_body, cf, state);
+    Some(function_body)
+}
+
+fn try_build_compiled_function_body_from_hir<'a>(
+    builder: AstBuilder<'a>,
+    cf: &CompiledFunction,
+    state: &AstRenderState,
+) -> Option<ast::FunctionBody<'a>> {
+    if cf.body_payload != CompiledBodyPayload::LowerFromFinalHir
+        || cf.needs_cache_import
+        || cf.needs_emit_freeze
+    {
+        return None;
+    }
+    let hir_function = cf.hir_function.as_ref()?;
+    let lowered_body = super::hir_to_ast::try_lower_function_body(hir_function)?;
+    let rendered_body = render_compiled_body_source(cf, state);
+    if normalize_compiled_body_for_hir_match(&lowered_body)
+        != normalize_compiled_body_for_hir_match(&rendered_body)
+    {
+        return None;
+    }
+    let statements = super::hir_to_ast::try_lower_function_body_ast(builder, hir_function)?;
+    Some(builder.function_body(SPAN, builder.vec(), statements))
+}
+
+fn normalize_compiled_body_for_hir_match(body_source: &str) -> String {
+    let flow_cast_normalized = normalize_generated_body_flow_cast_marker_calls(body_source);
+    let iife_normalized = normalize_generated_body_iife_parenthesization(&flow_cast_normalized);
+    iife_normalized
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn parse_compiled_function_body<'a>(
     allocator: &'a Allocator,
     source_type: SourceType,
@@ -3767,9 +3807,21 @@ fn source_type_for_filename(filename: &str) -> SourceType {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use oxc_allocator::Allocator;
     use oxc_ast::{AstBuilder, ast};
     use oxc_span::SourceType;
+
+    use crate::{
+        environment::Environment,
+        hir::types::{
+            self, BasicBlock, BlockId, DeclarationId, Effect, HIR, HIRFunction, Identifier,
+            IdentifierId, IdentifierName, MutableRange, Place, ReactFunctionType,
+            SourceLocation, Terminal, Type,
+        },
+        options::EnvironmentConfig,
+    };
 
     use super::{
         AstRenderState, CompiledBodyPayload, CompiledFunction, CompiledParam,
@@ -3988,6 +4040,42 @@ function Component(props) {
         assert!(rewritten.contains("hookGuard(cache, loweredContext(structuralCheck));"));
     }
 
+    #[test]
+    fn rewrites_nested_arrow_body_from_hir_ast() {
+        let source = "const FancyButton = (props) => null;";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::VariableDeclaration(variable) = statement else {
+            panic!("expected variable declaration");
+        };
+        let ast::Expression::ArrowFunctionExpression(arrow) = variable.declarations[0]
+            .init
+            .as_ref()
+            .expect("expected initializer")
+        else {
+            panic!("expected arrow function");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "FancyButton",
+            arrow.span.start,
+            arrow.span.end,
+            "return props;",
+            &["props"],
+            true,
+        );
+        compiled_function.body_payload = CompiledBodyPayload::LowerFromFinalHir;
+        compiled_function.hir_function = Some(simple_return_param_hir("props"));
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("const FancyButton = (props) => {"));
+        assert!(rewritten.contains("return props;"));
+    }
+
     fn make_test_compiled_function(
         name: &str,
         start: u32,
@@ -4028,6 +4116,59 @@ function Component(props) {
             needs_hook_guards: false,
             needs_structural_check_import: false,
             needs_lower_context_access: false,
+        }
+    }
+
+    fn simple_return_param_hir(name: &str) -> HIRFunction {
+        let param = named_place(0, 0, name);
+        HIRFunction {
+            env: Environment::new(EnvironmentConfig::default()),
+            loc: SourceLocation::Generated,
+            id: None,
+            fn_type: ReactFunctionType::Other,
+            params: vec![types::Argument::Place(param.clone())],
+            returns: param.clone(),
+            context: vec![],
+            body: HIR {
+                entry: BlockId::new(0),
+                blocks: vec![(
+                    BlockId::new(0),
+                    BasicBlock {
+                        kind: types::BlockKind::Block,
+                        id: BlockId::new(0),
+                        instructions: vec![],
+                        terminal: Terminal::Return {
+                            value: param.clone(),
+                            return_variant: types::ReturnVariant::Explicit,
+                            id: types::InstructionId::new(0),
+                            loc: SourceLocation::Generated,
+                        },
+                        preds: HashSet::new(),
+                        phis: vec![],
+                    },
+                )],
+            },
+            generator: false,
+            async_: false,
+            directives: vec![],
+            aliasing_effects: None,
+        }
+    }
+
+    fn named_place(id: u32, declaration_id: u32, name: &str) -> Place {
+        Place {
+            identifier: Identifier {
+                id: IdentifierId::new(id),
+                declaration_id: DeclarationId::new(declaration_id),
+                name: Some(IdentifierName::Named(name.to_string())),
+                mutable_range: MutableRange::default(),
+                scope: None,
+                type_: Type::Poly,
+                loc: SourceLocation::Generated,
+            },
+            effect: Effect::Read,
+            reactive: false,
+            loc: SourceLocation::Generated,
         }
     }
 
