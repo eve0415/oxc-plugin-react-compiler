@@ -309,7 +309,12 @@ fn try_emit_module(
         if stmt_compiled.len() == 1
             && stmt_compiled[0].start == span.start
             && stmt_compiled[0].end == span.end
-            && let Some(statements) = try_lower_compiled_statement_ast(builder, stmt_compiled[0])
+            && let Some(statements) = try_lower_compiled_statement_ast(
+                builder,
+                &allocator,
+                state.source_type,
+                stmt_compiled[0],
+            )
         {
             for statement in statements {
                 body.push(statement);
@@ -3317,16 +3322,21 @@ fn collect_rendered_outlined_functions(cf: &CompiledFunction) -> Vec<RenderedOut
 
 fn try_lower_compiled_statement_ast<'a>(
     builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
     cf: &CompiledFunction,
 ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
     if !can_emit_compiled_statement_ast(cf) {
         return None;
     }
     let mut statements = builder.vec();
-    statements.push(super::hir_to_ast::try_lower_function_declaration_ast(
-        builder,
-        cf.hir_function.as_ref()?,
-    )?);
+    let mut function_statement =
+        super::hir_to_ast::try_lower_function_declaration_ast(builder, cf.hir_function.as_ref()?)?;
+    let ast::Statement::FunctionDeclaration(function) = &mut function_statement else {
+        return None;
+    };
+    prepend_hir_body_prefix_statements(builder, allocator, source_type, function, cf)?;
+    statements.push(function_statement);
     for (outlined_name, _, _) in &cf.outlined_functions {
         let hir_function = cf
             .hir_outlined_functions
@@ -3341,12 +3351,57 @@ fn try_lower_compiled_statement_ast<'a>(
     Some(statements)
 }
 
+fn prepend_hir_body_prefix_statements<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    function: &mut ast::Function<'a>,
+    cf: &CompiledFunction,
+) -> Option<()> {
+    let mut prefix_source = String::new();
+    if !cf.param_destructurings.is_empty() && !cf.generated_body.contains("=== undefined ?") {
+        for (index, destructuring) in cf.param_destructurings.iter().enumerate() {
+            let after: String = cf.param_destructurings[index + 1..].join("\n");
+            let context = format!("{}\n{}", cf.generated_body, after);
+            let pruned = crate::pipeline::prune_unused_destructuring(destructuring, &context);
+            if pruned.trim().is_empty() {
+                continue;
+            }
+            prefix_source.push_str(pruned.trim_end());
+            prefix_source.push('\n');
+        }
+    }
+    for statement in &cf.preserved_body_statements {
+        if statement.trim().is_empty() {
+            continue;
+        }
+        prefix_source.push_str(statement.trim_end());
+        prefix_source.push('\n');
+    }
+    if prefix_source.is_empty() {
+        return Some(());
+    }
+
+    let body = function.body.as_ref()?;
+    let mut statements = parse_statements(
+        allocator,
+        source_type,
+        allocator.alloc_str(prefix_source.as_str()),
+    )
+    .ok()?;
+    statements.extend(body.statements.iter().map(|statement| statement.clone_in(allocator)));
+    function.body = Some(builder.alloc_function_body(
+        body.span,
+        body.directives.clone_in(allocator),
+        statements,
+    ));
+    Some(())
+}
+
 fn can_emit_compiled_statement_ast(cf: &CompiledFunction) -> bool {
     cf.body_payload == CompiledBodyPayload::LowerFromFinalHir
         && cf.is_function_declaration
         && !cf.needs_cache_import
-        && cf.param_destructurings.is_empty()
-        && cf.preserved_body_statements.is_empty()
         && !cf.needs_instrument_forget
         && !cf.needs_emit_freeze
         && !cf.needs_hook_guards
