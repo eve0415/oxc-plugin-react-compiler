@@ -4051,38 +4051,6 @@ fn ensure_trailing_comma_in_enum_members(rendered: &str) -> String {
     lines.join("\n")
 }
 
-pub(crate) fn insert_preserved_body_statements(body: &str, statements: &[String]) -> String {
-    let non_empty: Vec<&String> = statements
-        .iter()
-        .filter(|stmt| !stmt.trim().is_empty())
-        .collect();
-    if non_empty.is_empty() {
-        return body.to_string();
-    }
-
-    if let Some(cache_line_end) = body
-        .find("_c(")
-        .and_then(|start| body[start..].find('\n').map(|nl| start + nl + 1))
-    {
-        let mut result = String::new();
-        result.push_str(&body[..cache_line_end]);
-        for stmt in non_empty {
-            result.push_str(stmt.trim_end());
-            result.push('\n');
-        }
-        result.push_str(&body[cache_line_end..]);
-        result
-    } else {
-        let mut result = String::new();
-        for stmt in non_empty {
-            result.push_str(stmt.trim_end());
-            result.push('\n');
-        }
-        result.push_str(body);
-        result
-    }
-}
-
 fn is_identifier_char(c: char) -> bool {
     c == '_' || c == '$' || c.is_ascii_alphanumeric()
 }
@@ -7612,41 +7580,6 @@ fn build_array_destructuring(
             "let {} = {} === undefined ? {} : {};",
             binding_name, elem_temp, default_expr, elem_temp
         ));
-    }
-}
-
-/// Convert a binding pattern to a parameter string, stripping type annotations.
-/// Insert parameter destructuring statements into the generated function body.
-/// They go right after the `const $ = _c(N);` line.
-pub(crate) fn insert_param_destructurings(body: &str, destructurings: &[String]) -> String {
-    // Find the first newline after "const $ = _c(" — insert after that line
-    let non_empty: Vec<&String> = destructurings.iter().filter(|d| !d.is_empty()).collect();
-    if non_empty.is_empty() {
-        return body.to_string();
-    }
-    if let Some(cache_line_end) = body
-        .find("_c(")
-        .and_then(|start| body[start..].find('\n').map(|nl| start + nl + 1))
-    {
-        let mut result = String::new();
-        result.push_str(&body[..cache_line_end]);
-        for destr in &non_empty {
-            result.push_str("  ");
-            result.push_str(destr);
-            result.push('\n');
-        }
-        result.push_str(&body[cache_line_end..]);
-        result
-    } else {
-        // No _c() found — just prepend destructurings
-        let mut result = String::new();
-        for destr in &non_empty {
-            result.push_str("  ");
-            result.push_str(destr);
-            result.push('\n');
-        }
-        result.push_str(body);
-        result
     }
 }
 
