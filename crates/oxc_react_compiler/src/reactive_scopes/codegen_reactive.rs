@@ -15457,46 +15457,6 @@ fn codegen_reactive_sequence_expression_ev(
     }
 }
 
-fn find_matching_open_paren(expr: &str) -> Option<usize> {
-    let bytes = expr.as_bytes();
-    let mut depth = 0i32;
-    let mut i = bytes.len();
-    while i > 0 {
-        i -= 1;
-        match bytes[i] {
-            b')' => depth += 1,
-            b'(' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn find_matching_open_bracket(expr: &str) -> Option<usize> {
-    let bytes = expr.as_bytes();
-    let mut depth = 0i32;
-    let mut i = bytes.len();
-    while i > 0 {
-        i -= 1;
-        match bytes[i] {
-            b']' => depth += 1,
-            b'[' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
 fn apply_optional_to_rendered_expr(expr: &str, optional: bool) -> Option<String> {
     if !optional {
         return Some(expr.to_string());
@@ -15505,32 +15465,47 @@ fn apply_optional_to_rendered_expr(expr: &str, optional: bool) -> Option<String>
     if trimmed.contains("?.") {
         return Some(trimmed.to_string());
     }
-    if trimmed.ends_with(')')
-        && let Some(open_idx) = find_matching_open_paren(trimmed)
-    {
-        let callee = trimmed[..open_idx].trim_end();
-        let args = &trimmed[open_idx + 1..trimmed.len() - 1];
-        if !callee.is_empty() {
-            return Some(format!("{callee}?.({args})"));
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let parsed =
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), trimmed)
+            .ok()?;
+    let expression = match parsed {
+        ast::Expression::CallExpression(call) => {
+            let mut call = call.unbox();
+            call.optional = true;
+            builder.expression_chain(
+                SPAN,
+                ast::ChainElement::CallExpression(builder.alloc(call)),
+            )
         }
-    }
-    if trimmed.ends_with(']')
-        && let Some(open_idx) = find_matching_open_bracket(trimmed)
-    {
-        let object = trimmed[..open_idx].trim_end();
-        let property = &trimmed[open_idx + 1..trimmed.len() - 1];
-        if !object.is_empty() {
-            return Some(format!("{object}?.[{property}]"));
+        ast::Expression::ComputedMemberExpression(member) => {
+            let mut member = member.unbox();
+            member.optional = true;
+            builder.expression_chain(
+                SPAN,
+                ast::ChainElement::ComputedMemberExpression(builder.alloc(member)),
+            )
         }
-    }
-    if let Some(dot_idx) = trimmed.rfind('.') {
-        let object = trimmed[..dot_idx].trim_end();
-        let property = trimmed[dot_idx + 1..].trim_start();
-        if !object.is_empty() && !property.is_empty() {
-            return Some(format!("{object}?.{property}"));
+        ast::Expression::StaticMemberExpression(member) => {
+            let mut member = member.unbox();
+            member.optional = true;
+            builder.expression_chain(
+                SPAN,
+                ast::ChainElement::StaticMemberExpression(builder.alloc(member)),
+            )
         }
-    }
-    None
+        ast::Expression::PrivateFieldExpression(member) => {
+            let mut member = member.unbox();
+            member.optional = true;
+            builder.expression_chain(
+                SPAN,
+                ast::ChainElement::PrivateFieldExpression(builder.alloc(member)),
+            )
+        }
+        _ => return None,
+    };
+    Some(codegen_expression_with_oxc(&expression))
 }
 
 // ---- Place & identifier helpers ----
@@ -20000,7 +19975,8 @@ fn unicode_escape_non_ascii(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        FunctionExpressionType, function_expr_as_declaration, function_expr_to_method_property,
+        FunctionExpressionType, apply_optional_to_rendered_expr, function_expr_as_declaration,
+        function_expr_to_method_property,
         maybe_fill_for_header_initializer_from_update, reconstruct_for_init_declaration,
         render_function_expression_ast, render_object_method_ast,
         render_reactive_function_body_prologue_ast,
@@ -20145,5 +20121,21 @@ mod tests {
 
         assert!(rendered.starts_with("\"use strict\";"));
         assert!(rendered.contains("const $ = _c(1);"));
+    }
+
+    #[test]
+    fn optionalizes_rendered_call_via_ast() {
+        let rendered =
+            apply_optional_to_rendered_expr("foo(bar)", true).expect("expected optional call");
+
+        assert_eq!(rendered, "foo?.(bar)");
+    }
+
+    #[test]
+    fn optionalizes_rendered_member_via_ast() {
+        let rendered =
+            apply_optional_to_rendered_expr("foo.bar", true).expect("expected optional member");
+
+        assert_eq!(rendered, "foo?.bar");
     }
 }
