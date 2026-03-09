@@ -733,7 +733,8 @@ fn codegen_reactive_function_with_primitives(
     };
     let needs_function_hook_guard_wrapper = cx.emit_hook_guards && emit_function_hook_guard;
     if needs_function_hook_guard_wrapper && options.emit_function_hook_guard_wrapper_in_body {
-        body = wrap_hook_guarded_block(&body, HOOK_GUARD_PUSH, HOOK_GUARD_POP);
+        body = render_hook_guarded_block_ast(&body, HOOK_GUARD_PUSH, HOOK_GUARD_POP)
+            .expect("generated hook-guarded function body should parse");
     }
     body = prune_unused_const_literal_decls(&body);
 
@@ -941,27 +942,109 @@ fn is_simple_identifier_char(ch: char) -> bool {
     ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()
 }
 
-fn wrap_hook_guarded_block(body: &str, before: u8, after: u8) -> String {
-    let mut out = String::new();
-    out.push_str("try {\n");
-    out.push_str(&format!("{}({});\n", HOOK_GUARD_IDENT, before));
-    if !body.is_empty() {
-        out.push_str(body);
-        if !body.ends_with('\n') {
-            out.push('\n');
-        }
-    }
-    out.push_str("} finally {\n");
-    out.push_str(&format!("{}({});\n", HOOK_GUARD_IDENT, after));
-    out.push_str("}\n");
-    out
+fn build_hook_guard_call_expression_ast<'a>(
+    builder: AstBuilder<'a>,
+    mode: u8,
+) -> ast::Expression<'a> {
+    builder.expression_call(
+        SPAN,
+        builder.expression_identifier(SPAN, builder.ident(HOOK_GUARD_IDENT)),
+        NONE,
+        builder.vec1(ast::Argument::from(builder.expression_numeric_literal(
+            SPAN,
+            mode as f64,
+            None,
+            NumberBase::Decimal,
+        ))),
+        false,
+    )
 }
 
-fn wrap_hook_guarded_call_expression(call_expr: &str) -> String {
-    format!(
-        "(function () {{\ntry {{\n{}({});\nreturn {};\n}} finally {{\n{}({});\n}}\n}})()",
-        HOOK_GUARD_IDENT, HOOK_GUARD_ALLOW, call_expr, HOOK_GUARD_IDENT, HOOK_GUARD_DISALLOW
-    )
+fn build_hook_guard_call_statement_ast<'a>(
+    builder: AstBuilder<'a>,
+    mode: u8,
+) -> ast::Statement<'a> {
+    builder.statement_expression(SPAN, build_hook_guard_call_expression_ast(builder, mode))
+}
+
+fn render_hook_guarded_block_ast(body: &str, before: u8, after: u8) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let mut guarded_body = builder.vec1(build_hook_guard_call_statement_ast(builder, before));
+    guarded_body.extend(
+        parse_statement_list_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), body)
+            .ok()?,
+    );
+    let statement = builder.statement_try(
+        SPAN,
+        builder.alloc_block_statement(SPAN, guarded_body),
+        Option::<oxc_allocator::Box<'_, ast::CatchClause<'_>>>::None,
+        Some(builder.alloc_block_statement(
+            SPAN,
+            builder.vec1(build_hook_guard_call_statement_ast(builder, after)),
+        )),
+    );
+    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+}
+
+fn render_hook_guarded_call_expression_ast(call_expr: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let mut try_body = builder.vec1(build_hook_guard_call_statement_ast(builder, HOOK_GUARD_ALLOW));
+    try_body.push(builder.statement_return(
+        SPAN,
+        Some(
+            parse_expression_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
+                call_expr,
+            )
+            .ok()?,
+        ),
+    ));
+    let try_statement = builder.statement_try(
+        SPAN,
+        builder.alloc_block_statement(SPAN, try_body),
+        Option::<oxc_allocator::Box<'_, ast::CatchClause<'_>>>::None,
+        Some(builder.alloc_block_statement(
+            SPAN,
+            builder.vec1(build_hook_guard_call_statement_ast(
+                builder,
+                HOOK_GUARD_DISALLOW,
+            )),
+        )),
+    );
+    let function = builder.expression_function(
+        SPAN,
+        ast::FunctionType::FunctionExpression,
+        None,
+        false,
+        false,
+        false,
+        NONE,
+        NONE,
+        builder.alloc(builder.formal_parameters(
+            SPAN,
+            ast::FormalParameterKind::FormalParameter,
+            builder.vec(),
+            Option::<oxc_allocator::Box<'_, ast::FormalParameterRest<'_>>>::None,
+        )),
+        NONE,
+        Some(builder.alloc(builder.function_body(
+            SPAN,
+            builder.vec(),
+            builder.vec1(try_statement),
+        ))),
+    );
+    let expression = builder.expression_call(SPAN, function, NONE, builder.vec(), false);
+    Some(strip_top_level_parenthesized_expression(
+        codegen_expression_with_oxc(&expression),
+    ))
+}
+
+fn guard_hook_call_expression(call_expr: String) -> String {
+    render_hook_guarded_call_expression_ast(&call_expr)
+        .expect("generated hook-guarded call should parse")
 }
 
 fn set_codegen_error_once(cx: &mut Context, reason: &str, message: String) {
@@ -7715,7 +7798,7 @@ fn maybe_codegen_fused_method_call_eval_order(
         }
     };
     let call_expr = if cx.emit_hook_guards && hook_name.is_some_and(Environment::is_hook_name) {
-        wrap_hook_guarded_call_expression(&call_expr)
+        guard_hook_call_expression(call_expr)
     } else {
         call_expr
     };
@@ -8047,7 +8130,7 @@ fn maybe_codegen_fused_method_call_destructure_assignment(
                 };
                 let call_expr =
                     if cx.emit_hook_guards && hook_name.is_some_and(Environment::is_hook_name) {
-                        wrap_hook_guarded_call_expression(&call_expr)
+                        guard_hook_call_expression(call_expr)
                     } else {
                         call_expr
                     };
@@ -14164,7 +14247,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                     format!("{}({})", callee_final, rendered_args_joined)
                 };
                 let call_expr = if cx.emit_hook_guards && is_hook_call {
-                    wrap_hook_guarded_call_expression(&call_expr)
+                    guard_hook_call_expression(call_expr)
                 } else {
                     call_expr
                 };
@@ -14201,7 +14284,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                     format!("{}({})", callee_final, call_args.join(", "))
                 };
                 let call_expr = if cx.emit_hook_guards && is_hook_call {
-                    wrap_hook_guarded_call_expression(&call_expr)
+                    guard_hook_call_expression(call_expr)
                 } else {
                     call_expr
                 };
@@ -14220,7 +14303,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                     format!("{}({})", callee_final, call_args.join(", "))
                 };
                 let call_expr = if cx.emit_hook_guards && is_hook_call {
-                    wrap_hook_guarded_call_expression(&call_expr)
+                    guard_hook_call_expression(call_expr)
                 } else {
                     call_expr
                 };
@@ -14258,7 +14341,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                     format!("{}{}{}({})", recv, dot, prop, rendered_args_joined)
                 };
                 let call_expr = if cx.emit_hook_guards {
-                    wrap_hook_guarded_call_expression(&call_expr)
+                    guard_hook_call_expression(call_expr)
                 } else {
                     call_expr
                 };
@@ -14295,7 +14378,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                     format!("{}{}{}({})", recv, dot, prop, call_args.join(", "))
                 };
                 let call_expr = if cx.emit_hook_guards {
-                    wrap_hook_guarded_call_expression(&call_expr)
+                    guard_hook_call_expression(call_expr)
                 } else {
                     call_expr
                 };
@@ -14314,7 +14397,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                     format!("{}{}{}({})", recv, dot, prop, call_args.join(", "))
                 };
                 let call_expr = if cx.emit_hook_guards {
-                    wrap_hook_guarded_call_expression(&call_expr)
+                    guard_hook_call_expression(call_expr)
                 } else {
                     call_expr
                 };
@@ -14795,7 +14878,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                     }
                 });
             if cx.emit_hook_guards && is_hook_call {
-                ExprValue::primary(wrap_hook_guarded_call_expression(&call_expr))
+                ExprValue::primary(guard_hook_call_expression(call_expr))
             } else {
                 ExprValue::primary(call_expr)
             }
@@ -14892,7 +14975,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                 }
             };
             if cx.emit_hook_guards && is_hook_call {
-                ExprValue::primary(wrap_hook_guarded_call_expression(&call_expr))
+                ExprValue::primary(guard_hook_call_expression(call_expr))
             } else {
                 ExprValue::primary(call_expr)
             }
@@ -21441,9 +21524,10 @@ mod tests {
         render_reactive_function_body_prologue_ast, render_jsx_expression_ast,
         render_jsx_fragment_ast, render_reactive_for_in_statement_ast,
         render_reactive_for_of_statement_ast, render_reactive_for_statement_ast,
+        render_hook_guarded_block_ast, render_hook_guarded_call_expression_ast,
         render_method_call_expression_ast,
         render_ts_type_cast_expression_ast,
-        render_cached_inline_hook_callback_block_ast,
+        render_cached_inline_hook_callback_block_ast, HOOK_GUARD_POP, HOOK_GUARD_PUSH,
     };
     use crate::hir::types::{
         Argument, ArrayElement, ArrayPattern, DeclarationId, DependencyPathEntry, Effect,
@@ -21835,6 +21919,30 @@ mod tests {
         assert!(rendered.contains("for (let i = 0; i < 2; i += 1)"));
         assert!(rendered.contains("$[i] = Symbol.for(\"react.memo_cache_sentinel\")"));
         assert!(rendered.contains("$[1] = \"hash\""));
+    }
+
+    #[test]
+    fn renders_hook_guarded_block_via_ast() {
+        let rendered = render_hook_guarded_block_ast("work();", HOOK_GUARD_PUSH, HOOK_GUARD_POP)
+            .expect("expected hook-guarded block");
+
+        assert!(rendered.starts_with("try {\n"));
+        assert!(rendered.contains("$dispatcherGuard(0);"));
+        assert!(rendered.contains("work();"));
+        assert!(rendered.contains("finally {\n  $dispatcherGuard(1);"));
+    }
+
+    #[test]
+    fn renders_hook_guarded_call_expression_via_ast() {
+        let rendered = render_hook_guarded_call_expression_ast("useMemo(cb, deps)")
+            .expect("expected hook-guarded call");
+
+        assert!(rendered.starts_with("(function"));
+        assert!(rendered.contains("try {"));
+        assert!(rendered.contains("$dispatcherGuard(2);"));
+        assert!(rendered.contains("return useMemo(cb, deps);"));
+        assert!(rendered.contains("$dispatcherGuard(3);"));
+        assert!(rendered.ends_with("})()"));
     }
 
     #[test]
