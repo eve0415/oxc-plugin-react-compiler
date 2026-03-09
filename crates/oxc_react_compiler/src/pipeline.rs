@@ -20,8 +20,10 @@ use sha2::Sha256;
 
 use crate::CompileResult;
 use crate::codegen_backend::{
-    CompiledBodyPayload, CompiledFunction, CompiledOutlinedFunction, CompiledParam, ModuleEmitArgs,
-    SynthesizedDefaultParamCache,
+    CompiledArrayPattern, CompiledBindingPattern, CompiledBodyPayload, CompiledFunction,
+    CompiledInitializer, CompiledObjectPattern, CompiledObjectPatternProperty,
+    CompiledOutlinedFunction, CompiledParam, CompiledParamPrefixStatement, CompiledPropertyKey,
+    ModuleEmitArgs, SynthesizedDefaultParamCache,
 };
 use crate::error::CompilerError;
 use crate::hir::build;
@@ -5807,7 +5809,7 @@ fn try_compile_function<'a>(
     let mut synthesized_default_param_cache = None;
     let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
     if let Some((synthesized, synthesized_cache_plan, synthesized_hir_outlined)) =
-        synthesize_default_param_cache_body(&generated_body, &params_result.destructurings)
+        synthesize_default_param_cache_body(&generated_body, &params_result.prefix_statements)
     {
         generated_body = synthesized;
         synthesized_default_param_cache = Some(synthesized_cache_plan);
@@ -5836,7 +5838,7 @@ fn try_compile_function<'a>(
 
     let ParamsResult {
         compiled_params,
-        destructurings,
+        prefix_statements,
         hir_outlined_functions: param_hir_outlined_functions,
     } = params_result;
 
@@ -5894,13 +5896,15 @@ fn try_compile_function<'a>(
         && !name.is_empty();
     let needs_emit_freeze =
         options.environment.enable_emit_freeze && codegen_result.needs_cache_import;
-    let param_destructurings = if synthesized_default_param_cache.is_some() {
+    let param_prefix_statements = if synthesized_default_param_cache.is_some() {
         vec![]
-    } else if destructurings
-        .iter()
-        .any(|line| line.contains("=== undefined ?"))
-    {
-        destructurings.clone()
+    } else if prefix_statements.iter().any(|statement| {
+        matches!(
+            &statement.init,
+            CompiledInitializer::UndefinedFallback { .. }
+        )
+    }) {
+        prefix_statements.clone()
     } else {
         vec![]
     };
@@ -5923,7 +5927,7 @@ fn try_compile_function<'a>(
         body_payload,
         needs_cache_import,
         compiled_params,
-        param_destructurings,
+        param_prefix_statements,
         synthesized_default_param_cache,
         is_async: func.r#async,
         is_generator: func.generator,
@@ -6036,7 +6040,7 @@ fn try_compile_function_with_name<'a>(
     let mut synthesized_default_param_cache = None;
     let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
     if let Some((synthesized, synthesized_cache_plan, synthesized_hir_outlined)) =
-        synthesize_default_param_cache_body(&generated_body, &params_result.destructurings)
+        synthesize_default_param_cache_body(&generated_body, &params_result.prefix_statements)
     {
         generated_body = synthesized;
         synthesized_default_param_cache = Some(synthesized_cache_plan);
@@ -6065,7 +6069,7 @@ fn try_compile_function_with_name<'a>(
 
     let ParamsResult {
         compiled_params,
-        destructurings,
+        prefix_statements,
         hir_outlined_functions: param_hir_outlined_functions,
     } = params_result;
 
@@ -6123,13 +6127,15 @@ fn try_compile_function_with_name<'a>(
         && !name.is_empty();
     let needs_emit_freeze =
         options.environment.enable_emit_freeze && codegen_result.needs_cache_import;
-    let param_destructurings = if synthesized_default_param_cache.is_some() {
+    let param_prefix_statements = if synthesized_default_param_cache.is_some() {
         vec![]
-    } else if destructurings
-        .iter()
-        .any(|line| line.contains("=== undefined ?"))
-    {
-        destructurings.clone()
+    } else if prefix_statements.iter().any(|statement| {
+        matches!(
+            &statement.init,
+            CompiledInitializer::UndefinedFallback { .. }
+        )
+    }) {
+        prefix_statements.clone()
     } else {
         vec![]
     };
@@ -6152,7 +6158,7 @@ fn try_compile_function_with_name<'a>(
         body_payload,
         needs_cache_import,
         compiled_params,
-        param_destructurings,
+        param_prefix_statements,
         synthesized_default_param_cache,
         is_async: func.r#async,
         is_generator: func.generator,
@@ -6273,7 +6279,7 @@ fn try_compile_arrow<'a>(
     let mut synthesized_default_param_cache = None;
     let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
     if let Some((synthesized, synthesized_cache_plan, synthesized_hir_outlined)) =
-        synthesize_default_param_cache_body(&generated_body, &params_result.destructurings)
+        synthesize_default_param_cache_body(&generated_body, &params_result.prefix_statements)
     {
         generated_body = synthesized;
         synthesized_default_param_cache = Some(synthesized_cache_plan);
@@ -6302,7 +6308,7 @@ fn try_compile_arrow<'a>(
 
     let ParamsResult {
         compiled_params,
-        destructurings,
+        prefix_statements,
         hir_outlined_functions: param_hir_outlined_functions,
     } = params_result;
 
@@ -6360,13 +6366,15 @@ fn try_compile_arrow<'a>(
         && !name.is_empty();
     let needs_emit_freeze =
         options.environment.enable_emit_freeze && codegen_result.needs_cache_import;
-    let param_destructurings = if synthesized_default_param_cache.is_some() {
+    let param_prefix_statements = if synthesized_default_param_cache.is_some() {
         vec![]
-    } else if destructurings
-        .iter()
-        .any(|line| line.contains("=== undefined ?"))
-    {
-        destructurings.clone()
+    } else if prefix_statements.iter().any(|statement| {
+        matches!(
+            &statement.init,
+            CompiledInitializer::UndefinedFallback { .. }
+        )
+    }) {
+        prefix_statements.clone()
     } else {
         vec![]
     };
@@ -6389,7 +6397,7 @@ fn try_compile_arrow<'a>(
         body_payload,
         needs_cache_import,
         compiled_params,
-        param_destructurings,
+        param_prefix_statements,
         synthesized_default_param_cache,
         is_async: arrow.r#async,
         is_generator: false,
@@ -6414,8 +6422,8 @@ fn try_compile_arrow<'a>(
 struct ParamsResult {
     /// Structured rewritten params when they are plain identifiers/rest identifiers.
     compiled_params: Option<Vec<CompiledParam>>,
-    /// Destructuring statements to emit at the top of the function body.
-    destructurings: Vec<String>,
+    /// Structured prefix statements to emit at the top of the function body.
+    prefix_statements: Vec<CompiledParamPrefixStatement>,
     /// HIR-lowered outlined functions from source default parameter values.
     hir_outlined_functions: Vec<(String, HIRFunction)>,
 }
@@ -6431,42 +6439,33 @@ fn outlined_functions_are_hir_lowerable(
     })
 }
 
-fn parse_simple_default_binding_line(line: &str) -> Option<(String, String, String)> {
-    let line = line.trim();
-    let after_const = line.strip_prefix("const ")?;
-    let (name, after_name) = after_const.split_once(" = ")?;
-    if name.is_empty()
-        || !name
+fn extract_simple_default_binding_candidate(
+    statement: &CompiledParamPrefixStatement,
+) -> Option<(String, String, String)> {
+    match (&statement.kind, &statement.pattern, &statement.init) {
+        (
+            ast::VariableDeclarationKind::Const,
+            CompiledBindingPattern::Identifier(name),
+            CompiledInitializer::UndefinedFallback {
+                temp_name,
+                default_expr,
+            },
+        ) if is_valid_binding_identifier(name) && is_valid_binding_identifier(temp_name) => {
+            Some((name.clone(), temp_name.clone(), default_expr.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn is_valid_binding_identifier(name: &str) -> bool {
+    !name.is_empty()
+        && name
             .chars()
             .next()
             .is_some_and(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphabetic())
-        || !name
+        && name
             .chars()
             .all(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphanumeric())
-    {
-        return None;
-    }
-
-    let (temp, after_temp) = after_name.split_once(" === undefined ? ")?;
-    if temp.is_empty()
-        || !temp
-            .chars()
-            .next()
-            .is_some_and(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphabetic())
-        || !temp
-            .chars()
-            .all(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphanumeric())
-    {
-        return None;
-    }
-
-    let suffix = format!(" : {};", temp);
-    let expr = after_temp.strip_suffix(&suffix)?.trim();
-    if expr.is_empty() {
-        return None;
-    }
-
-    Some((name.to_string(), temp.to_string(), expr.to_string()))
 }
 
 fn is_outlined_temp_expr(expr: &str) -> bool {
@@ -6580,12 +6579,12 @@ type DefaultParamCacheSynthesis = (
 
 fn synthesize_default_param_cache_body(
     generated_body: &str,
-    destructurings: &[String],
+    prefix_statements: &[CompiledParamPrefixStatement],
 ) -> Option<DefaultParamCacheSynthesis> {
     let debug_default_param_cache = std::env::var("DEBUG_DEFAULT_PARAM_CACHE").is_ok();
-    let mut candidates = destructurings
+    let mut candidates = prefix_statements
         .iter()
-        .filter_map(|line| parse_simple_default_binding_line(line));
+        .filter_map(extract_simple_default_binding_candidate);
     let (name, temp, expr) = candidates.next()?;
     if candidates.next().is_some() {
         if debug_default_param_cache {
@@ -6705,7 +6704,7 @@ fn params_to_result<'a>(
     temp_counter: &mut usize,
 ) -> ParamsResult {
     let mut compiled_params: Option<Vec<CompiledParam>> = Some(Vec::new());
-    let mut destructurings: Vec<String> = Vec::new();
+    let mut prefix_statements: Vec<CompiledParamPrefixStatement> = Vec::new();
     let mut hir_outlined_functions: Vec<(String, HIRFunction)> = Vec::new();
     let mut outline_counter: usize = 0;
 
@@ -6776,30 +6775,26 @@ fn params_to_result<'a>(
 
             match &param.pattern {
                 ast::BindingPattern::BindingIdentifier(ident) => {
-                    // `x = defaultExpr` → param `t0`, body `const x = t0 === undefined ? defaultExpr : t0;`
-                    destructurings.push(format!(
-                        "const {} = {} === undefined ? {} : {};",
-                        ident.name, temp_name, effective_default, temp_name
+                    prefix_statements.push(compiled_prefix_statement(
+                        ast::VariableDeclarationKind::Const,
+                        CompiledBindingPattern::Identifier(ident.name.to_string()),
+                        CompiledInitializer::UndefinedFallback {
+                            temp_name: temp_name.clone(),
+                            default_expr: effective_default.to_string(),
+                        },
                     ));
                 }
-                ast::BindingPattern::ObjectPattern(_) | ast::BindingPattern::ArrayPattern(_) => {
-                    // `{a, b} = defaultExpr` → param `t0`, body `const {a, b} = t0 === undefined ? defaultExpr : t0;`
-                    let pat_start = param.pattern.span().start as usize;
-                    let pat_end = param.pattern.span().end as usize;
-                    let pat_raw = &source[pat_start..pat_end];
-                    destructurings.push(format!(
-                        "const {} = {} === undefined ? {} : {};",
-                        pat_raw, temp_name, effective_default, temp_name
-                    ));
-                }
-                _ => {
-                    let start = param.pattern.span().start as usize;
-                    let end = param.pattern.span().end as usize;
-                    let raw = &source[start..end];
-                    destructurings.push(format!(
-                        "const {} = {} === undefined ? {} : {};",
-                        raw, temp_name, effective_default, temp_name
-                    ));
+                ast::BindingPattern::ObjectPattern(_)
+                | ast::BindingPattern::ArrayPattern(_)
+                | ast::BindingPattern::AssignmentPattern(_) => {
+                    prefix_statements.push(compiled_prefix_statement(
+                        ast::VariableDeclarationKind::Const,
+                        compiled_binding_pattern_from_ast(&param.pattern, source),
+                        CompiledInitializer::UndefinedFallback {
+                            temp_name: temp_name.clone(),
+                            default_expr: effective_default.to_string(),
+                        },
+                    ))
                 }
             }
             continue;
@@ -6832,7 +6827,7 @@ fn params_to_result<'a>(
                     &temp_name,
                     source,
                     temp_counter,
-                    &mut destructurings,
+                    &mut prefix_statements,
                 );
             }
             ast::BindingPattern::ArrayPattern(arr_pattern) => {
@@ -6853,7 +6848,7 @@ fn params_to_result<'a>(
                     &temp_name,
                     source,
                     temp_counter,
-                    &mut destructurings,
+                    &mut prefix_statements,
                 );
             }
             ast::BindingPattern::AssignmentPattern(assign_pattern) => {
@@ -6869,27 +6864,33 @@ fn params_to_result<'a>(
 
                 match &assign_pattern.left {
                     ast::BindingPattern::ObjectPattern(_)
-                    | ast::BindingPattern::ArrayPattern(_) => {
-                        let start = param.pattern.span().start as usize;
-                        let end = param.pattern.span().end as usize;
-                        let raw = &source[start..end];
-                        destructurings.push(format!("const {} = {};", raw, temp_name));
+                    | ast::BindingPattern::ArrayPattern(_)
+                    | ast::BindingPattern::AssignmentPattern(_) => {
+                        prefix_statements.push(compiled_prefix_statement(
+                            ast::VariableDeclarationKind::Const,
+                            CompiledBindingPattern::Assignment {
+                                left: Box::new(compiled_binding_pattern_from_ast(
+                                    &assign_pattern.left,
+                                    source,
+                                )),
+                                default_expr: source[assign_pattern.right.span().start as usize
+                                    ..assign_pattern.right.span().end as usize]
+                                    .to_string(),
+                            },
+                            CompiledInitializer::Identifier(temp_name.clone()),
+                        ))
                     }
                     ast::BindingPattern::BindingIdentifier(ident) => {
-                        let name = ident.name.as_str();
                         let default_start = assign_pattern.right.span().start as usize;
                         let default_end = assign_pattern.right.span().end as usize;
-                        let default_expr = &source[default_start..default_end];
-                        destructurings.push(format!(
-                            "const {} = {} === undefined ? {} : {};",
-                            name, temp_name, default_expr, temp_name
+                        prefix_statements.push(compiled_prefix_statement(
+                            ast::VariableDeclarationKind::Const,
+                            CompiledBindingPattern::Identifier(ident.name.to_string()),
+                            CompiledInitializer::UndefinedFallback {
+                                temp_name: temp_name.clone(),
+                                default_expr: source[default_start..default_end].to_string(),
+                            },
                         ));
-                    }
-                    _ => {
-                        let start = param.pattern.span().start as usize;
-                        let end = param.pattern.span().end as usize;
-                        let raw = &source[start..end];
-                        destructurings.push(format!("const {} = {};", raw, temp_name));
                     }
                 }
             }
@@ -6921,7 +6922,7 @@ fn params_to_result<'a>(
                     &temp_name,
                     source,
                     temp_counter,
-                    &mut destructurings,
+                    &mut prefix_statements,
                 );
             }
             ast::BindingPattern::ObjectPattern(obj_pattern) => {
@@ -6938,7 +6939,7 @@ fn params_to_result<'a>(
                     &temp_name,
                     source,
                     temp_counter,
-                    &mut destructurings,
+                    &mut prefix_statements,
                 );
             }
             _ => {
@@ -6949,7 +6950,7 @@ fn params_to_result<'a>(
 
     ParamsResult {
         compiled_params,
-        destructurings,
+        prefix_statements,
         hir_outlined_functions,
     }
 }
@@ -7306,82 +7307,82 @@ fn build_object_destructuring(
     temp_name: &str,
     source: &str,
     temp_counter: &mut usize,
-    destructurings: &mut Vec<String>,
+    prefix_statements: &mut Vec<CompiledParamPrefixStatement>,
 ) {
-    let mut parts: Vec<String> = Vec::new();
-    let mut defaults: Vec<(String, String, String)> = Vec::new(); // (temp, binding_name, default_expr)
+    let base_index = prefix_statements.len();
+    let mut properties = Vec::new();
     for prop in &pattern.properties {
         match &prop.value {
             ast::BindingPattern::BindingIdentifier(ident) => {
-                let key = match &prop.key {
-                    ast::PropertyKey::StaticIdentifier(id) => id.name.to_string(),
-                    ast::PropertyKey::StringLiteral(s) => format!("\"{}\"", s.value),
-                    _ => {
-                        // Fallback to source text for computed keys
-                        let start = prop.key.span().start as usize;
-                        let end = prop.key.span().end as usize;
-                        source[start..end].to_string()
-                    }
-                };
-                if key == ident.name.as_str() {
-                    parts.push(ident.name.to_string());
-                } else {
-                    parts.push(format!("{}: {}", key, ident.name));
-                }
+                properties.push(CompiledObjectPatternProperty {
+                    key: compiled_property_key_from_ast(&prop.key, source),
+                    value: CompiledBindingPattern::Identifier(ident.name.to_string()),
+                    shorthand: !prop.computed
+                        && matches!(
+                            &prop.key,
+                            ast::PropertyKey::StaticIdentifier(id) if id.name == ident.name
+                        ),
+                    computed: prop.computed,
+                });
             }
             ast::BindingPattern::AssignmentPattern(assign) => {
-                // Default value: extract into temp + separate conditional
                 if let ast::BindingPattern::BindingIdentifier(ident) = &assign.left {
-                    let key = match &prop.key {
-                        ast::PropertyKey::StaticIdentifier(id) => id.name.to_string(),
-                        _ => {
-                            let start = prop.key.span().start as usize;
-                            let end = prop.key.span().end as usize;
-                            source[start..end].to_string()
-                        }
-                    };
                     let elem_temp = format!("t{}", *temp_counter);
                     *temp_counter += 1;
                     let default_start = assign.right.span().start as usize;
                     let default_end = assign.right.span().end as usize;
-                    let default_val = source[default_start..default_end].to_string();
-                    // Use `key: temp` in the destructuring pattern
-                    parts.push(format!("{}: {}", key, elem_temp));
-                    defaults.push((elem_temp, ident.name.to_string(), default_val));
+                    properties.push(CompiledObjectPatternProperty {
+                        key: compiled_property_key_from_ast(&prop.key, source),
+                        value: CompiledBindingPattern::Identifier(elem_temp.clone()),
+                        shorthand: false,
+                        computed: prop.computed,
+                    });
+                    prefix_statements.push(compiled_prefix_statement(
+                        ast::VariableDeclarationKind::Let,
+                        CompiledBindingPattern::Identifier(ident.name.to_string()),
+                        CompiledInitializer::UndefinedFallback {
+                            temp_name: elem_temp,
+                            default_expr: source[default_start..default_end].to_string(),
+                        },
+                    ));
                 } else {
-                    // Nested complex pattern with default — use source
-                    let start = prop.span.start as usize;
-                    let end = prop.span.end as usize;
-                    parts.push(source[start..end].to_string());
+                    properties.push(CompiledObjectPatternProperty {
+                        key: compiled_property_key_from_ast(&prop.key, source),
+                        value: CompiledBindingPattern::Assignment {
+                            left: Box::new(compiled_binding_pattern_from_ast(&assign.left, source)),
+                            default_expr: source[assign.right.span().start as usize
+                                ..assign.right.span().end as usize]
+                                .to_string(),
+                        },
+                        shorthand: false,
+                        computed: prop.computed,
+                    });
                 }
             }
             _ => {
-                // Nested patterns — use source text
-                let start = prop.span.start as usize;
-                let end = prop.span.end as usize;
-                parts.push(source[start..end].to_string());
+                properties.push(CompiledObjectPatternProperty {
+                    key: compiled_property_key_from_ast(&prop.key, source),
+                    value: compiled_binding_pattern_from_ast(&prop.value, source),
+                    shorthand: false,
+                    computed: prop.computed,
+                });
             }
         }
     }
 
-    // Handle rest element
-    if let Some(rest) = &pattern.rest {
-        if let ast::BindingPattern::BindingIdentifier(ident) = &rest.argument {
-            parts.push(format!("...{}", ident.name));
-        } else {
-            let start = rest.span.start as usize;
-            let end = rest.span.end as usize;
-            parts.push(source[start..end].to_string());
-        }
-    }
-
-    destructurings.push(format!("let {{ {} }} = {};", parts.join(", "), temp_name));
-    for (elem_temp, binding_name, default_expr) in defaults {
-        destructurings.push(format!(
-            "let {} = {} === undefined ? {} : {};",
-            binding_name, elem_temp, default_expr, elem_temp
-        ));
-    }
+    prefix_statements.insert(
+        base_index,
+        compiled_prefix_statement(
+            ast::VariableDeclarationKind::Let,
+            CompiledBindingPattern::Object(CompiledObjectPattern {
+                properties,
+                rest: pattern.rest.as_ref().map(|rest| {
+                    Box::new(compiled_binding_pattern_from_ast(&rest.argument, source))
+                }),
+            }),
+            CompiledInitializer::Identifier(temp_name.to_string()),
+        ),
+    );
 }
 
 /// Build a destructuring statement from an array pattern.
@@ -7390,70 +7391,131 @@ fn build_array_destructuring(
     temp_name: &str,
     source: &str,
     temp_counter: &mut usize,
-    destructurings: &mut Vec<String>,
+    prefix_statements: &mut Vec<CompiledParamPrefixStatement>,
 ) {
-    let mut parts: Vec<String> = Vec::new();
-    // Track defaults: (temp_name, binding_name, default_expr)
-    let mut defaults: Vec<(String, String, String)> = Vec::new();
+    let base_index = prefix_statements.len();
+    let mut elements = Vec::new();
 
     for elem in &pattern.elements {
         match elem {
+            Some(ast::BindingPattern::BindingIdentifier(ident)) => {
+                elements.push(Some(CompiledBindingPattern::Identifier(
+                    ident.name.to_string(),
+                )));
+            }
+            Some(ast::BindingPattern::AssignmentPattern(assign)) => {
+                let elem_temp = format!("t{}", *temp_counter);
+                *temp_counter += 1;
+                elements.push(Some(CompiledBindingPattern::Identifier(elem_temp.clone())));
+                let default_start = assign.right.span().start as usize;
+                let default_end = assign.right.span().end as usize;
+                prefix_statements.push(compiled_prefix_statement(
+                    ast::VariableDeclarationKind::Let,
+                    compiled_binding_pattern_from_ast(&assign.left, source),
+                    CompiledInitializer::UndefinedFallback {
+                        temp_name: elem_temp,
+                        default_expr: source[default_start..default_end].to_string(),
+                    },
+                ));
+            }
             Some(binding) => {
-                match binding {
-                    ast::BindingPattern::BindingIdentifier(ident) => {
-                        parts.push(ident.name.to_string());
-                    }
-                    ast::BindingPattern::AssignmentPattern(assign) => {
-                        // Element with default: destructure into temp, apply default after
-                        let elem_temp = format!("t{}", *temp_counter);
-                        *temp_counter += 1;
-                        parts.push(elem_temp.clone());
-
-                        let binding_name = match &assign.left {
-                            ast::BindingPattern::BindingIdentifier(ident) => ident.name.to_string(),
-                            _ => {
-                                let start = assign.left.span().start as usize;
-                                let end = assign.left.span().end as usize;
-                                source[start..end].to_string()
-                            }
-                        };
-                        let default_start = assign.right.span().start as usize;
-                        let default_end = assign.right.span().end as usize;
-                        let default_expr = source[default_start..default_end].to_string();
-                        defaults.push((elem_temp, binding_name, default_expr));
-                    }
-                    _ => {
-                        let start = binding.span().start as usize;
-                        let end = binding.span().end as usize;
-                        parts.push(source[start..end].to_string());
-                    }
-                }
+                elements.push(Some(compiled_binding_pattern_from_ast(binding, source)));
             }
-            None => {
-                parts.push(String::new()); // elision
-            }
+            None => elements.push(None),
         }
     }
 
-    // Handle rest
-    if let Some(rest) = &pattern.rest {
-        if let ast::BindingPattern::BindingIdentifier(ident) = &rest.argument {
-            parts.push(format!("...{}", ident.name));
-        } else {
-            let start = rest.span.start as usize;
-            let end = rest.span.end as usize;
-            parts.push(source[start..end].to_string());
-        }
+    prefix_statements.insert(
+        base_index,
+        compiled_prefix_statement(
+            ast::VariableDeclarationKind::Let,
+            CompiledBindingPattern::Array(CompiledArrayPattern {
+                elements,
+                rest: pattern.rest.as_ref().map(|rest| {
+                    Box::new(compiled_binding_pattern_from_ast(&rest.argument, source))
+                }),
+            }),
+            CompiledInitializer::Identifier(temp_name.to_string()),
+        ),
+    );
+}
+
+fn compiled_prefix_statement(
+    kind: ast::VariableDeclarationKind,
+    pattern: CompiledBindingPattern,
+    init: CompiledInitializer,
+) -> CompiledParamPrefixStatement {
+    CompiledParamPrefixStatement {
+        kind,
+        pattern,
+        init,
     }
+}
 
-    destructurings.push(format!("let [{}] = {};", parts.join(", "), temp_name));
+fn compiled_binding_pattern_from_ast(
+    pattern: &ast::BindingPattern<'_>,
+    source: &str,
+) -> CompiledBindingPattern {
+    match pattern {
+        ast::BindingPattern::BindingIdentifier(ident) => {
+            CompiledBindingPattern::Identifier(ident.name.to_string())
+        }
+        ast::BindingPattern::ObjectPattern(object) => {
+            let properties = object
+                .properties
+                .iter()
+                .map(|prop| CompiledObjectPatternProperty {
+                    key: compiled_property_key_from_ast(&prop.key, source),
+                    value: compiled_binding_pattern_from_ast(&prop.value, source),
+                    shorthand: prop.shorthand,
+                    computed: prop.computed,
+                })
+                .collect();
+            CompiledBindingPattern::Object(CompiledObjectPattern {
+                properties,
+                rest: object.rest.as_ref().map(|rest| {
+                    Box::new(compiled_binding_pattern_from_ast(&rest.argument, source))
+                }),
+            })
+        }
+        ast::BindingPattern::ArrayPattern(array) => {
+            CompiledBindingPattern::Array(CompiledArrayPattern {
+                elements: array
+                    .elements
+                    .iter()
+                    .map(|element| {
+                        element
+                            .as_ref()
+                            .map(|pattern| compiled_binding_pattern_from_ast(pattern, source))
+                    })
+                    .collect(),
+                rest: array.rest.as_ref().map(|rest| {
+                    Box::new(compiled_binding_pattern_from_ast(&rest.argument, source))
+                }),
+            })
+        }
+        ast::BindingPattern::AssignmentPattern(assign) => CompiledBindingPattern::Assignment {
+            left: Box::new(compiled_binding_pattern_from_ast(&assign.left, source)),
+            default_expr: source
+                [assign.right.span().start as usize..assign.right.span().end as usize]
+                .to_string(),
+        },
+    }
+}
 
-    // Emit conditional defaults
-    for (elem_temp, binding_name, default_expr) in defaults {
-        destructurings.push(format!(
-            "let {} = {} === undefined ? {} : {};",
-            binding_name, elem_temp, default_expr, elem_temp
-        ));
+fn compiled_property_key_from_ast(key: &ast::PropertyKey<'_>, source: &str) -> CompiledPropertyKey {
+    match key {
+        ast::PropertyKey::StaticIdentifier(id) => {
+            CompiledPropertyKey::StaticIdentifier(id.name.to_string())
+        }
+        ast::PropertyKey::StringLiteral(string) => {
+            CompiledPropertyKey::StringLiteral(string.value.to_string())
+        }
+        _ => {
+            let start = key.span().start as usize;
+            let end = key.span().end as usize;
+            CompiledPropertyKey::Source(source[start..end].to_string())
+        }
     }
 }
 
@@ -7461,13 +7523,11 @@ fn build_array_destructuring(
 /// Given `const { a, b, c: d } = t0;` and a body that only uses `a`,
 /// returns `const { a } = t0;`.
 pub(crate) fn prune_unused_destructuring(destr: &str, body: &str) -> String {
-    // Only handle object destructuring: `const { ... } = ...;`
     let trimmed = destr.trim();
     if !trimmed.starts_with("const {") && !trimmed.starts_with("let {") {
         return destr.to_string();
     }
 
-    // Extract the parts: "const { ... } = rhs;"
     let open = match trimmed.find('{') {
         Some(i) => i,
         None => return destr.to_string(),
@@ -7476,11 +7536,10 @@ pub(crate) fn prune_unused_destructuring(destr: &str, body: &str) -> String {
         Some(i) => i,
         None => return destr.to_string(),
     };
-    let prefix = &trimmed[..open + 1]; // "const {"
-    let inner = trimmed[open + 1..close].trim(); // "a, b, c: d"
-    let suffix = &trimmed[close..]; // "} = t0;"
+    let prefix = &trimmed[..open + 1];
+    let inner = trimmed[open + 1..close].trim();
+    let suffix = &trimmed[close..];
 
-    // Parse properties and extract the binding names
     let props: Vec<&str> = inner
         .split(',')
         .map(|s| s.trim())
@@ -7489,12 +7548,9 @@ pub(crate) fn prune_unused_destructuring(destr: &str, body: &str) -> String {
     let mut kept: Vec<&str> = Vec::new();
 
     for prop in &props {
-        // Extract the local binding name from each property
-        // Cases: "a", "c: d", "a = default", "c: d = default", "...rest"
         let binding_name = if let Some(rest) = prop.strip_prefix("...") {
             rest
         } else if let Some(colon_idx) = prop.find(':') {
-            // "key: value" or "key: value = default"
             let after_colon = prop[colon_idx + 1..].trim();
             if let Some(eq_idx) = after_colon.find('=') {
                 after_colon[..eq_idx].trim()
@@ -7502,43 +7558,33 @@ pub(crate) fn prune_unused_destructuring(destr: &str, body: &str) -> String {
                 after_colon
             }
         } else if let Some(eq_idx) = prop.find('=') {
-            // "name = default"
             prop[..eq_idx].trim()
         } else {
-            // Simple "name"
             *prop
         };
 
-        // Check if the binding name is a valid identifier and is used in the body
         let binding_name = binding_name.trim();
         if binding_name.is_empty() {
             kept.push(prop);
             continue;
         }
 
-        // Check if the binding name appears as a word boundary in the body
-        // Simple heuristic: check if the name appears in the body
         if is_identifier_used(binding_name, body) {
             kept.push(prop);
         }
-        // If not used, skip this property
     }
 
     if kept.is_empty() {
-        // All properties were pruned — drop the destructuring entirely.
         return String::new();
     }
 
     if kept.len() == props.len() {
-        // Nothing was pruned
         return destr.to_string();
     }
 
     format!("{} {} {}", prefix, kept.join(", "), suffix)
 }
 
-/// Check if an identifier name is used in the body as a standalone identifier
-/// (not as part of a longer identifier name).
 fn is_identifier_used(name: &str, body: &str) -> bool {
     let mut start = 0;
     while let Some(idx) = body[start..].find(name) {

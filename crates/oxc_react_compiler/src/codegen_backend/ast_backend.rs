@@ -13,8 +13,9 @@ use oxc_syntax::operator::{AssignmentOperator, BinaryOperator, LogicalOperator};
 use crate::CompileResult;
 
 use super::{
-    CompiledBodyPayload, CompiledFunction, CompiledParam, ModuleEmitArgs,
-    SynthesizedDefaultParamCache,
+    CompiledArrayPattern, CompiledBindingPattern, CompiledBodyPayload, CompiledFunction,
+    CompiledInitializer, CompiledObjectPattern, CompiledParam, CompiledParamPrefixStatement,
+    CompiledPropertyKey, ModuleEmitArgs, SynthesizedDefaultParamCache,
 };
 
 struct AstRenderState {
@@ -4637,21 +4638,294 @@ fn collect_compiled_body_prefix_statements<'a>(
     source_type: SourceType,
     cf: &CompiledFunction,
 ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
+    let builder = AstBuilder::new(allocator);
     let mut statements = oxc_allocator::Vec::new_in(allocator);
-    if cf.param_destructurings.is_empty() || cf.generated_body.contains("=== undefined ?") {
+    if cf.param_prefix_statements.is_empty() || cf.generated_body.contains("=== undefined ?") {
         return Some(statements);
     }
-    for (index, destructuring) in cf.param_destructurings.iter().enumerate() {
-        let after = cf.param_destructurings[index + 1..].join("\n");
-        let context = format!("{}\n{}", cf.generated_body, after);
-        let pruned = crate::pipeline::prune_unused_destructuring(destructuring, &context);
-        if pruned.trim().is_empty() {
+    for (index, statement) in cf.param_prefix_statements.iter().enumerate() {
+        let later_statements = &cf.param_prefix_statements[index + 1..];
+        let Some(pruned) =
+            prune_compiled_prefix_statement(statement, &cf.generated_body, later_statements)
+        else {
             continue;
-        }
-        statements
-            .extend(parse_statements(allocator, source_type, allocator.alloc_str(&pruned)).ok()?);
+        };
+        statements.push(build_compiled_prefix_statement(
+            builder,
+            allocator,
+            source_type,
+            &pruned,
+        )?);
     }
     Some(statements)
+}
+
+fn prune_compiled_prefix_statement(
+    statement: &CompiledParamPrefixStatement,
+    body: &str,
+    later_statements: &[CompiledParamPrefixStatement],
+) -> Option<CompiledParamPrefixStatement> {
+    let CompiledBindingPattern::Object(pattern) = &statement.pattern else {
+        return Some(statement.clone());
+    };
+
+    let mut properties = Vec::new();
+    for property in &pattern.properties {
+        if compiled_binding_pattern_is_used(&property.value, body, later_statements) {
+            properties.push(property.clone());
+        }
+    }
+
+    let rest = pattern.rest.as_ref().and_then(|rest| {
+        compiled_binding_pattern_is_used(rest, body, later_statements).then(|| rest.clone())
+    });
+
+    if properties.is_empty() && rest.is_none() {
+        return None;
+    }
+
+    Some(CompiledParamPrefixStatement {
+        kind: statement.kind,
+        pattern: CompiledBindingPattern::Object(CompiledObjectPattern { properties, rest }),
+        init: statement.init.clone(),
+    })
+}
+
+fn compiled_binding_pattern_is_used(
+    pattern: &CompiledBindingPattern,
+    body: &str,
+    later_statements: &[CompiledParamPrefixStatement],
+) -> bool {
+    let mut bound_identifiers = Vec::new();
+    collect_compiled_binding_pattern_identifiers(pattern, &mut bound_identifiers);
+    bound_identifiers.into_iter().any(|ident| {
+        expression_references_identifier_in_source(body, &ident)
+            || later_statements
+                .iter()
+                .any(|statement| compiled_prefix_statement_references_identifier(statement, &ident))
+    })
+}
+
+fn collect_compiled_binding_pattern_identifiers(
+    pattern: &CompiledBindingPattern,
+    identifiers: &mut Vec<String>,
+) {
+    match pattern {
+        CompiledBindingPattern::Identifier(name) => identifiers.push(name.clone()),
+        CompiledBindingPattern::Object(object) => {
+            for property in &object.properties {
+                collect_compiled_binding_pattern_identifiers(&property.value, identifiers);
+            }
+            if let Some(rest) = &object.rest {
+                collect_compiled_binding_pattern_identifiers(rest, identifiers);
+            }
+        }
+        CompiledBindingPattern::Array(array) => {
+            for element in array.elements.iter().flatten() {
+                collect_compiled_binding_pattern_identifiers(element, identifiers);
+            }
+            if let Some(rest) = &array.rest {
+                collect_compiled_binding_pattern_identifiers(rest, identifiers);
+            }
+        }
+        CompiledBindingPattern::Assignment { left, .. } => {
+            collect_compiled_binding_pattern_identifiers(left, identifiers);
+        }
+    }
+}
+
+fn compiled_prefix_statement_references_identifier(
+    statement: &CompiledParamPrefixStatement,
+    ident: &str,
+) -> bool {
+    match &statement.init {
+        CompiledInitializer::Identifier(name) => name == ident,
+        CompiledInitializer::UndefinedFallback {
+            temp_name,
+            default_expr,
+        } => temp_name == ident || expression_references_identifier_in_source(default_expr, ident),
+    }
+}
+
+fn expression_references_identifier_in_source(source: &str, ident: &str) -> bool {
+    let mut start = 0usize;
+    while let Some(idx) = source[start..].find(ident) {
+        let abs_idx = start + idx;
+        let before_ok = abs_idx == 0 || !is_ident_char(source.as_bytes()[abs_idx - 1]);
+        let after_idx = abs_idx + ident.len();
+        let after_ok = after_idx >= source.len() || !is_ident_char(source.as_bytes()[after_idx]);
+        if before_ok && after_ok {
+            return true;
+        }
+        start = abs_idx + 1;
+    }
+    false
+}
+
+fn is_ident_char(byte: u8) -> bool {
+    byte == b'_' || byte == b'$' || byte.is_ascii_alphanumeric()
+}
+
+fn build_compiled_prefix_statement<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    statement: &CompiledParamPrefixStatement,
+) -> Option<ast::Statement<'a>> {
+    let pattern =
+        build_compiled_binding_pattern(builder, allocator, source_type, &statement.pattern)?;
+    let init = build_compiled_prefix_initializer(builder, allocator, source_type, &statement.init)?;
+    Some(ast::Statement::VariableDeclaration(
+        builder.alloc_variable_declaration(
+            SPAN,
+            statement.kind,
+            builder.vec1(builder.variable_declarator(
+                SPAN,
+                statement.kind,
+                pattern,
+                NONE,
+                Some(init),
+                false,
+            )),
+            false,
+        ),
+    ))
+}
+
+fn build_compiled_binding_pattern<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    pattern: &CompiledBindingPattern,
+) -> Option<ast::BindingPattern<'a>> {
+    match pattern {
+        CompiledBindingPattern::Identifier(name) => {
+            Some(builder.binding_pattern_binding_identifier(SPAN, builder.ident(name)))
+        }
+        CompiledBindingPattern::Object(object) => Some(build_compiled_object_pattern(
+            builder,
+            allocator,
+            source_type,
+            object,
+        )),
+        CompiledBindingPattern::Array(array) => Some(build_compiled_array_pattern(
+            builder,
+            allocator,
+            source_type,
+            array,
+        )),
+        CompiledBindingPattern::Assignment { left, default_expr } => {
+            Some(builder.binding_pattern_assignment_pattern(
+                SPAN,
+                build_compiled_binding_pattern(builder, allocator, source_type, left)?,
+                parse_expression_source(allocator, source_type, default_expr).ok()?,
+            ))
+        }
+    }
+}
+
+fn build_compiled_object_pattern<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    object: &CompiledObjectPattern,
+) -> ast::BindingPattern<'a> {
+    let mut properties = builder.vec();
+    for property in &object.properties {
+        let value =
+            build_compiled_binding_pattern(builder, allocator, source_type, &property.value)
+                .expect("compiled property pattern should build");
+        let key = build_compiled_property_key(builder, allocator, source_type, &property.key)
+            .expect("compiled property key should build");
+        properties.push(builder.binding_property(
+            SPAN,
+            key,
+            value,
+            property.shorthand,
+            property.computed,
+        ));
+    }
+    let rest = object.rest.as_ref().map(|rest| {
+        builder.alloc_binding_rest_element(
+            SPAN,
+            build_compiled_binding_pattern(builder, allocator, source_type, rest)
+                .expect("compiled rest pattern should build"),
+        )
+    });
+    builder.binding_pattern_object_pattern(SPAN, properties, rest)
+}
+
+fn build_compiled_array_pattern<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    array: &CompiledArrayPattern,
+) -> ast::BindingPattern<'a> {
+    let elements = builder.vec_from_iter(array.elements.iter().map(|element| {
+        element.as_ref().map(|pattern| {
+            build_compiled_binding_pattern(builder, allocator, source_type, pattern)
+                .expect("compiled array element pattern should build")
+        })
+    }));
+    let rest = array.rest.as_ref().map(|rest| {
+        builder.alloc_binding_rest_element(
+            SPAN,
+            build_compiled_binding_pattern(builder, allocator, source_type, rest)
+                .expect("compiled array rest pattern should build"),
+        )
+    });
+    builder.binding_pattern_array_pattern(SPAN, elements, rest)
+}
+
+fn build_compiled_property_key<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    key: &CompiledPropertyKey,
+) -> Option<ast::PropertyKey<'a>> {
+    match key {
+        CompiledPropertyKey::StaticIdentifier(name) => {
+            Some(builder.property_key_static_identifier(SPAN, builder.ident(name)))
+        }
+        CompiledPropertyKey::StringLiteral(value) => Some(ast::PropertyKey::from(
+            builder.expression_string_literal(SPAN, builder.atom(value), None),
+        )),
+        CompiledPropertyKey::Source(source) => Some(ast::PropertyKey::from(
+            parse_expression_source(allocator, source_type, source).ok()?,
+        )),
+    }
+}
+
+fn build_compiled_prefix_initializer<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    init: &CompiledInitializer,
+) -> Option<ast::Expression<'a>> {
+    match init {
+        CompiledInitializer::Identifier(name) => {
+            Some(builder.expression_identifier(SPAN, builder.ident(name)))
+        }
+        CompiledInitializer::UndefinedFallback {
+            temp_name,
+            default_expr,
+        } => {
+            let default_expr =
+                parse_expression_source(allocator, source_type, default_expr).ok()?;
+            let temp_ident = || builder.expression_identifier(SPAN, builder.ident(temp_name));
+            Some(builder.expression_conditional(
+                SPAN,
+                builder.expression_binary(
+                    SPAN,
+                    temp_ident(),
+                    BinaryOperator::StrictEquality,
+                    builder.expression_identifier(SPAN, builder.ident("undefined")),
+                ),
+                default_expr,
+                temp_ident(),
+            ))
+        }
+    }
 }
 
 fn collect_preserved_original_body_statements<'a>(
@@ -4914,12 +5188,15 @@ mod tests {
     };
 
     use super::{
-        AstRenderState, CompiledBodyPayload, CompiledFunction, CompiledParam,
-        codegen_statement_source, compute_transform_state, maybe_gate_entrypoint_source,
-        normalize_compiled_body_for_hir_match, normalize_generated_body_flow_cast_marker_calls,
-        parse_statements, restore_flow_cast_marker_calls, source_type_for_filename,
+        AstRenderState, CompiledBindingPattern, CompiledBodyPayload, CompiledFunction,
+        CompiledInitializer, CompiledObjectPattern, CompiledParam, CompiledParamPrefixStatement,
+        CompiledPropertyKey, codegen_statement_source, compute_transform_state,
+        maybe_gate_entrypoint_source, normalize_compiled_body_for_hir_match,
+        normalize_generated_body_flow_cast_marker_calls, parse_statements,
+        restore_flow_cast_marker_calls, source_type_for_filename,
         try_rewrite_compiled_statement_ast,
     };
+    use crate::codegen_backend::CompiledObjectPatternProperty;
 
     fn empty_test_state(source_type: oxc_span::SourceType) -> AstRenderState {
         AstRenderState {
@@ -5113,17 +5390,31 @@ function Component(props) {
             "FancyButton",
             arrow.span.start,
             arrow.span.end,
-            "return props;",
+            "return value;",
             &["props"],
             true,
         );
-        compiled_function.param_destructurings = vec!["const value = props.value;".to_string()];
+        compiled_function.param_prefix_statements = vec![CompiledParamPrefixStatement {
+            kind: ast::VariableDeclarationKind::Const,
+            pattern: CompiledBindingPattern::Object(CompiledObjectPattern {
+                properties: vec![CompiledObjectPatternProperty {
+                    key: CompiledPropertyKey::StaticIdentifier("value".to_string()),
+                    value: CompiledBindingPattern::Identifier("value".to_string()),
+                    shorthand: true,
+                    computed: false,
+                }],
+                rest: None,
+            }),
+            init: CompiledInitializer::Identifier("props".to_string()),
+        }];
 
         let rewritten = rewrite_single_statement_for_test("fixture.ts", source, &compiled_function);
 
-        assert!(rewritten.contains("const value = props.value;"));
+        assert!(rewritten.contains("const {"));
+        assert!(rewritten.contains("value"));
+        assert!(rewritten.contains("} = props;"));
         assert!(rewritten.contains("enum Color"));
-        assert!(rewritten.contains("return props;"));
+        assert!(rewritten.contains("return value;"));
     }
 
     #[test]
@@ -5328,7 +5619,7 @@ function Component(props) {
                     })
                     .collect(),
             ),
-            param_destructurings: vec![],
+            param_prefix_statements: vec![],
             synthesized_default_param_cache: None,
             is_async: false,
             is_generator: false,

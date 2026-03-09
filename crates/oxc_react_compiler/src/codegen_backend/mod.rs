@@ -21,6 +21,60 @@ pub(crate) struct CompiledParam {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CompiledBindingPattern {
+    Identifier(String),
+    Object(CompiledObjectPattern),
+    Array(CompiledArrayPattern),
+    Assignment {
+        left: Box<CompiledBindingPattern>,
+        default_expr: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompiledObjectPattern {
+    pub(crate) properties: Vec<CompiledObjectPatternProperty>,
+    pub(crate) rest: Option<Box<CompiledBindingPattern>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompiledObjectPatternProperty {
+    pub(crate) key: CompiledPropertyKey,
+    pub(crate) value: CompiledBindingPattern,
+    pub(crate) shorthand: bool,
+    pub(crate) computed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompiledArrayPattern {
+    pub(crate) elements: Vec<Option<CompiledBindingPattern>>,
+    pub(crate) rest: Option<Box<CompiledBindingPattern>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CompiledPropertyKey {
+    StaticIdentifier(String),
+    StringLiteral(String),
+    Source(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CompiledInitializer {
+    Identifier(String),
+    UndefinedFallback {
+        temp_name: String,
+        default_expr: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompiledParamPrefixStatement {
+    pub(crate) kind: ast::VariableDeclarationKind,
+    pub(crate) pattern: CompiledBindingPattern,
+    pub(crate) init: CompiledInitializer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompiledOutlinedFunction {
     pub(crate) name: String,
     pub(crate) params: Vec<CompiledParam>,
@@ -45,7 +99,7 @@ pub(crate) struct CompiledFunction {
     pub(crate) body_payload: CompiledBodyPayload,
     pub(crate) needs_cache_import: bool,
     pub(crate) compiled_params: Option<Vec<CompiledParam>>,
-    pub(crate) param_destructurings: Vec<String>,
+    pub(crate) param_prefix_statements: Vec<CompiledParamPrefixStatement>,
     pub(crate) synthesized_default_param_cache: Option<SynthesizedDefaultParamCache>,
     pub(crate) is_async: bool,
     pub(crate) is_generator: bool,
