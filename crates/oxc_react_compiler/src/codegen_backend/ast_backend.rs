@@ -315,6 +315,7 @@ fn try_emit_module(
                 &allocator,
                 state.source_type,
                 stmt_compiled[0],
+                &state,
             )
         {
             for statement in statements {
@@ -3431,6 +3432,7 @@ fn try_lower_compiled_statement_ast<'a>(
     allocator: &'a Allocator,
     source_type: SourceType,
     cf: &CompiledFunction,
+    state: &AstRenderState,
 ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
     if !can_emit_compiled_statement_ast(cf) {
         return None;
@@ -3442,6 +3444,7 @@ fn try_lower_compiled_statement_ast<'a>(
         return None;
     };
     prepend_hir_body_prefix_statements(builder, allocator, source_type, function, cf)?;
+    prepend_hir_instrument_forget_statement(builder, allocator, function, cf, state)?;
     statements.push(function_statement);
     for (outlined_name, _, _) in &cf.outlined_functions {
         let hir_function = cf
@@ -3474,6 +3477,20 @@ fn prepend_hir_body_prefix_statements<'a>(
         cf,
         None,
     )?;
+    function.body = Some(builder.alloc(cloned_body));
+    Some(())
+}
+
+fn prepend_hir_instrument_forget_statement<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    function: &mut ast::Function<'a>,
+    cf: &CompiledFunction,
+    state: &AstRenderState,
+) -> Option<()> {
+    let body = function.body.as_mut()?;
+    let mut cloned_body = body.clone_in(allocator).unbox();
+    prepend_instrument_forget_statement(builder, allocator, &mut cloned_body, cf, state);
     function.body = Some(builder.alloc(cloned_body));
     Some(())
 }
@@ -3530,7 +3547,6 @@ fn can_emit_compiled_statement_ast(cf: &CompiledFunction) -> bool {
     cf.body_payload == CompiledBodyPayload::LowerFromFinalHir
         && cf.is_function_declaration
         && !cf.needs_cache_import
-        && !cf.needs_instrument_forget
         && !cf.needs_emit_freeze
         && !cf.needs_hook_guards
         && !cf.needs_structural_check_import
