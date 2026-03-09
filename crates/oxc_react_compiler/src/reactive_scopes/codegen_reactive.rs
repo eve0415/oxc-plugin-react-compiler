@@ -12808,8 +12808,10 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
             ..
         } => match target_kind {
             ReactiveTerminalTargetKind::Implicit => None,
-            ReactiveTerminalTargetKind::Unlabeled => Some("break;\n".to_string()),
-            ReactiveTerminalTargetKind::Labeled => Some(format!("break bb{};\n", target.0)),
+            ReactiveTerminalTargetKind::Unlabeled => render_reactive_break_statement_ast(None),
+            ReactiveTerminalTargetKind::Labeled => {
+                render_reactive_break_statement_ast(Some(&format!("bb{}", target.0)))
+            }
         },
         ReactiveTerminal::Continue {
             target,
@@ -12817,8 +12819,10 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
             ..
         } => match target_kind {
             ReactiveTerminalTargetKind::Implicit => None,
-            ReactiveTerminalTargetKind::Unlabeled => Some("continue;\n".to_string()),
-            ReactiveTerminalTargetKind::Labeled => Some(format!("continue bb{};\n", target.0)),
+            ReactiveTerminalTargetKind::Unlabeled => render_reactive_continue_statement_ast(None),
+            ReactiveTerminalTargetKind::Labeled => {
+                render_reactive_continue_statement_ast(Some(&format!("bb{}", target.0)))
+            }
         },
         ReactiveTerminal::Return { value, .. } => {
             let expr = codegen_place_to_expression(cx, value);
@@ -12832,14 +12836,14 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                 );
             }
             if expr == "undefined" {
-                Some("return;\n".to_string())
+                render_reactive_return_statement_ast(None)
             } else {
-                Some(format!("return {};\n", expr))
+                render_reactive_return_statement_ast(Some(&expr))
             }
         }
         ReactiveTerminal::Throw { value, .. } => {
             let expr = codegen_place_to_expression(cx, value);
-            Some(format!("throw {};\n", expr))
+            render_reactive_throw_statement_ast(&expr)
         }
         ReactiveTerminal::If {
             test,
@@ -18509,6 +18513,54 @@ fn render_reactive_assignment_statement_ast(target_name: &str, rhs: &str) -> Opt
         target_name,
         rhs_expression,
     );
+    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+}
+
+fn render_reactive_break_statement_ast(label: Option<&str>) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let statement = builder.statement_break(
+        SPAN,
+        label.map(|label| builder.label_identifier(SPAN, builder.atom(label))),
+    );
+    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+}
+
+fn render_reactive_continue_statement_ast(label: Option<&str>) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let statement = builder.statement_continue(
+        SPAN,
+        label.map(|label| builder.label_identifier(SPAN, builder.atom(label))),
+    );
+    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+}
+
+fn render_reactive_return_statement_ast(argument: Option<&str>) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let parsed_argument = match argument {
+        Some(argument) => Some(
+            parse_expression_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
+                argument,
+            )
+            .ok()?,
+        ),
+        None => None,
+    };
+    let statement = builder.statement_return(SPAN, parsed_argument);
+    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+}
+
+fn render_reactive_throw_statement_ast(argument: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let parsed_argument =
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), argument)
+            .ok()?;
+    let statement = builder.statement_throw(SPAN, parsed_argument);
     Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
 }
 
