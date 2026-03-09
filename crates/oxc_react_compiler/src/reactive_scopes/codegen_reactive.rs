@@ -12853,15 +12853,21 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
         } => {
             let test_expr = codegen_place_to_expression(cx, test);
             let cons_block = codegen_block(cx, consequent);
-            let mut result = format!("if ({}) {{\n{}}}", test_expr, cons_block);
-            if let Some(alt) = alternate {
-                let alt_block = codegen_block(cx, alt);
-                if !alt_block.trim().is_empty() {
+            let alt_block = alternate.as_ref().map(|alt| codegen_block(cx, alt));
+            if let Some(rendered) =
+                render_reactive_if_statement_ast(&test_expr, &cons_block, alt_block.as_deref())
+            {
+                Some(rendered)
+            } else {
+                let mut result = format!("if ({}) {{\n{}}}", test_expr, cons_block);
+                if let Some(alt_block) = alt_block
+                    && !alt_block.trim().is_empty()
+                {
                     result.push_str(&format!(" else {{\n{}}}", alt_block));
                 }
+                result.push('\n');
+                Some(result)
             }
-            result.push('\n');
-            Some(result)
         }
         ReactiveTerminal::Switch { test, cases, .. } => {
             let test_expr = codegen_place_to_expression(cx, test);
@@ -13023,7 +13029,8 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
         } => {
             let test_expr = codegen_place_with_min_prec(cx, test, ExprPrecedence::Conditional);
             let body = codegen_block(cx, loop_block);
-            Some(format!("while ({}) {{\n{}}}\n", test_expr, body))
+            render_reactive_while_statement_ast(&test_expr, &body)
+                .or_else(|| Some(format!("while ({}) {{\n{}}}\n", test_expr, body)))
         }
         ReactiveTerminal::DoWhile {
             test, loop_block, ..
@@ -13052,7 +13059,8 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
             } else {
                 let test_expr = codegen_place_with_min_prec(cx, test, ExprPrecedence::Conditional);
                 let body = codegen_block(cx, loop_block);
-                Some(format!("do {{\n{}}} while ({});\n", body, test_expr))
+                render_reactive_do_while_statement_ast(&body, &test_expr)
+                    .or_else(|| Some(format!("do {{\n{}}} while ({});\n", body, test_expr)))
             }
         }
         ReactiveTerminal::Label { block, .. } => Some(codegen_block(cx, block)),
@@ -13087,7 +13095,22 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                 (String::new(), None)
             };
             let catch_body = codegen_block(cx, handler);
-            if catch_param.is_empty() {
+            let rendered_catch_body = if let Some(alias) = &catch_alias {
+                format!("{alias}{catch_body}")
+            } else {
+                catch_body.clone()
+            };
+            if let Some(rendered) = render_reactive_try_statement_ast(
+                &try_body,
+                if catch_param.is_empty() {
+                    None
+                } else {
+                    Some(catch_param.as_str())
+                },
+                Some(&rendered_catch_body),
+            ) {
+                Some(rendered)
+            } else if catch_param.is_empty() {
                 Some(format!(
                     "try {{\n{}}} catch {{\n{}}}\n",
                     try_body, catch_body
@@ -18113,6 +18136,34 @@ fn parse_expression_for_ast_codegen<'a>(
     Err("failed to parse nested expression".to_string())
 }
 
+fn parse_statement_list_for_ast_codegen<'a>(
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    statement_source: &str,
+) -> Result<oxc_allocator::Vec<'a, ast::Statement<'a>>, String> {
+    let parsed_body = parse_function_body_for_ast_codegen(
+        allocator,
+        source_type,
+        false,
+        false,
+        statement_source,
+    )?;
+    if !parsed_body.directives.is_empty() {
+        return Err("block statements contain directives".to_string());
+    }
+    Ok(parsed_body.statements)
+}
+
+fn parse_block_statement_for_ast_codegen<'a>(
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    body_source: &str,
+) -> Result<oxc_allocator::Box<'a, ast::BlockStatement<'a>>, String> {
+    let builder = AstBuilder::new(allocator);
+    let statements = parse_statement_list_for_ast_codegen(allocator, source_type, body_source)?;
+    Ok(builder.alloc_block_statement(SPAN, statements))
+}
+
 fn single_return_expression_from_body<'a>(
     allocator: &'a Allocator,
     body: &ast::FunctionBody<'a>,
@@ -18561,6 +18612,109 @@ fn render_reactive_throw_statement_ast(argument: &str) -> Option<String> {
         parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), argument)
             .ok()?;
     let statement = builder.statement_throw(SPAN, parsed_argument);
+    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+}
+
+fn render_reactive_if_statement_ast(
+    test: &str,
+    consequent_body: &str,
+    alternate_body: Option<&str>,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let parsed_test =
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), test)
+            .ok()?;
+    let consequent = builder.statement_block(
+        SPAN,
+        parse_statement_list_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            consequent_body,
+        )
+        .ok()?,
+    );
+    let alternate = match alternate_body.filter(|body| !body.trim().is_empty()) {
+        Some(body) => Some(
+            builder.statement_block(
+                SPAN,
+                parse_statement_list_for_ast_codegen(
+                    &allocator,
+                    SourceType::mjs().with_jsx(true),
+                    body,
+                )
+                .ok()?,
+            ),
+        ),
+        None => None,
+    };
+    let statement = builder.statement_if(SPAN, parsed_test, consequent, alternate);
+    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+}
+
+fn render_reactive_while_statement_ast(test: &str, body: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let parsed_test =
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), test)
+            .ok()?;
+    let parsed_body = builder.statement_block(
+        SPAN,
+        parse_statement_list_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), body)
+            .ok()?,
+    );
+    let statement = builder.statement_while(SPAN, parsed_test, parsed_body);
+    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+}
+
+fn render_reactive_do_while_statement_ast(body: &str, test: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let parsed_body = builder.statement_block(
+        SPAN,
+        parse_statement_list_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), body)
+            .ok()?,
+    );
+    let parsed_test =
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), test)
+            .ok()?;
+    let statement = builder.statement_do_while(SPAN, parsed_body, parsed_test);
+    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+}
+
+fn render_reactive_try_statement_ast(
+    try_body: &str,
+    catch_param: Option<&str>,
+    catch_body: Option<&str>,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let try_block = parse_block_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        try_body,
+    )
+    .ok()?;
+    let body = catch_body?;
+    let param = catch_param.map(|name| {
+        builder.catch_parameter(
+            SPAN,
+            builder.binding_pattern_binding_identifier(SPAN, builder.ident(name)),
+            NONE,
+        )
+    });
+    let handler = builder.alloc_catch_clause(
+        SPAN,
+        param,
+        parse_block_statement_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), body)
+            .ok()?,
+    );
+    let statement = builder.statement_try(
+        SPAN,
+        try_block,
+        Some(handler),
+        Option::<oxc_allocator::Box<'_, ast::BlockStatement<'_>>>::None,
+    );
     Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
 }
 
