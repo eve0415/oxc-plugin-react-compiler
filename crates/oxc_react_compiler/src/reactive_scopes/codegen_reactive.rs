@@ -13101,20 +13101,7 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
             let test_expr = codegen_place_to_expression(cx, test);
             let cons_block = codegen_block(cx, consequent);
             let alt_block = alternate.as_ref().map(|alt| codegen_block(cx, alt));
-            if let Some(rendered) =
-                render_reactive_if_statement_ast(&test_expr, &cons_block, alt_block.as_deref())
-            {
-                Some(rendered)
-            } else {
-                let mut result = format!("if ({}) {{\n{}}}", test_expr, cons_block);
-                if let Some(alt_block) = alt_block
-                    && !alt_block.trim().is_empty()
-                {
-                    result.push_str(&format!(" else {{\n{}}}", alt_block));
-                }
-                result.push('\n');
-                Some(result)
-            }
+            render_reactive_if_statement_ast(&test_expr, &cons_block, alt_block.as_deref())
         }
         ReactiveTerminal::Switch { test, cases, .. } => {
             let test_expr = codegen_place_to_expression(cx, test);
@@ -13170,37 +13157,7 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                     block_code.filter(|code| !code.trim().is_empty()),
                 ));
             }
-            if let Some(rendered) =
-                render_reactive_switch_statement_ast(&test_expr, &rendered_cases)
-            {
-                Some(rendered)
-            } else {
-                let mut result = format!("switch ({}) {{\n", test_expr);
-                for (case_test, block_code) in rendered_cases {
-                    let has_block = block_code
-                        .as_ref()
-                        .is_some_and(|code| !code.trim().is_empty());
-
-                    if let Some(test_expr) = case_test {
-                        if has_block {
-                            result.push_str(&format!("case {}: ", test_expr));
-                        } else {
-                            result.push_str(&format!("case {}:\n", test_expr));
-                        }
-                    } else if has_block {
-                        result.push_str("default: ");
-                    } else {
-                        result.push_str("default:\n");
-                    }
-                    if let Some(block_code) = block_code
-                        && !block_code.trim().is_empty()
-                    {
-                        result.push_str(&format!("{{\n{}}}\n", block_code));
-                    }
-                }
-                result.push_str("}\n");
-                Some(result)
-            }
+            render_reactive_switch_statement_ast(&test_expr, &rendered_cases)
         }
         ReactiveTerminal::For {
             init,
@@ -13301,7 +13258,6 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
             let test_expr = codegen_place_with_min_prec(cx, test, ExprPrecedence::Conditional);
             let body = codegen_block(cx, loop_block);
             render_reactive_while_statement_ast(&test_expr, &body)
-                .or_else(|| Some(format!("while ({}) {{\n{}}}\n", test_expr, body)))
         }
         ReactiveTerminal::DoWhile {
             test, loop_block, ..
@@ -13331,7 +13287,6 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                 let test_expr = codegen_place_with_min_prec(cx, test, ExprPrecedence::Conditional);
                 let body = codegen_block(cx, loop_block);
                 render_reactive_do_while_statement_ast(&body, &test_expr)
-                    .or_else(|| Some(format!("do {{\n{}}} while ({});\n", body, test_expr)))
             }
         }
         ReactiveTerminal::Label { block, .. } => Some(codegen_block(cx, block)),
@@ -13375,7 +13330,7 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
             } else {
                 catch_body.clone()
             };
-            if let Some(rendered) = render_reactive_try_statement_ast(
+            render_reactive_try_statement_ast(
                 &try_body,
                 if catch_param.is_empty() {
                     None
@@ -13383,24 +13338,7 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                     Some(catch_param.as_str())
                 },
                 Some(&rendered_catch_body),
-            ) {
-                Some(rendered)
-            } else if catch_param.is_empty() {
-                Some(format!(
-                    "try {{\n{}}} catch {{\n{}}}\n",
-                    try_body, catch_body
-                ))
-            } else {
-                let full_catch_body = if let Some(alias) = catch_alias {
-                    format!("{}{}", alias, catch_body)
-                } else {
-                    catch_body
-                };
-                Some(format!(
-                    "try {{\n{}}} catch ({}) {{\n{}}}\n",
-                    try_body, catch_param, full_catch_body
-                ))
-            }
+            )
         }
     }
 }
