@@ -571,6 +571,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 }
                 Some(statements)
             }
+            Terminal::Unreachable { .. } => Some(self.builder.vec()),
             _ => None,
         }
     }
@@ -780,7 +781,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
     }
 
     fn lower_catch_parameter(&self, place: &Place) -> Option<ast::CatchParameter<'a>> {
-        let name = place_name(place)?;
+        let name = lowered_place_name(place, &self.synthetic_param_names)?;
         Some(
             self.builder.catch_parameter(
                 SPAN,
@@ -946,6 +947,32 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 expr_type,
                 ..
             } => lower_function_expression_ast(self.builder, name.as_deref(), lowered_func, *expr_type),
+            InstructionValue::TemplateLiteral {
+                quasis, subexprs, ..
+            } => {
+                let mut expressions = self.builder.vec();
+                for expr in subexprs {
+                    expressions.push(self.lower_place(expr, visiting)?);
+                }
+                Some(self.builder.expression_template_literal(
+                    SPAN,
+                    self.builder.vec_from_iter(quasis.iter().enumerate().map(|(index, quasi)| {
+                        self.builder.template_element(
+                            SPAN,
+                            ast::TemplateElementValue {
+                                raw: self.builder.atom(&quasi.raw),
+                                cooked: quasi
+                                    .cooked
+                                    .as_deref()
+                                    .map(|cooked| self.builder.atom(cooked)),
+                            },
+                            index + 1 == quasis.len(),
+                            false,
+                        )
+                    })),
+                    expressions,
+                ))
+            }
             InstructionValue::Primitive { value, .. } => Some(lower_primitive(self.builder, value)),
             InstructionValue::BinaryExpression {
                 operator,
@@ -2296,9 +2323,10 @@ fn same_place(left: &Place, right: &Place) -> bool {
 }
 
 fn place_name(place: &Place) -> Option<&str> {
-    match place.identifier.name.as_ref()? {
-        types::IdentifierName::Named(name) | types::IdentifierName::Promoted(name) => Some(name),
-    }
+    let name = match place.identifier.name.as_ref()? {
+        types::IdentifierName::Named(name) | types::IdentifierName::Promoted(name) => name,
+    };
+    is_identifier_name(name).then_some(name)
 }
 
 fn lowered_place_name<'a>(
@@ -2319,8 +2347,26 @@ fn synthetic_param_names(hir_function: &HIRFunction) -> HashMap<IdentifierId, St
         let identifier = match param {
             types::Argument::Place(place) | types::Argument::Spread(place) => &place.identifier,
         };
-        if identifier.name.is_none() {
+        if !identifier
+            .name
+            .as_ref()
+            .is_some_and(|name| is_identifier_name(name.value()))
+        {
             names.insert(identifier.id, format!("t{next_temp}"));
+            next_temp += 1;
+        }
+    }
+    for (_, block) in &hir_function.body.blocks {
+        if let Terminal::Try { handler_binding, .. } = &block.terminal
+            && let Some(binding) = handler_binding
+            && !binding
+                .identifier
+                .name
+                .as_ref()
+                .is_some_and(|name| is_identifier_name(name.value()))
+            && !names.contains_key(&binding.identifier.id)
+        {
+            names.insert(binding.identifier.id, format!("t{next_temp}"));
             next_temp += 1;
         }
     }
@@ -4172,6 +4218,167 @@ mod tests {
         );
 
         assert_eq!(try_lower_function_body(&hir).as_deref(), Some("return () => x;\n"));
+    }
+
+    #[test]
+    fn lowers_template_literal_expression() {
+        let item = named_place(285, 285, "i");
+        let template = temporary_place(286);
+        let hir = hir_function(
+            vec![instruction(
+                287,
+                template.clone(),
+                types::InstructionValue::TemplateLiteral {
+                    subexprs: vec![item.clone()],
+                    quasis: vec![
+                        types::TemplateQuasi {
+                            raw: "button-".to_string(),
+                            cooked: Some("button-".to_string()),
+                        },
+                        types::TemplateQuasi {
+                            raw: String::new(),
+                            cooked: Some(String::new()),
+                        },
+                    ],
+                    loc: SourceLocation::Generated,
+                },
+            )],
+            Terminal::Return {
+                value: template.clone(),
+                return_variant: types::ReturnVariant::Explicit,
+                id: InstructionId::new(288),
+                loc: SourceLocation::Generated,
+            },
+            template,
+        );
+        let mut hir = hir;
+        hir.params = vec![types::Argument::Place(item)];
+
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("return `button-${i}`;\n")
+        );
+    }
+
+    #[test]
+    fn lowers_try_catch_with_synthetic_catch_binding() {
+        let array_value = temporary_place(290);
+        let undefined_value = temporary_place(291);
+        let catch_binding = Place {
+            identifier: Identifier {
+                id: IdentifierId::new(292),
+                declaration_id: DeclarationId::new(292),
+                name: Some(IdentifierName::Promoted("#t3".to_string())),
+                mutable_range: MutableRange::default(),
+                scope: None,
+                type_: Type::Poly,
+                loc: SourceLocation::Generated,
+            },
+            effect: Effect::Read,
+            reactive: false,
+            loc: SourceLocation::Generated,
+        };
+        let hir = HIRFunction {
+            env: Environment::new(EnvironmentConfig::default()),
+            loc: SourceLocation::Generated,
+            id: None,
+            fn_type: ReactFunctionType::Other,
+            params: vec![],
+            returns: undefined_value.clone(),
+            context: vec![],
+            body: HIR {
+                entry: BlockId::new(0),
+                blocks: vec![
+                    (
+                        BlockId::new(0),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(0),
+                            instructions: vec![],
+                            terminal: Terminal::Try {
+                                block: BlockId::new(1),
+                                handler_binding: Some(catch_binding),
+                                handler: BlockId::new(2),
+                                fallthrough: BlockId::new(3),
+                                id: InstructionId::new(293),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(1),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(1),
+                            instructions: vec![instruction(
+                                294,
+                                array_value.clone(),
+                                types::InstructionValue::ArrayExpression {
+                                    elements: vec![],
+                                    loc: SourceLocation::Generated,
+                                },
+                            )],
+                            terminal: Terminal::Return {
+                                value: array_value,
+                                return_variant: types::ReturnVariant::Explicit,
+                                id: InstructionId::new(295),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(2),
+                        BasicBlock {
+                            kind: types::BlockKind::Catch,
+                            id: BlockId::new(2),
+                            instructions: vec![instruction(
+                                296,
+                                undefined_value.clone(),
+                                types::InstructionValue::Primitive {
+                                    value: types::PrimitiveValue::Undefined,
+                                    loc: SourceLocation::Generated,
+                                },
+                            )],
+                            terminal: Terminal::Return {
+                                value: undefined_value.clone(),
+                                return_variant: types::ReturnVariant::Explicit,
+                                id: InstructionId::new(297),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId::new(3),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId::new(3),
+                            instructions: vec![],
+                            terminal: Terminal::Unreachable {
+                                id: InstructionId::new(299),
+                                loc: SourceLocation::Generated,
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                ],
+            },
+            generator: false,
+            async_: false,
+            directives: vec![],
+            aliasing_effects: None,
+        };
+
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("try {\n  return [];\n} catch (t0) {\n  return;\n}\n")
+        );
     }
 
     #[test]
