@@ -5887,7 +5887,7 @@ fn try_compile_function<'a>(
 
     // Compute parameter destructuring (reactive codegen inlines these in body).
     let mut temp_counter = 0;
-    let params_result = params_to_result(&func.params, source, &mut temp_counter);
+    let params_result = params_to_result(&func.params, source, semantic, options, &mut temp_counter);
 
     // Run the shared HIR pipeline (all passes from pruneMaybeThrows through codegen)
     let pipeline_output = match run_hir_pipeline_with_optional_retry(hir_func, name, options) {
@@ -5931,8 +5931,16 @@ fn try_compile_function<'a>(
         generated_body = normalize_use_fire_binding_temp_names(&generated_body);
     }
 
+    let ParamsResult {
+        params_str,
+        compiled_params,
+        destructurings,
+        outlined_functions: param_outlined_functions,
+        hir_outlined_functions: param_hir_outlined_functions,
+    } = params_result;
+
     let mut outlined = codegen_result.outlined_functions;
-    outlined.extend(params_result.outlined_functions);
+    outlined.extend(param_outlined_functions);
     outlined.extend(synthesized_outlined_functions);
     // Add HIR-level outlined functions
     for of in &pipeline_output.hir_outlined {
@@ -5968,18 +5976,15 @@ fn try_compile_function<'a>(
         options.environment.enable_emit_freeze && codegen_result.needs_cache_import;
     let param_destructurings = if synthesized_param_default_cache {
         vec![]
-    } else if params_result
-        .destructurings
-        .iter()
-        .any(|line| line.contains("=== undefined ?"))
+    } else if destructurings.iter().any(|line| line.contains("=== undefined ?"))
     {
-        params_result.destructurings.clone()
+        destructurings.clone()
     } else {
         vec![]
     };
 
     let needs_cache_import = codegen_result.needs_cache_import || synthesized_param_default_cache;
-    let hir_outlined_functions: Vec<(String, HIRFunction)> = pipeline_output
+    let pipeline_hir_outlined_functions: Vec<(String, HIRFunction)> = pipeline_output
         .hir_outlined
         .iter()
         .map(|of| {
@@ -5989,12 +5994,14 @@ fn try_compile_function<'a>(
         })
         .collect();
     let body_payload = if !needs_cache_import
-        && outlined_functions_are_hir_lowerable(&outlined, &hir_outlined_functions)
+        && outlined_functions_are_hir_lowerable(&outlined, &pipeline_hir_outlined_functions)
     {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
         CompiledBodyPayload::GeneratedString
     };
+    let hir_outlined_functions =
+        align_hir_outlined_functions(&outlined, pipeline_hir_outlined_functions, param_hir_outlined_functions);
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -6003,8 +6010,8 @@ fn try_compile_function<'a>(
         generated_body,
         body_payload,
         needs_cache_import,
-        params_str: params_result.params_str,
-        compiled_params: params_result.compiled_params,
+        params_str,
+        compiled_params,
         param_destructurings,
         is_async: func.r#async,
         is_generator: func.generator,
@@ -6080,7 +6087,7 @@ fn try_compile_function_with_name<'a>(
 
     // Compute parameter destructuring (reactive codegen inlines these in body).
     let mut temp_counter = 0;
-    let params_result = params_to_result(&func.params, source, &mut temp_counter);
+    let params_result = params_to_result(&func.params, source, semantic, options, &mut temp_counter);
 
     // Run the shared HIR pipeline
     let pipeline_output = match run_hir_pipeline_with_optional_retry(hir_func, name, options) {
@@ -6124,8 +6131,16 @@ fn try_compile_function_with_name<'a>(
         generated_body = normalize_use_fire_binding_temp_names(&generated_body);
     }
 
+    let ParamsResult {
+        params_str,
+        compiled_params,
+        destructurings,
+        outlined_functions: param_outlined_functions,
+        hir_outlined_functions: param_hir_outlined_functions,
+    } = params_result;
+
     let mut outlined = codegen_result.outlined_functions;
-    outlined.extend(params_result.outlined_functions);
+    outlined.extend(param_outlined_functions);
     outlined.extend(synthesized_outlined_functions);
     for of in &pipeline_output.hir_outlined {
         if let Err(e) = validate_outlined_function_codegen(
@@ -6160,18 +6175,15 @@ fn try_compile_function_with_name<'a>(
         options.environment.enable_emit_freeze && codegen_result.needs_cache_import;
     let param_destructurings = if synthesized_param_default_cache {
         vec![]
-    } else if params_result
-        .destructurings
-        .iter()
-        .any(|line| line.contains("=== undefined ?"))
+    } else if destructurings.iter().any(|line| line.contains("=== undefined ?"))
     {
-        params_result.destructurings.clone()
+        destructurings.clone()
     } else {
         vec![]
     };
 
     let needs_cache_import = codegen_result.needs_cache_import || synthesized_param_default_cache;
-    let hir_outlined_functions: Vec<(String, HIRFunction)> = pipeline_output
+    let pipeline_hir_outlined_functions: Vec<(String, HIRFunction)> = pipeline_output
         .hir_outlined
         .iter()
         .map(|of| {
@@ -6181,12 +6193,14 @@ fn try_compile_function_with_name<'a>(
         })
         .collect();
     let body_payload = if !needs_cache_import
-        && outlined_functions_are_hir_lowerable(&outlined, &hir_outlined_functions)
+        && outlined_functions_are_hir_lowerable(&outlined, &pipeline_hir_outlined_functions)
     {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
         CompiledBodyPayload::GeneratedString
     };
+    let hir_outlined_functions =
+        align_hir_outlined_functions(&outlined, pipeline_hir_outlined_functions, param_hir_outlined_functions);
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -6195,8 +6209,8 @@ fn try_compile_function_with_name<'a>(
         generated_body,
         body_payload,
         needs_cache_import,
-        params_str: params_result.params_str,
-        compiled_params: params_result.compiled_params,
+        params_str,
+        compiled_params,
         param_destructurings,
         is_async: func.r#async,
         is_generator: func.generator,
@@ -6280,7 +6294,7 @@ fn try_compile_arrow<'a>(
 
     // Compute parameter destructuring (reactive codegen inlines these in body).
     let mut temp_counter = 0;
-    let params_result = params_to_result(&arrow.params, source, &mut temp_counter);
+    let params_result = params_to_result(&arrow.params, source, semantic, options, &mut temp_counter);
 
     // Run the shared HIR pipeline
     let pipeline_output = match run_hir_pipeline_with_optional_retry(hir_func, name, options) {
@@ -6324,8 +6338,16 @@ fn try_compile_arrow<'a>(
         generated_body = normalize_use_fire_binding_temp_names(&generated_body);
     }
 
+    let ParamsResult {
+        params_str,
+        compiled_params,
+        destructurings,
+        outlined_functions: param_outlined_functions,
+        hir_outlined_functions: param_hir_outlined_functions,
+    } = params_result;
+
     let mut outlined = codegen_result.outlined_functions;
-    outlined.extend(params_result.outlined_functions);
+    outlined.extend(param_outlined_functions);
     outlined.extend(synthesized_outlined_functions);
     for of in &pipeline_output.hir_outlined {
         if let Err(e) = validate_outlined_function_codegen(
@@ -6360,18 +6382,15 @@ fn try_compile_arrow<'a>(
         options.environment.enable_emit_freeze && codegen_result.needs_cache_import;
     let param_destructurings = if synthesized_param_default_cache {
         vec![]
-    } else if params_result
-        .destructurings
-        .iter()
-        .any(|line| line.contains("=== undefined ?"))
+    } else if destructurings.iter().any(|line| line.contains("=== undefined ?"))
     {
-        params_result.destructurings.clone()
+        destructurings.clone()
     } else {
         vec![]
     };
 
     let needs_cache_import = codegen_result.needs_cache_import || synthesized_param_default_cache;
-    let hir_outlined_functions: Vec<(String, HIRFunction)> = pipeline_output
+    let pipeline_hir_outlined_functions: Vec<(String, HIRFunction)> = pipeline_output
         .hir_outlined
         .iter()
         .map(|of| {
@@ -6381,12 +6400,14 @@ fn try_compile_arrow<'a>(
         })
         .collect();
     let body_payload = if !needs_cache_import
-        && outlined_functions_are_hir_lowerable(&outlined, &hir_outlined_functions)
+        && outlined_functions_are_hir_lowerable(&outlined, &pipeline_hir_outlined_functions)
     {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
         CompiledBodyPayload::GeneratedString
     };
+    let hir_outlined_functions =
+        align_hir_outlined_functions(&outlined, pipeline_hir_outlined_functions, param_hir_outlined_functions);
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -6395,8 +6416,8 @@ fn try_compile_arrow<'a>(
         generated_body,
         body_payload,
         needs_cache_import,
-        params_str: params_result.params_str,
-        compiled_params: params_result.compiled_params,
+        params_str,
+        compiled_params,
         param_destructurings,
         is_async: arrow.r#async,
         is_generator: false,
@@ -6425,6 +6446,27 @@ struct ParamsResult {
     destructurings: Vec<String>,
     /// Outlined functions from default parameter values.
     outlined_functions: Vec<(String, String, String)>,
+    /// HIR-lowered outlined functions from source default parameter values.
+    hir_outlined_functions: Vec<(String, HIRFunction)>,
+}
+
+fn align_hir_outlined_functions(
+    outlined: &[(String, String, String)],
+    pipeline_hir_outlined_functions: Vec<(String, HIRFunction)>,
+    param_hir_outlined_functions: Vec<(String, HIRFunction)>,
+) -> Vec<(String, HIRFunction)> {
+    let mut by_name: std::collections::HashMap<String, HIRFunction> =
+        std::collections::HashMap::new();
+    for (name, hir_function) in pipeline_hir_outlined_functions {
+        by_name.insert(name, hir_function);
+    }
+    for (name, hir_function) in param_hir_outlined_functions {
+        by_name.insert(name, hir_function);
+    }
+    outlined
+        .iter()
+        .filter_map(|(name, _, _)| by_name.remove(name).map(|hir_function| (name.clone(), hir_function)))
+        .collect()
 }
 
 fn outlined_functions_are_hir_lowerable(
@@ -6643,15 +6685,18 @@ fn synthesize_default_param_cache_body(
 /// Generate a comma-separated parameter string from the AST, stripping type annotations.
 /// Destructured parameters are replaced with temporaries (t0, t1, ...) and their
 /// destructuring is moved to the function body, matching upstream behavior.
-fn params_to_result(
-    params: &ast::FormalParameters,
-    source: &str,
+fn params_to_result<'a>(
+    params: &ast::FormalParameters<'a>,
+    source: &'a str,
+    semantic: &oxc_semantic::Semantic<'a>,
+    options: &PluginOptions,
     temp_counter: &mut usize,
 ) -> ParamsResult {
     let mut param_strs: Vec<String> = Vec::new();
     let mut compiled_params: Option<Vec<CompiledParam>> = Some(Vec::new());
     let mut destructurings: Vec<String> = Vec::new();
     let mut outlined_functions: Vec<(String, String, String)> = Vec::new();
+    let mut hir_outlined_functions: Vec<(String, HIRFunction)> = Vec::new();
     let mut outline_counter: usize = 0;
 
     for param in &params.items {
@@ -6685,6 +6730,11 @@ fn params_to_result(
                         let params_str = arrow_params_to_string(&arrow.params, source);
                         let body_str = arrow_body_to_outlined_string(&arrow.body, source);
                         outlined_functions.push((name.clone(), params_str, body_str));
+                        if let Some(hir_function) = try_lower_default_outlined_arrow(
+                            &name, arrow, source, semantic, options,
+                        ) {
+                            hir_outlined_functions.push((name.clone(), hir_function));
+                        }
                         Some(name)
                     } else {
                         None
@@ -6717,6 +6767,11 @@ fn params_to_result(
                             })
                             .unwrap_or_default();
                         outlined_functions.push((name.clone(), params_str, body_str));
+                        if let Some(hir_function) = try_lower_default_outlined_function(
+                            &name, func, source, semantic, options,
+                        ) {
+                            hir_outlined_functions.push((name.clone(), hir_function));
+                        }
                         Some(name)
                     } else {
                         None
@@ -6916,7 +6971,51 @@ fn params_to_result(
         compiled_params,
         destructurings,
         outlined_functions,
+        hir_outlined_functions,
     }
+}
+
+fn try_lower_default_outlined_arrow<'a>(
+    name: &str,
+    arrow: &ast::ArrowFunctionExpression<'a>,
+    source: &'a str,
+    semantic: &oxc_semantic::Semantic<'a>,
+    options: &PluginOptions,
+) -> Option<HIRFunction> {
+    let env = crate::environment::Environment::new(options.environment.clone());
+    let lowering_cx = build::LoweringContext::new(semantic, source, env);
+    let mut hir_function = build::lower_arrow_expression(
+        &arrow.body,
+        &arrow.params,
+        lowering_cx,
+        build::LowerFunctionOptions::arrow(Some(name), arrow.span, arrow.r#async, arrow.expression),
+    )
+    .ok()?
+    .func;
+    hir_function.id = Some(name.to_string());
+    Some(hir_function)
+}
+
+fn try_lower_default_outlined_function<'a>(
+    name: &str,
+    func: &ast::Function<'a>,
+    source: &'a str,
+    semantic: &oxc_semantic::Semantic<'a>,
+    options: &PluginOptions,
+) -> Option<HIRFunction> {
+    let body = func.body.as_ref()?;
+    let env = crate::environment::Environment::new(options.environment.clone());
+    let lowering_cx = build::LoweringContext::new(semantic, source, env);
+    let mut hir_function = build::lower_function(
+        body,
+        &func.params,
+        lowering_cx,
+        build::LowerFunctionOptions::function(Some(name), func.span, func.generator, func.r#async),
+    )
+    .ok()?
+    .func;
+    hir_function.id = Some(name.to_string());
+    Some(hir_function)
 }
 
 /// Check if an arrow function expression used as a default parameter can be outlined.
@@ -7827,4 +7926,52 @@ fn check_var_init_for_dynamic_components(
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use oxc_allocator::Allocator;
+    use oxc_ast::ast;
+    use oxc_parser::Parser;
+    use oxc_semantic::SemanticBuilder;
+    use oxc_span::SourceType;
+
+    use crate::options::PluginOptions;
+
+    use super::params_to_result;
+
+    #[test]
+    fn params_to_result_collects_hir_for_outlined_default_arrow() {
+        let allocator = Allocator::default();
+        let source = "function Component(callback = () => {}) { return callback; }";
+        let parser_ret = Parser::new(&allocator, source, SourceType::mjs()).parse();
+        assert!(
+            parser_ret.errors.is_empty(),
+            "parse errors: {:?}",
+            parser_ret.errors
+        );
+        let program = parser_ret.program;
+        let semantic_ret = SemanticBuilder::new().build(&program);
+        let semantic = semantic_ret.semantic;
+        let ast::Statement::FunctionDeclaration(function) = &program.body[0] else {
+            panic!("expected function declaration");
+        };
+
+        let mut temp_counter = 0;
+        let params_result = params_to_result(
+            &function.params,
+            source,
+            &semantic,
+            &PluginOptions::default(),
+            &mut temp_counter,
+        );
+
+        assert_eq!(params_result.outlined_functions.len(), 1);
+        assert_eq!(params_result.hir_outlined_functions.len(), 1);
+        assert_eq!(params_result.hir_outlined_functions[0].0, "_temp");
+        assert_eq!(
+            params_result.hir_outlined_functions[0].1.id.as_deref(),
+            Some("_temp")
+        );
+    }
 }
