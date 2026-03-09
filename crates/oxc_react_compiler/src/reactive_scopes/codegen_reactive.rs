@@ -3453,22 +3453,36 @@ fn codegen_block_no_reset_with_options(
             let dep_slot = cx.alloc_cache_slot();
             let value_slot = cx.alloc_cache_slot();
             let target_name = identifier_name_with_cx(cx, &target_ident);
-            output.push_str(&format!(
-                "if ({}[{}] !== {}) {{\n{}{}[{}] = {};\n{}[{}] = {};\n}} else {{\n{} = {}[{}];\n}}\n",
-                cache_var,
-                dep_slot,
-                dep_expr,
-                if_stmt,
-                cache_var,
-                dep_slot,
-                dep_expr,
-                cache_var,
-                value_slot,
-                target_name,
-                target_name,
-                cache_var,
-                value_slot
-            ));
+            let mut consequent = if_stmt;
+            consequent.push_str(
+                &render_reactive_expression_statement_ast(&format!(
+                    "{}[{}] = {}",
+                    cache_var, dep_slot, dep_expr
+                ))
+                .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, dep_slot, dep_expr)),
+            );
+            consequent.push_str(
+                &render_reactive_expression_statement_ast(&format!(
+                    "{}[{}] = {}",
+                    cache_var, value_slot, target_name
+                ))
+                .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, value_slot, target_name)),
+            );
+            let alternate = render_reactive_assignment_statement_ast(
+                &target_name,
+                &format!("{}[{}]", cache_var, value_slot),
+            )
+            .unwrap_or_else(|| format!("{} = {}[{}];\n", target_name, cache_var, value_slot));
+            let guard_test = format!("{}[{}] !== {}", cache_var, dep_slot, dep_expr);
+            output.push_str(
+                &render_reactive_if_statement_ast(&guard_test, &consequent, Some(&alternate))
+                    .unwrap_or_else(|| {
+                        format!(
+                            "if ({}) {{\n{}}} else {{\n{}}}\n",
+                            guard_test, consequent, alternate
+                        )
+                    }),
+            );
             last_source_end_line = None;
             i += 1;
             continue;
