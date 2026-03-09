@@ -15241,7 +15241,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             quasis, subexprs, ..
         } => {
             let expr = render_template_literal_ast(cx, quasis, subexprs)
-                .unwrap_or_else(|| codegen_template_literal(cx, quasis, subexprs));
+                .expect("generated template literal should parse");
             ExprValue::primary(expr)
         }
         InstructionValue::TypeCastExpression {
@@ -21492,30 +21492,6 @@ fn codegen_primitive(value: &PrimitiveValue) -> String {
     }
 }
 
-// ---- Template literal codegen ----
-
-fn codegen_template_literal(
-    cx: &mut Context,
-    quasis: &[TemplateQuasi],
-    subexprs: &[Place],
-) -> String {
-    // Empty template literal with no interpolations -> ""
-    if subexprs.is_empty() && quasis.len() == 1 && quasis[0].raw.is_empty() {
-        return "\"\"".to_string();
-    }
-    let mut result = String::from("`");
-    for (i, quasi) in quasis.iter().enumerate() {
-        result.push_str(&quasi.raw);
-        if i < subexprs.len() {
-            result.push_str("${");
-            result.push_str(&codegen_place_to_expression(cx, &subexprs[i]));
-            result.push('}');
-        }
-    }
-    result.push('`');
-    result
-}
-
 // ---- Operator helpers ----
 
 fn operator_to_str(op: &BinaryOperator) -> &'static str {
@@ -21686,7 +21662,7 @@ mod tests {
         render_jsx_fragment_ast, render_reactive_for_in_statement_ast,
         render_reactive_for_of_statement_ast, render_reactive_for_statement_ast,
         render_hook_guarded_block_ast, render_hook_guarded_call_expression_ast,
-        render_method_call_expression_with_options_ast,
+        render_method_call_expression_with_options_ast, render_template_literal_ast,
         render_ts_type_cast_expression_ast,
         render_cached_inline_hook_callback_block_ast, HOOK_GUARD_POP, HOOK_GUARD_PUSH,
     };
@@ -21695,7 +21671,7 @@ mod tests {
         Identifier, IdentifierId, IdentifierName, JsxAttribute, JsxTag, MutableRange, ObjectProperty,
         ObjectPropertyKey, ObjectPropertyOrSpread, ObjectPropertyType, ObjectPattern, Pattern,
         Place, PrimitiveValue, PropertyLiteral, ReactiveScopeDependency, SourceLocation, Type,
-        TypeAnnotationKind,
+        TemplateQuasi, TypeAnnotationKind,
     };
     use crate::reactive_scopes::codegen_reactive::{CachePrologue, FastRefreshPrologue};
 
@@ -22125,6 +22101,44 @@ mod tests {
 
         assert!(rendered.starts_with("<div title={"));
         assert!(rendered.contains("\"a\\\\nb\""));
+    }
+
+    #[test]
+    fn renders_template_literal_via_ast() {
+        let mut cx = test_context();
+        let rendered = render_template_literal_ast(
+            &mut cx,
+            &[
+                TemplateQuasi {
+                    raw: "hello ".to_string(),
+                    cooked: Some("hello ".to_string()),
+                },
+                TemplateQuasi {
+                    raw: "!".to_string(),
+                    cooked: Some("!".to_string()),
+                },
+            ],
+            &[named_place(0, 0, "name")],
+        )
+        .expect("expected template literal");
+
+        assert_eq!(rendered, "`hello ${name}!`");
+    }
+
+    #[test]
+    fn renders_empty_template_literal_via_ast() {
+        let mut cx = test_context();
+        let rendered = render_template_literal_ast(
+            &mut cx,
+            &[TemplateQuasi {
+                raw: String::new(),
+                cooked: Some(String::new()),
+            }],
+            &[],
+        )
+        .expect("expected empty template literal");
+
+        assert_eq!(rendered, "``");
     }
 
     #[test]
