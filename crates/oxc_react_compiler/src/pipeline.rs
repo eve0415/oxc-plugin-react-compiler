@@ -4150,34 +4150,6 @@ fn parse_temp_token_index(name: &str) -> Option<u32> {
     digits.parse::<u32>().ok()
 }
 
-pub(crate) fn maybe_align_hook_guard_name(body: &str, hook_guard_ident: &str) -> String {
-    if hook_guard_ident == "$dispatcherGuard" {
-        return body.to_string();
-    }
-    replace_identifier_token(body, "$dispatcherGuard", hook_guard_ident)
-}
-
-pub(crate) fn maybe_align_structural_check_name(
-    body: &str,
-    structural_check_ident: &str,
-) -> String {
-    if structural_check_ident.is_empty() || structural_check_ident == "$structuralCheck" {
-        return body.to_string();
-    }
-    replace_identifier_token(body, "$structuralCheck", structural_check_ident)
-}
-
-pub(crate) fn maybe_align_lower_context_access_name(
-    body: &str,
-    imported_name: &str,
-    lower_context_access_ident: &str,
-) -> String {
-    if imported_name == lower_context_access_ident {
-        return body.to_string();
-    }
-    replace_identifier_token(body, imported_name, lower_context_access_ident)
-}
-
 fn is_simple_identifier_name(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
