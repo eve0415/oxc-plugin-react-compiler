@@ -12628,10 +12628,10 @@ fn codegen_reactive_scope(
             )
             .unwrap_or_else(|| format!("let {} = {};\n", condition_name, test_condition)),
         );
-        output.push_str(&format!("if (!{}) {{\n", condition_name));
+        let mut cached_body = String::new();
         for (name, index) in &cache_loads {
             let old_name = cx.synthesize_name(&format!("old${}", name));
-            output.push_str(
+            cached_body.push_str(
                 &render_reactive_variable_statement_ast(
                     ast::VariableDeclarationKind::Let,
                     &old_name,
@@ -12639,7 +12639,7 @@ fn codegen_reactive_scope(
                 )
                 .unwrap_or_else(|| format!("let {} = {}[{}];\n", old_name, cache_var, index)),
             );
-            output.push_str(
+            cached_body.push_str(
                 &render_reactive_expression_statement_ast(&format!(
                     "$structuralCheck({}, {}, \"{}\", \"{}\", \"cached\", \"{}\")",
                     old_name, name, name, cx.function_name, scope_loc
@@ -12652,14 +12652,16 @@ fn codegen_reactive_scope(
                 }),
             );
         }
-        output.push_str("}\n");
+        output.push_str(
+            &render_reactive_if_statement_ast(&format!("!{}", condition_name), &cached_body, None)
+                .unwrap_or_else(|| format!("if (!{}) {{\n{}}}\n", condition_name, cached_body)),
+        );
         for stmt in &cache_store_stmts {
             output.push_str(stmt);
         }
-        output.push_str(&format!("if ({}) {{\n", condition_name));
-        output.push_str(&computation);
+        let mut recomputed_body = computation.clone();
         for (name, index) in &cache_loads {
-            output.push_str(
+            recomputed_body.push_str(
                 &render_reactive_expression_statement_ast(&format!(
                     "$structuralCheck({}[{}], {}, \"{}\", \"{}\", \"recomputed\", \"{}\")",
                     cache_var, index, name, name, cx.function_name, scope_loc
@@ -12671,7 +12673,7 @@ fn codegen_reactive_scope(
                     )
                 }),
             );
-            output.push_str(
+            recomputed_body.push_str(
                 &render_reactive_assignment_statement_ast(
                     name,
                     &format!("{}[{}]", cache_var, index),
@@ -12679,35 +12681,45 @@ fn codegen_reactive_scope(
                 .unwrap_or_else(|| format!("{} = {}[{}];\n", name, cache_var, index)),
             );
         }
-        output.push_str("}\n");
+        output.push_str(
+            &render_reactive_if_statement_ast(&condition_name, &recomputed_body, None)
+                .unwrap_or_else(|| format!("if ({}) {{\n{}}}\n", condition_name, recomputed_body)),
+        );
         output.push_str("}\n");
     } else {
         // Emit the standard if/else memoization guard.
-        let multiline_guard = !change_exprs.is_empty()
-            && change_exprs.len() > 1
-            && format!("if ({}) {{", test_condition).len() > 80;
-        if multiline_guard {
-            output.push_str("if (\n");
-            for (index, expr) in change_exprs.iter().enumerate() {
-                if index + 1 < change_exprs.len() {
-                    output.push_str(&format!("{} ||\n", expr));
-                } else {
-                    output.push_str(&format!("{}\n", expr));
-                }
-            }
-            output.push_str(") {\n");
-        } else {
-            output.push_str(&format!("if ({}) {{\n", test_condition));
-        }
-        output.push_str(&computation);
+        let mut consequent = computation.clone();
         for stmt in &cache_store_stmts {
-            output.push_str(stmt);
+            consequent.push_str(stmt);
         }
-        output.push_str("} else {\n");
-        for stmt in &cache_load_stmts {
-            output.push_str(stmt);
-        }
-        output.push_str("}\n");
+        let alternate = cache_load_stmts.concat();
+        output.push_str(
+            &render_reactive_if_statement_ast(&test_condition, &consequent, Some(&alternate))
+                .unwrap_or_else(|| {
+                    let multiline_guard = !change_exprs.is_empty()
+                        && change_exprs.len() > 1
+                        && format!("if ({}) {{", test_condition).len() > 80;
+                    let mut fallback = String::new();
+                    if multiline_guard {
+                        fallback.push_str("if (\n");
+                        for (index, expr) in change_exprs.iter().enumerate() {
+                            if index + 1 < change_exprs.len() {
+                                fallback.push_str(&format!("{} ||\n", expr));
+                            } else {
+                                fallback.push_str(&format!("{}\n", expr));
+                            }
+                        }
+                        fallback.push_str(") {\n");
+                    } else {
+                        fallback.push_str(&format!("if ({}) {{\n", test_condition));
+                    }
+                    fallback.push_str(&consequent);
+                    fallback.push_str("} else {\n");
+                    fallback.push_str(&alternate);
+                    fallback.push_str("}\n");
+                    fallback
+                }),
+        );
     }
     for stmt in &deferred_post_scope_calls {
         output.push_str(stmt);
