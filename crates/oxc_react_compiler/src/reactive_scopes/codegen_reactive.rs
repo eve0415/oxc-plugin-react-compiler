@@ -7964,14 +7964,27 @@ fn is_eval_order_fusion_participant(instr: &ReactiveInstruction) -> bool {
     }
 }
 
+fn render_sequence_expression_ast(prefix_exprs: &[String], final_expr: &str) -> Option<String> {
+    if prefix_exprs.is_empty() {
+        return Some(final_expr.to_string());
+    }
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let mut expressions = builder.vec();
+    for expr in prefix_exprs {
+        expressions.push(parse_rendered_expression_ast(&allocator, expr)?);
+    }
+    expressions.push(parse_rendered_expression_ast(&allocator, final_expr)?);
+    let sequence = builder.expression_sequence(SPAN, expressions);
+    Some(format!("({})", codegen_expression_with_oxc(&sequence)))
+}
+
 fn wrap_sequence_expr(prefix_exprs: &[String], final_expr: String) -> String {
     if prefix_exprs.is_empty() {
         return final_expr;
     }
-    let mut parts = Vec::with_capacity(prefix_exprs.len() + 1);
-    parts.extend(prefix_exprs.iter().cloned());
-    parts.push(final_expr);
-    format!("({})", parts.join(", "))
+    render_sequence_expression_ast(prefix_exprs, &final_expr)
+        .expect("generated sequence expression should parse")
 }
 
 fn render_side_effect_prefix_exprs_from_participants(
@@ -15211,8 +15224,8 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             ExprValue::primary(expr)
         }
         InstructionValue::JsxFragment { children, .. } => {
-            let expr = render_jsx_fragment_ast(cx, children)
-                .unwrap_or_else(|| codegen_jsx_fragment(cx, children));
+            let expr =
+                render_jsx_fragment_ast(cx, children).expect("generated jsx fragment should parse");
             ExprValue::primary(expr)
         }
         InstructionValue::JSXText { value: text, .. } => {
@@ -18916,7 +18929,10 @@ fn codegen_jsx(
     let tag_name = match tag {
         JsxTag::BuiltinTag(name) => name.clone(),
         JsxTag::Component(place) => codegen_place_to_expression(cx, place),
-        JsxTag::Fragment => return codegen_jsx_fragment(cx, children.as_deref().unwrap_or(&[])),
+        JsxTag::Fragment => {
+            return render_jsx_fragment_ast(cx, children.as_deref().unwrap_or(&[]))
+                .expect("generated jsx fragment should parse")
+        }
     };
 
     let attrs: Vec<String> = props
@@ -19033,11 +19049,6 @@ fn codegen_jsx_fbt_child(cx: &mut Context, place: &Place) -> String {
         return ev.expr;
     }
     format!("{{{}}}", ev.expr.trim())
-}
-
-fn codegen_jsx_fragment(cx: &mut Context, children: &[Place]) -> String {
-    let child_strs: Vec<String> = children.iter().map(|c| codegen_jsx_child(cx, c)).collect();
-    format!("<>{}</>", child_strs.join(""))
 }
 
 fn render_jsx_expression_ast(
@@ -21662,7 +21673,7 @@ mod tests {
         render_reactive_for_of_statement_ast, render_reactive_for_statement_ast,
         render_hook_guarded_block_ast, render_hook_guarded_call_expression_ast,
         render_method_call_expression_with_options_ast, render_tagged_template_expression_ast,
-        render_template_literal_ast,
+        render_template_literal_ast, render_sequence_expression_ast,
         render_ts_type_cast_expression_ast,
         render_cached_inline_hook_callback_block_ast, HOOK_GUARD_POP, HOOK_GUARD_PUSH,
     };
@@ -22153,6 +22164,17 @@ mod tests {
         .expect("expected tagged template literal");
 
         assert_eq!(rendered, "tag`hello`");
+    }
+
+    #[test]
+    fn renders_sequence_expression_via_ast() {
+        let rendered = render_sequence_expression_ast(
+            &["before()".to_string(), "other()".to_string()],
+            "value",
+        )
+        .expect("expected sequence expression");
+
+        assert_eq!(rendered, "(before(), other(), value)");
     }
 
     #[test]
