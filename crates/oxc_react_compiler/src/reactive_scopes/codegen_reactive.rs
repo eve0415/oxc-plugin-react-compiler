@@ -18947,15 +18947,17 @@ fn render_jsx_expression_ast(
         JsxTag::BuiltinTag(name) => name.as_str(),
         JsxTag::Component(_) | JsxTag::Fragment => "",
     };
-    if SINGLE_CHILD_FBT_TAGS.contains(&tag_name) {
-        return None;
-    }
+    let single_child_fbt_tag = SINGLE_CHILD_FBT_TAGS.contains(&tag_name);
 
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let opening_name = render_jsx_element_name_ast(builder, &allocator, cx, tag)?;
     let attributes = render_jsx_attributes_ast(builder, &allocator, cx, props)?;
-    let jsx_children = render_jsx_children_ast(builder, &allocator, cx, children.as_deref().unwrap_or(&[]))?;
+    let jsx_children = if single_child_fbt_tag {
+        render_jsx_fbt_children_ast(builder, &allocator, cx, children.as_deref().unwrap_or(&[]))?
+    } else {
+        render_jsx_children_ast(builder, &allocator, cx, children.as_deref().unwrap_or(&[]))?
+    };
     let closing_element = if jsx_children.is_empty() {
         None
     } else {
@@ -19116,6 +19118,46 @@ fn render_jsx_children_ast<'a>(
         lowered.push(render_jsx_child_ast(builder, allocator, cx, child)?);
     }
     Some(lowered)
+}
+
+fn render_jsx_fbt_children_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    cx: &mut Context,
+    children: &[Place],
+) -> Option<oxc_allocator::Vec<'a, ast::JSXChild<'a>>> {
+    let mut lowered = builder.vec();
+    for child in children {
+        lowered.push(render_jsx_fbt_child_ast(builder, allocator, cx, child)?);
+    }
+    Some(lowered)
+}
+
+fn render_jsx_fbt_child_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    cx: &mut Context,
+    place: &Place,
+) -> Option<ast::JSXChild<'a>> {
+    let ev = codegen_place_expr_value(cx, place);
+    let trimmed = ev.expr.trim();
+
+    if ev.kind == ExprKind::JsxText {
+        let inner = trimmed.strip_prefix('"')?.strip_suffix('"')?;
+        return Some(builder.jsx_child_text(SPAN, builder.atom(inner), None));
+    }
+
+    let expression = parse_rendered_expression_ast(allocator, trimmed)?;
+    Some(match expression {
+        ast::Expression::JSXElement(element) => ast::JSXChild::Element(element),
+        ast::Expression::JSXFragment(fragment) => builder.jsx_child_expression_container(
+            SPAN,
+            ast::JSXExpression::from(ast::Expression::JSXFragment(fragment)),
+        ),
+        expression => {
+            builder.jsx_child_expression_container(SPAN, ast::JSXExpression::from(expression))
+        }
+    })
 }
 
 fn render_jsx_attributes_ast<'a>(
@@ -21811,6 +21853,20 @@ mod tests {
         .expect("expected jsx element");
 
         assert_eq!(rendered, "<div>{value}</div>");
+    }
+
+    #[test]
+    fn renders_single_child_fbt_tag_via_ast() {
+        let mut cx = test_context();
+        let rendered = render_jsx_expression_ast(
+            &mut cx,
+            &JsxTag::BuiltinTag("fbt:param".to_string()),
+            &[],
+            &Some(vec![named_place(0, 0, "value")]),
+        )
+        .expect("expected fbt jsx element");
+
+        assert_eq!(rendered, "<fbt:param>{value}</fbt:param>");
     }
 
     #[test]
