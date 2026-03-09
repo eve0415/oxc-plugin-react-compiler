@@ -4008,10 +4008,10 @@ fn prepend_compiled_body_prefix_statements<'a>(
     original_body: Option<&ast::FunctionBody<'_>>,
     cache_import_name: Option<&str>,
 ) -> Option<()> {
-    let prefix_source = build_compiled_body_prefix_source(cf);
+    let prefix_statements = collect_compiled_body_prefix_statements(allocator, source_type, cf)?;
     let preserved_original_statements =
         collect_preserved_original_body_statements(allocator, original_body);
-    if prefix_source.is_empty() && preserved_original_statements.is_empty() {
+    if prefix_statements.is_empty() && preserved_original_statements.is_empty() {
         return Some(());
     }
     let insert_idx = cache_import_name
@@ -4025,16 +4025,7 @@ fn prepend_compiled_body_prefix_statements<'a>(
             .iter()
             .map(|statement| statement.clone_in(allocator)),
     );
-    if !prefix_source.is_empty() {
-        statements.extend(
-            parse_statements(
-                allocator,
-                source_type,
-                allocator.alloc_str(prefix_source.as_str()),
-            )
-            .ok()?,
-        );
-    }
+    statements.extend(prefix_statements);
     statements.extend(preserved_original_statements);
     statements.extend(
         body.statements[insert_idx..]
@@ -4641,21 +4632,26 @@ impl<'a> Visit<'a> for IdentifierReferenceDetector<'_> {
     }
 }
 
-fn build_compiled_body_prefix_source(cf: &CompiledFunction) -> String {
-    let mut prefix_source = String::new();
-    if !cf.param_destructurings.is_empty() && !cf.generated_body.contains("=== undefined ?") {
-        for (index, destructuring) in cf.param_destructurings.iter().enumerate() {
-            let after: String = cf.param_destructurings[index + 1..].join("\n");
-            let context = format!("{}\n{}", cf.generated_body, after);
-            let pruned = crate::pipeline::prune_unused_destructuring(destructuring, &context);
-            if pruned.trim().is_empty() {
-                continue;
-            }
-            prefix_source.push_str(pruned.trim_end());
-            prefix_source.push('\n');
-        }
+fn collect_compiled_body_prefix_statements<'a>(
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    cf: &CompiledFunction,
+) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
+    let mut statements = oxc_allocator::Vec::new_in(allocator);
+    if cf.param_destructurings.is_empty() || cf.generated_body.contains("=== undefined ?") {
+        return Some(statements);
     }
-    prefix_source
+    for (index, destructuring) in cf.param_destructurings.iter().enumerate() {
+        let after = cf.param_destructurings[index + 1..].join("\n");
+        let context = format!("{}\n{}", cf.generated_body, after);
+        let pruned = crate::pipeline::prune_unused_destructuring(destructuring, &context);
+        if pruned.trim().is_empty() {
+            continue;
+        }
+        statements
+            .extend(parse_statements(allocator, source_type, allocator.alloc_str(&pruned)).ok()?);
+    }
+    Some(statements)
 }
 
 fn collect_preserved_original_body_statements<'a>(
