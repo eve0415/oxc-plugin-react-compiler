@@ -10144,7 +10144,11 @@ fn maybe_codegen_fused_callback_reassign_scope(
     }
 
     if !has_materialized_named_binding(cx, &target_ident) {
-        output.push_str(&format!("let {};\n", target_name));
+        output.push_str(&render_reactive_variable_statement_ast(
+            ast::VariableDeclarationKind::Let,
+            &target_name,
+            None,
+        )?);
         cx.mark_decl_runtime_emitted(target_ident.declaration_id);
     }
     cx.declare(&target_ident);
@@ -10157,7 +10161,10 @@ fn maybe_codegen_fused_callback_reassign_scope(
     for dep_expr in &dep_exprs {
         let dep_slot = cx.alloc_cache_slot();
         change_exprs.push(format!("{}[{}] !== {}", cache_var, dep_slot, dep_expr));
-        cache_store_stmts.push(format!("{}[{}] = {};\n", cache_var, dep_slot, dep_expr));
+        cache_store_stmts.push(render_reactive_expression_statement_ast(&format!(
+            "{}[{}] = {}",
+            cache_var, dep_slot, dep_expr
+        ))?);
     }
     let callback_slot = cx.alloc_cache_slot();
 
@@ -10193,22 +10200,23 @@ fn maybe_codegen_fused_callback_reassign_scope(
             }
         }
     }
-    cache_store_stmts.push(format!(
-        "{}[{}] = {};\n",
+    cache_store_stmts.push(render_reactive_expression_statement_ast(&format!(
+        "{}[{}] = {}",
         cache_var, callback_slot, target_name
-    ));
+    ))?);
 
-    output.push_str(&format!("if ({}) {{\n", change_exprs.join(" || ")));
-    output.push_str(&computation);
+    let mut consequent = computation;
     for stmt in &cache_store_stmts {
-        output.push_str(stmt);
+        consequent.push_str(stmt);
     }
-    output.push_str("} else {\n");
-    output.push_str(&format!(
-        "{} = {}[{}];\n",
-        target_name, cache_var, callback_slot
-    ));
-    output.push_str("}\n");
+    output.push_str(&render_reactive_if_statement_ast(
+        &change_exprs.join(" || "),
+        &consequent,
+        Some(&render_reactive_assignment_statement_ast(
+            &target_name,
+            &format!("{}[{}]", cache_var, callback_slot),
+        )?),
+    )?);
 
     cx.restore_temps(temp_snapshot);
     Some(dep_scope_idx + consumed_after_dep)
