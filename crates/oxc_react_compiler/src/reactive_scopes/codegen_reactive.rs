@@ -5859,13 +5859,17 @@ fn maybe_codegen_fused_named_test_dual_reassign_scope_ternary_return(
 
     let target_name = first.reassign_name.clone();
     if !cx.has_declared(&first.reassign_ident) {
-        output.push_str(&format!("let {};\n", target_name));
+        output.push_str(&render_reactive_variable_statement_ast(
+            ast::VariableDeclarationKind::Let,
+            &target_name,
+            None,
+        )?);
         cx.mark_decl_runtime_emitted(first.reassign_ident.declaration_id);
     }
     cx.declare(&first.reassign_ident);
 
-    output.push_str(&format!(
-        "if ({}[{}] !== {} || {}[{}] !== {} || {}[{}] !== {}) {{\n{} ? {} : {};\n{}[{}] = {};\n{}[{}] = {};\n{}[{}] = {};\n{}[{}] = {};\n}} else {{\n{} = {}[{}];\n}}\n",
+    let guard_expr = format!(
+        "{}[{}] !== {} || {}[{}] !== {} || {}[{}] !== {}",
         cache_var,
         alternate_dep_slot,
         alternate_branch.dep_expr,
@@ -5875,25 +5879,43 @@ fn maybe_codegen_fused_named_test_dual_reassign_scope_ternary_return(
         cache_var,
         consequent_dep_slot,
         consequent_branch.dep_expr,
-        cond_expr,
-        consequent_branch.branch_expr,
-        alternate_branch.branch_expr,
-        cache_var,
-        alternate_dep_slot,
-        alternate_branch.dep_expr,
-        cache_var,
-        cond_slot,
-        cond_expr,
-        cache_var,
-        consequent_dep_slot,
-        consequent_branch.dep_expr,
-        cache_var,
-        output_slot,
-        target_name,
-        target_name,
-        cache_var,
-        output_slot
-    ));
+    );
+    let consequent = format!(
+        "{}{}{}{}",
+        render_reactive_expression_statement_ast(&format!(
+            "{} ? {} : {}",
+            cond_expr, consequent_branch.branch_expr, alternate_branch.branch_expr
+        ))?,
+        render_reactive_expression_statement_ast(&format!(
+            "{}[{}] = {}",
+            cache_var, alternate_dep_slot, alternate_branch.dep_expr
+        ))?,
+        render_reactive_expression_statement_ast(&format!(
+            "{}[{}] = {}",
+            cache_var, cond_slot, cond_expr
+        ))?,
+        render_reactive_expression_statement_ast(&format!(
+            "{}[{}] = {}",
+            cache_var, consequent_dep_slot, consequent_branch.dep_expr
+        ))?,
+    );
+    let consequent = format!(
+        "{}{}",
+        consequent,
+        render_reactive_expression_statement_ast(&format!(
+            "{}[{}] = {}",
+            cache_var, output_slot, target_name
+        ))?,
+    );
+    let alternate = render_reactive_assignment_statement_ast(
+        &target_name,
+        &format!("{}[{}]", cache_var, output_slot),
+    )?;
+    output.push_str(&render_reactive_if_statement_ast(
+        &guard_expr,
+        &consequent,
+        Some(&alternate),
+    )?);
     for decl_id in bridged_return_decls {
         cx.temp
             .insert(decl_id, Some(ExprValue::primary(target_name.clone())));
