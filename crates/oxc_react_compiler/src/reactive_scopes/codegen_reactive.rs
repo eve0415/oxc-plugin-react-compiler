@@ -15115,9 +15115,15 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             props,
             children,
             ..
-        } => ExprValue::primary(codegen_jsx(cx, tag, props, children)),
+        } => {
+            let expr = render_jsx_expression_ast(cx, tag, props, children)
+                .unwrap_or_else(|| codegen_jsx(cx, tag, props, children));
+            ExprValue::primary(expr)
+        }
         InstructionValue::JsxFragment { children, .. } => {
-            ExprValue::primary(codegen_jsx_fragment(cx, children))
+            let expr = render_jsx_fragment_ast(cx, children)
+                .unwrap_or_else(|| codegen_jsx_fragment(cx, children));
+            ExprValue::primary(expr)
         }
         InstructionValue::JSXText { value: text, .. } => {
             ExprValue::jsx_text(format!("\"{}\"", escape_jsx_text(text)))
@@ -18940,6 +18946,190 @@ fn codegen_jsx_fragment(cx: &mut Context, children: &[Place]) -> String {
     format!("<>{}</>", child_strs.join(""))
 }
 
+fn render_jsx_expression_ast(
+    cx: &mut Context,
+    tag: &JsxTag,
+    props: &[JsxAttribute],
+    children: &Option<Vec<Place>>,
+) -> Option<String> {
+    if matches!(tag, JsxTag::Fragment) {
+        return render_jsx_fragment_ast(cx, children.as_deref().unwrap_or(&[]));
+    }
+
+    let tag_name = match tag {
+        JsxTag::BuiltinTag(name) => name.as_str(),
+        JsxTag::Component(_) | JsxTag::Fragment => "",
+    };
+    if !props.is_empty() || SINGLE_CHILD_FBT_TAGS.contains(&tag_name) {
+        return None;
+    }
+
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let opening_name = render_jsx_element_name_ast(builder, &allocator, cx, tag)?;
+    let jsx_children = render_jsx_children_ast(builder, &allocator, cx, children.as_deref().unwrap_or(&[]))?;
+    let closing_element = if jsx_children.is_empty() {
+        None
+    } else {
+        Some(builder.alloc_jsx_closing_element(
+            SPAN,
+            render_jsx_element_name_ast(builder, &allocator, cx, tag)?,
+        ))
+    };
+    let expression = builder.expression_jsx_element(
+        SPAN,
+        builder.alloc_jsx_opening_element(SPAN, opening_name, NONE, builder.vec()),
+        jsx_children,
+        closing_element,
+    );
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_jsx_fragment_ast(cx: &mut Context, children: &[Place]) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let mut lowered = builder.vec();
+    for child in children {
+        lowered.push(render_jsx_child_ast(builder, &allocator, cx, child)?);
+    }
+    let expression = builder.expression_jsx_fragment(
+        SPAN,
+        builder.jsx_opening_fragment(SPAN),
+        lowered,
+        builder.jsx_closing_fragment(SPAN),
+    );
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_jsx_child_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    cx: &mut Context,
+    place: &Place,
+) -> Option<ast::JSXChild<'a>> {
+    let ev = codegen_place_expr_value(cx, place);
+    let trimmed = ev.expr.trim();
+
+    if ev.kind == ExprKind::JsxText {
+        let inner = trimmed.strip_prefix('"')?.strip_suffix('"')?;
+        if jsx_text_needs_expression_container(inner) {
+            let expression = parse_rendered_expression_ast(allocator, trimmed)?;
+            return Some(match expression {
+                ast::Expression::StringLiteral(literal) => builder.jsx_child_expression_container(
+                    SPAN,
+                    ast::JSXExpression::StringLiteral(literal),
+                ),
+                expression => builder.jsx_child_expression_container(
+                    SPAN,
+                    ast::JSXExpression::from(expression),
+                ),
+            });
+        }
+        return Some(builder.jsx_child_text(SPAN, builder.atom(inner), None));
+    }
+
+    let expression = parse_rendered_expression_ast(allocator, trimmed)?;
+    Some(match expression {
+        ast::Expression::JSXElement(element) => ast::JSXChild::Element(element),
+        ast::Expression::JSXFragment(fragment) => ast::JSXChild::Fragment(fragment),
+        ast::Expression::StringLiteral(literal) => builder.jsx_child_expression_container(
+            SPAN,
+            ast::JSXExpression::StringLiteral(literal),
+        ),
+        expression => {
+            builder.jsx_child_expression_container(SPAN, ast::JSXExpression::from(expression))
+        }
+    })
+}
+
+fn render_jsx_element_name_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    cx: &mut Context,
+    tag: &JsxTag,
+) -> Option<ast::JSXElementName<'a>> {
+    match tag {
+        JsxTag::BuiltinTag(name) => {
+            if let Some((namespace, local)) = name.split_once(':') {
+                Some(builder.jsx_element_name_namespaced_name(
+                    SPAN,
+                    builder.jsx_identifier(SPAN, builder.atom(namespace)),
+                    builder.jsx_identifier(SPAN, builder.atom(local)),
+                ))
+            } else {
+                Some(builder.jsx_element_name_identifier(SPAN, builder.atom(name)))
+            }
+        }
+        JsxTag::Component(place) => {
+            let expression =
+                parse_rendered_expression_ast(allocator, &codegen_place_to_expression(cx, place))?;
+            render_expression_to_jsx_element_name_ast(builder, expression)
+        }
+        JsxTag::Fragment => None,
+    }
+}
+
+fn render_expression_to_jsx_element_name_ast<'a>(
+    builder: AstBuilder<'a>,
+    expression: ast::Expression<'a>,
+) -> Option<ast::JSXElementName<'a>> {
+    match expression {
+        ast::Expression::Identifier(identifier) => Some(
+            builder.jsx_element_name_identifier_reference(SPAN, identifier.name),
+        ),
+        ast::Expression::StaticMemberExpression(member) => Some(
+            builder.jsx_element_name_member_expression(
+                SPAN,
+                render_expression_to_jsx_member_expression_object_ast(
+                    builder,
+                    member.object.clone_in(builder.allocator),
+                )?,
+                builder.jsx_identifier(SPAN, member.property.name),
+            ),
+        ),
+        ast::Expression::ThisExpression(_) => Some(builder.jsx_element_name_this_expression(SPAN)),
+        _ => None,
+    }
+}
+
+fn render_expression_to_jsx_member_expression_object_ast<'a>(
+    builder: AstBuilder<'a>,
+    expression: ast::Expression<'a>,
+) -> Option<ast::JSXMemberExpressionObject<'a>> {
+    match expression {
+        ast::Expression::Identifier(identifier) => Some(
+            builder.jsx_member_expression_object_identifier_reference(SPAN, identifier.name),
+        ),
+        ast::Expression::StaticMemberExpression(member) => Some(
+            builder.jsx_member_expression_object_member_expression(
+                SPAN,
+                render_expression_to_jsx_member_expression_object_ast(
+                    builder,
+                    member.object.clone_in(builder.allocator),
+                )?,
+                builder.jsx_identifier(SPAN, member.property.name),
+            ),
+        ),
+        ast::Expression::ThisExpression(_) => {
+            Some(builder.jsx_member_expression_object_this_expression(SPAN))
+        }
+        _ => None,
+    }
+}
+
+fn render_jsx_children_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    cx: &mut Context,
+    children: &[Place],
+) -> Option<oxc_allocator::Vec<'a, ast::JSXChild<'a>>> {
+    let mut lowered = builder.vec();
+    for child in children {
+        lowered.push(render_jsx_child_ast(builder, allocator, cx, child)?);
+    }
+    Some(lowered)
+}
+
 fn collect_inherited_decl_name_overrides_for_lowered_function(
     cx: &Context,
     lowered_func: &LoweredFunction,
@@ -20948,12 +21138,14 @@ mod tests {
         maybe_fill_for_header_initializer_from_update, reconstruct_for_init_declaration,
         render_function_expression_ast, render_object_method_ast,
         render_primitive_expression_ast, render_property_access_expression_ast, render_pattern_with_oxc,
-        render_reactive_function_body_prologue_ast, render_method_call_expression_ast,
+        render_reactive_function_body_prologue_ast, render_jsx_expression_ast,
+        render_jsx_fragment_ast,
+        render_method_call_expression_ast,
         render_ts_type_cast_expression_ast,
     };
     use crate::hir::types::{
         Argument, ArrayElement, ArrayPattern, DeclarationId, DependencyPathEntry, Effect,
-        Identifier, IdentifierId, IdentifierName, MutableRange, ObjectProperty,
+        Identifier, IdentifierId, IdentifierName, JsxTag, MutableRange, ObjectProperty,
         ObjectPropertyKey, ObjectPropertyOrSpread, ObjectPropertyType, ObjectPattern, Pattern,
         Place, PrimitiveValue, PropertyLiteral, ReactiveScopeDependency, SourceLocation, Type,
         TypeAnnotationKind,
@@ -21212,6 +21404,29 @@ mod tests {
                 .expect("expected satisfies expression");
         assert!(rendered.starts_with("value satisfies {"));
         assert!(rendered.contains("foo: string"));
+    }
+
+    #[test]
+    fn renders_jsx_fragment_via_ast() {
+        let mut cx = test_context();
+        let rendered =
+            render_jsx_fragment_ast(&mut cx, &[named_place(0, 0, "value")]).expect("expected fragment");
+
+        assert_eq!(rendered, "<>{value}</>");
+    }
+
+    #[test]
+    fn renders_simple_jsx_element_via_ast() {
+        let mut cx = test_context();
+        let rendered = render_jsx_expression_ast(
+            &mut cx,
+            &JsxTag::BuiltinTag("div".to_string()),
+            &[],
+            &Some(vec![named_place(0, 0, "value")]),
+        )
+        .expect("expected jsx element");
+
+        assert_eq!(rendered, "<div>{value}</div>");
     }
 
     #[test]
