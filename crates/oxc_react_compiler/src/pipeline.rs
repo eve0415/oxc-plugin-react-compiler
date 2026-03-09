@@ -5920,11 +5920,13 @@ fn try_compile_function<'a>(
     let mut generated_body = codegen_result.body.clone();
     let mut synthesized_param_default_cache = false;
     let mut synthesized_outlined_functions: Vec<(String, String, String)> = vec![];
-    if let Some((synthesized, synthesized_outlined)) =
+    let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
+    if let Some((synthesized, synthesized_outlined, synthesized_hir_outlined)) =
         synthesize_default_param_cache_body(&generated_body, &params_result.destructurings)
     {
         generated_body = synthesized;
         synthesized_outlined_functions = synthesized_outlined;
+        synthesized_hir_outlined_functions = synthesized_hir_outlined;
         synthesized_param_default_cache = true;
     }
     if pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite {
@@ -6000,8 +6002,13 @@ fn try_compile_function<'a>(
     } else {
         CompiledBodyPayload::GeneratedString
     };
-    let hir_outlined_functions =
-        align_hir_outlined_functions(&outlined, pipeline_hir_outlined_functions, param_hir_outlined_functions);
+    let mut source_hir_outlined_functions = param_hir_outlined_functions;
+    source_hir_outlined_functions.extend(synthesized_hir_outlined_functions);
+    let hir_outlined_functions = align_hir_outlined_functions(
+        &outlined,
+        pipeline_hir_outlined_functions,
+        source_hir_outlined_functions,
+    );
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -6120,11 +6127,13 @@ fn try_compile_function_with_name<'a>(
     let mut generated_body = codegen_result.body.clone();
     let mut synthesized_param_default_cache = false;
     let mut synthesized_outlined_functions: Vec<(String, String, String)> = vec![];
-    if let Some((synthesized, synthesized_outlined)) =
+    let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
+    if let Some((synthesized, synthesized_outlined, synthesized_hir_outlined)) =
         synthesize_default_param_cache_body(&generated_body, &params_result.destructurings)
     {
         generated_body = synthesized;
         synthesized_outlined_functions = synthesized_outlined;
+        synthesized_hir_outlined_functions = synthesized_hir_outlined;
         synthesized_param_default_cache = true;
     }
     if pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite {
@@ -6199,8 +6208,13 @@ fn try_compile_function_with_name<'a>(
     } else {
         CompiledBodyPayload::GeneratedString
     };
-    let hir_outlined_functions =
-        align_hir_outlined_functions(&outlined, pipeline_hir_outlined_functions, param_hir_outlined_functions);
+    let mut source_hir_outlined_functions = param_hir_outlined_functions;
+    source_hir_outlined_functions.extend(synthesized_hir_outlined_functions);
+    let hir_outlined_functions = align_hir_outlined_functions(
+        &outlined,
+        pipeline_hir_outlined_functions,
+        source_hir_outlined_functions,
+    );
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -6327,11 +6341,13 @@ fn try_compile_arrow<'a>(
     let mut generated_body = codegen_result.body.clone();
     let mut synthesized_param_default_cache = false;
     let mut synthesized_outlined_functions: Vec<(String, String, String)> = vec![];
-    if let Some((synthesized, synthesized_outlined)) =
+    let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
+    if let Some((synthesized, synthesized_outlined, synthesized_hir_outlined)) =
         synthesize_default_param_cache_body(&generated_body, &params_result.destructurings)
     {
         generated_body = synthesized;
         synthesized_outlined_functions = synthesized_outlined;
+        synthesized_hir_outlined_functions = synthesized_hir_outlined;
         synthesized_param_default_cache = true;
     }
     if pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite {
@@ -6406,8 +6422,13 @@ fn try_compile_arrow<'a>(
     } else {
         CompiledBodyPayload::GeneratedString
     };
-    let hir_outlined_functions =
-        align_hir_outlined_functions(&outlined, pipeline_hir_outlined_functions, param_hir_outlined_functions);
+    let mut source_hir_outlined_functions = param_hir_outlined_functions;
+    source_hir_outlined_functions.extend(synthesized_hir_outlined_functions);
+    let hir_outlined_functions = align_hir_outlined_functions(
+        &outlined,
+        pipeline_hir_outlined_functions,
+        source_hir_outlined_functions,
+    );
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -6527,7 +6548,9 @@ fn is_outlined_temp_expr(expr: &str) -> bool {
     suffix.is_empty() || suffix.chars().all(|ch| ch.is_ascii_digit())
 }
 
-fn rewrite_inline_empty_arrow_callback(expr: &str) -> (String, Vec<(String, String, String)>) {
+fn rewrite_inline_empty_arrow_callback(
+    expr: &str,
+) -> (String, Vec<(String, String, String)>, Vec<(String, HIRFunction)>) {
     let trimmed = expr.trim();
     let patterns = ["() =>{}", "() => {}"];
     for pattern in patterns {
@@ -6535,10 +6558,11 @@ fn rewrite_inline_empty_arrow_callback(expr: &str) -> (String, Vec<(String, Stri
             return (
                 trimmed.replacen(pattern, "_temp", 1),
                 vec![("_temp".to_string(), String::new(), String::new())],
+                vec![synthesized_empty_outlined_arrow_hir("_temp")],
             );
         }
     }
-    (trimmed.to_string(), vec![])
+    (trimmed.to_string(), vec![], vec![])
 }
 
 fn parse_single_slot_memoized_default_body(
@@ -6621,7 +6645,7 @@ fn parse_single_slot_memoized_default_body(
     Some(memoized_expr)
 }
 
-type DefaultParamCacheBody = (String, Vec<(String, String, String)>);
+type DefaultParamCacheBody = (String, Vec<(String, String, String)>, Vec<(String, HIRFunction)>);
 
 fn synthesize_default_param_cache_body(
     generated_body: &str,
@@ -6646,7 +6670,8 @@ fn synthesize_default_param_cache_body(
     }
 
     let return_stmt = format!("return {};", name);
-    let (rewritten_expr, outlined_functions) = if generated_body.trim() == return_stmt {
+    let (rewritten_expr, outlined_functions, hir_outlined_functions) =
+        if generated_body.trim() == return_stmt {
         if debug_default_param_cache {
             eprintln!(
                 "[DEFAULT_PARAM_CACHE] synthesize simple-return name={} temp={} expr={}",
@@ -6679,7 +6704,62 @@ fn synthesize_default_param_cache_body(
             "const $ = _c(2);\nlet {name};\nif ($[0] !== {temp}) {{\n{name} = {temp} === undefined ? {rewritten_expr} : {temp};\n$[0] = {temp};\n$[1] = {name};\n}} else {{\n{name} = $[1];\n}}\n{return_stmt}"
         ),
         outlined_functions,
+        hir_outlined_functions,
     ))
+}
+
+fn synthesized_empty_outlined_arrow_hir(name: &str) -> (String, HIRFunction) {
+    let temp_undefined = crate::hir::types::Place {
+        identifier: crate::hir::types::make_temporary_identifier(
+            crate::hir::types::IdentifierId::new(0),
+            crate::hir::types::SourceLocation::Generated,
+        ),
+        effect: crate::hir::types::Effect::Read,
+        reactive: false,
+        loc: crate::hir::types::SourceLocation::Generated,
+    };
+    let hir_function = HIRFunction {
+        env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
+        loc: crate::hir::types::SourceLocation::Generated,
+        id: Some(name.to_string()),
+        fn_type: crate::hir::types::ReactFunctionType::Other,
+        params: vec![],
+        returns: temp_undefined.clone(),
+        context: vec![],
+        body: crate::hir::types::HIR {
+            entry: crate::hir::types::BlockId::new(0),
+            blocks: vec![(
+                crate::hir::types::BlockId::new(0),
+                crate::hir::types::BasicBlock {
+                    kind: crate::hir::types::BlockKind::Block,
+                    id: crate::hir::types::BlockId::new(0),
+                    instructions: vec![crate::hir::types::Instruction {
+                        id: crate::hir::types::InstructionId::new(0),
+                        lvalue: temp_undefined.clone(),
+                        value: crate::hir::types::InstructionValue::Primitive {
+                            value: crate::hir::types::PrimitiveValue::Undefined,
+                            loc: crate::hir::types::SourceLocation::Generated,
+                        },
+                        loc: crate::hir::types::SourceLocation::Generated,
+                        effects: None,
+                    }],
+                    terminal: crate::hir::types::Terminal::Return {
+                        value: temp_undefined.clone(),
+                        return_variant: crate::hir::types::ReturnVariant::Explicit,
+                        id: crate::hir::types::InstructionId::new(1),
+                        loc: crate::hir::types::SourceLocation::Generated,
+                    },
+                    preds: std::collections::HashSet::new(),
+                    phis: vec![],
+                },
+            )],
+        },
+        generator: false,
+        async_: false,
+        directives: vec![],
+        aliasing_effects: None,
+    };
+    (name.to_string(), hir_function)
 }
 
 /// Generate a comma-separated parameter string from the AST, stripping type annotations.
