@@ -2886,8 +2886,10 @@ fn normalize_compiled_body_for_hir_match(body_source: &str) -> String {
     let flow_cast_normalized = normalize_generated_body_flow_cast_marker_calls(body_source);
     let iife_normalized = normalize_generated_body_iife_parenthesization(&flow_cast_normalized);
     if let Some(canonicalized) = canonicalize_body_source_for_hir_match(&iife_normalized) {
-        return normalize_hir_match_object_shorthand_pairs(
-            &normalize_hir_match_multiline_brace_literals(&canonicalized),
+        return normalize_hir_match_destructuring_brace_spacing(
+            &normalize_hir_match_object_shorthand_pairs(
+                &normalize_hir_match_multiline_brace_literals(&canonicalized),
+            ),
         );
     }
     let normalized = iife_normalized
@@ -2896,9 +2898,11 @@ fn normalize_compiled_body_for_hir_match(body_source: &str) -> String {
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-    normalize_hir_match_object_shorthand_pairs(&normalize_hir_match_multiline_brace_literals(
-        &normalized,
-    ))
+    normalize_hir_match_destructuring_brace_spacing(
+        &normalize_hir_match_object_shorthand_pairs(&normalize_hir_match_multiline_brace_literals(
+            &normalized,
+        )),
+    )
 }
 
 fn canonicalize_body_source_for_hir_match(body_source: &str) -> Option<String> {
@@ -3001,6 +3005,26 @@ fn normalize_hir_match_object_shorthand_pairs(code: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn normalize_hir_match_destructuring_brace_spacing(code: &str) -> String {
+    code.lines()
+        .map(collapse_hir_match_destructuring_brace_spacing)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn collapse_hir_match_destructuring_brace_spacing(line: &str) -> String {
+    for prefix in ["const {", "let {", "var {"] {
+        let Some(rest) = line.strip_prefix(prefix) else {
+            continue;
+        };
+        let Some((binding_part, suffix)) = rest.split_once("} =") else {
+            continue;
+        };
+        return format!("{prefix}{} }} ={suffix}", binding_part.trim());
+    }
+    line.trim().to_string()
 }
 
 fn collapse_hir_match_object_shorthand_pairs_once(line: &str) -> String {
@@ -4254,6 +4278,19 @@ return { name: country.name, code };"#;
 return <Stringify key={id} render={render} />;"#;
         let rendered = r#"const { id: id, render: render } = t0;
 return <Stringify key={id} render={render} />;"#;
+
+        assert_eq!(
+            normalize_compiled_body_for_hir_match(lowered),
+            normalize_compiled_body_for_hir_match(rendered)
+        );
+    }
+
+    #[test]
+    fn normalize_compiled_body_for_hir_match_canonicalizes_destructure_brace_spacing() {
+        let lowered = r#"const { id, name } = t0;
+return <Stringify key={id} name={name} />;"#;
+        let rendered = r#"const {id, name} = t0;
+return <Stringify key={id} name={name} />;"#;
 
         assert_eq!(
             normalize_compiled_body_for_hir_match(lowered),
