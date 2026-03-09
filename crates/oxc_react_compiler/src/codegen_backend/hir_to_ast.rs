@@ -1025,6 +1025,28 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 self.builder
                     .expression_object(SPAN, self.lower_object_properties(properties, visiting)?),
             ),
+            InstructionValue::JsxExpression {
+                tag,
+                props,
+                children,
+                ..
+            } => lower_jsx_expression(
+                self.builder,
+                tag,
+                props,
+                children.as_deref(),
+                |place, visiting| self.lower_place(place, visiting),
+                visiting,
+            ),
+            InstructionValue::JsxFragment { children, .. } => lower_jsx_fragment_expression(
+                self.builder,
+                children,
+                |place, visiting| self.lower_place(place, visiting),
+                visiting,
+            ),
+            InstructionValue::JSXText { value, .. } => {
+                Some(self.builder.expression_string_literal(SPAN, self.builder.atom(value), None))
+            }
             InstructionValue::PropertyLoad {
                 object,
                 property,
@@ -1593,6 +1615,236 @@ where
 {
     let expression = lower_property_load(builder, object, property, false, lower_place, visiting)?;
     expression_to_assignment_target(builder, expression)
+}
+
+fn lower_jsx_expression<'a, F>(
+    builder: AstBuilder<'a>,
+    tag: &types::JsxTag,
+    props: &[types::JsxAttribute],
+    children: Option<&[Place]>,
+    lower_place: F,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<ast::Expression<'a>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+{
+    if matches!(tag, types::JsxTag::Fragment) {
+        return lower_jsx_fragment_expression(
+            builder,
+            children.unwrap_or(&[]),
+            lower_place,
+            visiting,
+        );
+    }
+
+    let opening_name = lower_jsx_element_name(builder, tag, lower_place, visiting)?;
+    let attributes = lower_jsx_attributes(builder, props, lower_place, visiting)?;
+    let jsx_children =
+        lower_jsx_children(builder, children.unwrap_or(&[]), lower_place, visiting)?;
+    let closing_element = if jsx_children.is_empty() {
+        None
+    } else {
+        Some(builder.alloc_jsx_closing_element(
+            SPAN,
+            lower_jsx_element_name(builder, tag, lower_place, visiting)?,
+        ))
+    };
+
+    Some(builder.expression_jsx_element(
+        SPAN,
+        builder.alloc_jsx_opening_element(SPAN, opening_name, NONE, attributes),
+        jsx_children,
+        closing_element,
+    ))
+}
+
+fn lower_jsx_fragment_expression<'a, F>(
+    builder: AstBuilder<'a>,
+    children: &[Place],
+    lower_place: F,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<ast::Expression<'a>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+{
+    Some(builder.expression_jsx_fragment(
+        SPAN,
+        builder.jsx_opening_fragment(SPAN),
+        lower_jsx_children(builder, children, lower_place, visiting)?,
+        builder.jsx_closing_fragment(SPAN),
+    ))
+}
+
+fn lower_jsx_element_name<'a, F>(
+    builder: AstBuilder<'a>,
+    tag: &types::JsxTag,
+    lower_place: F,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<ast::JSXElementName<'a>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+{
+    match tag {
+        types::JsxTag::BuiltinTag(name) => {
+            if let Some((namespace, local)) = name.split_once(':') {
+                Some(builder.jsx_element_name_namespaced_name(
+                    SPAN,
+                    builder.jsx_identifier(SPAN, builder.atom(namespace)),
+                    builder.jsx_identifier(SPAN, builder.atom(local)),
+                ))
+            } else {
+                Some(builder.jsx_element_name_identifier(SPAN, builder.atom(name)))
+            }
+        }
+        types::JsxTag::Component(place) => {
+            expression_to_jsx_element_name(builder, lower_place(place, visiting)?)
+        }
+        types::JsxTag::Fragment => None,
+    }
+}
+
+fn expression_to_jsx_element_name<'a>(
+    builder: AstBuilder<'a>,
+    expression: ast::Expression<'a>,
+) -> Option<ast::JSXElementName<'a>> {
+    match expression {
+        ast::Expression::Identifier(identifier) => Some(
+            builder.jsx_element_name_identifier_reference(SPAN, identifier.name),
+        ),
+        ast::Expression::StaticMemberExpression(member) => Some(
+            builder.jsx_element_name_member_expression(
+                SPAN,
+                expression_to_jsx_member_expression_object(
+                    builder,
+                    member.object.clone_in(builder.allocator),
+                )?,
+                builder.jsx_identifier(SPAN, member.property.name),
+            ),
+        ),
+        ast::Expression::ThisExpression(_) => Some(builder.jsx_element_name_this_expression(SPAN)),
+        _ => None,
+    }
+}
+
+fn expression_to_jsx_member_expression_object<'a>(
+    builder: AstBuilder<'a>,
+    expression: ast::Expression<'a>,
+) -> Option<ast::JSXMemberExpressionObject<'a>> {
+    match expression {
+        ast::Expression::Identifier(identifier) => Some(
+            builder.jsx_member_expression_object_identifier_reference(SPAN, identifier.name),
+        ),
+        ast::Expression::StaticMemberExpression(member) => Some(
+            builder.jsx_member_expression_object_member_expression(
+                SPAN,
+                expression_to_jsx_member_expression_object(
+                    builder,
+                    member.object.clone_in(builder.allocator),
+                )?,
+                builder.jsx_identifier(SPAN, member.property.name),
+            ),
+        ),
+        ast::Expression::ThisExpression(_) => {
+            Some(builder.jsx_member_expression_object_this_expression(SPAN))
+        }
+        _ => None,
+    }
+}
+
+fn lower_jsx_attributes<'a, F>(
+    builder: AstBuilder<'a>,
+    props: &[types::JsxAttribute],
+    lower_place: F,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<oxc_allocator::Vec<'a, ast::JSXAttributeItem<'a>>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+{
+    let mut attributes = builder.vec();
+    for prop in props {
+        match prop {
+            types::JsxAttribute::Attribute { name, place } => {
+                let value = lower_jsx_attribute_value(builder, place, lower_place, visiting)?;
+                attributes.push(builder.jsx_attribute_item_attribute(
+                    SPAN,
+                    builder.jsx_attribute_name_identifier(SPAN, builder.atom(name)),
+                    value,
+                ));
+            }
+            types::JsxAttribute::SpreadAttribute { argument } => {
+                attributes.push(builder.jsx_attribute_item_spread_attribute(
+                    SPAN,
+                    lower_place(argument, visiting)?,
+                ));
+            }
+        }
+    }
+    Some(attributes)
+}
+
+fn lower_jsx_attribute_value<'a, F>(
+    builder: AstBuilder<'a>,
+    place: &Place,
+    lower_place: F,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<Option<ast::JSXAttributeValue<'a>>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+{
+    let expression = lower_place(place, visiting)?;
+    match expression {
+        ast::Expression::BooleanLiteral(boolean) if boolean.value => Some(None),
+        ast::Expression::StringLiteral(literal) => {
+            Some(Some(ast::JSXAttributeValue::StringLiteral(literal)))
+        }
+        ast::Expression::JSXElement(element) => Some(Some(ast::JSXAttributeValue::Element(element))),
+        ast::Expression::JSXFragment(fragment) => {
+            Some(Some(ast::JSXAttributeValue::Fragment(fragment)))
+        }
+        expression => Some(Some(ast::JSXAttributeValue::ExpressionContainer(
+            builder.alloc_jsx_expression_container(SPAN, ast::JSXExpression::from(expression)),
+        ))),
+    }
+}
+
+fn lower_jsx_children<'a, F>(
+    builder: AstBuilder<'a>,
+    children: &[Place],
+    lower_place: F,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<oxc_allocator::Vec<'a, ast::JSXChild<'a>>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+{
+    let mut lowered = builder.vec();
+    for child in children {
+        lowered.push(lower_jsx_child(builder, child, lower_place, visiting)?);
+    }
+    Some(lowered)
+}
+
+fn lower_jsx_child<'a, F>(
+    builder: AstBuilder<'a>,
+    place: &Place,
+    lower_place: F,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<ast::JSXChild<'a>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+{
+    let expression = lower_place(place, visiting)?;
+    match expression {
+        ast::Expression::StringLiteral(literal) => Some(builder.jsx_child_expression_container(
+            SPAN,
+            ast::JSXExpression::StringLiteral(literal),
+        )),
+        ast::Expression::JSXElement(element) => Some(ast::JSXChild::Element(element)),
+        ast::Expression::JSXFragment(fragment) => Some(ast::JSXChild::Fragment(fragment)),
+        expression => Some(builder.jsx_child_expression_container(
+            SPAN,
+            ast::JSXExpression::from(expression),
+        )),
+    }
 }
 
 fn collect_used_temps(hir_function: &HIRFunction) -> HashSet<IdentifierId> {
@@ -3675,6 +3927,67 @@ mod tests {
             .code;
 
         assert_eq!(code, "function outlined(t0, ...t1) {\n  return t0;\n}\n");
+    }
+
+    #[test]
+    fn lowers_function_declaration_returning_jsx() {
+        let component = named_place(250, 250, "Item");
+        let item = named_place(251, 251, "item");
+        let jsx = temporary_place(252);
+
+        let mut hir = hir_function(
+            vec![instruction(
+                252,
+                jsx.clone(),
+                types::InstructionValue::JsxExpression {
+                    tag: types::JsxTag::Component(component),
+                    props: vec![types::JsxAttribute::Attribute {
+                        name: "item".to_string(),
+                        place: item.clone(),
+                    }],
+                    children: None,
+                    loc: SourceLocation::Generated,
+                    opening_loc: SourceLocation::Generated,
+                    closing_loc: SourceLocation::Generated,
+                },
+            )],
+            Terminal::Return {
+                value: jsx.clone(),
+                return_variant: types::ReturnVariant::Explicit,
+                id: InstructionId::new(253),
+                loc: SourceLocation::Generated,
+            },
+            jsx,
+        );
+        hir.id = Some("outlined".to_string());
+        hir.params = vec![types::Argument::Place(item)];
+
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        let statement =
+            try_lower_function_declaration_ast(builder, &hir).expect("should lower declaration");
+        let program = builder.program(
+            SPAN,
+            SourceType::mjs().with_jsx(true),
+            "",
+            builder.vec(),
+            None,
+            builder.vec(),
+            builder.vec1(statement),
+        );
+        let code = Codegen::new()
+            .with_options(CodegenOptions {
+                indent_char: IndentChar::Space,
+                indent_width: 2,
+                ..CodegenOptions::default()
+            })
+            .build(&program)
+            .code;
+
+        assert_eq!(
+            code,
+            "function outlined(item) {\n  return <Item item={item} />;\n}\n"
+        );
     }
 
     fn hir_function(

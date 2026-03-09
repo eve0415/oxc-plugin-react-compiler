@@ -2893,6 +2893,17 @@ fn normalize_compiled_body_for_hir_match(body_source: &str) -> String {
         .join("\n")
 }
 
+fn outlined_hir_matches_rendered_body(
+    rendered_body: &str,
+    hir_function: &crate::hir::types::HIRFunction,
+) -> bool {
+    let Some(lowered_body) = super::hir_to_ast::try_lower_function_body(hir_function) else {
+        return false;
+    };
+    normalize_compiled_body_for_hir_match(&lowered_body)
+        == normalize_compiled_body_for_hir_match(rendered_body)
+}
+
 fn parse_compiled_function_body<'a>(
     allocator: &'a Allocator,
     source_type: SourceType,
@@ -3429,7 +3440,10 @@ fn collect_rendered_outlined_functions(cf: &CompiledFunction) -> Vec<RenderedOut
                 .hir_outlined_functions
                 .iter()
                 .find(|(outlined_name, _)| outlined_name == fn_name)
-                .map(|(_, hir_function)| hir_function.clone());
+                .and_then(|(_, hir_function)| {
+                    outlined_hir_matches_rendered_body(fn_body, hir_function)
+                        .then(|| hir_function.clone())
+                });
             RenderedOutlinedFunction {
                 name: fn_name.clone(),
                 params: fn_params.clone(),
