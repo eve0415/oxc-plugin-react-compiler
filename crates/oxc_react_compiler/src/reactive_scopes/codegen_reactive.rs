@@ -14938,16 +14938,20 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                 ),
             );
             let is_hook_call = !is_computed && Environment::is_hook_name(&prop);
-            let call_expr = if !is_computed
-                && !*receiver_optional
+            let call_expr = if !*receiver_optional
                 && !*call_optional
                 && !recv.contains("?.")
                 && !recv.starts_with("new ")
-                && !prop.starts_with('#')
-                && is_valid_js_identifier_name(&prop)
+                && (is_computed || (!prop.starts_with('#') && is_valid_js_identifier_name(&prop)))
             {
-                render_static_method_call_expression_ast(&recv, &prop, args, &rendered_args)
-                    .unwrap_or_else(|| format!("{}.{}({})", recv, prop, args_str))
+                render_method_call_expression_ast(&recv, &prop, args, &rendered_args, is_computed)
+                    .unwrap_or_else(|| {
+                        if is_computed {
+                            format!("{}[{}]({})", recv, prop, args_str)
+                        } else {
+                            format!("{}.{}({})", recv, prop, args_str)
+                        }
+                    })
             } else if is_computed {
                 let opt_recv = if *receiver_optional { "?." } else { "" };
                 if *call_optional {
@@ -15963,22 +15967,32 @@ fn render_call_expression_ast(
     ))
 }
 
-fn render_static_method_call_expression_ast(
+fn render_method_call_expression_ast(
     receiver: &str,
     property: &str,
     args: &[Argument],
     rendered_args: &[String],
+    computed: bool,
 ) -> Option<String> {
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let receiver = parse_rendered_expression_ast(&allocator, receiver)?;
     let args = render_arguments_ast(builder, &allocator, args, rendered_args)?;
-    let callee = ast::Expression::from(builder.member_expression_static(
-        SPAN,
-        receiver,
-        builder.identifier_name(SPAN, builder.ident(property)),
-        false,
-    ));
+    let callee = if computed {
+        ast::Expression::from(builder.member_expression_computed(
+            SPAN,
+            receiver,
+            parse_rendered_expression_ast(&allocator, property)?,
+            false,
+        ))
+    } else {
+        ast::Expression::from(builder.member_expression_static(
+            SPAN,
+            receiver,
+            builder.identifier_name(SPAN, builder.ident(property)),
+            false,
+        ))
+    };
     let expression = builder.expression_call(SPAN, callee, NONE, args, false);
     Some(strip_top_level_parenthesized_expression(
         codegen_expression_with_oxc(&expression),
@@ -20934,8 +20948,8 @@ mod tests {
         maybe_fill_for_header_initializer_from_update, reconstruct_for_init_declaration,
         render_function_expression_ast, render_object_method_ast,
         render_primitive_expression_ast, render_property_access_expression_ast, render_pattern_with_oxc,
-        render_reactive_function_body_prologue_ast,
-        render_static_method_call_expression_ast, render_ts_type_cast_expression_ast,
+        render_reactive_function_body_prologue_ast, render_method_call_expression_ast,
+        render_ts_type_cast_expression_ast,
     };
     use crate::hir::types::{
         Argument, ArrayElement, ArrayPattern, DeclarationId, DependencyPathEntry, Effect,
@@ -21145,15 +21159,30 @@ mod tests {
 
     #[test]
     fn renders_static_method_call_via_ast() {
-        let rendered = render_static_method_call_expression_ast(
+        let rendered = render_method_call_expression_ast(
             "value",
             "run",
             &[Argument::Place(named_place(0, 0, "arg"))],
             &["arg".to_string()],
+            false,
         )
         .expect("expected method call");
 
         assert_eq!(rendered, "value.run(arg)");
+    }
+
+    #[test]
+    fn renders_computed_method_call_via_ast() {
+        let rendered = render_method_call_expression_ast(
+            "value",
+            "\"run\"",
+            &[Argument::Place(named_place(0, 0, "arg"))],
+            &["arg".to_string()],
+            true,
+        )
+        .expect("expected computed method call");
+
+        assert_eq!(rendered, "value[\"run\"](arg)");
     }
 
     #[test]
