@@ -14018,7 +14018,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 } else {
                     call_expr
                 };
-                return Some(format!("{};\n", call_expr));
+                return render_reactive_expression_statement_ast(&call_expr);
             }
             let callback_index = (0..autodeps_index).rev().find(|idx| {
                 let arg = rendered_args[*idx].trim();
@@ -14135,7 +14135,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 } else {
                     call_expr
                 };
-                return Some(format!("{};\n", call_expr));
+                return render_reactive_expression_statement_ast(&call_expr);
             }
             let callback_index = (0..autodeps_index).rev().find(|idx| {
                 let arg = rendered_args[*idx].trim();
