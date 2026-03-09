@@ -2861,8 +2861,8 @@ fn codegen_block_no_reset_with_options(
                 } else {
                     format!("({prefix_expr}, {left_expr})")
                 };
-                Some(format!(
-                    "{} {} {};\n",
+                render_reactive_expression_statement_ast(&format!(
+                    "{} {} {}",
                     combined_left,
                     logical_operator_to_str(operator),
                     right_expr
@@ -2903,10 +2903,7 @@ fn codegen_block_no_reset_with_options(
             );
         }
         let body = codegen_block(cx, loop_block);
-        Some(format!(
-            "while (({}, {})) {{\n{}}}\n",
-            pending_expr, test_expr, body
-        ))
+        render_reactive_while_statement_ast(&format!("({}, {})", pending_expr, test_expr), &body)
     }
 
     fn sequence_seed_loc(instr: &ReactiveInstruction) -> &SourceLocation {
@@ -3256,7 +3253,7 @@ fn codegen_block_no_reset_with_options(
             return None;
         };
         let mut stmt = codegen_instruction_nullable(cx, instr)?;
-        stmt.push_str(&format!("{};\n", target));
+        stmt.push_str(&render_reactive_expression_statement_ast(&target)?);
         Some(stmt)
     }
 
