@@ -5898,7 +5898,6 @@ fn try_compile_function<'a>(
     }
 
     let ParamsResult {
-        params_str: _params_str,
         compiled_params,
         destructurings,
         hir_outlined_functions: param_hir_outlined_functions,
@@ -6105,7 +6104,6 @@ fn try_compile_function_with_name<'a>(
     }
 
     let ParamsResult {
-        params_str: _params_str,
         compiled_params,
         destructurings,
         hir_outlined_functions: param_hir_outlined_functions,
@@ -6320,7 +6318,6 @@ fn try_compile_arrow<'a>(
     }
 
     let ParamsResult {
-        params_str: _params_str,
         compiled_params,
         destructurings,
         hir_outlined_functions: param_hir_outlined_functions,
@@ -6427,8 +6424,6 @@ fn try_compile_arrow<'a>(
 
 /// Result of parameter string generation.
 struct ParamsResult {
-    /// The parameter string for the function signature.
-    params_str: String,
     /// Structured rewritten params when they are plain identifiers/rest identifiers.
     compiled_params: Option<Vec<CompiledParam>>,
     /// Destructuring statements to emit at the top of the function body.
@@ -6717,7 +6712,6 @@ fn params_to_result<'a>(
     options: &PluginOptions,
     temp_counter: &mut usize,
 ) -> ParamsResult {
-    let mut param_strs: Vec<String> = Vec::new();
     let mut compiled_params: Option<Vec<CompiledParam>> = Some(Vec::new());
     let mut destructurings: Vec<String> = Vec::new();
     let mut hir_outlined_functions: Vec<(String, HIRFunction)> = Vec::new();
@@ -6728,7 +6722,6 @@ fn params_to_result<'a>(
         if let Some(initializer) = &param.initializer {
             let temp_name = format!("t{}", *temp_counter);
             *temp_counter += 1;
-            param_strs.push(temp_name.clone());
             if let Some(params) = compiled_params.as_mut() {
                 params.push(CompiledParam {
                     name: temp_name.clone(),
@@ -6822,7 +6815,6 @@ fn params_to_result<'a>(
 
         match &param.pattern {
             ast::BindingPattern::BindingIdentifier(ident) => {
-                param_strs.push(ident.name.to_string());
                 if let Some(params) = compiled_params.as_mut() {
                     params.push(CompiledParam {
                         name: ident.name.to_string(),
@@ -6833,7 +6825,6 @@ fn params_to_result<'a>(
             ast::BindingPattern::ObjectPattern(obj_pattern) => {
                 let temp_name = format!("t{}", *temp_counter);
                 *temp_counter += 1;
-                param_strs.push(temp_name.clone());
                 if let Some(params) = compiled_params.as_mut() {
                     params.push(CompiledParam {
                         name: temp_name.clone(),
@@ -6855,7 +6846,6 @@ fn params_to_result<'a>(
             ast::BindingPattern::ArrayPattern(arr_pattern) => {
                 let temp_name = format!("t{}", *temp_counter);
                 *temp_counter += 1;
-                param_strs.push(temp_name.clone());
                 if let Some(params) = compiled_params.as_mut() {
                     params.push(CompiledParam {
                         name: temp_name.clone(),
@@ -6878,7 +6868,6 @@ fn params_to_result<'a>(
                 // AssignmentPattern in BindingPattern is for destructuring defaults like `[a = 2]`
                 let temp_name = format!("t{}", *temp_counter);
                 *temp_counter += 1;
-                param_strs.push(temp_name.clone());
                 if let Some(params) = compiled_params.as_mut() {
                     params.push(CompiledParam {
                         name: temp_name.clone(),
@@ -6919,7 +6908,6 @@ fn params_to_result<'a>(
     if let Some(rest) = &params.rest {
         match &rest.rest.argument {
             ast::BindingPattern::BindingIdentifier(ident) => {
-                param_strs.push(format!("...{}", ident.name));
                 if let Some(params) = compiled_params.as_mut() {
                     params.push(CompiledParam {
                         name: ident.name.to_string(),
@@ -6930,7 +6918,6 @@ fn params_to_result<'a>(
             ast::BindingPattern::ArrayPattern(arr_pattern) => {
                 let temp_name = format!("t{}", *temp_counter);
                 *temp_counter += 1;
-                param_strs.push(format!("...{}", temp_name));
                 if let Some(params) = compiled_params.as_mut() {
                     params.push(CompiledParam {
                         name: temp_name.clone(),
@@ -6948,7 +6935,6 @@ fn params_to_result<'a>(
             ast::BindingPattern::ObjectPattern(obj_pattern) => {
                 let temp_name = format!("t{}", *temp_counter);
                 *temp_counter += 1;
-                param_strs.push(format!("...{}", temp_name));
                 if let Some(params) = compiled_params.as_mut() {
                     params.push(CompiledParam {
                         name: temp_name.clone(),
@@ -6964,16 +6950,12 @@ fn params_to_result<'a>(
                 );
             }
             _ => {
-                let rest_start = rest.span.start as usize;
-                let rest_end = rest.span.end as usize;
-                param_strs.push(source[rest_start..rest_end].to_string());
                 compiled_params = None;
             }
         }
     }
 
     ParamsResult {
-        params_str: param_strs.join(", "),
         compiled_params,
         destructurings,
         hir_outlined_functions,
