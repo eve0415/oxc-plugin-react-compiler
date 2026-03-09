@@ -17224,9 +17224,12 @@ fn codegen_object_property(cx: &mut Context, prop: &ObjectPropertyOrSpread) -> S
                     }
                 }
                 ObjectPropertyType::Method => {
-                    // Emit shorthand method syntax: key(params) { body }
-                    let compact_method =
-                        |src: String| -> String { compact_method_if_single_statement(src) };
+                    let computed_key_source = match &p.key {
+                        ObjectPropertyKey::Computed(place) => {
+                            Some(codegen_place_to_expression(cx, place))
+                        }
+                        _ => None,
+                    };
                     if let Some(&idx) = cx.object_methods.get(&p.place.identifier.id) {
                         let lf = cx.object_methods_store[idx].lowered_func.clone();
                         // Build inner function body using reactive codegen
@@ -17252,30 +17255,40 @@ fn codegen_object_property(cx: &mut Context, prop: &ObjectPropertyOrSpread) -> S
                                 cx.fbt_operands.clone(),
                             );
                         adopt_codegen_error(cx, inner_result.error.take());
-                        let params = codegen_params(cx, &lf.func.params);
-                        let async_prefix = if lf.func.async_ { "async " } else { "" };
-                        let generator_star = if lf.func.generator { "*" } else { "" };
                         let body_trimmed = inner_result.body.trim();
-                        if body_trimmed.is_empty() {
-                            format!("{}{}{}({}) {{}}", async_prefix, generator_star, key, params)
+                        if let Some(rendered) = render_object_method_ast(
+                            &p.key,
+                            computed_key_source.as_deref(),
+                            &lf.func.params,
+                            &inner_result.param_names,
+                            body_trimmed,
+                            &lf.func.directives,
+                            lf.func.async_,
+                            lf.func.generator,
+                        ) {
+                            rendered
                         } else {
-                            compact_method(format!(
-                                "{}{}{}({}) {{\n{}\n}}",
-                                async_prefix, generator_star, key, params, body_trimmed
-                            ))
+                            cx.codegen_error.get_or_insert_with(|| {
+                                CompilerError::Bail(BailOut {
+                                    reason: "Failed to AST-render object method".to_string(),
+                                    diagnostics: vec![CompilerDiagnostic {
+                                        severity: DiagnosticSeverity::Invariant,
+                                        message: format!(
+                                            "object method AST render failed for key {key}"
+                                        ),
+                                    }],
+                                })
+                            });
+                            format!("{key}: () => {{}}")
                         }
                     } else {
-                        // The method was lowered as a FunctionExpression.
-                        // Convert to shorthand by stripping the "function" keyword.
                         let val = codegen_place_to_expression(cx, &p.place);
-                        if let Some(rest) = val.strip_prefix("async function*") {
-                            compact_method(format!("async *{}{}", key, rest.trim_start()))
-                        } else if let Some(rest) = val.strip_prefix("async function") {
-                            compact_method(format!("async {}{}", key, rest.trim_start()))
-                        } else if let Some(rest) = val.strip_prefix("function*") {
-                            compact_method(format!("*{}{}", key, rest.trim_start()))
-                        } else if let Some(rest) = val.strip_prefix("function") {
-                            compact_method(format!("{}{}", key, rest.trim_start()))
+                        if let Some(rendered) = function_expr_to_method_property(
+                            &p.key,
+                            computed_key_source.as_deref(),
+                            &val,
+                        ) {
+                            rendered
                         } else {
                             format!("{}: {}", key, val)
                         }
@@ -17801,6 +17814,164 @@ fn wrap_named_anonymous_function_expression<'a>(
     ))
 }
 
+fn make_object_property_key_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    key: &ObjectPropertyKey,
+    computed_key_source: Option<&str>,
+) -> Option<(ast::PropertyKey<'a>, bool)> {
+    match key {
+        ObjectPropertyKey::Identifier(name) => Some((
+            builder.property_key_static_identifier(SPAN, builder.ident(name)),
+            false,
+        )),
+        ObjectPropertyKey::String(name) if is_valid_js_identifier(name) => Some((
+            builder.property_key_static_identifier(SPAN, builder.ident(name)),
+            false,
+        )),
+        ObjectPropertyKey::String(name) => Some((
+            ast::PropertyKey::from(builder.expression_string_literal(
+                SPAN,
+                builder.atom(name),
+                None,
+            )),
+            false,
+        )),
+        ObjectPropertyKey::Number(value) => Some((
+            ast::PropertyKey::from(builder.expression_numeric_literal(
+                SPAN,
+                *value,
+                None,
+                oxc_syntax::number::NumberBase::Decimal,
+            )),
+            false,
+        )),
+        ObjectPropertyKey::Computed(_) => {
+            let key_source = computed_key_source?;
+            let key_expression = parse_expression_for_ast_codegen(
+                allocator,
+                SourceType::mjs().with_jsx(true),
+                key_source,
+            )
+            .ok()?;
+            Some((ast::PropertyKey::from(key_expression), true))
+        }
+    }
+}
+
+fn extract_single_object_property_source(rendered_object_expression: &str) -> Option<String> {
+    let stripped = rendered_object_expression.trim();
+    let stripped = stripped
+        .strip_prefix('(')
+        .and_then(|inner| inner.strip_suffix(')'))
+        .unwrap_or(stripped)
+        .trim();
+    let stripped = stripped
+        .strip_prefix('{')
+        .and_then(|inner| inner.strip_suffix('}'))?;
+    Some(stripped.trim().to_string())
+}
+
+fn codegen_object_property_with_oxc(property: ast::ObjectPropertyKind<'_>) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let expression = ast::Expression::from(
+        builder.expression_object(SPAN, builder.vec1(property.clone_in(&allocator))),
+    );
+    let rendered = codegen_expression_with_oxc(&expression);
+    extract_single_object_property_source(&rendered)
+}
+
+fn render_object_method_ast(
+    key: &ObjectPropertyKey,
+    computed_key_source: Option<&str>,
+    params: &[Argument],
+    param_names: &[String],
+    body_source: &str,
+    directives: &[String],
+    is_async: bool,
+    is_generator: bool,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let parsed_body = parse_function_body_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        is_async,
+        is_generator,
+        body_source,
+    )
+    .ok()?;
+    let formal_params = make_reactive_formal_params(builder, params, param_names)?;
+    let function = builder.expression_function(
+        SPAN,
+        ast::FunctionType::FunctionExpression,
+        None,
+        is_generator,
+        is_async,
+        false,
+        NONE,
+        NONE,
+        formal_params,
+        NONE,
+        Some(builder.alloc(parsed_body)),
+    );
+    let (property_key, computed) =
+        make_object_property_key_ast(builder, &allocator, key, computed_key_source)?;
+    let property = builder.object_property_kind_object_property(
+        SPAN,
+        ast::PropertyKind::Init,
+        property_key,
+        function,
+        true,
+        false,
+        computed,
+    );
+    let rendered = codegen_object_property_with_oxc(property)?;
+    if directives.is_empty() {
+        Some(rendered)
+    } else {
+        Some(rendered)
+    }
+}
+
+fn function_expr_to_method_property(
+    key: &ObjectPropertyKey,
+    computed_key_source: Option<&str>,
+    value_source: &str,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let mut expression = parse_expression_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        value_source,
+    )
+    .ok()?;
+    let function = loop {
+        match expression {
+            ast::Expression::FunctionExpression(function) => break function,
+            ast::Expression::ParenthesizedExpression(parenthesized) => {
+                expression = parenthesized.unbox().expression;
+            }
+            _ => return None,
+        }
+    };
+    let builder = AstBuilder::new(&allocator);
+    let function = ast::Expression::FunctionExpression(builder.alloc(function.unbox()));
+    let (property_key, computed) =
+        make_object_property_key_ast(builder, &allocator, key, computed_key_source)?;
+    let property = builder.object_property_kind_object_property(
+        SPAN,
+        ast::PropertyKind::Init,
+        property_key,
+        function,
+        true,
+        false,
+        computed,
+    );
+    codegen_object_property_with_oxc(property)
+}
+
 fn codegen_expression_with_oxc(expression: &ast::Expression<'_>) -> String {
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
@@ -18029,46 +18200,6 @@ fn codegen_function_expression(
     }
 }
 
-/// Check if a code string is a single top-level statement (no semicolons at depth 0 except the trailing one).
-/// This correctly handles multi-line expressions like arrow functions with block bodies.
-fn is_single_statement(code: &str) -> bool {
-    let bytes = code.as_bytes();
-    let len = bytes.len();
-    if len == 0 {
-        return true;
-    }
-    let mut depth = 0i32; // brace depth
-    let mut in_string = false;
-    let mut string_char: u8 = 0;
-    let mut i = 0;
-    while i < len {
-        let b = bytes[i];
-        if in_string {
-            if b == b'\\' {
-                i += 1; // skip escaped char
-            } else if b == string_char {
-                in_string = false;
-            }
-        } else {
-            match b {
-                b'\'' | b'"' | b'`' => {
-                    in_string = true;
-                    string_char = b;
-                }
-                b'{' | b'(' | b'[' => depth += 1,
-                b'}' | b')' | b']' => depth -= 1,
-                b';' if depth == 0 => {
-                    // Only allow the trailing semicolon
-                    return i == len - 1;
-                }
-                _ => {}
-            }
-        }
-        i += 1;
-    }
-    true
-}
-
 fn compact_single_statement(code: &str) -> String {
     let mut out = String::new();
     let mut prev_space = false;
@@ -18084,45 +18215,6 @@ fn compact_single_statement(code: &str) -> String {
         prev_space = out.ends_with(' ');
     }
     out
-}
-
-fn compact_method_if_single_statement(method_src: String) -> String {
-    let Some(open_brace_idx) = method_src.find('{') else {
-        return method_src;
-    };
-    let Some(close_brace_idx) = method_src.rfind('}') else {
-        return method_src;
-    };
-    if close_brace_idx <= open_brace_idx {
-        return method_src;
-    }
-    let body = method_src[open_brace_idx + 1..close_brace_idx].trim();
-    if body.is_empty() {
-        return method_src;
-    }
-    if !body.contains('\n') || body.contains('`') || !is_single_statement(body) {
-        return method_src;
-    }
-    let compact_body = compact_single_statement(body);
-    format!(
-        "{} {{ {} }}{}",
-        method_src[..open_brace_idx].trim_end(),
-        compact_body,
-        method_src[close_brace_idx + 1..].trim_start()
-    )
-}
-
-fn codegen_params(cx: &mut Context, params: &[Argument]) -> String {
-    params
-        .iter()
-        .map(|p| match p {
-            Argument::Place(place) => identifier_name_with_cx(cx, &place.identifier),
-            Argument::Spread(place) => {
-                format!("...{}", identifier_name_with_cx(cx, &place.identifier))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 // ---- For-loop init/update helpers ----
@@ -18563,11 +18655,12 @@ fn unicode_escape_non_ascii(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        FunctionExpressionType, function_expr_as_declaration, render_function_expression_ast,
+        FunctionExpressionType, function_expr_as_declaration, function_expr_to_method_property,
+        render_function_expression_ast, render_object_method_ast,
     };
     use crate::hir::types::{
         Argument, DeclarationId, Effect, Identifier, IdentifierId, IdentifierName, MutableRange,
-        Place, SourceLocation, Type,
+        ObjectPropertyKey, Place, SourceLocation, Type,
     };
 
     fn named_place(id: u32, declaration_id: u32, name: &str) -> Place {
@@ -18633,5 +18726,36 @@ mod tests {
 
         assert!(declaration.starts_with("async function useFoo(value)"));
         assert!(declaration.contains("return value;"));
+    }
+
+    #[test]
+    fn renders_object_method_via_ast() {
+        let rendered = render_object_method_ast(
+            &ObjectPropertyKey::Identifier("run".to_string()),
+            None,
+            &[Argument::Place(named_place(0, 0, "value"))],
+            &["value".to_string()],
+            "return value;",
+            &[],
+            false,
+            false,
+        )
+        .expect("expected object method");
+
+        assert!(rendered.contains("run(value)"));
+        assert!(rendered.contains("return value;"));
+    }
+
+    #[test]
+    fn converts_function_expression_to_method_property_via_ast() {
+        let rendered = function_expr_to_method_property(
+            &ObjectPropertyKey::Identifier("callback".to_string()),
+            None,
+            "async function(value) {\n  return value;\n}",
+        )
+        .expect("expected method property");
+
+        assert!(rendered.contains("async callback(value)"));
+        assert!(rendered.contains("return value;"));
     }
 }
