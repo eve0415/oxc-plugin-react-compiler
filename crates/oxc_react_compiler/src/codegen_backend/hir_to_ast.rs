@@ -593,9 +593,12 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
             return None;
         }
 
+        let suppressed_declares = collect_same_block_materialized_declares(&block.instructions);
         let mut statements = self.builder.vec();
         for instruction in &block.instructions {
-            if let Some(statement) = self.lower_instruction_to_statement(instruction)? {
+            if let Some(statement) =
+                self.lower_instruction_to_statement(instruction, &suppressed_declares)?
+            {
                 statements.push(statement);
             }
         }
@@ -612,11 +615,15 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
     fn lower_instruction_to_statement(
         &self,
         instruction: &Instruction,
+        suppressed_declares: &HashSet<types::DeclarationId>,
     ) -> Option<Option<ast::Statement<'a>>> {
         match &instruction.value {
             InstructionValue::DeclareLocal { lvalue, .. }
             | InstructionValue::DeclareContext { lvalue, .. } => {
                 if lvalue.kind == InstructionKind::Catch {
+                    return Some(None);
+                }
+                if suppressed_declares.contains(&lvalue.place.identifier.declaration_id) {
                     return Some(None);
                 }
                 let name = place_name(&lvalue.place)?;
@@ -2332,6 +2339,33 @@ fn variable_declaration_kind(kind: InstructionKind) -> Option<ast::VariableDecla
         | InstructionKind::Function
         | InstructionKind::HoistedFunction => None,
     }
+}
+
+fn collect_same_block_materialized_declares(
+    instructions: &[Instruction],
+) -> HashSet<types::DeclarationId> {
+    let mut materialized = HashSet::new();
+    let mut suppressed = HashSet::new();
+    for instruction in instructions.iter().rev() {
+        match &instruction.value {
+            InstructionValue::StoreLocal { lvalue, .. }
+            | InstructionValue::StoreContext { lvalue, .. } => {
+                if lvalue.place.identifier.name.is_some()
+                    && variable_declaration_kind(lvalue.kind).is_some()
+                {
+                    materialized.insert(lvalue.place.identifier.declaration_id);
+                }
+            }
+            InstructionValue::DeclareLocal { lvalue, .. }
+            | InstructionValue::DeclareContext { lvalue, .. } => {
+                if materialized.contains(&lvalue.place.identifier.declaration_id) {
+                    suppressed.insert(lvalue.place.identifier.declaration_id);
+                }
+            }
+            _ => {}
+        }
+    }
+    suppressed
 }
 
 #[cfg(test)]
@@ -4138,6 +4172,126 @@ mod tests {
         );
 
         assert_eq!(try_lower_function_body(&hir).as_deref(), Some("return () => x;\n"));
+    }
+
+    #[test]
+    fn suppresses_same_block_declare_before_materialized_const_store() {
+        let x = named_place(270, 270, "x");
+        let inner = named_place(271, 271, "inner");
+        let inner_value = temporary_place(272);
+        let three_value = temporary_place(273);
+        let call_value = temporary_place(274);
+        let inner_hir = HIRFunction {
+            env: Environment::new(EnvironmentConfig::default()),
+            loc: SourceLocation::Generated,
+            id: None,
+            fn_type: ReactFunctionType::Other,
+            params: vec![],
+            returns: x.clone(),
+            context: vec![x.clone()],
+            body: HIR {
+                entry: BlockId::new(0),
+                blocks: vec![(
+                    BlockId::new(0),
+                    BasicBlock {
+                        kind: types::BlockKind::Block,
+                        id: BlockId::new(0),
+                        instructions: vec![],
+                        terminal: Terminal::Return {
+                            value: x.clone(),
+                            return_variant: types::ReturnVariant::Explicit,
+                            id: InstructionId::new(275),
+                            loc: SourceLocation::Generated,
+                        },
+                        preds: HashSet::new(),
+                        phis: vec![],
+                    },
+                )],
+            },
+            generator: false,
+            async_: false,
+            directives: vec![],
+            aliasing_effects: None,
+        };
+        let hir = hir_function(
+            vec![
+                instruction(
+                    276,
+                    temporary_place(276),
+                    types::InstructionValue::DeclareLocal {
+                        lvalue: types::LValue {
+                            place: x.clone(),
+                            kind: InstructionKind::Let,
+                        },
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    277,
+                    inner_value.clone(),
+                    types::InstructionValue::FunctionExpression {
+                        name: None,
+                        lowered_func: types::LoweredFunction { func: inner_hir },
+                        expr_type: types::FunctionExpressionType::ArrowFunctionExpression,
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    278,
+                    temporary_place(278),
+                    types::InstructionValue::StoreLocal {
+                        lvalue: types::LValue {
+                            place: inner.clone(),
+                            kind: InstructionKind::Const,
+                        },
+                        value: inner_value,
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    279,
+                    three_value.clone(),
+                    types::InstructionValue::Primitive {
+                        value: types::PrimitiveValue::Number(3.0),
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    280,
+                    temporary_place(280),
+                    types::InstructionValue::StoreLocal {
+                        lvalue: types::LValue {
+                            place: x.clone(),
+                            kind: InstructionKind::Const,
+                        },
+                        value: three_value,
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    281,
+                    call_value.clone(),
+                    types::InstructionValue::CallExpression {
+                        callee: inner,
+                        args: vec![],
+                        optional: false,
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+            ],
+            Terminal::Return {
+                value: call_value.clone(),
+                return_variant: types::ReturnVariant::Explicit,
+                id: InstructionId::new(282),
+                loc: SourceLocation::Generated,
+            },
+            call_value,
+        );
+
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("const inner = () => x;\nconst x = 3;\nreturn inner();\n")
+        );
     }
 
     fn hir_function(
