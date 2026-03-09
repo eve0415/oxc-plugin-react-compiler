@@ -3943,101 +3943,6 @@ fn is_identifier_char(c: char) -> bool {
     c == '_' || c == '$' || c.is_ascii_alphanumeric()
 }
 
-fn replace_identifier_token(source: &str, from: &str, to: &str) -> String {
-    if from.is_empty() || from == to || !source.contains(from) {
-        return source.to_string();
-    }
-    let mut output = String::with_capacity(source.len() + to.len());
-    let mut last = 0usize;
-    for (idx, _) in source.match_indices(from) {
-        let start_ok = source[..idx]
-            .chars()
-            .next_back()
-            .is_none_or(|c| !is_identifier_char(c));
-        let end = idx + from.len();
-        let end_ok = source[end..]
-            .chars()
-            .next()
-            .is_none_or(|c| !is_identifier_char(c));
-        if !start_ok || !end_ok {
-            continue;
-        }
-        output.push_str(&source[last..idx]);
-        output.push_str(to);
-        last = end;
-    }
-    if last == 0 {
-        return source.to_string();
-    }
-    output.push_str(&source[last..]);
-    output
-}
-
-fn normalize_use_fire_binding_temp_names(body: &str) -> String {
-    let mut declared_names: Vec<String> = Vec::new();
-    for line in body.lines() {
-        let trimmed = line.trim_start();
-        let rest = if let Some(rest) = trimmed.strip_prefix("let ") {
-            rest
-        } else if let Some(rest) = trimmed.strip_prefix("const ") {
-            rest
-        } else {
-            continue;
-        };
-        let name_end = rest
-            .char_indices()
-            .take_while(|(_, c)| is_identifier_char(*c))
-            .map(|(idx, c)| idx + c.len_utf8())
-            .last()
-            .unwrap_or(0);
-        if name_end == 0 {
-            continue;
-        }
-        let name = &rest[..name_end];
-        let Some(temp_index) = parse_temp_token_index(name) else {
-            continue;
-        };
-        let after_name = rest[name_end..].trim_start();
-        if !after_name.starts_with("= useFire(") {
-            continue;
-        }
-        if declared_names.iter().any(|existing| existing == name) {
-            continue;
-        }
-        // Keep `tN` ordering stable and numeric.
-        let _ = temp_index;
-        declared_names.push(name.to_string());
-    }
-
-    if declared_names.len() < 2 {
-        return body.to_string();
-    }
-    let mut desired = declared_names.clone();
-    desired.sort_by_key(|name| parse_temp_token_index(name).unwrap_or(u32::MAX));
-    if desired == declared_names {
-        return body.to_string();
-    }
-
-    let mut rewritten = body.to_string();
-    for (idx, from) in declared_names.iter().enumerate() {
-        let placeholder = format!("__USE_FIRE_TMP_{}__", idx);
-        rewritten = replace_identifier_token(&rewritten, from, &placeholder);
-    }
-    for (idx, to) in desired.iter().enumerate() {
-        let placeholder = format!("__USE_FIRE_TMP_{}__", idx);
-        rewritten = replace_identifier_token(&rewritten, &placeholder, to);
-    }
-    rewritten
-}
-
-fn parse_temp_token_index(name: &str) -> Option<u32> {
-    let digits = name.strip_prefix('t')?;
-    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    digits.parse::<u32>().ok()
-}
-
 pub(crate) fn collect_top_level_bindings(
     program: &ast::Program<'_>,
 ) -> std::collections::HashSet<String> {
@@ -5902,9 +5807,8 @@ fn try_compile_function<'a>(
         synthesized_hir_outlined_functions = synthesized_hir_outlined;
         synthesized_param_default_cache = true;
     }
-    if pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite {
-        generated_body = normalize_use_fire_binding_temp_names(&generated_body);
-    }
+    let normalize_use_fire_binding_temps =
+        pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite;
     let mut cache_prologue = if synthesized_param_default_cache {
         None
     } else {
@@ -6012,6 +5916,7 @@ fn try_compile_function<'a>(
         hir_function: Some(pipeline_output.final_hir_snapshot),
         cache_prologue,
         needs_function_hook_guard_wrapper: codegen_result.needs_function_hook_guard_wrapper,
+        normalize_use_fire_binding_temps,
         needs_instrument_forget,
         needs_emit_freeze,
         outlined_functions: outlined,
@@ -6120,9 +6025,8 @@ fn try_compile_function_with_name<'a>(
         synthesized_hir_outlined_functions = synthesized_hir_outlined;
         synthesized_param_default_cache = true;
     }
-    if pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite {
-        generated_body = normalize_use_fire_binding_temp_names(&generated_body);
-    }
+    let normalize_use_fire_binding_temps =
+        pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite;
     let mut cache_prologue = if synthesized_param_default_cache {
         None
     } else {
@@ -6230,6 +6134,7 @@ fn try_compile_function_with_name<'a>(
         hir_function: Some(pipeline_output.final_hir_snapshot),
         cache_prologue,
         needs_function_hook_guard_wrapper: codegen_result.needs_function_hook_guard_wrapper,
+        normalize_use_fire_binding_temps,
         needs_instrument_forget,
         needs_emit_freeze,
         outlined_functions: outlined,
@@ -6346,9 +6251,8 @@ fn try_compile_arrow<'a>(
         synthesized_hir_outlined_functions = synthesized_hir_outlined;
         synthesized_param_default_cache = true;
     }
-    if pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite {
-        generated_body = normalize_use_fire_binding_temp_names(&generated_body);
-    }
+    let normalize_use_fire_binding_temps =
+        pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite;
     let mut cache_prologue = if synthesized_param_default_cache {
         None
     } else {
@@ -6456,6 +6360,7 @@ fn try_compile_arrow<'a>(
         hir_function: Some(pipeline_output.final_hir_snapshot),
         cache_prologue,
         needs_function_hook_guard_wrapper: codegen_result.needs_function_hook_guard_wrapper,
+        normalize_use_fire_binding_temps,
         needs_instrument_forget,
         needs_emit_freeze,
         outlined_functions: outlined,

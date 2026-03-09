@@ -2874,6 +2874,7 @@ fn build_compiled_function_body<'a>(
         parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?
     };
 
+    normalize_use_fire_binding_temps_ast(builder, &mut function_body, cf);
     wrap_function_hook_guard_body(builder, allocator, &mut function_body, cf, state);
     apply_preserved_directives(builder, &mut function_body, cf);
     prepend_cache_prologue_statements(builder, allocator, &mut function_body, cf, state);
@@ -3678,6 +3679,51 @@ fn build_hook_guard_statement<'a>(
     )
 }
 
+fn normalize_use_fire_binding_temps_ast<'a>(
+    builder: AstBuilder<'a>,
+    body: &mut ast::FunctionBody<'a>,
+    cf: &CompiledFunction,
+) {
+    if !cf.normalize_use_fire_binding_temps {
+        return;
+    }
+
+    let mut declared_names = Vec::new();
+    let mut collector = UseFireBindingCollector {
+        declared_names: &mut declared_names,
+    };
+    collector.visit_function_body(body);
+    if declared_names.len() < 2 {
+        return;
+    }
+
+    let mut desired = declared_names.clone();
+    desired.sort_by_key(|name| parse_temp_token_index(name).unwrap_or(u32::MAX));
+    if desired == declared_names {
+        return;
+    }
+
+    let renames = declared_names
+        .iter()
+        .zip(desired.iter())
+        .filter_map(|(from, to)| (from != to).then_some((from.as_str(), to.as_str())))
+        .collect::<Vec<_>>();
+    if renames.is_empty() {
+        return;
+    }
+
+    let mut renamer = BindingAndReferenceRenamer { builder, renames };
+    renamer.visit_function_body(body);
+}
+
+fn parse_temp_token_index(name: &str) -> Option<u32> {
+    let digits = name.strip_prefix('t')?;
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u32>().ok()
+}
+
 fn prepend_compiled_body_prefix_statements<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
@@ -4118,8 +4164,17 @@ struct IdentifierReferenceRenamer<'a, 'rename> {
     renames: Vec<(&'rename str, &'rename str)>,
 }
 
+struct BindingAndReferenceRenamer<'a, 'rename> {
+    builder: AstBuilder<'a>,
+    renames: Vec<(&'rename str, &'rename str)>,
+}
+
 struct OutputCacheSlotCollector {
     output_slots: HashSet<(String, u32)>,
+}
+
+struct UseFireBindingCollector<'a> {
+    declared_names: &'a mut Vec<String>,
 }
 
 struct EmitFreezeCacheStoreRewriter<'a, 'rename> {
@@ -4149,6 +4204,42 @@ impl<'a> VisitMut<'a> for IdentifierReferenceRenamer<'a, '_> {
         {
             it.name = self.builder.ident(to);
         }
+    }
+}
+
+impl<'a> VisitMut<'a> for BindingAndReferenceRenamer<'a, '_> {
+    fn visit_binding_identifier(&mut self, it: &mut ast::BindingIdentifier<'a>) {
+        if let Some((_, to)) = self
+            .renames
+            .iter()
+            .find(|(from, _)| it.name.as_str() == *from)
+        {
+            it.name = self.builder.ident(to);
+        }
+    }
+
+    fn visit_identifier_reference(&mut self, it: &mut ast::IdentifierReference<'a>) {
+        if let Some((_, to)) = self
+            .renames
+            .iter()
+            .find(|(from, _)| it.name.as_str() == *from)
+        {
+            it.name = self.builder.ident(to);
+        }
+    }
+}
+
+impl<'a> Visit<'a> for UseFireBindingCollector<'_> {
+    fn visit_variable_declarator(&mut self, it: &ast::VariableDeclarator<'a>) {
+        if let Some(ast::Expression::CallExpression(call)) = &it.init
+            && matches!(&call.callee, ast::Expression::Identifier(identifier) if identifier.name == "useFire")
+            && let ast::BindingPattern::BindingIdentifier(ident) = &it.id
+            && parse_temp_token_index(ident.name.as_str()).is_some()
+            && !self.declared_names.iter().any(|existing| existing == ident.name.as_str())
+        {
+            self.declared_names.push(ident.name.to_string());
+        }
+        walk::walk_variable_declarator(self, it);
     }
 }
 
@@ -4844,6 +4935,27 @@ function Component(props) {
     }
 
     #[test]
+    fn normalizes_use_fire_binding_temp_names_as_ast() {
+        let source = r#"function Component() { return null; }"#;
+        let mut compiled_function = make_test_compiled_function(
+            "Component",
+            0,
+            source.len() as u32,
+            "let t1 = useFire(foo);\nlet t0 = useFire(bar);\nreturn [t1, t0];",
+            &[],
+            false,
+        );
+        compiled_function.normalize_use_fire_binding_temps = true;
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("let t0 = useFire(foo);"));
+        assert!(rewritten.contains("let t1 = useFire(bar);"));
+        assert!(rewritten.contains("return [t0, t1];"));
+    }
+
+    #[test]
     fn rewrites_nested_arrow_body_from_hir_ast() {
         let source = "const FancyButton = (props) => null;";
         let allocator = Allocator::default();
@@ -4936,6 +5048,7 @@ function Component(props) {
             hir_function: None,
             cache_prologue: None,
             needs_function_hook_guard_wrapper: false,
+            normalize_use_fire_binding_temps: false,
             needs_instrument_forget: false,
             needs_emit_freeze: false,
             outlined_functions: vec![],
