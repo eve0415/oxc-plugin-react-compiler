@@ -307,7 +307,9 @@ fn try_emit_module(
         if stmt_compiled.is_empty() {
             let original_stmt = args.source[span.start as usize..span.end as usize].to_string();
             let maybe_gated = gate_name
-                .map(|name| maybe_gate_entrypoint_source(original_stmt.clone(), name))
+                .map(|name| {
+                    maybe_gate_entrypoint_source(state.source_type, original_stmt.clone(), name)
+                })
                 .unwrap_or(original_stmt.clone());
             if maybe_gated == original_stmt {
                 body.push(stmt.clone_in(&allocator));
@@ -5012,8 +5014,107 @@ fn can_emit_compiled_statement_ast(cf: &CompiledFunction) -> bool {
         && !cf.needs_cache_import
 }
 
-fn maybe_gate_entrypoint_source(source: String, gate_name: &str) -> String {
-    crate::pipeline::gate_fixture_entrypoint_arrows(source, gate_name)
+fn maybe_gate_entrypoint_source(
+    source_type: SourceType,
+    source: String,
+    gate_name: &str,
+) -> String {
+    let allocator = Allocator::default();
+    let Ok(mut statements) = parse_statements(&allocator, source_type, &source) else {
+        return source;
+    };
+    if statements.len() != 1 {
+        return source;
+    }
+
+    let builder = AstBuilder::new(&allocator);
+    let mut gater = FixtureEntrypointArrowGater {
+        builder,
+        gate_name,
+        changed: false,
+    };
+    gater.visit_statement(&mut statements[0]);
+    if !gater.changed {
+        return source;
+    }
+
+    codegen_statement_source(&allocator, source_type, &statements[0])
+}
+
+struct FixtureEntrypointArrowGater<'a, 'gate> {
+    builder: AstBuilder<'a>,
+    gate_name: &'gate str,
+    changed: bool,
+}
+
+impl<'a> VisitMut<'a> for FixtureEntrypointArrowGater<'a, '_> {
+    fn visit_object_property(&mut self, property: &mut ast::ObjectProperty<'a>) {
+        walk_mut::walk_object_property(self, property);
+
+        let Some(key_name) = fixture_entrypoint_property_name(property) else {
+            return;
+        };
+        if !matches!(key_name, "fn" | "useHook") || !is_empty_arrow_expression(&property.value) {
+            return;
+        }
+
+        property.value = build_gated_empty_arrow_expression(self.builder, self.gate_name);
+        self.changed = true;
+    }
+}
+
+fn fixture_entrypoint_property_name<'a>(property: &ast::ObjectProperty<'a>) -> Option<&'a str> {
+    match &property.key {
+        ast::PropertyKey::StaticIdentifier(identifier) => Some(identifier.name.as_str()),
+        ast::PropertyKey::StringLiteral(string) => Some(string.value.as_str()),
+        _ => None,
+    }
+}
+
+fn is_empty_arrow_expression(expression: &ast::Expression<'_>) -> bool {
+    let ast::Expression::ArrowFunctionExpression(arrow) = expression.without_parentheses() else {
+        return false;
+    };
+    !arrow.r#async
+        && !arrow.expression
+        && arrow.params.items.is_empty()
+        && arrow.params.rest.is_none()
+        && arrow.body.statements.is_empty()
+}
+
+fn build_gated_empty_arrow_expression<'a>(
+    builder: AstBuilder<'a>,
+    gate_name: &str,
+) -> ast::Expression<'a> {
+    builder.expression_conditional(
+        SPAN,
+        builder.expression_call(
+            SPAN,
+            builder.expression_identifier(SPAN, builder.ident(gate_name)),
+            NONE,
+            builder.vec(),
+            false,
+        ),
+        build_empty_arrow_expression(builder),
+        build_empty_arrow_expression(builder),
+    )
+}
+
+fn build_empty_arrow_expression<'a>(builder: AstBuilder<'a>) -> ast::Expression<'a> {
+    builder.expression_arrow_function(
+        SPAN,
+        false,
+        false,
+        NONE,
+        builder.alloc(builder.formal_parameters(
+            SPAN,
+            ast::FormalParameterKind::ArrowFormalParameters,
+            builder.vec(),
+            NONE,
+        )),
+        NONE,
+        builder.alloc(builder.function_body(SPAN, builder.vec(), builder.vec())),
+    )
 }
 
 fn build_inserted_import_statement<'a>(
@@ -5136,7 +5237,6 @@ fn codegen_program(program: &ast::Program<'_>) -> String {
     Codegen::new().with_options(options).build(program).code
 }
 
-#[cfg(test)]
 fn codegen_statement_source(
     allocator: &Allocator,
     source_type: SourceType,
@@ -5786,9 +5886,11 @@ function Component(props) {
     fn gates_empty_fixture_entrypoint_arrows() {
         let input =
             "export let FIXTURE_ENTRYPOINT = { fn: () =>{}, useHook: () =>{} };".to_string();
-        let output = maybe_gate_entrypoint_source(input, "gate");
-        assert!(output.contains("fn: gate() ? () =>{} : () =>{}"));
-        assert!(output.contains("useHook: gate() ? () =>{} : () =>{}"));
+        let output =
+            maybe_gate_entrypoint_source(source_type_for_filename("fixture.jsx"), input, "gate");
+        assert!(output.contains("fn: gate() ?"));
+        assert!(output.contains("useHook: gate() ?"));
+        assert_eq!(output.matches("() =>").count(), 4);
     }
 
     #[test]

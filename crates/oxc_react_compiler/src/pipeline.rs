@@ -5062,21 +5062,6 @@ fn parse_dynamic_gating_identifier(source: &str) -> Option<String> {
     }
 }
 
-pub(crate) fn gate_fixture_entrypoint_arrows(mut code: String, gate_name: &str) -> String {
-    let gated_empty_arrow = format!("{gate_name}() ? () =>{{}} : () =>{{}}");
-    code = code.replace("fn: () =>{}", &format!("fn: {}", gated_empty_arrow));
-    code = code.replace("fn: () => {}", &format!("fn: {}", gated_empty_arrow));
-    code = code.replace(
-        "useHook: () =>{}",
-        &format!("useHook: {}", gated_empty_arrow),
-    );
-    code = code.replace(
-        "useHook: () => {}",
-        &format!("useHook: {}", gated_empty_arrow),
-    );
-    code
-}
-
 /// Collect all compilable functions from a statement.
 fn collect_compilable_functions<'a>(
     stmt: &ast::Statement<'a>,
