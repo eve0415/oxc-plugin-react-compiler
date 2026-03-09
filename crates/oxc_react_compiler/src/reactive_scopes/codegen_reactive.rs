@@ -4222,7 +4222,13 @@ fn emit_labeled_statement(output: &mut String, label_id: BlockId, stmt: &str) {
         }
         return;
     }
-    if labeled_statement_needs_block_wrapper(trimmed) {
+    let label = format!("bb{}", label_id.0);
+    let needs_block_wrapper = labeled_statement_needs_block_wrapper(trimmed);
+    if let Some(rendered) =
+        render_reactive_labeled_statement_ast(&label, trimmed, needs_block_wrapper)
+    {
+        output.push_str(&rendered);
+    } else if needs_block_wrapper {
         output.push_str(&format!("bb{}: {{\n", label_id.0));
         for line in trimmed.lines() {
             if line.trim().is_empty() {
@@ -4234,11 +4240,11 @@ fn emit_labeled_statement(output: &mut String, label_id: BlockId, stmt: &str) {
             }
         }
         output.push_str("}\n");
-        return;
-    }
-    output.push_str(&format!("bb{}: {}", label_id.0, trimmed));
-    if !trimmed.ends_with('\n') {
-        output.push('\n');
+    } else {
+        output.push_str(&format!("bb{}: {}", label_id.0, trimmed));
+        if !trimmed.ends_with('\n') {
+            output.push('\n');
+        }
     }
 }
 
@@ -18920,6 +18926,36 @@ fn render_reactive_if_statement_ast(
         None => None,
     };
     let statement = builder.statement_if(SPAN, parsed_test, consequent, alternate);
+    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+}
+
+fn render_reactive_labeled_statement_ast(
+    label: &str,
+    statement_source: &str,
+    wrap_in_block: bool,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let body = if wrap_in_block {
+        builder.statement_block(
+            SPAN,
+            parse_statement_list_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
+                statement_source,
+            )
+            .ok()?,
+        )
+    } else {
+        parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            statement_source,
+        )
+        .ok()?
+    };
+    let statement =
+        builder.statement_labeled(SPAN, builder.label_identifier(SPAN, builder.atom(label)), body);
     Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
 }
 
