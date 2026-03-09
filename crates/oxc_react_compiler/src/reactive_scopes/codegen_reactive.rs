@@ -7755,7 +7755,34 @@ fn maybe_codegen_fused_method_call_eval_order(
     );
     let args_str = join_call_arguments(&rendered_args);
 
-    let call_expr = if is_computed {
+    let call_expr = if !recv.contains("?.") && !recv.starts_with("new ") {
+        render_method_call_expression_with_options_ast(
+            &recv,
+            &prop,
+            args,
+            &rendered_args,
+            is_computed,
+            *receiver_optional,
+            *call_optional,
+        )
+        .unwrap_or_else(|| {
+            if is_computed {
+                let opt_recv = if *receiver_optional { "?." } else { "" };
+                if *call_optional {
+                    format!("{}{}[{}]?.({})", recv, opt_recv, prop, args_str)
+                } else {
+                    format!("{}{}[{}]({})", recv, opt_recv, prop, args_str)
+                }
+            } else {
+                let dot = if *receiver_optional { "?." } else { "." };
+                if *call_optional {
+                    format!("{}{}{}?.({})", recv, dot, prop, args_str)
+                } else {
+                    format!("{}{}{}({})", recv, dot, prop, args_str)
+                }
+            }
+        })
+    } else if is_computed {
         let opt_recv = if *receiver_optional { "?." } else { "" };
         if *call_optional {
             format!("{}{}[{}]?.({})", recv, opt_recv, prop, args_str)
@@ -8084,7 +8111,34 @@ fn maybe_codegen_fused_method_call_destructure_assignment(
                     hook_name.is_some(),
                 );
                 let args_str = join_call_arguments(&rendered_args);
-                let call_expr = if is_computed {
+                let call_expr = if !recv.contains("?.") && !recv.starts_with("new ") {
+                    render_method_call_expression_with_options_ast(
+                        &recv,
+                        &prop,
+                        args,
+                        &rendered_args,
+                        is_computed,
+                        *receiver_optional,
+                        *call_optional,
+                    )
+                    .unwrap_or_else(|| {
+                        if is_computed {
+                            let opt_recv = if *receiver_optional { "?." } else { "" };
+                            if *call_optional {
+                                format!("{}{}[{}]?.({})", recv, opt_recv, prop, args_str)
+                            } else {
+                                format!("{}{}[{}]({})", recv, opt_recv, prop, args_str)
+                            }
+                        } else {
+                            let dot = if *receiver_optional { "?." } else { "." };
+                            if *call_optional {
+                                format!("{}{}{}?.({})", recv, dot, prop, args_str)
+                            } else {
+                                format!("{}{}{}({})", recv, dot, prop, args_str)
+                            }
+                        }
+                    })
+                } else if is_computed {
                     let opt_recv = if *receiver_optional { "?." } else { "" };
                     if *call_optional {
                         format!("{}{}[{}]?.({})", recv, opt_recv, prop, args_str)
@@ -14310,14 +14364,25 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 .iter()
                 .position(|arg| arg == "AUTODEPS" || arg.ends_with(".AUTODEPS"))?;
             maybe_replace_autodeps_with_inferred_deps(cx, &prop, args, &mut rendered_args, true);
-            let dot = if *receiver_optional { "?." } else { "." };
             if cx.disable_memoization_features {
                 let rendered_args_joined = join_call_arguments(&rendered_args);
-                let call_expr = if *call_optional {
-                    format!("{}{}{}?.({})", recv, dot, prop, rendered_args_joined)
-                } else {
-                    format!("{}{}{}({})", recv, dot, prop, rendered_args_joined)
-                };
+                let call_expr = render_method_call_expression_with_options_ast(
+                    &recv,
+                    &prop,
+                    args,
+                    &rendered_args,
+                    false,
+                    *receiver_optional,
+                    *call_optional,
+                )
+                .unwrap_or_else(|| {
+                    let dot = if *receiver_optional { "?." } else { "." };
+                    if *call_optional {
+                        format!("{}{}{}?.({})", recv, dot, prop, rendered_args_joined)
+                    } else {
+                        format!("{}{}{}({})", recv, dot, prop, rendered_args_joined)
+                    }
+                });
                 let call_expr = if cx.emit_hook_guards {
                     guard_hook_call_expression(call_expr)
                 } else {
@@ -14350,11 +14415,23 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 let cb_slot = cx.alloc_cache_slot();
                 let deps_slot = cx.alloc_cache_slot();
                 call_args[dep_idx] = deps_name.clone();
-                let call_expr = if *call_optional {
-                    format!("{}{}{}?.({})", recv, dot, prop, call_args.join(", "))
-                } else {
-                    format!("{}{}{}({})", recv, dot, prop, call_args.join(", "))
-                };
+                let call_expr = render_method_call_expression_with_options_ast(
+                    &recv,
+                    &prop,
+                    args,
+                    &call_args,
+                    false,
+                    *receiver_optional,
+                    *call_optional,
+                )
+                .unwrap_or_else(|| {
+                    let dot = if *receiver_optional { "?." } else { "." };
+                    if *call_optional {
+                        format!("{}{}{}?.({})", recv, dot, prop, call_args.join(", "))
+                    } else {
+                        format!("{}{}{}({})", recv, dot, prop, call_args.join(", "))
+                    }
+                });
                 let call_expr = if cx.emit_hook_guards {
                     guard_hook_call_expression(call_expr)
                 } else {
@@ -14369,11 +14446,23 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 )?
             } else {
                 let slot = cx.alloc_cache_slot();
-                let call_expr = if *call_optional {
-                    format!("{}{}{}?.({})", recv, dot, prop, call_args.join(", "))
-                } else {
-                    format!("{}{}{}({})", recv, dot, prop, call_args.join(", "))
-                };
+                let call_expr = render_method_call_expression_with_options_ast(
+                    &recv,
+                    &prop,
+                    args,
+                    &call_args,
+                    false,
+                    *receiver_optional,
+                    *call_optional,
+                )
+                .unwrap_or_else(|| {
+                    let dot = if *receiver_optional { "?." } else { "." };
+                    if *call_optional {
+                        format!("{}{}{}?.({})", recv, dot, prop, call_args.join(", "))
+                    } else {
+                        format!("{}{}{}({})", recv, dot, prop, call_args.join(", "))
+                    }
+                });
                 let call_expr = if cx.emit_hook_guards {
                     guard_hook_call_expression(call_expr)
                 } else {
