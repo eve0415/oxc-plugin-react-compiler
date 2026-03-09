@@ -1,5 +1,6 @@
 use oxc_allocator::{Allocator, CloneIn, Dummy};
 use oxc_ast::{AstBuilder, NONE, ast};
+use oxc_ast_visit::{VisitMut, walk_mut};
 use oxc_codegen::{Codegen, CodegenOptions, IndentChar};
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SPAN, SourceType};
@@ -656,6 +657,7 @@ fn try_rewrite_compiled_statement_ast<'a>(
             Some(&state.cache_import_name),
         )?;
         prepend_instrument_forget_statement(builder, allocator, &mut function_body, cf, state);
+        align_runtime_identifier_references(builder, &mut function_body, cf, state);
         let compiled_params = cf.compiled_params.as_deref()?;
         let rewritten = if let Some(gate_name) = state
             .gating_local_name
@@ -740,6 +742,7 @@ fn try_build_gated_function_declaration_statements<'a>(
         Some(&state.cache_import_name),
     )?;
     prepend_instrument_forget_statement(builder, allocator, &mut function_body, cf, state);
+    align_runtime_identifier_references(builder, &mut function_body, cf, state);
     let compiled_params = cf.compiled_params.as_deref()?;
 
     match stmt {
@@ -3241,9 +3244,6 @@ fn skip_quoted(source: &str, start_idx: usize) -> Option<usize> {
 
 fn render_compiled_body_source(cf: &CompiledFunction, state: &AstRenderState) -> String {
     let mut body = cf.generated_body.clone();
-    if state.cache_import_name != "_c" {
-        body = body.replacen("_c(", &format!("{}(", state.cache_import_name), 1);
-    }
     if !cf.directives.is_empty() {
         body = crate::pipeline::strip_directive_lines(&body, &cf.directives);
     }
@@ -3257,22 +3257,6 @@ fn render_compiled_body_source(cf: &CompiledFunction, state: &AstRenderState) ->
             &body,
             &state.make_read_only_ident,
             freeze_name,
-        );
-    }
-    if cf.needs_hook_guards {
-        body = crate::pipeline::maybe_align_hook_guard_name(&body, &state.hook_guard_ident);
-    }
-    if cf.needs_structural_check_import {
-        body = crate::pipeline::maybe_align_structural_check_name(
-            &body,
-            &state.structural_check_ident,
-        );
-    }
-    if cf.needs_lower_context_access && !state.lower_context_access_ident.is_empty() {
-        body = crate::pipeline::maybe_align_lower_context_access_name(
-            &body,
-            &state.lower_context_access_imported,
-            &state.lower_context_access_ident,
         );
     }
     body = crate::pipeline::insert_blank_lines_for_guarded_cache_init(&body);
@@ -3491,8 +3475,74 @@ fn prepend_hir_instrument_forget_statement<'a>(
     let body = function.body.as_mut()?;
     let mut cloned_body = body.clone_in(allocator).unbox();
     prepend_instrument_forget_statement(builder, allocator, &mut cloned_body, cf, state);
+    align_runtime_identifier_references(builder, &mut cloned_body, cf, state);
     function.body = Some(builder.alloc(cloned_body));
     Some(())
+}
+
+fn align_runtime_identifier_references<'a>(
+    builder: AstBuilder<'a>,
+    body: &mut ast::FunctionBody<'a>,
+    cf: &CompiledFunction,
+    state: &AstRenderState,
+) {
+    let mut renames = Vec::new();
+    if cf.needs_hook_guards && !state.hook_guard_ident.is_empty() {
+        renames.push(("$dispatcherGuard", state.hook_guard_ident.as_str()));
+    }
+    if cf.needs_structural_check_import && !state.structural_check_ident.is_empty() {
+        renames.push(("$structuralCheck", state.structural_check_ident.as_str()));
+    }
+    if cf.needs_lower_context_access
+        && !state.lower_context_access_imported.is_empty()
+        && !state.lower_context_access_ident.is_empty()
+        && state.lower_context_access_imported != state.lower_context_access_ident
+    {
+        renames.push((
+            state.lower_context_access_imported.as_str(),
+            state.lower_context_access_ident.as_str(),
+        ));
+    }
+    let cache_import_name =
+        (state.cache_import_name != "_c").then_some(state.cache_import_name.as_str());
+    if renames.is_empty() && cache_import_name.is_none() {
+        return;
+    }
+
+    let mut renamer = IdentifierReferenceRenamer {
+        builder,
+        cache_import_name,
+        renames,
+    };
+    renamer.visit_function_body(body);
+}
+
+struct IdentifierReferenceRenamer<'a, 'rename> {
+    builder: AstBuilder<'a>,
+    cache_import_name: Option<&'rename str>,
+    renames: Vec<(&'rename str, &'rename str)>,
+}
+
+impl<'a> VisitMut<'a> for IdentifierReferenceRenamer<'a, '_> {
+    fn visit_call_expression(&mut self, it: &mut ast::CallExpression<'a>) {
+        if let Some(cache_import_name) = self.cache_import_name
+            && let ast::Expression::Identifier(identifier) = &mut it.callee
+            && identifier.name == "_c"
+        {
+            identifier.name = self.builder.ident(cache_import_name);
+        }
+        walk_mut::walk_call_expression(self, it);
+    }
+
+    fn visit_identifier_reference(&mut self, it: &mut ast::IdentifierReference<'a>) {
+        if let Some((_, to)) = self
+            .renames
+            .iter()
+            .find(|(from, _)| it.name.as_str() == *from)
+        {
+            it.name = self.builder.ident(to);
+        }
+    }
 }
 
 fn build_compiled_body_prefix_source(cf: &CompiledFunction) -> String {
@@ -3548,9 +3598,6 @@ fn can_emit_compiled_statement_ast(cf: &CompiledFunction) -> bool {
         && cf.is_function_declaration
         && !cf.needs_cache_import
         && !cf.needs_emit_freeze
-        && !cf.needs_hook_guards
-        && !cf.needs_structural_check_import
-        && !cf.needs_lower_context_access
 }
 
 fn maybe_gate_entrypoint_source(source: String, gate_name: &str) -> String {
@@ -3907,6 +3954,38 @@ function Component(props) {
 
         assert!(rewritten.contains("\"worklet\";"));
         assert!(rewritten.contains("return value;"));
+    }
+
+    #[test]
+    fn rewrites_runtime_helper_identifiers_as_ast() {
+        let source = r#"function Component() {
+  return null;
+}"#;
+        let mut compiled_function = make_test_compiled_function(
+            "Component",
+            0,
+            source.len() as u32,
+            "const cache = _c(1);\nreturn $dispatcherGuard(cache, lowerContextAccess($structuralCheck));",
+            &[],
+            false,
+        );
+        compiled_function.needs_hook_guards = true;
+        compiled_function.needs_structural_check_import = true;
+        compiled_function.needs_lower_context_access = true;
+        let state = AstRenderState {
+            cache_import_name: "_cache".to_string(),
+            hook_guard_ident: "hookGuard".to_string(),
+            structural_check_ident: "structuralCheck".to_string(),
+            lower_context_access_ident: "loweredContext".to_string(),
+            lower_context_access_imported: "lowerContextAccess".to_string(),
+            ..empty_test_state(source_type_for_filename("fixture.jsx"))
+        };
+
+        let rewritten =
+            rewrite_single_statement_for_test_with_state("fixture.jsx", source, &compiled_function, state);
+
+        assert!(rewritten.contains("const cache = _cache(1);"));
+        assert!(rewritten.contains("hookGuard(cache, loweredContext(structuralCheck));"));
     }
 
     fn make_test_compiled_function(
