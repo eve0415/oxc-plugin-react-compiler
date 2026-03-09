@@ -5066,6 +5066,70 @@ pub(crate) fn strip_directive_lines(body: &str, directives: &[String]) -> String
     out
 }
 
+fn strip_leading_cache_prologue(
+    body: &str,
+    cache_prologue: &crate::reactive_scopes::codegen_reactive::CachePrologue,
+) -> Option<String> {
+    let lines: Vec<&str> = body.lines().collect();
+    if lines.is_empty() {
+        return None;
+    }
+
+    let expected_const = format!(
+        "const {} = _c({});",
+        cache_prologue.binding_name, cache_prologue.size
+    );
+    if lines[0].trim() != expected_const {
+        return None;
+    }
+
+    let mut stripped_line_count = 1usize;
+    if let Some(fast_refresh) = &cache_prologue.fast_refresh {
+        let rest = &lines[stripped_line_count..];
+        if rest.len() < 8 {
+            return None;
+        }
+        let expected = [
+            "if (".to_string(),
+            format!(
+                "{}[{}] !== \"{}\"",
+                cache_prologue.binding_name, fast_refresh.cache_index, fast_refresh.hash
+            ),
+            ") {".to_string(),
+            format!(
+                "for (let {} = 0; {} < {}; {} += 1) {{",
+                fast_refresh.index_binding_name,
+                fast_refresh.index_binding_name,
+                cache_prologue.size,
+                fast_refresh.index_binding_name
+            ),
+            format!(
+                "{}[{}] = Symbol.for(\"{}\");",
+                cache_prologue.binding_name,
+                fast_refresh.index_binding_name,
+                crate::reactive_scopes::codegen_reactive::MEMO_CACHE_SENTINEL
+            ),
+            "}".to_string(),
+            format!(
+                "{}[{}] = \"{}\";",
+                cache_prologue.binding_name, fast_refresh.cache_index, fast_refresh.hash
+            ),
+            "}".to_string(),
+        ];
+        if !rest
+            .iter()
+            .take(expected.len())
+            .zip(expected.iter())
+            .all(|(line, expected)| line.trim() == expected)
+        {
+            return None;
+        }
+        stripped_line_count += expected.len();
+    }
+
+    Some(lines[stripped_line_count..].join("\n"))
+}
+
 fn is_valid_js_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
@@ -5891,6 +5955,18 @@ fn try_compile_function<'a>(
     if pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite {
         generated_body = normalize_use_fire_binding_temp_names(&generated_body);
     }
+    let mut cache_prologue = if synthesized_param_default_cache {
+        None
+    } else {
+        codegen_result.cache_prologue.clone()
+    };
+    if let Some(prologue) = cache_prologue.as_ref() {
+        if let Some(stripped_body) = strip_leading_cache_prologue(&generated_body, prologue) {
+            generated_body = stripped_body;
+        } else {
+            cache_prologue = None;
+        }
+    }
 
     let ParamsResult {
         compiled_params,
@@ -5986,6 +6062,7 @@ fn try_compile_function<'a>(
         directives,
         preserved_body_statements,
         hir_function: Some(pipeline_output.final_hir_snapshot),
+        cache_prologue,
         needs_instrument_forget,
         needs_emit_freeze,
         outlined_functions: outlined,
@@ -6097,6 +6174,18 @@ fn try_compile_function_with_name<'a>(
     if pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite {
         generated_body = normalize_use_fire_binding_temp_names(&generated_body);
     }
+    let mut cache_prologue = if synthesized_param_default_cache {
+        None
+    } else {
+        codegen_result.cache_prologue.clone()
+    };
+    if let Some(prologue) = cache_prologue.as_ref() {
+        if let Some(stripped_body) = strip_leading_cache_prologue(&generated_body, prologue) {
+            generated_body = stripped_body;
+        } else {
+            cache_prologue = None;
+        }
+    }
 
     let ParamsResult {
         compiled_params,
@@ -6192,6 +6281,7 @@ fn try_compile_function_with_name<'a>(
         directives,
         preserved_body_statements,
         hir_function: Some(pipeline_output.final_hir_snapshot),
+        cache_prologue,
         needs_instrument_forget,
         needs_emit_freeze,
         outlined_functions: outlined,
@@ -6311,6 +6401,18 @@ fn try_compile_arrow<'a>(
     if pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite {
         generated_body = normalize_use_fire_binding_temp_names(&generated_body);
     }
+    let mut cache_prologue = if synthesized_param_default_cache {
+        None
+    } else {
+        codegen_result.cache_prologue.clone()
+    };
+    if let Some(prologue) = cache_prologue.as_ref() {
+        if let Some(stripped_body) = strip_leading_cache_prologue(&generated_body, prologue) {
+            generated_body = stripped_body;
+        } else {
+            cache_prologue = None;
+        }
+    }
 
     let ParamsResult {
         compiled_params,
@@ -6406,6 +6508,7 @@ fn try_compile_arrow<'a>(
         directives,
         preserved_body_statements,
         hir_function: Some(pipeline_output.final_hir_snapshot),
+        cache_prologue,
         needs_instrument_forget,
         needs_emit_freeze,
         outlined_functions: outlined,

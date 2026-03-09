@@ -7,7 +7,8 @@ use oxc_codegen::{Codegen, CodegenOptions, IndentChar};
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SPAN, SourceType};
 use oxc_syntax::identifier::is_identifier_name;
-use oxc_syntax::operator::{AssignmentOperator, LogicalOperator};
+use oxc_syntax::number::NumberBase;
+use oxc_syntax::operator::{AssignmentOperator, BinaryOperator, LogicalOperator};
 
 use crate::CompileResult;
 
@@ -2859,6 +2860,7 @@ fn build_compiled_function_body<'a>(
     };
 
     apply_preserved_directives(builder, &mut function_body, cf);
+    prepend_cache_prologue_statements(builder, allocator, &mut function_body, cf, state);
     prepend_compiled_body_prefix_statements(
         builder,
         allocator,
@@ -3570,6 +3572,35 @@ fn parse_directive_literal_value(directive: &str) -> Option<&str> {
     Some(&directive[quote.len_utf8()..directive.len() - quote.len_utf8()])
 }
 
+fn prepend_cache_prologue_statements<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    body: &mut ast::FunctionBody<'a>,
+    cf: &CompiledFunction,
+    state: &AstRenderState,
+) {
+    let Some(cache_prologue) = cf.cache_prologue.as_ref() else {
+        return;
+    };
+
+    let mut statements = builder.vec1(build_cache_initializer_statement(
+        builder,
+        &cache_prologue.binding_name,
+        cache_prologue.size,
+        &state.cache_import_name,
+    ));
+    if let Some(fast_refresh) = cache_prologue.fast_refresh.as_ref() {
+        statements.push(build_fast_refresh_reset_statement(
+            builder,
+            &cache_prologue.binding_name,
+            cache_prologue.size,
+            fast_refresh,
+        ));
+    }
+    statements.extend(body.statements.iter().map(|statement| statement.clone_in(allocator)));
+    body.statements = statements;
+}
+
 fn prepend_compiled_body_prefix_statements<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
@@ -3606,6 +3637,164 @@ fn prepend_compiled_body_prefix_statements<'a>(
     );
     body.statements = statements;
     Some(())
+}
+
+fn build_cache_initializer_statement<'a>(
+    builder: AstBuilder<'a>,
+    cache_binding_name: &str,
+    cache_size: u32,
+    cache_import_name: &str,
+) -> ast::Statement<'a> {
+    build_const_binding_statement(
+        builder,
+        SPAN,
+        cache_binding_name,
+        builder.expression_call(
+            SPAN,
+            builder.expression_identifier(SPAN, builder.ident(cache_import_name)),
+            NONE,
+            builder.vec1(ast::Argument::from(builder.expression_numeric_literal(
+                SPAN,
+                cache_size as f64,
+                None,
+                NumberBase::Decimal,
+            ))),
+            false,
+        ),
+    )
+}
+
+fn build_fast_refresh_reset_statement<'a>(
+    builder: AstBuilder<'a>,
+    cache_binding_name: &str,
+    cache_size: u32,
+    fast_refresh: &crate::reactive_scopes::codegen_reactive::FastRefreshPrologue,
+) -> ast::Statement<'a> {
+    let test = builder.expression_binary(
+        SPAN,
+        cache_member_slot_expression(builder, cache_binding_name, fast_refresh.cache_index),
+        BinaryOperator::StrictInequality,
+        builder.expression_string_literal(SPAN, builder.atom(&fast_refresh.hash), None),
+    );
+    let mut consequent_statements = builder.vec1(builder.statement_for(
+        SPAN,
+        Some(ast::ForStatementInit::VariableDeclaration(
+            builder.alloc_variable_declaration(
+                SPAN,
+                ast::VariableDeclarationKind::Let,
+                builder.vec1(builder.variable_declarator(
+                    SPAN,
+                    ast::VariableDeclarationKind::Let,
+                    builder.binding_pattern_binding_identifier(
+                        SPAN,
+                        builder.ident(&fast_refresh.index_binding_name),
+                    ),
+                    NONE,
+                    Some(builder.expression_numeric_literal(
+                        SPAN,
+                        0.0,
+                        None,
+                        NumberBase::Decimal,
+                    )),
+                    false,
+                )),
+                false,
+            ),
+        )),
+        Some(builder.expression_binary(
+            SPAN,
+            builder.expression_identifier(SPAN, builder.ident(&fast_refresh.index_binding_name)),
+            BinaryOperator::LessThan,
+            builder.expression_numeric_literal(SPAN, cache_size as f64, None, NumberBase::Decimal),
+        )),
+        Some(builder.expression_assignment(
+            SPAN,
+            AssignmentOperator::Addition,
+            ast::AssignmentTarget::from(
+                builder.simple_assignment_target_assignment_target_identifier(
+                    SPAN,
+                    builder.ident(&fast_refresh.index_binding_name),
+                ),
+            ),
+            builder.expression_numeric_literal(SPAN, 1.0, None, NumberBase::Decimal),
+        )),
+        builder.statement_block(
+            SPAN,
+            builder.vec1(builder.statement_expression(
+                SPAN,
+                builder.expression_assignment(
+                    SPAN,
+                    AssignmentOperator::Assign,
+                    ast::AssignmentTarget::from(ast::SimpleAssignmentTarget::from(
+                        builder.member_expression_computed(
+                            SPAN,
+                            builder.expression_identifier(SPAN, builder.ident(cache_binding_name)),
+                            builder.expression_identifier(
+                                SPAN,
+                                builder.ident(&fast_refresh.index_binding_name),
+                            ),
+                            false,
+                        ),
+                    )),
+                    build_memo_cache_sentinel_expression(builder),
+                ),
+            )),
+        ),
+    ));
+    consequent_statements.push(builder.statement_expression(
+        SPAN,
+        builder.expression_assignment(
+            SPAN,
+            AssignmentOperator::Assign,
+            ast::AssignmentTarget::from(ast::SimpleAssignmentTarget::from(
+                builder.member_expression_computed(
+                    SPAN,
+                    builder.expression_identifier(SPAN, builder.ident(cache_binding_name)),
+                    builder.expression_numeric_literal(
+                        SPAN,
+                        fast_refresh.cache_index as f64,
+                        None,
+                        NumberBase::Decimal,
+                    ),
+                    false,
+                ),
+            )),
+            builder.expression_string_literal(SPAN, builder.atom(&fast_refresh.hash), None),
+        ),
+    ));
+    builder.statement_if(SPAN, test, builder.statement_block(SPAN, consequent_statements), None)
+}
+
+fn cache_member_slot_expression<'a>(
+    builder: AstBuilder<'a>,
+    cache_binding_name: &str,
+    slot: u32,
+) -> ast::Expression<'a> {
+    ast::Expression::from(builder.member_expression_computed(
+        SPAN,
+        builder.expression_identifier(SPAN, builder.ident(cache_binding_name)),
+        builder.expression_numeric_literal(SPAN, slot as f64, None, NumberBase::Decimal),
+        false,
+    ))
+}
+
+fn build_memo_cache_sentinel_expression<'a>(builder: AstBuilder<'a>) -> ast::Expression<'a> {
+    builder.expression_call(
+        SPAN,
+        ast::Expression::from(builder.member_expression_static(
+            SPAN,
+            builder.expression_identifier(SPAN, builder.ident("Symbol")),
+            builder.identifier_name(SPAN, "for"),
+            false,
+        )),
+        NONE,
+        builder.vec1(ast::Argument::from(builder.expression_string_literal(
+            SPAN,
+            builder.atom(crate::reactive_scopes::codegen_reactive::MEMO_CACHE_SENTINEL),
+            None,
+        ))),
+        false,
+    )
 }
 
 fn prepend_instrument_forget_statement<'a>(
@@ -4581,6 +4770,7 @@ function Component(props) {
             directives: vec![],
             preserved_body_statements: vec![],
             hir_function: None,
+            cache_prologue: None,
             needs_instrument_forget: false,
             needs_emit_freeze: false,
             outlined_functions: vec![],

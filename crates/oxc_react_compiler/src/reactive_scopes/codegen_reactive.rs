@@ -125,6 +125,20 @@ impl ExprValue {
 }
 
 /// Result of codegen for a reactive function.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FastRefreshPrologue {
+    pub cache_index: u32,
+    pub hash: String,
+    pub index_binding_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachePrologue {
+    pub binding_name: String,
+    pub size: u32,
+    pub fast_refresh: Option<FastRefreshPrologue>,
+}
+
 pub struct CodegenResult {
     /// Generated function body (statements inside the function).
     pub body: String,
@@ -142,6 +156,8 @@ pub struct CodegenResult {
     pub needs_hook_guards: bool,
     /// Whether this function emitted `$structuralCheck` calls.
     pub needs_structural_check_import: bool,
+    /// Structured cache prologue metadata for AST emission.
+    pub cache_prologue: Option<CachePrologue>,
     /// Deferred codegen error (upstream invariant parity).
     pub error: Option<CompilerError>,
 }
@@ -708,35 +724,55 @@ fn codegen_reactive_function_with_primitives(
 
     // Build output with correct ordering: directives, then cache allocation, then body.
     // Upstream puts directives like "use no forget" before `const $ = _c(N);`.
+    let cache_prologue = if cache_size > 0 {
+        Some(CachePrologue {
+            binding_name: cx.synthesize_name("$"),
+            size: cache_size,
+            fast_refresh: fast_refresh_state
+                .as_ref()
+                .map(|(cache_index, hash)| FastRefreshPrologue {
+                    cache_index: *cache_index,
+                    hash: hash.clone(),
+                    index_binding_name: cx.synthesize_name("$i"),
+                }),
+        })
+    } else {
+        None
+    };
+
     let mut output = String::new();
     if options.emit_directives_in_body {
         for directive in &func.directives {
             output.push_str(&format!("\"{}\";\n", directive));
         }
     }
-    if cache_size > 0 {
-        let cache_var = cx.synthesize_name("$");
-        output.push_str(&format!("const {} = _c({});\n", cache_var, cache_size));
-        if let Some((cache_index, hash)) = &fast_refresh_state {
-            let index_var = cx.synthesize_name("$i");
+    if let Some(cache_prologue) = &cache_prologue {
+        output.push_str(&format!(
+            "const {} = _c({});\n",
+            cache_prologue.binding_name, cache_prologue.size
+        ));
+        if let Some(fast_refresh) = &cache_prologue.fast_refresh {
             output.push_str("if (\n");
             output.push_str(&format!(
                 "  {}[{}] !== \"{}\"\n",
-                cache_var, cache_index, hash
+                cache_prologue.binding_name, fast_refresh.cache_index, fast_refresh.hash
             ));
             output.push_str(") {\n");
             output.push_str(&format!(
                 "  for (let {} = 0; {} < {}; {} += 1) {{\n",
-                index_var, index_var, cache_size, index_var
+                fast_refresh.index_binding_name,
+                fast_refresh.index_binding_name,
+                cache_prologue.size,
+                fast_refresh.index_binding_name
             ));
             output.push_str(&format!(
                 "    {}[{}] = Symbol.for(\"{}\");\n",
-                cache_var, index_var, MEMO_CACHE_SENTINEL
+                cache_prologue.binding_name, fast_refresh.index_binding_name, MEMO_CACHE_SENTINEL
             ));
             output.push_str("  }\n");
             output.push_str(&format!(
                 "  {}[{}] = \"{}\";\n",
-                cache_var, cache_index, hash
+                cache_prologue.binding_name, fast_refresh.cache_index, fast_refresh.hash
             ));
             output.push_str("}\n");
         }
@@ -760,6 +796,7 @@ fn codegen_reactive_function_with_primitives(
         has_fire_rewrite: false,
         needs_hook_guards: body.contains(HOOK_GUARD_IDENT),
         needs_structural_check_import: cx.needs_structural_check_import,
+        cache_prologue,
         error: cx.codegen_error,
     }
 }
