@@ -19157,9 +19157,7 @@ fn render_jsx_attributes_ast<'a>(
                 let expression =
                     parse_rendered_expression_ast(allocator, &codegen_place_expr_value(cx, place).expr)?;
                 let value = match expression {
-                    ast::Expression::StringLiteral(_)
-                    | ast::Expression::JSXElement(_)
-                    | ast::Expression::JSXFragment(_) => return None,
+                    ast::Expression::StringLiteral(_) => return None,
                     expression => Some(ast::JSXAttributeValue::ExpressionContainer(
                         builder.alloc_jsx_expression_container(
                             SPAN,
@@ -21643,6 +21641,23 @@ mod tests {
         }
     }
 
+    fn temp_place(id: u32, declaration_id: u32) -> Place {
+        Place {
+            identifier: Identifier {
+                id: IdentifierId::new(id),
+                declaration_id: DeclarationId::new(declaration_id),
+                name: None,
+                mutable_range: MutableRange::default(),
+                scope: None,
+                type_: Type::Poly,
+                loc: SourceLocation::Generated,
+            },
+            effect: Effect::Read,
+            reactive: false,
+            loc: SourceLocation::Generated,
+        }
+    }
+
     #[test]
     fn renders_named_function_expression_via_ast() {
         let rendered = render_function_expression_ast(
@@ -21865,6 +21880,28 @@ mod tests {
         .expect("expected jsx element");
 
         assert_eq!(rendered, "<div value={value} />");
+    }
+
+    #[test]
+    fn renders_jsx_element_attribute_via_ast() {
+        let mut cx = test_context();
+        let place = temp_place(2, 2);
+        cx.set_temp_expr(
+            &place.identifier,
+            Some(super::ExprValue::primary("<span />".to_string())),
+        );
+        let rendered = render_jsx_expression_ast(
+            &mut cx,
+            &JsxTag::BuiltinTag("div".to_string()),
+            &[JsxAttribute::Attribute {
+                name: "slot".to_string(),
+                place,
+            }],
+            &None,
+        )
+        .expect("expected jsx element");
+
+        assert_eq!(rendered, "<div slot={<span />} />");
     }
 
     #[test]
