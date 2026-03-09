@@ -17996,7 +17996,7 @@ fn codegen_function_expression(
     adopt_codegen_error(cx, inner_result.error.take());
 
     let body_trimmed = inner_result.body.trim();
-    render_function_expression_ast(
+    if let Some(rendered) = render_function_expression_ast(
         &lowered_func.func.params,
         &inner_result.param_names,
         body_trimmed,
@@ -18010,67 +18010,23 @@ fn codegen_function_expression(
         } else {
             None
         },
-    )
-    .unwrap_or_else(|| {
-        let params = inner_result.param_names.join(", ");
-        let async_prefix = if lowered_func.func.async_ {
-            "async "
-        } else {
-            ""
-        };
-        let generator_star = if lowered_func.func.generator { "*" } else { "" };
-        let mut rendered = match fn_type {
-            FunctionExpressionType::ArrowFunctionExpression => {
-                let is_single_return = lowered_func.func.directives.is_empty()
-                    && body_trimmed.starts_with("return ")
-                    && body_trimmed.ends_with(';')
-                    && is_single_statement(body_trimmed);
-                if is_single_return {
-                    let expr = body_trimmed[7..body_trimmed.len() - 1].trim();
-                    let arrow_expr = if expr.starts_with('{') && expr.ends_with('}') {
-                        format!("({})", expr)
-                    } else {
-                        expr.to_string()
-                    };
-                    let inline_arrow = format!("{}({}) => {}", async_prefix, params, arrow_expr);
-                    if inline_arrow.len() > 60 {
-                        format!("{}({}) =>\n{}", async_prefix, params, arrow_expr)
-                    } else {
-                        inline_arrow
-                    }
-                } else if body_trimmed.is_empty() {
-                    format!("{}({}) => {{}}", async_prefix, params)
-                } else {
-                    format!("{}({}) => {{\n{}\n}}", async_prefix, params, body_trimmed)
-                }
-            }
-            FunctionExpressionType::FunctionExpression
-            | FunctionExpressionType::FunctionDeclaration => {
-                let fn_name = name.as_deref().unwrap_or("");
-                if fn_name.is_empty() {
-                    format!(
-                        "{}function{}({}) {{\n{}\n}}",
-                        async_prefix, generator_star, params, body_trimmed
-                    )
-                } else {
-                    format!(
-                        "{}function{} {}({}) {{\n{}\n}}",
-                        async_prefix, generator_star, fn_name, params, body_trimmed
-                    )
-                }
-            }
-        };
-
-        if cx.enable_name_anonymous_functions
-            && name.is_none()
-            && let Some(name_hint) = lowered_func.func.id.as_ref()
-        {
-            let key = escape_string(name_hint);
-            rendered = format!("{{ \"{key}\": {rendered} }}[\"{key}\"]");
-        }
-
+    ) {
         rendered
-    })
+    } else {
+        cx.codegen_error.get_or_insert_with(|| {
+            CompilerError::Bail(BailOut {
+                reason: "Failed to AST-render nested function expression".to_string(),
+                diagnostics: vec![CompilerDiagnostic {
+                    severity: DiagnosticSeverity::Invariant,
+                    message: lowered_func.func.id.as_ref().map_or_else(
+                        || "nested function expression AST render failed".to_string(),
+                        |id| format!("nested function expression AST render failed: {id}"),
+                    ),
+                }],
+            })
+        });
+        "(() => {})".to_string()
+    }
 }
 
 /// Check if a code string is a single top-level statement (no semicolons at depth 0 except the trailing one).
