@@ -471,7 +471,7 @@ fn strip_flow_function_signature_types(source: &str) -> String {
 /// `(value: Foo)` -> `(value as /*__FLOW_CAST__*/ Foo)`
 ///
 /// The marker comment allows HIR lowering to recover cast-style emission.
-fn rewrite_flow_cast_expressions(source: &str) -> String {
+pub(crate) fn rewrite_flow_cast_expressions(source: &str) -> String {
     fn split_flow_cast_inner(inner: &str) -> Option<(String, String)> {
         let chars: Vec<(usize, char)> = inner.char_indices().collect();
         let mut depth_paren = 0usize;

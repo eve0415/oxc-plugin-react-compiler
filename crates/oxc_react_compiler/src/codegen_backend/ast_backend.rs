@@ -36,6 +36,8 @@ struct InsertedImportSpec {
     local: String,
 }
 
+const FLOW_CAST_MARKER_HELPER: &str = "__REACT_COMPILER_FLOW_CAST__";
+
 struct RenderedCompiledFunction {
     before_emit: String,
     replacement_src: String,
@@ -202,8 +204,7 @@ fn try_emit_module(
             stmt,
             &stmt_compiled,
             &state,
-        )
-        {
+        ) {
             for statement in statements {
                 let statement_source =
                     codegen_statement_source(&allocator, state.source_type, &statement);
@@ -222,6 +223,13 @@ fn try_emit_module(
             args.source,
             &state,
         )?;
+        if std::env::var("DEBUG_AST_STRING_REWRITE").is_ok() {
+            eprintln!(
+                "[AST_STRING_REWRITE] file={} stmt={}",
+                args.filename,
+                args.source[span.start as usize..span.end as usize].replace('\n', "\\n")
+            );
+        }
         let rewritten_stmt = if let Some(name) = gate_name {
             maybe_gate_entrypoint_source(rewritten_stmt, name)
         } else {
@@ -269,7 +277,10 @@ fn try_emit_module(
         args.program.directives.clone_in(&allocator),
         body,
     );
-    let code = codegen_program(&program);
+    let mut code = codegen_program(&program);
+    if code.contains(FLOW_CAST_MARKER_HELPER) {
+        code = restore_flow_cast_marker_calls(&code);
+    }
     let transformed = super::shared::normalize_for_transform_flag(&code)
         != super::shared::normalize_for_transform_flag(args.source_untransformed);
 
@@ -599,29 +610,9 @@ fn try_rewrite_compiled_statement_ast<'a>(
         }
 
         let body_source = render_compiled_body_source(cf, state);
-        let function_body = match parse_compiled_function_body(allocator, source_type, cf, &body_source) {
-            Ok(body) => body,
-            Err(err) => {
-                if std::env::var("DEBUG_AST_REWRITE_REASON").is_ok() {
-                    eprintln!(
-                        "[AST_REWRITE_REASON] file={} name={} reason=parse-body err={}",
-                        cf.name,
-                        cf.name,
-                        err
-                    );
-                }
-                return None;
-            }
-        };
-        let Some(compiled_params) = cf.compiled_params.as_deref() else {
-            if std::env::var("DEBUG_AST_REWRITE_REASON").is_ok() {
-                eprintln!(
-                    "[AST_REWRITE_REASON] file={} name={} reason=params-none",
-                    cf.name, cf.name
-                );
-            }
-            return None;
-        };
+        let function_body =
+            parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?;
+        let compiled_params = cf.compiled_params.as_deref()?;
         let rewritten = if let Some(gate_name) = state
             .gating_local_name
             .as_deref()
@@ -647,14 +638,6 @@ fn try_rewrite_compiled_statement_ast<'a>(
             )
         };
         if !rewritten {
-            if std::env::var("DEBUG_AST_REWRITE_REASON").is_ok() {
-                eprintln!(
-                    "[AST_REWRITE_REASON] file={} name={} reason=rewrite-false stmt={}",
-                    cf.name,
-                    cf.name,
-                    stmt_source.replace('\n', "\\n")
-                );
-            }
             return None;
         }
 
@@ -695,8 +678,10 @@ fn try_build_gated_function_declaration_statements<'a>(
     if source[stmt.span().start as usize..stmt.span().end as usize].contains("FIXTURE_ENTRYPOINT") {
         return None;
     }
-    let referenced_before_decl =
-        crate::pipeline::has_early_binding_reference(&source[..stmt.span().start as usize], &cf.name);
+    let referenced_before_decl = crate::pipeline::has_early_binding_reference(
+        &source[..stmt.span().start as usize],
+        &cf.name,
+    );
 
     let body_source = render_compiled_body_source(cf, state);
     let function_body =
@@ -844,7 +829,9 @@ fn build_early_reference_gated_function_declaration_statements<'a>(
     let optimized_name = format!("{}_optimized", cf.name);
     let unoptimized_name = format!("{}_unoptimized", cf.name);
     let param_count = crate::pipeline::count_param_slots(&cf.params_str);
-    let wrapper_args = (0..param_count).map(|i| format!("arg{i}")).collect::<Vec<_>>();
+    let wrapper_args = (0..param_count)
+        .map(|i| format!("arg{i}"))
+        .collect::<Vec<_>>();
 
     let mut statements = builder.vec();
     statements.push(build_const_binding_statement(
@@ -960,10 +947,9 @@ fn build_export_default_identifier_statement<'a>(
 ) -> ast::Statement<'a> {
     ast::Statement::ExportDefaultDeclaration(builder.alloc_export_default_declaration(
         span,
-        ast::ExportDefaultDeclarationKind::Identifier(builder.alloc_identifier_reference(
-            span,
-            builder.atom(name),
-        )),
+        ast::ExportDefaultDeclarationKind::Identifier(
+            builder.alloc_identifier_reference(span, builder.atom(name)),
+        ),
     ))
 }
 
@@ -1042,9 +1028,10 @@ fn build_identifier_call_expression<'a>(
     name: &str,
     args: &[String],
 ) -> ast::Expression<'a> {
-    let arguments = builder.vec_from_iter(args.iter().map(|arg| {
-        ast::Argument::from(builder.expression_identifier(span, builder.ident(arg)))
-    }));
+    let arguments =
+        builder.vec_from_iter(args.iter().map(|arg| {
+            ast::Argument::from(builder.expression_identifier(span, builder.ident(arg)))
+        }));
     builder.expression_call(
         span,
         builder.expression_identifier(span, builder.ident(name)),
@@ -2815,11 +2802,55 @@ fn parse_compiled_function_body<'a>(
 ) -> Result<ast::FunctionBody<'a>, String> {
     let async_prefix = if cf.is_async { "async " } else { "" };
     let generator_prefix = if cf.is_generator { "*" } else { "" };
-    let wrapper = format!(
-        "{}function {}__codex_ast_body() {{\n{}\n}}",
-        async_prefix, generator_prefix, body_source
-    );
-    let mut statements = parse_statements(allocator, source_type, allocator.alloc_str(&wrapper))?;
+    let mut attempts = vec![(source_type, body_source.to_string())];
+    let iife_normalized = normalize_generated_body_iife_parenthesization(body_source);
+    if iife_normalized != body_source {
+        attempts.push((source_type, iife_normalized.clone()));
+    }
+    let flow_cast_normalized = normalize_generated_body_flow_cast_marker_calls(body_source);
+    if flow_cast_normalized != body_source {
+        let ts_source_type = source_type.with_typescript(true);
+        attempts.push((ts_source_type, flow_cast_normalized.clone()));
+        let flow_iife_normalized =
+            normalize_generated_body_iife_parenthesization(&flow_cast_normalized);
+        if flow_iife_normalized != flow_cast_normalized {
+            attempts.push((ts_source_type, flow_iife_normalized));
+        }
+    }
+
+    let mut last_err = None;
+    let mut statements = None;
+    for (attempt_source_type, attempt_body) in attempts {
+        let wrapper = format!(
+            "{}function {}__codex_ast_body() {{\n{}\n}}",
+            async_prefix, generator_prefix, attempt_body
+        );
+        match parse_statements(
+            allocator,
+            attempt_source_type,
+            allocator.alloc_str(&wrapper),
+        ) {
+            Ok(parsed_statements) => {
+                statements = Some(parsed_statements);
+                break;
+            }
+            Err(err) => {
+                last_err = Some((err, wrapper));
+            }
+        }
+    }
+    let mut statements = match statements {
+        Some(statements) => statements,
+        None => {
+            let (err, _) = last_err.unwrap_or_else(|| {
+                (
+                    "failed to parse wrapped function body".to_string(),
+                    String::new(),
+                )
+            });
+            return Err(err);
+        }
+    };
     let statement = statements
         .pop()
         .ok_or_else(|| "failed to parse wrapped function body".to_string())?;
@@ -2831,6 +2862,327 @@ fn parse_compiled_function_body<'a>(
         .body
         .map(|body| body.unbox())
         .ok_or_else(|| "wrapped function body missing body".to_string())
+}
+
+fn normalize_generated_body_iife_parenthesization(body_source: &str) -> String {
+    let mut changed = false;
+    let normalized = body_source
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            let indent = &line[..line.len() - line.trim_start().len()];
+            match trimmed {
+                "function() {" => {
+                    changed = true;
+                    format!("{indent}(function() {{")
+                }
+                "function () {" => {
+                    changed = true;
+                    format!("{indent}(function () {{")
+                }
+                "}();" => {
+                    changed = true;
+                    format!("{indent}}})();")
+                }
+                _ => line.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if changed {
+        normalized
+    } else {
+        body_source.to_string()
+    }
+}
+
+fn normalize_generated_body_flow_cast_marker_calls(body_source: &str) -> String {
+    let rewritten = crate::pipeline::rewrite_flow_cast_expressions(body_source);
+    if rewritten == body_source {
+        return body_source.to_string();
+    }
+    rewrite_flow_cast_marker_calls(&rewritten)
+}
+
+fn rewrite_flow_cast_marker_calls(source: &str) -> String {
+    let mut changed = false;
+    let mut out = String::with_capacity(source.len());
+    let mut paren_stack: Vec<usize> = Vec::new();
+    let bytes = source.as_bytes();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        if source[i..].starts_with("//") {
+            while i < bytes.len() {
+                let ch = source[i..].chars().next().unwrap();
+                out.push(ch);
+                i += ch.len_utf8();
+                if ch == '\n' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if source[i..].starts_with("/*") {
+            out.push('/');
+            out.push('*');
+            i += 2;
+            while i < bytes.len() {
+                if source[i..].starts_with("*/") {
+                    out.push('*');
+                    out.push('/');
+                    i += 2;
+                    break;
+                }
+                let ch = source[i..].chars().next().unwrap();
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+            continue;
+        }
+
+        let ch = source[i..].chars().next().unwrap();
+        if ch == '\'' || ch == '"' || ch == '`' {
+            let quote = ch;
+            out.push(ch);
+            i += ch.len_utf8();
+            let mut escaped = false;
+            while i < bytes.len() {
+                let c = source[i..].chars().next().unwrap();
+                out.push(c);
+                i += c.len_utf8();
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                if c == '\\' {
+                    escaped = true;
+                    continue;
+                }
+                if c == quote {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        if ch == '(' {
+            paren_stack.push(out.len());
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+
+        if ch == ')' {
+            out.push(ch);
+            i += ch.len_utf8();
+
+            if let Some(open_idx) = paren_stack.pop() {
+                let close_idx = out.len() - 1;
+                if open_idx < close_idx {
+                    let inner = &out[open_idx + 1..close_idx];
+                    if let Some((expr, ty)) = split_flow_cast_marker_inner(inner) {
+                        let replacement =
+                            format!("{FLOW_CAST_MARKER_HELPER}<{}>({})", ty.trim(), expr.trim());
+                        out.replace_range(open_idx..=close_idx, &replacement);
+                        changed = true;
+                    }
+                }
+            }
+            continue;
+        }
+
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+
+    if changed { out } else { source.to_string() }
+}
+
+fn split_flow_cast_marker_inner(inner: &str) -> Option<(String, String)> {
+    const MARKER: &str = " as /*__FLOW_CAST__*/ ";
+    let chars: Vec<(usize, char)> = inner.char_indices().collect();
+    let mut depth_paren = 0usize;
+    let mut depth_brace = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut depth_angle = 0usize;
+
+    for (byte_idx, ch) in chars {
+        match ch {
+            '(' => depth_paren += 1,
+            ')' => depth_paren = depth_paren.saturating_sub(1),
+            '{' => depth_brace += 1,
+            '}' => depth_brace = depth_brace.saturating_sub(1),
+            '[' => depth_bracket += 1,
+            ']' => depth_bracket = depth_bracket.saturating_sub(1),
+            '<' => depth_angle += 1,
+            '>' => depth_angle = depth_angle.saturating_sub(1),
+            _ => {}
+        }
+        let at_top = depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 && depth_angle == 0;
+        if at_top && inner[byte_idx..].starts_with(MARKER) {
+            let left = inner[..byte_idx].trim();
+            let right = inner[byte_idx + MARKER.len()..].trim();
+            if left.is_empty() || right.is_empty() {
+                return None;
+            }
+            return Some((left.to_string(), right.to_string()));
+        }
+    }
+
+    None
+}
+
+fn restore_flow_cast_marker_calls(source: &str) -> String {
+    if !source.contains(FLOW_CAST_MARKER_HELPER) {
+        return source.to_string();
+    }
+
+    let mut out = String::with_capacity(source.len());
+    let bytes = source.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if starts_flow_cast_marker(source, i)
+            && let Some((replacement, next_idx)) = parse_flow_cast_marker_call(source, i)
+        {
+            out.push_str(&replacement);
+            i = next_idx;
+            continue;
+        }
+
+        let ch = source[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn starts_flow_cast_marker(source: &str, idx: usize) -> bool {
+    if !source[idx..].starts_with(FLOW_CAST_MARKER_HELPER) {
+        return false;
+    }
+    let prev = source[..idx].chars().next_back();
+    !prev.is_some_and(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphanumeric())
+}
+
+fn parse_flow_cast_marker_call(source: &str, idx: usize) -> Option<(String, usize)> {
+    let mut i = idx + FLOW_CAST_MARKER_HELPER.len();
+    i = skip_ascii_whitespace(source, i);
+    if source[i..].chars().next()? != '<' {
+        return None;
+    }
+    let (type_annotation, after_type) = parse_balanced_angle_contents(source, i)?;
+    let i = skip_ascii_whitespace(source, after_type);
+    if source[i..].chars().next()? != '(' {
+        return None;
+    }
+    let (arg, after_arg) = parse_balanced_paren_contents(source, i)?;
+    let restored_arg = restore_flow_cast_marker_calls(arg.trim());
+    Some((
+        format!("({}: {})", restored_arg.trim(), type_annotation.trim()),
+        after_arg,
+    ))
+}
+
+fn skip_ascii_whitespace(source: &str, mut idx: usize) -> usize {
+    while idx < source.len() {
+        let ch = source[idx..].chars().next().unwrap();
+        if !ch.is_ascii_whitespace() {
+            break;
+        }
+        idx += ch.len_utf8();
+    }
+    idx
+}
+
+fn parse_balanced_angle_contents(source: &str, open_idx: usize) -> Option<(String, usize)> {
+    let bytes = source.as_bytes();
+    let mut i = open_idx + 1;
+    let mut depth_angle = 1usize;
+    let mut depth_paren = 0usize;
+    let mut depth_brace = 0usize;
+    let mut depth_bracket = 0usize;
+    while i < bytes.len() {
+        let ch = source[i..].chars().next().unwrap();
+        match ch {
+            '\'' | '"' | '`' => {
+                i = skip_quoted(source, i)?;
+                continue;
+            }
+            '(' => depth_paren += 1,
+            ')' => depth_paren = depth_paren.saturating_sub(1),
+            '{' => depth_brace += 1,
+            '}' => depth_brace = depth_brace.saturating_sub(1),
+            '[' => depth_bracket += 1,
+            ']' => depth_bracket = depth_bracket.saturating_sub(1),
+            '<' if depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 => {
+                depth_angle += 1;
+            }
+            '>' if depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 => {
+                depth_angle = depth_angle.saturating_sub(1);
+                if depth_angle == 0 {
+                    return Some((source[open_idx + 1..i].to_string(), i + 1));
+                }
+            }
+            _ => {}
+        }
+        i += ch.len_utf8();
+    }
+    None
+}
+
+fn parse_balanced_paren_contents(source: &str, open_idx: usize) -> Option<(String, usize)> {
+    let bytes = source.as_bytes();
+    let mut i = open_idx + 1;
+    let mut depth_paren = 1usize;
+    let mut depth_brace = 0usize;
+    let mut depth_bracket = 0usize;
+    while i < bytes.len() {
+        let ch = source[i..].chars().next().unwrap();
+        match ch {
+            '\'' | '"' | '`' => {
+                i = skip_quoted(source, i)?;
+                continue;
+            }
+            '(' => depth_paren += 1,
+            ')' => {
+                depth_paren = depth_paren.saturating_sub(1);
+                if depth_paren == 0 {
+                    return Some((source[open_idx + 1..i].to_string(), i + 1));
+                }
+            }
+            '{' => depth_brace += 1,
+            '}' => depth_brace = depth_brace.saturating_sub(1),
+            '[' => depth_bracket += 1,
+            ']' => depth_bracket = depth_bracket.saturating_sub(1),
+            _ => {}
+        }
+        i += ch.len_utf8();
+    }
+    None
+}
+
+fn skip_quoted(source: &str, start_idx: usize) -> Option<usize> {
+    let quote = source[start_idx..].chars().next()?;
+    let bytes = source.as_bytes();
+    let mut i = start_idx + quote.len_utf8();
+    let mut escaped = false;
+    while i < bytes.len() {
+        let ch = source[i..].chars().next().unwrap();
+        i += ch.len_utf8();
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == quote {
+            return Some(i);
+        }
+    }
+    None
 }
 
 fn render_compiled_function(
@@ -3299,8 +3651,10 @@ mod tests {
 
     use super::{
         AstRenderState, CompiledBodyPayload, CompiledFunction, CompiledParam,
-        codegen_statement_source, maybe_gate_entrypoint_source, parse_statements,
-        source_type_for_filename, try_rewrite_compiled_statement_ast,
+        codegen_statement_source, maybe_gate_entrypoint_source,
+        normalize_generated_body_flow_cast_marker_calls, parse_statements,
+        restore_flow_cast_marker_calls, source_type_for_filename,
+        try_rewrite_compiled_statement_ast,
     };
 
     fn empty_test_state(source_type: oxc_span::SourceType) -> AstRenderState {
@@ -3319,6 +3673,26 @@ mod tests {
             runtime_import_merge_plan: None,
             instrument_source_path: String::new(),
         }
+    }
+
+    #[test]
+    fn rewrites_flow_cast_bodies_to_marker_calls() {
+        let body = r#"const x = { bar: props.bar };
+const y = (x: Foo);
+const z = ([]: Array<number>);
+return z;"#;
+        let normalized = normalize_generated_body_flow_cast_marker_calls(body);
+        assert!(normalized.contains("__REACT_COMPILER_FLOW_CAST__<Foo>(x)"));
+        assert!(normalized.contains("__REACT_COMPILER_FLOW_CAST__<Array<number>>([])"));
+    }
+
+    #[test]
+    fn restores_flow_cast_marker_calls_to_flow_syntax() {
+        let source = r#"const y = __REACT_COMPILER_FLOW_CAST__<Foo>(x);
+const z = __REACT_COMPILER_FLOW_CAST__<Array<number>>([]);"#;
+        let restored = restore_flow_cast_marker_calls(source);
+        assert!(restored.contains("const y = (x: Foo);"));
+        assert!(restored.contains("const z = ([]: Array<number>);"));
     }
 
     fn make_test_compiled_function(
@@ -3773,8 +4147,10 @@ mod tests {
         let ast::Statement::ExportNamedDeclaration(export_named) = statement else {
             panic!("expected export named declaration");
         };
-        let ast::Declaration::FunctionDeclaration(function) =
-            export_named.declaration.as_ref().expect("expected declaration")
+        let ast::Declaration::FunctionDeclaration(function) = export_named
+            .declaration
+            .as_ref()
+            .expect("expected declaration")
         else {
             panic!("expected function declaration");
         };
