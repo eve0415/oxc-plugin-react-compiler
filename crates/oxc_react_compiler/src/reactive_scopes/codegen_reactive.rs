@@ -20360,27 +20360,11 @@ fn render_reactive_function_body_prologue_ast(
         ));
 
         if let Some(fast_refresh) = &cache_prologue.fast_refresh {
-            let refresh_statement = parse_single_statement_for_ast_codegen(
-                &allocator,
-                SourceType::mjs().with_jsx(true),
-                &format!(
-                    "if (\n  {}[{}] !== \"{}\"\n) {{\n  for (let {} = 0; {} < {}; {} += 1) {{\n    {}[{}] = Symbol.for(\"{}\");\n  }}\n  {}[{}] = \"{}\";\n}}",
-                    cache_prologue.binding_name,
-                    fast_refresh.cache_index,
-                    escape_string(&fast_refresh.hash),
-                    fast_refresh.index_binding_name,
-                    fast_refresh.index_binding_name,
-                    cache_prologue.size,
-                    fast_refresh.index_binding_name,
-                    cache_prologue.binding_name,
-                    fast_refresh.index_binding_name,
-                    MEMO_CACHE_SENTINEL,
-                    cache_prologue.binding_name,
-                    fast_refresh.cache_index,
-                    escape_string(&fast_refresh.hash),
-                ),
-            )
-            .ok()?;
+            let refresh_statement = build_fast_refresh_cache_reset_statement_ast(
+                builder,
+                cache_prologue,
+                fast_refresh,
+            )?;
             statements.push(refresh_statement);
         }
     }
@@ -20393,6 +20377,148 @@ fn render_reactive_function_body_prologue_ast(
             codegen_directives_and_statements_with_oxc(directives, &statements)
         ))
     }
+}
+
+fn build_fast_refresh_cache_reset_statement_ast<'a>(
+    builder: AstBuilder<'a>,
+    cache_prologue: &CachePrologue,
+    fast_refresh: &FastRefreshPrologue,
+) -> Option<ast::Statement<'a>> {
+    fn build_cache_slot_expression<'a>(
+        builder: AstBuilder<'a>,
+        binding_name: &str,
+        slot_expr: ast::Expression<'a>,
+    ) -> ast::Expression<'a> {
+        ast::Expression::from(builder.member_expression_computed(
+            SPAN,
+            builder.expression_identifier(SPAN, builder.ident(binding_name)),
+            slot_expr,
+            false,
+        ))
+    }
+
+    fn build_cache_slot_assignment_statement<'a>(
+        builder: AstBuilder<'a>,
+        binding_name: &str,
+        slot_expr: ast::Expression<'a>,
+        value: ast::Expression<'a>,
+    ) -> ast::Statement<'a> {
+        let target = ast::AssignmentTarget::from(ast::SimpleAssignmentTarget::from(
+            builder.member_expression_computed(
+                SPAN,
+                builder.expression_identifier(SPAN, builder.ident(binding_name)),
+                slot_expr,
+                false,
+            ),
+        ));
+        builder.statement_expression(
+            SPAN,
+            builder.expression_assignment(SPAN, AssignmentOperator::Assign, target, value),
+        )
+    }
+
+    fn build_symbol_for_expression<'a>(builder: AstBuilder<'a>, value: &str) -> ast::Expression<'a> {
+        builder.expression_call(
+            SPAN,
+            ast::Expression::from(builder.member_expression_static(
+                SPAN,
+                builder.expression_identifier(SPAN, builder.ident("Symbol")),
+                builder.identifier_name(SPAN, builder.ident("for")),
+                false,
+            )),
+            NONE,
+            builder.vec1(ast::Argument::from(
+                builder.expression_string_literal(SPAN, builder.atom(value), None),
+            )),
+            false,
+        )
+    }
+
+    let hash_slot = builder.expression_numeric_literal(
+        SPAN,
+        fast_refresh.cache_index as f64,
+        None,
+        NumberBase::Decimal,
+    );
+    let test = builder.expression_binary(
+        SPAN,
+        build_cache_slot_expression(builder, &cache_prologue.binding_name, hash_slot),
+        AstBinaryOperator::StrictInequality,
+        builder.expression_string_literal(SPAN, builder.atom(&fast_refresh.hash), None),
+    );
+
+    let index_name = &fast_refresh.index_binding_name;
+    let index_identifier = builder.binding_pattern_binding_identifier(SPAN, builder.ident(index_name));
+    let loop_init = builder.for_statement_init_variable_declaration(
+        SPAN,
+        ast::VariableDeclarationKind::Let,
+        builder.vec1(builder.variable_declarator(
+            SPAN,
+            ast::VariableDeclarationKind::Let,
+            index_identifier,
+            NONE,
+            Some(builder.expression_numeric_literal(SPAN, 0.0, None, NumberBase::Decimal)),
+            false,
+        )),
+        false,
+    );
+    let loop_test = builder.expression_binary(
+        SPAN,
+        builder.expression_identifier(SPAN, builder.ident(index_name)),
+        AstBinaryOperator::LessThan,
+        builder.expression_numeric_literal(
+            SPAN,
+            cache_prologue.size as f64,
+            None,
+            NumberBase::Decimal,
+        ),
+    );
+    let loop_update = builder.expression_assignment(
+        SPAN,
+        AssignmentOperator::Addition,
+        ast::AssignmentTarget::from(
+            builder.simple_assignment_target_assignment_target_identifier(
+                SPAN,
+                builder.ident(index_name),
+            ),
+        ),
+        builder.expression_numeric_literal(SPAN, 1.0, None, NumberBase::Decimal),
+    );
+    let loop_body = builder.statement_block(
+        SPAN,
+        builder.vec1(build_cache_slot_assignment_statement(
+            builder,
+            &cache_prologue.binding_name,
+            builder.expression_identifier(SPAN, builder.ident(index_name)),
+            build_symbol_for_expression(builder, MEMO_CACHE_SENTINEL),
+        )),
+    );
+    let refresh_loop = builder.statement_for(
+        SPAN,
+        Some(loop_init),
+        Some(loop_test),
+        Some(loop_update),
+        loop_body,
+    );
+
+    let hash_store = build_cache_slot_assignment_statement(
+        builder,
+        &cache_prologue.binding_name,
+        builder.expression_numeric_literal(
+            SPAN,
+            fast_refresh.cache_index as f64,
+            None,
+            NumberBase::Decimal,
+        ),
+        builder.expression_string_literal(SPAN, builder.atom(&fast_refresh.hash), None),
+    );
+
+    Some(builder.statement_if(
+        SPAN,
+        test,
+        builder.statement_block(SPAN, builder.vec_from_iter([refresh_loop, hash_store])),
+        None,
+    ))
 }
 
 fn render_cached_inline_hook_callback_block_ast(
@@ -21237,7 +21363,7 @@ mod tests {
         Place, PrimitiveValue, PropertyLiteral, ReactiveScopeDependency, SourceLocation, Type,
         TypeAnnotationKind,
     };
-    use crate::reactive_scopes::codegen_reactive::CachePrologue;
+    use crate::reactive_scopes::codegen_reactive::{CachePrologue, FastRefreshPrologue};
 
     fn test_context() -> Context {
         let options = CodegenReactiveOptions::default();
@@ -21598,6 +21724,28 @@ mod tests {
 
         assert!(rendered.starts_with("\"use strict\";"));
         assert!(rendered.contains("const $ = _c(1);"));
+    }
+
+    #[test]
+    fn renders_function_body_fast_refresh_prologue_via_ast() {
+        let rendered = render_reactive_function_body_prologue_ast(
+            None,
+            Some(&CachePrologue {
+                binding_name: "$".to_string(),
+                size: 2,
+                fast_refresh: Some(FastRefreshPrologue {
+                    cache_index: 1,
+                    hash: "hash".to_string(),
+                    index_binding_name: "i".to_string(),
+                }),
+            }),
+        )
+        .expect("expected prologue");
+
+        assert!(rendered.contains("if ($[1] !== \"hash\")"));
+        assert!(rendered.contains("for (let i = 0; i < 2; i += 1)"));
+        assert!(rendered.contains("$[i] = Symbol.for(\"react.memo_cache_sentinel\")"));
+        assert!(rendered.contains("$[1] = \"hash\""));
     }
 
     #[test]
