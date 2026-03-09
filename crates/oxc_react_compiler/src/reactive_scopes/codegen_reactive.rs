@@ -15232,9 +15232,8 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
         InstructionValue::TaggedTemplateExpression {
             tag, raw, cooked, ..
         } => {
-            let tag_expr = codegen_place_to_expression(cx, tag);
             let expr = render_tagged_template_expression_ast(cx, tag, raw, cooked.as_deref())
-                .unwrap_or_else(|| format!("{}`{}`", tag_expr, raw));
+                .expect("generated tagged template literal should parse");
             ExprValue::primary(expr)
         }
         InstructionValue::TemplateLiteral {
@@ -21662,7 +21661,8 @@ mod tests {
         render_jsx_fragment_ast, render_reactive_for_in_statement_ast,
         render_reactive_for_of_statement_ast, render_reactive_for_statement_ast,
         render_hook_guarded_block_ast, render_hook_guarded_call_expression_ast,
-        render_method_call_expression_with_options_ast, render_template_literal_ast,
+        render_method_call_expression_with_options_ast, render_tagged_template_expression_ast,
+        render_template_literal_ast,
         render_ts_type_cast_expression_ast,
         render_cached_inline_hook_callback_block_ast, HOOK_GUARD_POP, HOOK_GUARD_PUSH,
     };
@@ -22139,6 +22139,20 @@ mod tests {
         .expect("expected empty template literal");
 
         assert_eq!(rendered, "``");
+    }
+
+    #[test]
+    fn renders_tagged_template_literal_via_ast() {
+        let mut cx = test_context();
+        let rendered = render_tagged_template_expression_ast(
+            &mut cx,
+            &named_place(0, 0, "tag"),
+            "hello",
+            Some("hello"),
+        )
+        .expect("expected tagged template literal");
+
+        assert_eq!(rendered, "tag`hello`");
     }
 
     #[test]
