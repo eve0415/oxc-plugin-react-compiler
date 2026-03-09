@@ -14272,12 +14272,16 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 callee_expr.clone()
             };
             if cx.disable_memoization_features {
-                let rendered_args_joined = join_call_arguments(&rendered_args);
-                let call_expr = if *optional {
-                    format!("{}?.({})", callee_final, rendered_args_joined)
-                } else {
-                    format!("{}({})", callee_final, rendered_args_joined)
-                };
+                let call_expr =
+                    render_call_expression_ast(&callee_final, args, &rendered_args, *optional)
+                        .unwrap_or_else(|| {
+                            let rendered_args_joined = join_call_arguments(&rendered_args);
+                            if *optional {
+                                format!("{}?.({})", callee_final, rendered_args_joined)
+                            } else {
+                                format!("{}({})", callee_final, rendered_args_joined)
+                            }
+                        });
                 let call_expr = if cx.emit_hook_guards && is_hook_call {
                     guard_hook_call_expression(call_expr)
                 } else {
@@ -14310,11 +14314,15 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 let cb_slot = cx.alloc_cache_slot();
                 let deps_slot = cx.alloc_cache_slot();
                 call_args[dep_idx] = deps_name.clone();
-                let call_expr = if *optional {
-                    format!("{}?.({})", callee_final, call_args.join(", "))
-                } else {
-                    format!("{}({})", callee_final, call_args.join(", "))
-                };
+                let call_expr =
+                    render_call_expression_ast(&callee_final, args, &call_args, *optional)
+                        .unwrap_or_else(|| {
+                            if *optional {
+                                format!("{}?.({})", callee_final, call_args.join(", "))
+                            } else {
+                                format!("{}({})", callee_final, call_args.join(", "))
+                            }
+                        });
                 let call_expr = if cx.emit_hook_guards && is_hook_call {
                     guard_hook_call_expression(call_expr)
                 } else {
@@ -14329,11 +14337,15 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 )?
             } else {
                 let slot = cx.alloc_cache_slot();
-                let call_expr = if *optional {
-                    format!("{}?.({})", callee_final, call_args.join(", "))
-                } else {
-                    format!("{}({})", callee_final, call_args.join(", "))
-                };
+                let call_expr =
+                    render_call_expression_ast(&callee_final, args, &call_args, *optional)
+                        .unwrap_or_else(|| {
+                            if *optional {
+                                format!("{}?.({})", callee_final, call_args.join(", "))
+                            } else {
+                                format!("{}({})", callee_final, call_args.join(", "))
+                            }
+                        });
                 let call_expr = if cx.emit_hook_guards && is_hook_call {
                     guard_hook_call_expression(call_expr)
                 } else {
