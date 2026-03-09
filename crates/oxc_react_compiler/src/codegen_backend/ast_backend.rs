@@ -38,13 +38,6 @@ struct InsertedImportSpec {
 
 const FLOW_CAST_MARKER_HELPER: &str = "__REACT_COMPILER_FLOW_CAST__";
 
-struct RenderedCompiledFunction {
-    before_emit: String,
-    replacement_src: String,
-    next_source_start: u32,
-    outlined_functions: Vec<RenderedOutlinedFunction>,
-}
-
 struct RenderedOutlinedFunction {
     name: String,
     params: String,
@@ -102,13 +95,9 @@ fn try_emit_module(
         .filter(|_| compiled.iter().any(|cf| cf.needs_cache_import));
 
     let mut body = builder.vec();
-    let mut rendered_prefix = String::new();
     for import_plan in &state.imports_to_insert {
         let statement = build_inserted_import_statement(builder, import_plan);
-        let statement_source = codegen_statement_source(&allocator, state.source_type, &statement);
         body.push(statement);
-        rendered_prefix.push_str(statement_source.trim_end_matches('\n'));
-        rendered_prefix.push('\n');
     }
 
     let mut compiled_sorted = compiled.iter().collect::<Vec<_>>();
@@ -123,16 +112,9 @@ fn try_emit_module(
         {
             if plan.replacement.is_some() {
                 let statement = build_runtime_import_merge_statement(builder, &plan.merged_specs);
-                let statement_source =
-                    codegen_statement_source(&allocator, state.source_type, &statement);
                 body.push(statement);
-                rendered_prefix.push_str(statement_source.trim_end_matches('\n'));
-                rendered_prefix.push('\n');
             } else {
                 body.push(stmt.clone_in(&allocator));
-                let span = stmt.span();
-                rendered_prefix.push_str(&args.source[span.start as usize..span.end as usize]);
-                rendered_prefix.push('\n');
             }
             continue;
         }
@@ -176,8 +158,6 @@ fn try_emit_module(
                     allocator.alloc_str(&maybe_gated),
                 )?);
             }
-            rendered_prefix.push_str(&maybe_gated);
-            rendered_prefix.push('\n');
             continue;
         }
 
@@ -187,11 +167,7 @@ fn try_emit_module(
             && let Some(statements) = try_lower_compiled_statement_ast(builder, stmt_compiled[0])
         {
             for statement in statements {
-                let statement_source =
-                    codegen_statement_source(&allocator, state.source_type, &statement);
                 body.push(statement);
-                rendered_prefix.push_str(statement_source.trim_end_matches('\n'));
-                rendered_prefix.push('\n');
             }
             continue;
         }
@@ -206,66 +182,15 @@ fn try_emit_module(
             &state,
         ) {
             for statement in statements {
-                let statement_source =
-                    codegen_statement_source(&allocator, state.source_type, &statement);
                 body.push(statement);
-                rendered_prefix.push_str(statement_source.trim_end_matches('\n'));
-                rendered_prefix.push('\n');
             }
             continue;
         }
 
-        let (rewritten_stmt, outlined_functions) = rewrite_statement_source(
-            span.start as usize,
-            span.end as usize,
-            &stmt_compiled,
-            &rendered_prefix,
-            args.source,
-            &state,
-        )?;
-        if std::env::var("DEBUG_AST_STRING_REWRITE").is_ok() {
-            eprintln!(
-                "[AST_STRING_REWRITE] file={} stmt={}",
-                args.filename,
-                args.source[span.start as usize..span.end as usize].replace('\n', "\\n")
-            );
-        }
-        let rewritten_stmt = if let Some(name) = gate_name {
-            maybe_gate_entrypoint_source(rewritten_stmt, name)
-        } else {
-            rewritten_stmt
-        };
-        body.extend(parse_statements(
-            &allocator,
-            state.source_type,
-            allocator.alloc_str(&rewritten_stmt),
-        )?);
-        rendered_prefix.push_str(&rewritten_stmt);
-        rendered_prefix.push('\n');
-        for outlined in outlined_functions {
-            if let Some(hir_function) = outlined.hir_function.as_ref()
-                && let Some(statement) =
-                    super::hir_to_ast::try_lower_function_declaration_ast(builder, hir_function)
-            {
-                let statement_source =
-                    codegen_statement_source(&allocator, state.source_type, &statement);
-                body.push(statement);
-                rendered_prefix.push_str(statement_source.trim_end_matches('\n'));
-            } else {
-                let source = format_outlined_function_source(
-                    &outlined.name,
-                    &outlined.params,
-                    &outlined.body,
-                );
-                body.extend(parse_statements(
-                    &allocator,
-                    state.source_type,
-                    allocator.alloc_str(&source),
-                )?);
-                rendered_prefix.push_str(&source);
-            }
-            rendered_prefix.push('\n');
-        }
+        return Err(format!(
+            "unable to AST-rewrite compiled statement [{}..{}] in {}",
+            span.start, span.end, args.filename
+        ));
     }
 
     let program = builder.program(
@@ -534,42 +459,6 @@ fn build_render_state(args: ModuleEmitArgs<'_>, compiled: &[CompiledFunction]) -
         runtime_import_merge_plan,
         instrument_source_path,
     }
-}
-
-fn rewrite_statement_source(
-    stmt_start: usize,
-    stmt_end: usize,
-    compiled: &[&CompiledFunction],
-    global_prefix: &str,
-    source: &str,
-    state: &AstRenderState,
-) -> Result<(String, Vec<RenderedOutlinedFunction>), String> {
-    let mut rewritten = String::new();
-    let mut last_end = stmt_start;
-    let mut outlined_functions = Vec::new();
-
-    for cf in compiled {
-        if (cf.start as usize) < last_end || (cf.end as usize) > stmt_end {
-            return Err(format!(
-                "invalid compiled span [{}..{}] for statement [{}..{}]",
-                cf.start, cf.end, stmt_start, stmt_end
-            ));
-        }
-        let local_before = source[last_end..cf.start as usize].to_string();
-        let context_before = format!("{global_prefix}{}{}", rewritten, local_before);
-        let rendered = render_compiled_function(cf, local_before, &context_before, source, state);
-        rewritten.push_str(&rendered.before_emit);
-        rewritten.push_str(&rendered.replacement_src);
-        last_end = if (rendered.next_source_start as usize) > stmt_end {
-            cf.end as usize
-        } else {
-            rendered.next_source_start as usize
-        };
-        outlined_functions.extend(rendered.outlined_functions);
-    }
-
-    rewritten.push_str(&source[last_end..stmt_end]);
-    Ok((rewritten, outlined_functions))
 }
 
 fn try_rewrite_compiled_statement_ast<'a>(
@@ -3185,159 +3074,6 @@ fn skip_quoted(source: &str, start_idx: usize) -> Option<usize> {
     None
 }
 
-fn render_compiled_function(
-    cf: &CompiledFunction,
-    mut before_emit: String,
-    context_before: &str,
-    source: &str,
-    state: &AstRenderState,
-) -> RenderedCompiledFunction {
-    let mut body = render_compiled_body_source(cf, state);
-    if !body.is_empty() && !body.ends_with('\n') {
-        body.push('\n');
-    }
-
-    let body_for_emit = body.trim_end_matches('\n');
-    let compiled_fn_src = if cf.is_arrow {
-        let async_prefix = if cf.is_async { "async " } else { "" };
-        format!(
-            "{}({}) => {{\n{}\n}}",
-            async_prefix, cf.params_str, body_for_emit
-        )
-    } else {
-        let async_prefix = if cf.is_async { "async " } else { "" };
-        let gen_prefix = if cf.is_generator { "*" } else { "" };
-        format!(
-            "{}function {}{}({}) {{\n{}\n}}",
-            async_prefix, gen_prefix, cf.name, cf.params_str, body_for_emit
-        )
-    };
-
-    let original_src_raw = source[cf.start as usize..cf.end as usize]
-        .trim()
-        .to_string();
-    let preserve_original = super::shared::should_preserve_original_layout_for_equivalent_output(
-        cf,
-        &compiled_fn_src,
-        &original_src_raw,
-    );
-    let mut replacement_src = if preserve_original {
-        original_src_raw.clone()
-    } else {
-        compiled_fn_src.clone()
-    };
-    let mut next_source_start = cf.end;
-
-    if let Some(gate_name) = state
-        .gating_local_name
-        .as_ref()
-        .filter(|_| cf.needs_cache_import)
-    {
-        let gate_call = format!("{}()", gate_name);
-        let has_parenthesized_arrow_body = cf.is_arrow && original_src_raw.contains("=> (");
-        let original_src = super::shared::gated_uncompiled_function_source(source, cf);
-        let before_trimmed_owned = before_emit.trim_end().to_string();
-        let before_trimmed = before_trimmed_owned.as_str();
-        let export_default_ctx = before_trimmed.ends_with("export default");
-        let expression_ctx = cf.is_arrow || crate::pipeline::is_expression_context(before_trimmed);
-        let before_ends_with_open_paren = before_trimmed.ends_with('(');
-
-        replacement_src = if export_default_ctx && !cf.is_arrow && !cf.name.is_empty() {
-            let prefix = &before_trimmed[..before_trimmed.len() - "export default".len()];
-            before_emit = prefix.to_string();
-            format!(
-                "const {} = {} ? {} : {};\nexport default {};",
-                cf.name, gate_call, compiled_fn_src, original_src, cf.name
-            )
-        } else if expression_ctx || export_default_ctx {
-            format!("{} ? {} : {}", gate_call, compiled_fn_src, original_src)
-        } else {
-            let referenced_before_decl =
-                crate::pipeline::has_early_binding_reference(context_before, &cf.name);
-            if referenced_before_decl && !cf.name.is_empty() {
-                let gate_result_name = format!("{}_result", gate_name);
-                let optimized_name = format!("{}_optimized", cf.name);
-                let unoptimized_name = format!("{}_unoptimized", cf.name);
-                let optimized_fn = crate::pipeline::rename_function_declaration_name(
-                    &compiled_fn_src,
-                    &cf.name,
-                    &optimized_name,
-                );
-                let unoptimized_fn = crate::pipeline::rename_function_declaration_name(
-                    &original_src_raw,
-                    &cf.name,
-                    &unoptimized_name,
-                );
-                let param_count = crate::pipeline::count_param_slots(&cf.params_str);
-                let wrapper_params = (0..param_count)
-                    .map(|i| format!("arg{}", i))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let wrapper_args = wrapper_params.clone();
-                format!(
-                    "const {} = {};\n{}\n{}\nfunction {}({}) {{\nif ({}) return {}({});\nelse return {}({});\n}}",
-                    gate_result_name,
-                    gate_call,
-                    optimized_fn,
-                    unoptimized_fn,
-                    cf.name,
-                    wrapper_params,
-                    gate_result_name,
-                    optimized_name,
-                    wrapper_args,
-                    unoptimized_name,
-                    wrapper_args
-                )
-            } else {
-                format!(
-                    "const {} = {} ? {} : {};",
-                    cf.name, gate_call, compiled_fn_src, original_src
-                )
-            }
-        };
-
-        if !expression_ctx {
-            if before_emit.trim().is_empty() {
-                before_emit.clear();
-            } else {
-                before_emit = crate::pipeline::trim_trailing_blank_lines(&before_emit);
-            }
-        }
-
-        let has_closing_paren_after = source[cf.end as usize..].trim_start().starts_with(')');
-        if expression_ctx
-            && before_ends_with_open_paren
-            && !replacement_src.ends_with(')')
-            && !has_closing_paren_after
-        {
-            replacement_src.push(')');
-        }
-
-        if cf.is_arrow && has_parenthesized_arrow_body {
-            let trailing = &source[cf.end as usize..];
-            if trailing.starts_with(";\n\nexport default")
-                || trailing.starts_with(";\n\nexport const FIXTURE_ENTRYPOINT")
-            {
-                if !replacement_src.ends_with(';') {
-                    replacement_src.push(';');
-                }
-                if (cf.end as usize) + 2 <= source.len() {
-                    next_source_start = cf.end + 2;
-                }
-            }
-        }
-    }
-
-    let outlined_functions = collect_rendered_outlined_functions(cf);
-
-    RenderedCompiledFunction {
-        before_emit,
-        replacement_src,
-        next_source_start,
-        outlined_functions,
-    }
-}
-
 fn render_compiled_body_source(cf: &CompiledFunction, state: &AstRenderState) -> String {
     let mut body = cf.generated_body.clone();
     if state.cache_import_name != "_c" {
@@ -3604,6 +3340,7 @@ fn codegen_program(program: &ast::Program<'_>) -> String {
     Codegen::new().with_options(options).build(program).code
 }
 
+#[cfg(test)]
 fn codegen_statement_source(
     allocator: &Allocator,
     source_type: SourceType,
