@@ -13181,26 +13181,7 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
             }
             let body = codegen_block(cx, loop_block);
             let _ = loc;
-            let single_line_header = format!("for ({}; {}; {})", init_code, test_expr, update_code);
-            let multiline_header = single_line_header.len() > 80
-                || init_code.contains('\n')
-                || test_expr.contains('\n')
-                || update_code.contains('\n');
-            if let Some(rendered) =
-                render_reactive_for_statement_ast(&init_code, &test_expr, &update_code, &body)
-            {
-                Some(rendered)
-            } else if multiline_header {
-                Some(format!(
-                    "for (\n{};\n{};\n{}) {{\n{}}}\n",
-                    init_code, test_expr, update_code, body
-                ))
-            } else {
-                Some(format!(
-                    "for ({}; {}; {}) {{\n{}}}\n",
-                    init_code, test_expr, update_code, body
-                ))
-            }
+            render_reactive_for_statement_ast(&init_code, &test_expr, &update_code, &body)
         }
         ReactiveTerminal::ForOf {
             init,
@@ -19229,20 +19210,38 @@ fn parse_expression_for_ast_codegen<'a>(
     source_type: SourceType,
     expr_source: &str,
 ) -> Result<ast::Expression<'a>, String> {
-    let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(expr_source);
-    let mut attempts = vec![
-        (source_type, expr_source.to_string()),
-        (
+    let expression_sources = {
+        let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(expr_source);
+        let mut sources = vec![expr_source.to_string()];
+        if flow_cast_rewritten != expr_source {
+            sources.push(flow_cast_rewritten);
+        }
+        sources
+    };
+
+    let mut attempts = Vec::new();
+    for expression_source in &expression_sources {
+        attempts.push((source_type, expression_source.clone(), false));
+        attempts.push((source_type, expression_source.clone(), true));
+        attempts.push((
             source_type.with_typescript(true),
-            flow_cast_rewritten.clone(),
-        ),
-    ];
-    if flow_cast_rewritten != expr_source {
-        attempts.push((source_type, flow_cast_rewritten));
+            expression_source.clone(),
+            false,
+        ));
+        attempts.push((
+            source_type.with_typescript(true),
+            expression_source.clone(),
+            true,
+        ));
     }
 
-    for (attempt_source_type, attempt_expr) in attempts {
-        let wrapper = format!("const __codex_expr = {attempt_expr};");
+    for (attempt_source_type, attempt_expr, parenthesize) in attempts {
+        let assignment_expr = if parenthesize {
+            format!("({attempt_expr})")
+        } else {
+            attempt_expr
+        };
+        let wrapper = format!("const __codex_expr = {assignment_expr};");
         let wrapper = allocator.alloc_str(&wrapper);
         let parsed = Parser::new(allocator, wrapper, attempt_source_type).parse();
         if parsed.panicked || !parsed.errors.is_empty() {
@@ -21541,6 +21540,22 @@ mod tests {
                 .expect("expected for statement");
 
         assert_eq!(rendered, "for (let i = 0; i < 1; i += 1) {\n  work();\n}\n");
+    }
+
+    #[test]
+    fn renders_for_statement_with_sequence_update_via_ast() {
+        let rendered = render_reactive_for_statement_ast(
+            "let x = 0",
+            "x > props.min && x < props.max",
+            "x = x + (props.cond ? props.increment : 2), x",
+            "x = x * 2;\ny = y + x;",
+        )
+        .expect("expected for statement");
+
+        assert_eq!(
+            rendered,
+            "for (let x = 0; x > props.min && x < props.max; x = x + (props.cond ? props.increment : 2), x) {\n  x = x * 2;\n  y = y + x;\n}\n"
+        );
     }
 
     #[test]
