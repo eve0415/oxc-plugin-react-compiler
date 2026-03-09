@@ -18790,6 +18790,44 @@ fn render_reactive_variable_statement_ast(
     Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
 }
 
+fn render_variable_declaration_header_ast(
+    kind: ast::VariableDeclarationKind,
+    declarators: &[(String, Option<String>)],
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let mut rendered = builder.vec();
+    for (name, init) in declarators {
+        let init_expression = match init {
+            Some(expr) => Some(
+                parse_expression_for_ast_codegen(
+                    &allocator,
+                    SourceType::mjs().with_jsx(true),
+                    expr,
+                )
+                .ok()?,
+            ),
+            None => None,
+        };
+        rendered.push(builder.variable_declarator(
+            SPAN,
+            kind,
+            builder.binding_pattern_binding_identifier(SPAN, builder.ident(name)),
+            NONE,
+            init_expression,
+            false,
+        ));
+    }
+    let statement = ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+        SPAN, kind, rendered, false,
+    ));
+    Some(
+        codegen_statement_with_oxc(&statement)
+            .trim_end_matches(';')
+            .to_string(),
+    )
+}
+
 fn render_reactive_declare_local_statement_ast(name: &str) -> Option<String> {
     render_reactive_variable_statement_ast(ast::VariableDeclarationKind::Let, name, None)
 }
@@ -19560,6 +19598,24 @@ fn maybe_fill_for_header_initializer_from_update(
     init_code: &str,
     update_code: &str,
 ) -> Option<String> {
+    fn parse_single_declaration_header(init: &str) -> Option<(ast::VariableDeclarationKind, String)> {
+        let init = init.trim();
+        let (kind, name) = if let Some(name) = init.strip_prefix("let ") {
+            (ast::VariableDeclarationKind::Let, name)
+        } else if let Some(name) = init.strip_prefix("const ") {
+            (ast::VariableDeclarationKind::Const, name)
+        } else if let Some(name) = init.strip_prefix("var ") {
+            (ast::VariableDeclarationKind::Var, name)
+        } else {
+            return None;
+        };
+        let name = name.trim();
+        if name.is_empty() || !is_simple_identifier_name(name) {
+            return None;
+        }
+        Some((kind, name.to_string()))
+    }
+
     let init = init_code.trim();
     let update = update_code.trim();
     if init.is_empty() || update.is_empty() {
@@ -19579,7 +19635,8 @@ fn maybe_fill_for_header_initializer_from_update(
     if !is_decl {
         return None;
     }
-    Some(format!("{init} = {update}"))
+    let (kind, name) = parse_single_declaration_header(init)?;
+    render_variable_declaration_header_ast(kind, &[(name, Some(update.to_string()))])
 }
 
 fn reconstruct_for_init_declaration(code: &str) -> Option<String> {
@@ -19662,16 +19719,18 @@ fn reconstruct_for_init_declaration(code: &str) -> Option<String> {
         return None;
     }
 
-    let kind = header_kind.unwrap_or("let");
-    let rendered = declarators
-        .into_iter()
-        .map(|decl| match decl.init {
-            Some(init) => format!("{} = {}", decl.name, init),
-            None => decl.name,
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    Some(format!("{kind} {rendered}"))
+    let kind = match header_kind.unwrap_or("let") {
+        "const" => ast::VariableDeclarationKind::Const,
+        "var" => ast::VariableDeclarationKind::Var,
+        _ => ast::VariableDeclarationKind::Let,
+    };
+    render_variable_declaration_header_ast(
+        kind,
+        &declarators
+            .into_iter()
+            .map(|decl| (decl.name, decl.init))
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn loop_lvalue_kind_keyword(kind: InstructionKind) -> &'static str {
@@ -19911,6 +19970,7 @@ fn unicode_escape_non_ascii(s: &str) -> String {
 mod tests {
     use super::{
         FunctionExpressionType, function_expr_as_declaration, function_expr_to_method_property,
+        maybe_fill_for_header_initializer_from_update, reconstruct_for_init_declaration,
         render_function_expression_ast, render_object_method_ast,
     };
     use crate::hir::types::{
@@ -20012,5 +20072,21 @@ mod tests {
 
         assert!(rendered.contains("async callback(value)"));
         assert!(rendered.contains("return value;"));
+    }
+
+    #[test]
+    fn reconstructs_for_init_declaration_via_ast() {
+        let rendered = reconstruct_for_init_declaration("let value;\nvalue = 1;")
+            .expect("expected reconstructed header");
+
+        assert_eq!(rendered, "let value = 1");
+    }
+
+    #[test]
+    fn fills_for_header_initializer_via_ast() {
+        let rendered = maybe_fill_for_header_initializer_from_update("const index", "0")
+            .expect("expected filled header");
+
+        assert_eq!(rendered, "const index = 0");
     }
 }
