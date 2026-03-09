@@ -15149,7 +15149,9 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             ExprValue::primary(expr)
         }
         InstructionValue::RegExpLiteral { pattern, flags, .. } => {
-            ExprValue::primary(format!("/{}/{}", pattern, flags))
+            let expr = render_regexp_literal_expression_ast(pattern, flags)
+                .unwrap_or_else(|| format!("/{}/{}", pattern, flags));
+            ExprValue::primary(expr)
         }
         InstructionValue::MetaProperty { meta, property, .. } => {
             let expr = render_meta_property_expression_ast(meta, property)
@@ -15986,6 +15988,16 @@ fn render_await_expression_ast(value: &str) -> Option<String> {
     let value = parse_rendered_expression_ast(&allocator, value)?;
     let expression = builder.expression_await(SPAN, value);
     Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_expression_source_with_ast(expression: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let expression = parse_rendered_expression_ast(&allocator, expression)?;
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_regexp_literal_expression_ast(pattern: &str, flags: &str) -> Option<String> {
+    render_expression_source_with_ast(&format!("/{}/{}", pattern, flags))
 }
 
 fn strip_top_level_parenthesized_expression(expression: String) -> String {
