@@ -71,14 +71,18 @@ pub(crate) fn emit_module(
         };
     }
 
-    let raw_result = super::raw::emit_module(args, compiled.clone());
-    if !raw_result.transformed {
-        return raw_result;
-    }
+    let transformed = super::raw::emit_module(args, compiled.clone()).transformed;
 
     match try_emit_module(args, &compiled) {
-        Ok(result) => result,
-        Err(_) => raw_result,
+        Ok(mut result) => {
+            result.transformed = transformed;
+            result
+        }
+        Err(_) => CompileResult {
+            transformed: false,
+            code: args.source_untransformed.to_string(),
+            map: None,
+        },
     }
 }
 
@@ -206,16 +210,9 @@ fn try_emit_module(
     if code.contains(FLOW_CAST_MARKER_HELPER) {
         code = restore_flow_cast_marker_calls(&code);
     }
-    let transformed = super::shared::normalize_for_transform_flag(&code)
-        != super::shared::normalize_for_transform_flag(args.source_untransformed);
-
     Ok(CompileResult {
-        transformed,
-        code: if transformed {
-            code
-        } else {
-            args.source_untransformed.to_string()
-        },
+        transformed: true,
+        code,
         map: None,
     })
 }
