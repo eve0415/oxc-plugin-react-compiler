@@ -18681,6 +18681,43 @@ fn codegen_statements_with_oxc(statements: &[ast::Statement<'_>]) -> String {
         .to_string()
 }
 
+fn codegen_directives_and_statements_with_oxc(
+    directives: &[String],
+    statements: &[ast::Statement<'_>],
+) -> String {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let program = builder.program(
+        SPAN,
+        SourceType::mjs().with_jsx(true),
+        "",
+        builder.vec(),
+        None,
+        builder.vec_from_iter(directives.iter().map(|directive| {
+            builder.directive(
+                SPAN,
+                builder.string_literal(SPAN, directive.as_str(), None),
+                directive.as_str(),
+            )
+        })),
+        builder.vec_from_iter(
+            statements
+                .iter()
+                .map(|statement| statement.clone_in(&allocator)),
+        ),
+    );
+    Codegen::new()
+        .with_options(CodegenOptions {
+            indent_char: IndentChar::Space,
+            indent_width: 2,
+            ..CodegenOptions::default()
+        })
+        .build(&program)
+        .code
+        .trim_end()
+        .to_string()
+}
+
 fn split_flow_cast_expression_source(expr: &str) -> Option<(&str, &str)> {
     let trimmed = expr.trim();
     let inner = trimmed.strip_prefix('(')?.strip_suffix(')')?;
@@ -19147,13 +19184,7 @@ fn render_reactive_function_body_prologue_ast(
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let mut statements: Vec<ast::Statement<'_>> = Vec::new();
-    let mut output = String::new();
-
-    if let Some(directives) = directives {
-        for directive in directives {
-            output.push_str(&format!("\"{}\";\n", directive));
-        }
-    }
+    let directives = directives.unwrap_or(&[]);
 
     if let Some(cache_prologue) = cache_prologue {
         statements.push(ast::Statement::VariableDeclaration(
@@ -19210,13 +19241,13 @@ fn render_reactive_function_body_prologue_ast(
         }
     }
 
-    if !statements.is_empty() {
-        output.push_str(&format!("{}\n", codegen_statements_with_oxc(&statements)));
-    }
-    if output.is_empty() {
+    if directives.is_empty() && statements.is_empty() {
         None
     } else {
-        Some(output)
+        Some(format!(
+            "{}\n",
+            codegen_directives_and_statements_with_oxc(directives, &statements)
+        ))
     }
 }
 
@@ -19972,11 +20003,13 @@ mod tests {
         FunctionExpressionType, function_expr_as_declaration, function_expr_to_method_property,
         maybe_fill_for_header_initializer_from_update, reconstruct_for_init_declaration,
         render_function_expression_ast, render_object_method_ast,
+        render_reactive_function_body_prologue_ast,
     };
     use crate::hir::types::{
         Argument, DeclarationId, Effect, Identifier, IdentifierId, IdentifierName, MutableRange,
         ObjectPropertyKey, Place, SourceLocation, Type,
     };
+    use crate::reactive_scopes::codegen_reactive::CachePrologue;
 
     fn named_place(id: u32, declaration_id: u32, name: &str) -> Place {
         Place {
@@ -20088,5 +20121,29 @@ mod tests {
             .expect("expected filled header");
 
         assert_eq!(rendered, "const index = 0");
+    }
+
+    #[test]
+    fn renders_function_body_directives_via_ast() {
+        let rendered = render_reactive_function_body_prologue_ast(Some(&["worklet".to_string()]), None)
+            .expect("expected prologue");
+
+        assert_eq!(rendered.trim(), "\"worklet\";");
+    }
+
+    #[test]
+    fn renders_function_body_directives_and_cache_via_ast() {
+        let rendered = render_reactive_function_body_prologue_ast(
+            Some(&["use strict".to_string()]),
+            Some(&CachePrologue {
+                binding_name: "$".to_string(),
+                size: 1,
+                fast_refresh: None,
+            }),
+        )
+        .expect("expected prologue");
+
+        assert!(rendered.starts_with("\"use strict\";"));
+        assert!(rendered.contains("const $ = _c(1);"));
     }
 }
