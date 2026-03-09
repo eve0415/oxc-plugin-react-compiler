@@ -619,7 +619,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
             return None;
         }
 
-        let suppressed_declares = collect_same_block_materialized_declares(&block.instructions);
+        let suppressed_declares = collect_same_block_suppressed_declare_instruction_ids(&block.instructions);
         let mut statements = self.builder.vec();
         for instruction in &block.instructions {
             if let Some(statement) =
@@ -641,7 +641,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
     fn lower_instruction_to_statement(
         &self,
         instruction: &Instruction,
-        suppressed_declares: &HashSet<types::DeclarationId>,
+        suppressed_declares: &HashSet<types::InstructionId>,
     ) -> Option<Option<ast::Statement<'a>>> {
         match &instruction.value {
             InstructionValue::DeclareLocal { lvalue, .. }
@@ -649,7 +649,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 if lvalue.kind == InstructionKind::Catch {
                     return Some(None);
                 }
-                if suppressed_declares.contains(&lvalue.place.identifier.declaration_id) {
+                if suppressed_declares.contains(&instruction.id) {
                     return Some(None);
                 }
                 let name = place_name(&lvalue.place)?;
@@ -2412,9 +2412,9 @@ fn variable_declaration_kind(kind: InstructionKind) -> Option<ast::VariableDecla
     }
 }
 
-fn collect_same_block_materialized_declares(
+fn collect_same_block_suppressed_declare_instruction_ids(
     instructions: &[Instruction],
-) -> HashSet<types::DeclarationId> {
+) -> HashSet<types::InstructionId> {
     let mut materialized = HashSet::new();
     let mut suppressed = HashSet::new();
     for instruction in instructions.iter().rev() {
@@ -2430,7 +2430,9 @@ fn collect_same_block_materialized_declares(
             InstructionValue::DeclareLocal { lvalue, .. }
             | InstructionValue::DeclareContext { lvalue, .. } => {
                 if materialized.contains(&lvalue.place.identifier.declaration_id) {
-                    suppressed.insert(lvalue.place.identifier.declaration_id);
+                    suppressed.insert(instruction.id);
+                } else {
+                    materialized.insert(lvalue.place.identifier.declaration_id);
                 }
             }
             _ => {}
@@ -4524,6 +4526,55 @@ mod tests {
             try_lower_function_body(&hir).as_deref(),
             Some("const inner = () => x;\nconst x = 3;\nreturn inner();\n")
         );
+    }
+
+    #[test]
+    fn suppresses_earlier_duplicate_context_declare() {
+        let interval_id = named_place(320, 320, "intervalId");
+        let undefined_value = temporary_place(321);
+        let hir = hir_function(
+            vec![
+                instruction(
+                    322,
+                    temporary_place(322),
+                    types::InstructionValue::DeclareContext {
+                        lvalue: types::LValue {
+                            place: interval_id.clone(),
+                            kind: InstructionKind::HoistedLet,
+                        },
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    323,
+                    temporary_place(323),
+                    types::InstructionValue::DeclareContext {
+                        lvalue: types::LValue {
+                            place: interval_id,
+                            kind: InstructionKind::Let,
+                        },
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    324,
+                    undefined_value.clone(),
+                    types::InstructionValue::Primitive {
+                        value: types::PrimitiveValue::Undefined,
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+            ],
+            Terminal::Return {
+                value: undefined_value.clone(),
+                return_variant: types::ReturnVariant::Explicit,
+                id: InstructionId::new(325),
+                loc: SourceLocation::Generated,
+            },
+            undefined_value,
+        );
+
+        assert_eq!(try_lower_function_body(&hir).as_deref(), Some("let intervalId;\n"));
     }
 
     fn hir_function(
