@@ -1,7 +1,9 @@
 use super::CompiledFunction;
 
 pub(crate) fn gated_uncompiled_function_source(source: &str, cf: &CompiledFunction) -> String {
-    let original_src = source[cf.start as usize..cf.end as usize].trim().to_string();
+    let original_src = source[cf.start as usize..cf.end as usize]
+        .trim()
+        .to_string();
     if !cf.is_function_declaration {
         return original_src;
     }

@@ -3647,7 +3647,10 @@ mod tests {
             temp.clone(),
         );
         hir.id = Some("outlined".to_string());
-        hir.params = vec![types::Argument::Place(temp.clone()), types::Argument::Spread(rest)];
+        hir.params = vec![
+            types::Argument::Place(temp.clone()),
+            types::Argument::Spread(rest),
+        ];
 
         let allocator = Allocator::default();
         let builder = AstBuilder::new(&allocator);

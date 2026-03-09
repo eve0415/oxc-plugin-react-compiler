@@ -1715,11 +1715,7 @@ fn run_fixture_with_timeout(
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024) // 64MB stack
         .spawn(move || {
-            let r = run_fixture(
-                &fixture_clone,
-                run_skipped,
-                strict_output,
-            );
+            let r = run_fixture(&fixture_clone, run_skipped, strict_output);
             let _ = tx.send(r);
         })
         .expect("failed to spawn fixture thread");
@@ -1759,11 +1755,7 @@ fn run_fixture_with_timeout(
     }
 }
 
-fn run_fixture(
-    fixture: &Fixture,
-    run_skipped: bool,
-    strict_output: bool,
-) -> FixtureResult {
+fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> FixtureResult {
     let source = match std::fs::read_to_string(&fixture.input_path) {
         Ok(s) => s,
         Err(e) => {
@@ -5344,9 +5336,10 @@ fn normalize_compare_multiline_imports(code: &str) -> String {
 
 fn normalize_compare_trailing_sequence_null(code: &str) -> String {
     let mut result = Vec::new();
-    let assign_then_read =
-        regex::Regex::new(r"\(\(([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(.+?)\),\s*([A-Za-z_$][A-Za-z0-9_$]*)\);")
-            .unwrap();
+    let assign_then_read = regex::Regex::new(
+        r"\(\(([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(.+?)\),\s*([A-Za-z_$][A-Za-z0-9_$]*)\);",
+    )
+    .unwrap();
     let assign_then_discard =
         regex::Regex::new(r"\(\(([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(.+?)\),\s*(?:null|undefined)\);")
             .unwrap();
@@ -8087,11 +8080,10 @@ mod tests {
         normalize_multiline_object_method_bodies, normalize_multiline_optional_chain_calls,
         normalize_object_shorthand_pairs, normalize_promote_temps,
         normalize_react_memo_closing_paren, normalize_shadowed_temp_decls,
-        normalize_shared_cosmetic_equivalences,
-        normalize_simple_alias_return_tail, normalize_simple_jsx_attr_brace_spacing,
-        normalize_sort_simple_let_decl_runs, normalize_strip_inline_comments,
-        normalize_tail_return_from_cache_alias, normalize_temp_alpha_renaming,
-        normalize_temp_zero_suffixes, normalize_two_dep_guard_order,
+        normalize_shared_cosmetic_equivalences, normalize_simple_alias_return_tail,
+        normalize_simple_jsx_attr_brace_spacing, normalize_sort_simple_let_decl_runs,
+        normalize_strip_inline_comments, normalize_tail_return_from_cache_alias,
+        normalize_temp_alpha_renaming, normalize_temp_zero_suffixes, normalize_two_dep_guard_order,
     };
 
     #[test]
