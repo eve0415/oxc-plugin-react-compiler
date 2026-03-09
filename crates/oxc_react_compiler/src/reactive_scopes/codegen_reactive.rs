@@ -19154,10 +19154,25 @@ fn render_jsx_attributes_ast<'a>(
                 if cx.fbt_operands.contains(&place.identifier.id) {
                     return None;
                 }
-                let expression =
-                    parse_rendered_expression_ast(allocator, &codegen_place_expr_value(cx, place).expr)?;
+                let rendered_expr = codegen_place_expr_value(cx, place).expr;
+                let expression = parse_rendered_expression_ast(allocator, &rendered_expr)?;
                 let value = match expression {
-                    ast::Expression::StringLiteral(_) => return None,
+                    ast::Expression::StringLiteral(literal) => {
+                        let inner = rendered_expr
+                            .trim()
+                            .strip_prefix('"')
+                            .and_then(|inner| inner.strip_suffix('"'))?;
+                        if jsx_attr_needs_expression_container(inner) {
+                            Some(ast::JSXAttributeValue::ExpressionContainer(
+                                builder.alloc_jsx_expression_container(
+                                    SPAN,
+                                    ast::JSXExpression::StringLiteral(literal),
+                                ),
+                            ))
+                        } else {
+                            Some(ast::JSXAttributeValue::StringLiteral(literal))
+                        }
+                    }
                     expression => Some(ast::JSXAttributeValue::ExpressionContainer(
                         builder.alloc_jsx_expression_container(
                             SPAN,
@@ -21902,6 +21917,51 @@ mod tests {
         .expect("expected jsx element");
 
         assert_eq!(rendered, "<div slot={<span />} />");
+    }
+
+    #[test]
+    fn renders_jsx_string_attribute_via_ast() {
+        let mut cx = test_context();
+        let place = temp_place(3, 3);
+        cx.set_temp_expr(
+            &place.identifier,
+            Some(super::ExprValue::primary("\"hello\"".to_string())),
+        );
+        let rendered = render_jsx_expression_ast(
+            &mut cx,
+            &JsxTag::BuiltinTag("div".to_string()),
+            &[JsxAttribute::Attribute {
+                name: "title".to_string(),
+                place,
+            }],
+            &None,
+        )
+        .expect("expected jsx element");
+
+        assert_eq!(rendered, "<div title=\"hello\" />");
+    }
+
+    #[test]
+    fn renders_jsx_escaped_string_attribute_via_ast() {
+        let mut cx = test_context();
+        let place = temp_place(4, 4);
+        cx.set_temp_expr(
+            &place.identifier,
+            Some(super::ExprValue::primary("\"a\\\\nb\"".to_string())),
+        );
+        let rendered = render_jsx_expression_ast(
+            &mut cx,
+            &JsxTag::BuiltinTag("div".to_string()),
+            &[JsxAttribute::Attribute {
+                name: "title".to_string(),
+                place,
+            }],
+            &None,
+        )
+        .expect("expected jsx element");
+
+        assert!(rendered.starts_with("<div title={"));
+        assert!(rendered.contains("\"a\\\\nb\""));
     }
 
     #[test]
