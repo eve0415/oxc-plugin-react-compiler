@@ -754,41 +754,15 @@ fn codegen_reactive_function_with_primitives(
     };
 
     let mut output = String::new();
-    if options.emit_directives_in_body {
-        for directive in &func.directives {
-            output.push_str(&format!("\"{}\";\n", directive));
-        }
-    }
-    if let Some(cache_prologue) = &cache_prologue {
-        output.push_str(&format!(
-            "const {} = _c({});\n",
-            cache_prologue.binding_name, cache_prologue.size
-        ));
-        if let Some(fast_refresh) = &cache_prologue.fast_refresh {
-            output.push_str("if (\n");
-            output.push_str(&format!(
-                "  {}[{}] !== \"{}\"\n",
-                cache_prologue.binding_name, fast_refresh.cache_index, fast_refresh.hash
-            ));
-            output.push_str(") {\n");
-            output.push_str(&format!(
-                "  for (let {} = 0; {} < {}; {} += 1) {{\n",
-                fast_refresh.index_binding_name,
-                fast_refresh.index_binding_name,
-                cache_prologue.size,
-                fast_refresh.index_binding_name
-            ));
-            output.push_str(&format!(
-                "    {}[{}] = Symbol.for(\"{}\");\n",
-                cache_prologue.binding_name, fast_refresh.index_binding_name, MEMO_CACHE_SENTINEL
-            ));
-            output.push_str("  }\n");
-            output.push_str(&format!(
-                "  {}[{}] = \"{}\";\n",
-                cache_prologue.binding_name, fast_refresh.cache_index, fast_refresh.hash
-            ));
-            output.push_str("}\n");
-        }
+    if let Some(prologue) = render_reactive_function_body_prologue_ast(
+        if options.emit_directives_in_body {
+            Some(&func.directives)
+        } else {
+            None
+        },
+        cache_prologue.as_ref(),
+    ) {
+        output.push_str(&prologue);
     }
     output.push_str(&body);
 
@@ -18178,6 +18152,22 @@ fn parse_statement_list_for_ast_codegen<'a>(
     Ok(parsed_body.statements)
 }
 
+fn parse_single_statement_for_ast_codegen<'a>(
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    statement_source: &str,
+) -> Result<ast::Statement<'a>, String> {
+    let statements =
+        parse_statement_list_for_ast_codegen(allocator, source_type, statement_source)?;
+    if statements.len() != 1 {
+        return Err("expected exactly one statement".to_string());
+    }
+    statements
+        .into_iter()
+        .next()
+        .ok_or_else(|| "missing statement".to_string())
+}
+
 fn parse_block_statement_for_ast_codegen<'a>(
     allocator: &'a Allocator,
     source_type: SourceType,
@@ -18522,6 +18512,14 @@ fn split_flow_cast_expression_source(expr: &str) -> Option<(&str, &str)> {
     Some((left, right))
 }
 
+fn is_quoted_string_literal_source(expr: &str) -> bool {
+    let trimmed = expr.trim();
+    let Some(first) = trimmed.chars().next() else {
+        return false;
+    };
+    matches!(first, '"' | '\'') && trimmed.ends_with(first) && trimmed.len() >= 2
+}
+
 fn render_reactive_variable_statement_ast(
     kind: ast::VariableDeclarationKind,
     name: &str,
@@ -18593,6 +18591,9 @@ fn render_reactive_assignment_statement_ast(target_name: &str, rhs: &str) -> Opt
 
 fn render_reactive_expression_statement_ast(expression: &str) -> Option<String> {
     if split_flow_cast_expression_source(expression).is_some() {
+        return Some(format!("{expression};\n"));
+    }
+    if is_quoted_string_literal_source(expression) {
         return Some(format!("{expression};\n"));
     }
     let allocator = Allocator::default();
@@ -18828,18 +18829,95 @@ fn render_reactive_for_in_statement_ast(
     render_single_statement_source_with_oxc(&statement_source)
 }
 
+fn render_reactive_function_body_prologue_ast(
+    directives: Option<&[String]>,
+    cache_prologue: Option<&CachePrologue>,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let mut statements: Vec<ast::Statement<'_>> = Vec::new();
+    let mut output = String::new();
+
+    if let Some(directives) = directives {
+        for directive in directives {
+            output.push_str(&format!("\"{}\";\n", directive));
+        }
+    }
+
+    if let Some(cache_prologue) = cache_prologue {
+        statements.push(ast::Statement::VariableDeclaration(
+            builder.alloc_variable_declaration(
+                SPAN,
+                ast::VariableDeclarationKind::Const,
+                builder.vec1(
+                    builder.variable_declarator(
+                        SPAN,
+                        ast::VariableDeclarationKind::Const,
+                        builder.binding_pattern_binding_identifier(
+                            SPAN,
+                            builder.ident(&cache_prologue.binding_name),
+                        ),
+                        NONE,
+                        Some(
+                            parse_expression_for_ast_codegen(
+                                &allocator,
+                                SourceType::mjs().with_jsx(true),
+                                &format!("_c({})", cache_prologue.size),
+                            )
+                            .ok()?,
+                        ),
+                        false,
+                    ),
+                ),
+                false,
+            ),
+        ));
+
+        if let Some(fast_refresh) = &cache_prologue.fast_refresh {
+            let refresh_statement = parse_single_statement_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
+                &format!(
+                    "if (\n  {}[{}] !== \"{}\"\n) {{\n  for (let {} = 0; {} < {}; {} += 1) {{\n    {}[{}] = Symbol.for(\"{}\");\n  }}\n  {}[{}] = \"{}\";\n}}",
+                    cache_prologue.binding_name,
+                    fast_refresh.cache_index,
+                    escape_string(&fast_refresh.hash),
+                    fast_refresh.index_binding_name,
+                    fast_refresh.index_binding_name,
+                    cache_prologue.size,
+                    fast_refresh.index_binding_name,
+                    cache_prologue.binding_name,
+                    fast_refresh.index_binding_name,
+                    MEMO_CACHE_SENTINEL,
+                    cache_prologue.binding_name,
+                    fast_refresh.cache_index,
+                    escape_string(&fast_refresh.hash),
+                ),
+            )
+            .ok()?;
+            statements.push(refresh_statement);
+        }
+    }
+
+    if !statements.is_empty() {
+        output.push_str(&format!("{}\n", codegen_statements_with_oxc(&statements)));
+    }
+    if output.is_empty() {
+        None
+    } else {
+        Some(output)
+    }
+}
+
 fn render_single_statement_source_with_oxc(statement_source: &str) -> Option<String> {
     let allocator = Allocator::default();
-    let statements = parse_statement_list_for_ast_codegen(
+    let statement = parse_single_statement_for_ast_codegen(
         &allocator,
         SourceType::mjs().with_jsx(true),
         statement_source,
     )
     .ok()?;
-    if statements.len() != 1 {
-        return None;
-    }
-    Some(format!("{}\n", codegen_statement_with_oxc(&statements[0])))
+    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
 }
 
 fn build_identifier_assignment_statement_ast_with_expression<'a>(
