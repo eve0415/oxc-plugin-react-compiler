@@ -14,9 +14,11 @@ use oxc_ast::{AstBuilder, NONE, ast};
 use oxc_codegen::{Codegen, CodegenOptions, IndentChar};
 use oxc_parser::Parser;
 use oxc_span::{SPAN, SourceType};
+use oxc_syntax::number::NumberBase;
 use oxc_syntax::operator::{
     AssignmentOperator, BinaryOperator as AstBinaryOperator,
     LogicalOperator as AstLogicalOperator, UnaryOperator as AstUnaryOperator,
+    UpdateOperator as AstUpdateOperator,
 };
 
 use crate::environment::Environment;
@@ -14979,7 +14981,9 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                 .map(|a| codegen_argument(cx, a))
                 .collect::<Vec<_>>()
                 .join(", ");
-            ExprValue::primary(format!("new {}({})", callee_expr, args_str))
+            let expr = render_new_expression_ast(cx, callee, args)
+                .unwrap_or_else(|| format!("new {}({})", callee_expr, args_str));
+            ExprValue::primary(expr)
         }
         InstructionValue::ObjectExpression { properties, .. } => {
             if properties.is_empty() {
@@ -15019,19 +15023,18 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
         } => {
             let obj = codegen_member_object_expression(cx, object);
             let v = codegen_place_to_expression(cx, val);
-            ExprValue::new(
-                format!("{} = {}", format_property_access(&obj, property, false), v),
-                ExprPrecedence::Assignment,
-            )
+            let expr = render_property_store_expression_ast(&obj, property, &v)
+                .unwrap_or_else(|| format!("{} = {}", format_property_access(&obj, property, false), v));
+            ExprValue::new(expr, ExprPrecedence::Assignment)
         }
         InstructionValue::PropertyDelete {
             object, property, ..
         } => {
             let obj = codegen_member_object_expression(cx, object);
-            ExprValue::new(
-                format!("delete {}", format_property_access(&obj, property, false)),
-                ExprPrecedence::Unary,
-            )
+            let expr = render_property_delete_expression_ast(&obj, property).unwrap_or_else(|| {
+                format!("delete {}", format_property_access(&obj, property, false))
+            });
+            ExprValue::new(expr, ExprPrecedence::Unary)
         }
         InstructionValue::ComputedLoad {
             object,
@@ -15041,11 +15044,15 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
         } => {
             let obj = codegen_member_object_expression(cx, object);
             let prop = codegen_place_to_expression(cx, property);
-            if *optional {
-                ExprValue::primary(format!("{}?.[{}]", obj, prop))
-            } else {
-                ExprValue::primary(format!("{}[{}]", obj, prop))
-            }
+            let expr = render_computed_access_expression_ast(&obj, &prop, *optional)
+                .unwrap_or_else(|| {
+                    if *optional {
+                        format!("{}?.[{}]", obj, prop)
+                    } else {
+                        format!("{}[{}]", obj, prop)
+                    }
+                });
+            ExprValue::primary(expr)
         }
         InstructionValue::ComputedStore {
             object,
@@ -15056,23 +15063,26 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             let obj = codegen_member_object_expression(cx, object);
             let prop = codegen_place_to_expression(cx, property);
             let v = codegen_place_to_expression(cx, val);
-            ExprValue::new(
-                format!("{}[{}] = {}", obj, prop, v),
-                ExprPrecedence::Assignment,
-            )
+            let expr = render_computed_store_expression_ast(&obj, &prop, &v)
+                .unwrap_or_else(|| format!("{}[{}] = {}", obj, prop, v));
+            ExprValue::new(expr, ExprPrecedence::Assignment)
         }
         InstructionValue::ComputedDelete {
             object, property, ..
         } => {
             let obj = codegen_member_object_expression(cx, object);
             let prop = codegen_place_to_expression(cx, property);
-            ExprValue::new(format!("delete {}[{}]", obj, prop), ExprPrecedence::Unary)
+            let expr = render_computed_delete_expression_ast(&obj, &prop)
+                .unwrap_or_else(|| format!("delete {}[{}]", obj, prop));
+            ExprValue::new(expr, ExprPrecedence::Unary)
         }
         InstructionValue::StoreGlobal {
             name, value: val, ..
         } => {
             let v = codegen_place_to_expression(cx, val);
-            ExprValue::new(format!("{} = {}", name, v), ExprPrecedence::Assignment)
+            let expr = render_global_store_expression_ast(name, &v)
+                .unwrap_or_else(|| format!("{} = {}", name, v));
+            ExprValue::new(expr, ExprPrecedence::Assignment)
         }
         InstructionValue::JsxExpression {
             tag,
@@ -15149,13 +15159,17 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             // cx.temp, so codegen would fall back to a synthetic "tN" name.
             // `value` still maps to the LoadLocal that loaded the original variable.
             let expr = codegen_place_to_expression(cx, value);
-            ExprValue::primary(format!("{}{}", expr, update_op_to_str(operation)))
+            let rendered = render_update_expression_ast(&expr, *operation, false)
+                .unwrap_or_else(|| format!("{}{}", expr, update_op_to_str(operation)));
+            ExprValue::primary(rendered)
         }
         InstructionValue::PrefixUpdate {
             value, operation, ..
         } => {
             let expr = codegen_place_to_expression(cx, value);
-            ExprValue::primary(format!("{}{}", update_op_to_str(operation), expr))
+            let rendered = render_update_expression_ast(&expr, *operation, true)
+                .unwrap_or_else(|| format!("{}{}", update_op_to_str(operation), expr));
+            ExprValue::primary(rendered)
         }
         InstructionValue::ReactiveSequenceExpression {
             instructions,
@@ -15563,6 +15577,13 @@ fn lower_logical_operator_ast(operator: LogicalOperator) -> AstLogicalOperator {
     }
 }
 
+fn lower_update_operator_ast(operator: UpdateOperator) -> AstUpdateOperator {
+    match operator {
+        UpdateOperator::Increment => AstUpdateOperator::Increment,
+        UpdateOperator::Decrement => AstUpdateOperator::Decrement,
+    }
+}
+
 fn render_binary_expression_ast(
     left: &str,
     operator: BinaryOperator,
@@ -15610,6 +15631,201 @@ fn render_conditional_expression_ast(
     let consequent = parse_rendered_expression_ast(&allocator, consequent)?;
     let alternate = parse_rendered_expression_ast(&allocator, alternate)?;
     let expression = builder.expression_conditional(SPAN, test, consequent, alternate);
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn expression_to_simple_assignment_target_ast<'a>(
+    builder: AstBuilder<'a>,
+    expression: ast::Expression<'a>,
+) -> Option<ast::SimpleAssignmentTarget<'a>> {
+    match expression {
+        ast::Expression::Identifier(identifier) => Some(
+            builder.simple_assignment_target_assignment_target_identifier(SPAN, identifier.name),
+        ),
+        ast::Expression::ComputedMemberExpression(member) => {
+            Some(ast::SimpleAssignmentTarget::from(
+                ast::MemberExpression::ComputedMemberExpression(member),
+            ))
+        }
+        ast::Expression::StaticMemberExpression(member) => Some(ast::SimpleAssignmentTarget::from(
+            ast::MemberExpression::StaticMemberExpression(member),
+        )),
+        ast::Expression::PrivateFieldExpression(member) => Some(ast::SimpleAssignmentTarget::from(
+            ast::MemberExpression::PrivateFieldExpression(member),
+        )),
+        _ => None,
+    }
+}
+
+fn expression_to_assignment_target_ast<'a>(
+    builder: AstBuilder<'a>,
+    expression: ast::Expression<'a>,
+) -> Option<ast::AssignmentTarget<'a>> {
+    Some(ast::AssignmentTarget::from(
+        expression_to_simple_assignment_target_ast(builder, expression)?,
+    ))
+}
+
+fn build_property_access_expression_ast<'a>(
+    builder: AstBuilder<'a>,
+    object: ast::Expression<'a>,
+    property: &PropertyLiteral,
+    optional: bool,
+) -> ast::Expression<'a> {
+    match property {
+        PropertyLiteral::String(name) if is_non_negative_integer_string(name) => {
+            ast::Expression::from(builder.member_expression_computed(
+                SPAN,
+                object,
+                builder.expression_numeric_literal(
+                    SPAN,
+                    name.parse::<f64>().ok().unwrap_or_default(),
+                    None,
+                    NumberBase::Decimal,
+                ),
+                optional,
+            ))
+        }
+        PropertyLiteral::String(name) if is_valid_js_identifier(name) => {
+            ast::Expression::from(builder.member_expression_static(
+                SPAN,
+                object,
+                builder.identifier_name(SPAN, builder.ident(name)),
+                optional,
+            ))
+        }
+        PropertyLiteral::String(name) => ast::Expression::from(builder.member_expression_computed(
+            SPAN,
+            object,
+            builder.expression_string_literal(SPAN, builder.atom(name), None),
+            optional,
+        )),
+        PropertyLiteral::Number(value) => ast::Expression::from(builder.member_expression_computed(
+            SPAN,
+            object,
+            builder.expression_numeric_literal(SPAN, *value, None, NumberBase::Decimal),
+            optional,
+        )),
+    }
+}
+
+fn render_property_store_expression_ast(
+    object: &str,
+    property: &PropertyLiteral,
+    value: &str,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let object = parse_rendered_expression_ast(&allocator, object)?;
+    let value = parse_rendered_expression_ast(&allocator, value)?;
+    let target = expression_to_assignment_target_ast(
+        builder,
+        build_property_access_expression_ast(builder, object, property, false),
+    )?;
+    let expression = builder.expression_assignment(SPAN, AssignmentOperator::Assign, target, value);
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_property_delete_expression_ast(object: &str, property: &PropertyLiteral) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let object = parse_rendered_expression_ast(&allocator, object)?;
+    let member = build_property_access_expression_ast(builder, object, property, false);
+    let expression = builder.expression_unary(SPAN, AstUnaryOperator::Delete, member);
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_computed_access_expression_ast(
+    object: &str,
+    property: &str,
+    optional: bool,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let object = parse_rendered_expression_ast(&allocator, object)?;
+    let property = parse_rendered_expression_ast(&allocator, property)?;
+    let expression = ast::Expression::from(
+        builder.member_expression_computed(SPAN, object, property, optional),
+    );
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_computed_store_expression_ast(object: &str, property: &str, value: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let object = parse_rendered_expression_ast(&allocator, object)?;
+    let property = parse_rendered_expression_ast(&allocator, property)?;
+    let value = parse_rendered_expression_ast(&allocator, value)?;
+    let target = ast::AssignmentTarget::from(ast::SimpleAssignmentTarget::from(
+        builder.member_expression_computed(SPAN, object, property, false),
+    ));
+    let expression = builder.expression_assignment(SPAN, AssignmentOperator::Assign, target, value);
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_computed_delete_expression_ast(object: &str, property: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let object = parse_rendered_expression_ast(&allocator, object)?;
+    let property = parse_rendered_expression_ast(&allocator, property)?;
+    let expression = builder.expression_unary(
+        SPAN,
+        AstUnaryOperator::Delete,
+        ast::Expression::from(builder.member_expression_computed(SPAN, object, property, false)),
+    );
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_global_store_expression_ast(name: &str, value: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let value = parse_rendered_expression_ast(&allocator, value)?;
+    let target = ast::AssignmentTarget::from(
+        builder.simple_assignment_target_assignment_target_identifier(SPAN, builder.ident(name)),
+    );
+    let expression = builder.expression_assignment(SPAN, AssignmentOperator::Assign, target, value);
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_update_expression_ast(
+    target: &str,
+    operator: UpdateOperator,
+    prefix: bool,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let target = parse_rendered_expression_ast(&allocator, target)?;
+    let target = expression_to_simple_assignment_target_ast(builder, target)?;
+    let expression = builder.expression_update(
+        SPAN,
+        lower_update_operator_ast(operator),
+        prefix,
+        target,
+    );
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_new_expression_ast(
+    cx: &mut Context,
+    callee: &Place,
+    args: &[Argument],
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let callee = parse_rendered_expression_ast(&allocator, &codegen_place_to_expression(cx, callee))?;
+    let mut lowered_args = builder.vec();
+    for arg in args {
+        match arg {
+            Argument::Place(place) => lowered_args.push(ast::Argument::from(
+                parse_rendered_expression_ast(&allocator, &codegen_place_to_expression(cx, place))?,
+            )),
+            Argument::Spread(place) => lowered_args.push(builder.argument_spread_element(
+                SPAN,
+                parse_rendered_expression_ast(&allocator, &codegen_place_to_expression(cx, place))?,
+            )),
+        }
+    }
+    let expression = builder.expression_new(SPAN, callee, NONE, lowered_args);
     Some(codegen_expression_with_oxc(&expression))
 }
 
@@ -18120,6 +18336,9 @@ fn resolve_method_property(cx: &mut Context, place: &Place, receiver_expr: &str)
     if resolved.starts_with('"') && resolved.ends_with('"') && resolved.len() >= 2 {
         return (resolved[1..resolved.len() - 1].to_string(), false);
     }
+    if let Some(ast_resolved) = resolve_method_property_via_ast(receiver_expr, &resolved) {
+        return ast_resolved;
+    }
     // Check if the resolved expression is a member expression of the receiver (e.g., `Symbol.for`
     // when receiver is `Symbol`). In this case, extract just the property name for dot notation.
     // This handles the pattern from PropagateEarlyReturns where MethodCall's property is a
@@ -18143,6 +18362,80 @@ fn resolve_method_property(cx: &mut Context, place: &Place, receiver_expr: &str)
     }
     // Non-string property → computed/bracket notation
     (resolved, true)
+}
+
+fn normalize_rendered_expression_ast(expr: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let expression = parse_rendered_expression_ast(&allocator, expr)?;
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn resolve_method_property_via_ast(
+    receiver_expr: &str,
+    resolved_expr: &str,
+) -> Option<(String, bool)> {
+    let allocator = Allocator::default();
+    let normalized_receiver = normalize_rendered_expression_ast(receiver_expr)?;
+    let resolved = parse_rendered_expression_ast(&allocator, resolved_expr)?;
+
+    fn member_property_from_expression(
+        normalized_receiver: &str,
+        expression: ast::Expression<'_>,
+    ) -> Option<(String, bool)> {
+        match expression {
+            ast::Expression::StaticMemberExpression(member) => {
+                if codegen_expression_with_oxc(&member.object) == normalized_receiver {
+                    Some((member.property.name.to_string(), false))
+                } else {
+                    None
+                }
+            }
+            ast::Expression::ComputedMemberExpression(member) => {
+                if codegen_expression_with_oxc(&member.object) == normalized_receiver {
+                    Some((codegen_expression_with_oxc(&member.expression), true))
+                } else {
+                    None
+                }
+            }
+            ast::Expression::PrivateFieldExpression(member) => {
+                if codegen_expression_with_oxc(&member.object) == normalized_receiver {
+                    Some((format!("#{}", member.field.name), false))
+                } else {
+                    None
+                }
+            }
+            ast::Expression::ChainExpression(chain) => match chain.unbox().expression {
+                ast::ChainElement::StaticMemberExpression(member) => {
+                    if codegen_expression_with_oxc(&member.object) == normalized_receiver {
+                        Some((member.property.name.to_string(), false))
+                    } else {
+                        None
+                    }
+                }
+                ast::ChainElement::ComputedMemberExpression(member) => {
+                    if codegen_expression_with_oxc(&member.object) == normalized_receiver {
+                        Some((codegen_expression_with_oxc(&member.expression), true))
+                    } else {
+                        None
+                    }
+                }
+                ast::ChainElement::PrivateFieldExpression(member) => {
+                    if codegen_expression_with_oxc(&member.object) == normalized_receiver {
+                        Some((format!("#{}", member.field.name), false))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
+            ast::Expression::ParenthesizedExpression(parenthesized) => {
+                member_property_from_expression(normalized_receiver, parenthesized.unbox().expression)
+            }
+            _ => None,
+        }
+    }
+
+    member_property_from_expression(&normalized_receiver, resolved)
 }
 
 fn extract_single_computed_member_suffix(suffix: &str) -> Option<String> {
