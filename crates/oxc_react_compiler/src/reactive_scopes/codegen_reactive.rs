@@ -15846,7 +15846,7 @@ fn block_has_unconditional_break_terminator(block: &ReactiveBlock) -> bool {
 }
 
 fn codegen_dependency(cx: &mut Context, dep: &ReactiveScopeDependency) -> String {
-    let mut expr = if dep.path.is_empty() {
+    let root_expr = if dep.path.is_empty() {
         let has_stable_named_root = dep.identifier.name.as_ref().is_some_and(|name| match name {
             IdentifierName::Named(n) | IdentifierName::Promoted(n) => !is_codegen_temp_name(n),
         });
@@ -15860,32 +15860,99 @@ fn codegen_dependency(cx: &mut Context, dep: &ReactiveScopeDependency) -> String
     } else {
         identifier_name_with_cx(cx, &dep.identifier)
     };
-    for path_entry in &dep.path {
-        if is_valid_js_identifier_name(&path_entry.property) {
-            if path_entry.optional {
-                expr = format!("{}?.{}", expr, path_entry.property);
+    if dep.path.is_empty() {
+        return root_expr;
+    }
+    render_dependency_expression_ast(&root_expr, dep).unwrap_or_else(|| {
+        let mut expr = root_expr;
+        for path_entry in &dep.path {
+            if is_valid_js_identifier_name(&path_entry.property) {
+                if path_entry.optional {
+                    expr = format!("{}?.{}", expr, path_entry.property);
+                } else {
+                    expr = format!("{}.{}", expr, path_entry.property);
+                }
+            } else if path_entry.property.chars().all(|c| c.is_ascii_digit()) {
+                if path_entry.optional {
+                    expr = format!("{}?.[{}]", expr, path_entry.property);
+                } else {
+                    expr = format!("{}[{}]", expr, path_entry.property);
+                }
             } else {
-                expr = format!("{}.{}", expr, path_entry.property);
-            }
-        } else if path_entry.property.chars().all(|c| c.is_ascii_digit()) {
-            if path_entry.optional {
-                expr = format!("{}?.[{}]", expr, path_entry.property);
-            } else {
-                expr = format!("{}[{}]", expr, path_entry.property);
-            }
-        } else {
-            let escaped = path_entry
-                .property
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"");
-            if path_entry.optional {
-                expr = format!("{}?.[\"{}\"]", expr, escaped);
-            } else {
-                expr = format!("{}[\"{}\"]", expr, escaped);
+                let escaped = path_entry
+                    .property
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"");
+                if path_entry.optional {
+                    expr = format!("{}?.[\"{}\"]", expr, escaped);
+                } else {
+                    expr = format!("{}[\"{}\"]", expr, escaped);
+                }
             }
         }
+        expr
+    })
+}
+
+fn render_dependency_expression_ast(
+    root_expr: &str,
+    dep: &ReactiveScopeDependency,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let mut expression =
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), root_expr)
+            .ok()?;
+    let mut has_optional = false;
+    for path_entry in &dep.path {
+        if is_valid_js_identifier_name(&path_entry.property) {
+            expression = builder.member_expression_static(
+                SPAN,
+                expression,
+                builder.identifier_name(SPAN, builder.atom(&path_entry.property)),
+                path_entry.optional,
+            ).into();
+        } else if path_entry.property.chars().all(|c| c.is_ascii_digit()) {
+            expression = builder.member_expression_computed(
+                SPAN,
+                expression,
+                builder.expression_numeric_literal(
+                    SPAN,
+                    path_entry.property.parse::<f64>().ok()?,
+                    None,
+                    oxc_syntax::number::NumberBase::Decimal,
+                ),
+                path_entry.optional,
+            ).into();
+        } else {
+            expression = builder.member_expression_computed(
+                SPAN,
+                expression,
+                builder.expression_string_literal(
+                    SPAN,
+                    builder.atom(&path_entry.property),
+                    None,
+                ),
+                path_entry.optional,
+            ).into();
+        }
+        has_optional |= path_entry.optional;
     }
-    expr
+    if has_optional {
+        expression = match expression {
+            ast::Expression::ComputedMemberExpression(member) => {
+                builder.expression_chain(SPAN, ast::ChainElement::ComputedMemberExpression(member))
+            }
+            ast::Expression::StaticMemberExpression(member) => {
+                builder.expression_chain(SPAN, ast::ChainElement::StaticMemberExpression(member))
+            }
+            ast::Expression::PrivateFieldExpression(member) => {
+                builder.expression_chain(SPAN, ast::ChainElement::PrivateFieldExpression(member))
+            }
+            other => other,
+        };
+    }
+    Some(codegen_expression_with_oxc(&expression))
 }
 
 fn infer_fallback_scope_dep_exprs(cx: &mut Context, block: &ReactiveBlock) -> Vec<String> {
@@ -19982,8 +20049,9 @@ mod tests {
         render_reactive_function_body_prologue_ast,
     };
     use crate::hir::types::{
-        Argument, DeclarationId, Effect, Identifier, IdentifierId, IdentifierName, MutableRange,
-        ObjectPropertyKey, Place, SourceLocation, Type,
+        Argument, DeclarationId, DependencyPathEntry, Effect, Identifier, IdentifierId,
+        IdentifierName, MutableRange, ObjectPropertyKey, Place, ReactiveScopeDependency,
+        SourceLocation, Type,
     };
     use crate::reactive_scopes::codegen_reactive::CachePrologue;
 
@@ -20137,5 +20205,53 @@ mod tests {
             apply_optional_to_rendered_expr("foo.bar", true).expect("expected optional member");
 
         assert_eq!(rendered, "foo?.bar");
+    }
+
+    #[test]
+    fn renders_dependency_chain_via_ast() {
+        let dep = ReactiveScopeDependency {
+            identifier: Identifier {
+                id: IdentifierId::new(0),
+                declaration_id: DeclarationId::new(0),
+                name: Some(IdentifierName::Named("foo".to_string())),
+                mutable_range: MutableRange::default(),
+                scope: None,
+                type_: Type::Poly,
+                loc: SourceLocation::Generated,
+            },
+            path: vec![DependencyPathEntry {
+                property: "bar".to_string(),
+                optional: true,
+            }],
+        };
+
+        let rendered =
+            super::render_dependency_expression_ast("foo", &dep).expect("expected dependency");
+
+        assert_eq!(rendered, "foo?.bar");
+    }
+
+    #[test]
+    fn renders_computed_dependency_chain_via_ast() {
+        let dep = ReactiveScopeDependency {
+            identifier: Identifier {
+                id: IdentifierId::new(0),
+                declaration_id: DeclarationId::new(0),
+                name: Some(IdentifierName::Named("foo".to_string())),
+                mutable_range: MutableRange::default(),
+                scope: None,
+                type_: Type::Poly,
+                loc: SourceLocation::Generated,
+            },
+            path: vec![DependencyPathEntry {
+                property: "bad-key".to_string(),
+                optional: false,
+            }],
+        };
+
+        let rendered =
+            super::render_dependency_expression_ast("foo", &dep).expect("expected dependency");
+
+        assert_eq!(rendered, "foo[\"bad-key\"]");
     }
 }
