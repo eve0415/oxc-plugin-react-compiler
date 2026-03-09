@@ -933,6 +933,12 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 self.builder
                     .expression_identifier(SPAN, self.builder.ident(binding.name())),
             ),
+            InstructionValue::FunctionExpression {
+                name,
+                lowered_func,
+                expr_type,
+                ..
+            } => lower_function_expression_ast(self.builder, name.as_deref(), lowered_func, *expr_type),
             InstructionValue::Primitive { value, .. } => Some(lower_primitive(self.builder, value)),
             InstructionValue::BinaryExpression {
                 operator,
@@ -1847,6 +1853,76 @@ where
     }
 }
 
+fn lower_function_expression_ast<'a>(
+    builder: AstBuilder<'a>,
+    name: Option<&str>,
+    lowered_func: &types::LoweredFunction,
+    expr_type: types::FunctionExpressionType,
+) -> Option<ast::Expression<'a>> {
+    let hir_function = &lowered_func.func;
+    let synthetic_param_names = synthetic_param_names(hir_function);
+    let params = lower_function_params(builder, hir_function, &synthetic_param_names)?;
+    let statements = try_lower_function_body_ast(builder, hir_function)?;
+    let mut directives = builder.vec();
+    for directive in &hir_function.directives {
+        directives.push(builder.directive(
+            SPAN,
+            builder.string_literal(SPAN, builder.atom(directive), None),
+            builder.atom(directive),
+        ));
+    }
+
+    if expr_type == types::FunctionExpressionType::ArrowFunctionExpression
+        && directives.is_empty()
+        && let Some(expression) = single_return_expression(&statements, builder.allocator)
+    {
+        return Some(builder.expression_arrow_function(
+            SPAN,
+            true,
+            hir_function.async_,
+            NONE,
+            builder.alloc(params),
+            NONE,
+            builder.alloc(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_expression(SPAN, expression)),
+            )),
+        ));
+    }
+
+    let body = builder.alloc(builder.function_body(SPAN, directives, statements));
+    match expr_type {
+        types::FunctionExpressionType::ArrowFunctionExpression => Some(
+            builder.expression_arrow_function(
+                SPAN,
+                false,
+                hir_function.async_,
+                NONE,
+                builder.alloc(params),
+                NONE,
+                body,
+            ),
+        ),
+        types::FunctionExpressionType::FunctionExpression
+        | types::FunctionExpressionType::FunctionDeclaration => Some(
+            builder.expression_function(
+                SPAN,
+                ast::FunctionType::FunctionExpression,
+                name.map(|name| builder.binding_identifier(SPAN, builder.atom(name))),
+                hir_function.generator,
+                hir_function.async_,
+                false,
+                NONE,
+                NONE,
+                builder.alloc(params),
+                NONE,
+                Some(body),
+            ),
+        ),
+    }
+}
+
 fn collect_used_temps(hir_function: &HIRFunction) -> HashSet<IdentifierId> {
     let mut used = HashSet::new();
     for (_, block) in &hir_function.body.blocks {
@@ -2082,6 +2158,21 @@ fn statement_to_expression<'a>(
     match statement {
         ast::Statement::ExpressionStatement(expr_stmt) => {
             Some(expr_stmt.expression.clone_in(allocator))
+        }
+        _ => None,
+    }
+}
+
+fn single_return_expression<'a>(
+    statements: &oxc_allocator::Vec<'a, ast::Statement<'a>>,
+    allocator: &'a Allocator,
+) -> Option<ast::Expression<'a>> {
+    if statements.len() != 1 {
+        return None;
+    }
+    match statements.first()? {
+        ast::Statement::ReturnStatement(return_stmt) => {
+            Some(return_stmt.argument.as_ref()?.clone_in(allocator))
         }
         _ => None,
     }
@@ -3988,6 +4079,65 @@ mod tests {
             code,
             "function outlined(item) {\n  return <Item item={item} />;\n}\n"
         );
+    }
+
+    #[test]
+    fn lowers_nested_arrow_function_expression() {
+        let captured = named_place(260, 260, "x");
+        let inner_value = temporary_place(261);
+        let inner_hir = HIRFunction {
+            env: Environment::new(EnvironmentConfig::default()),
+            loc: SourceLocation::Generated,
+            id: None,
+            fn_type: ReactFunctionType::Other,
+            params: vec![],
+            returns: captured.clone(),
+            context: vec![captured.clone()],
+            body: HIR {
+                entry: BlockId::new(0),
+                blocks: vec![(
+                    BlockId::new(0),
+                    BasicBlock {
+                        kind: types::BlockKind::Block,
+                        id: BlockId::new(0),
+                        instructions: vec![],
+                        terminal: Terminal::Return {
+                            value: captured.clone(),
+                            return_variant: types::ReturnVariant::Explicit,
+                            id: InstructionId::new(262),
+                            loc: SourceLocation::Generated,
+                        },
+                        preds: HashSet::new(),
+                        phis: vec![],
+                    },
+                )],
+            },
+            generator: false,
+            async_: false,
+            directives: vec![],
+            aliasing_effects: None,
+        };
+        let hir = hir_function(
+            vec![instruction(
+                261,
+                inner_value.clone(),
+                types::InstructionValue::FunctionExpression {
+                    name: None,
+                    lowered_func: types::LoweredFunction { func: inner_hir },
+                    expr_type: types::FunctionExpressionType::ArrowFunctionExpression,
+                    loc: SourceLocation::Generated,
+                },
+            )],
+            Terminal::Return {
+                value: inner_value.clone(),
+                return_variant: types::ReturnVariant::Explicit,
+                id: InstructionId::new(263),
+                loc: SourceLocation::Generated,
+            },
+            inner_value,
+        );
+
+        assert_eq!(try_lower_function_body(&hir).as_deref(), Some("return () => x;\n"));
     }
 
     fn hir_function(
