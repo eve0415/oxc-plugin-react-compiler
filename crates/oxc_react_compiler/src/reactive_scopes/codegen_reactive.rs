@@ -12360,7 +12360,15 @@ fn codegen_reactive_scope(
             cx.used_declaration_names.insert(shifted_name.clone());
             cx.unique_identifiers.insert(shifted_name);
 
-            output.push_str(&format!("const {} = {};\n", alias_name, dep_expr));
+            if let Some(stmt) = render_reactive_variable_statement_ast(
+                ast::VariableDeclarationKind::Const,
+                &alias_name,
+                Some(&dep_expr),
+            ) {
+                output.push_str(&stmt);
+            } else {
+                output.push_str(&format!("const {} = {};\n", alias_name, dep_expr));
+            }
             selected_dep_exprs[dep_index] = alias_name.clone();
             optional_dep_alias = Some((dep_expr, alias_name));
         }
@@ -12370,12 +12378,25 @@ fn codegen_reactive_scope(
         let comparison = format!("{}[{}] !== {}", cache_var, index, dep_expr);
         if cx.enable_change_variable_codegen {
             let change_name = cx.synthesize_name(&format!("c_{}", index));
-            change_var_stmts.push(format!("let {} = {};\n", change_name, comparison));
+            change_var_stmts.push(
+                render_reactive_variable_statement_ast(
+                    ast::VariableDeclarationKind::Let,
+                    &change_name,
+                    Some(&comparison),
+                )
+                .unwrap_or_else(|| format!("let {} = {};\n", change_name, comparison)),
+            );
             change_exprs.push(change_name);
         } else {
             change_exprs.push(comparison);
         }
-        cache_store_stmts.push(format!("{}[{}] = {};\n", cache_var, index, dep_expr));
+        cache_store_stmts.push(
+            render_reactive_expression_statement_ast(&format!(
+                "{}[{}] = {}",
+                cache_var, index, dep_expr
+            ))
+            .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, index, dep_expr)),
+        );
     }
     let active_dep_exprs: HashSet<String> = selected_dep_exprs.iter().cloned().collect();
 
@@ -12427,7 +12448,15 @@ fn codegen_reactive_scope(
             first_output_index = Some(index);
         }
         if !has_materialized_named_binding(cx, &decl.identifier) {
-            output.push_str(&format!("let {};\n", name));
+            if let Some(stmt) = render_reactive_variable_statement_ast(
+                ast::VariableDeclarationKind::Let,
+                &name,
+                None,
+            ) {
+                output.push_str(&stmt);
+            } else {
+                output.push_str(&format!("let {};\n", name));
+            }
             if let Some(names) = cx.block_scope_output_names.last_mut() {
                 names.insert(name.clone());
             }
@@ -12511,12 +12540,21 @@ fn codegen_reactive_scope(
 
     // Build cache store statements for outputs
     for (name, index) in &cache_loads {
-        cache_store_stmts.push(format!("{}[{}] = {};\n", cache_var, index, name));
+        cache_store_stmts.push(
+            render_reactive_expression_statement_ast(&format!(
+                "{}[{}] = {}",
+                cache_var, index, name
+            ))
+            .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, index, name)),
+        );
     }
 
     // Build cache load statements for outputs
     for (name, index) in &cache_loads {
-        cache_load_stmts.push(format!("{} = {}[{}];\n", name, cache_var, index));
+        cache_load_stmts.push(
+            render_reactive_assignment_statement_ast(name, &format!("{}[{}]", cache_var, index))
+                .unwrap_or_else(|| format!("{} = {}[{}];\n", name, cache_var, index)),
+        );
     }
 
     // Emit debug change detection scope form (upstream: enableChangeDetectionForDebugging).
@@ -12526,15 +12564,37 @@ fn codegen_reactive_scope(
         let scope_loc = format_change_detection_scope_loc(scope, block);
         output.push_str("{\n");
         output.push_str(&computation);
-        output.push_str(&format!("let {} = {};\n", condition_name, test_condition));
+        output.push_str(
+            &render_reactive_variable_statement_ast(
+                ast::VariableDeclarationKind::Let,
+                &condition_name,
+                Some(&test_condition),
+            )
+            .unwrap_or_else(|| format!("let {} = {};\n", condition_name, test_condition)),
+        );
         output.push_str(&format!("if (!{}) {{\n", condition_name));
         for (name, index) in &cache_loads {
             let old_name = cx.synthesize_name(&format!("old${}", name));
-            output.push_str(&format!("let {} = {}[{}];\n", old_name, cache_var, index));
-            output.push_str(&format!(
-                "$structuralCheck({}, {}, \"{}\", \"{}\", \"cached\", \"{}\");\n",
-                old_name, name, name, cx.function_name, scope_loc
-            ));
+            output.push_str(
+                &render_reactive_variable_statement_ast(
+                    ast::VariableDeclarationKind::Let,
+                    &old_name,
+                    Some(&format!("{}[{}]", cache_var, index)),
+                )
+                .unwrap_or_else(|| format!("let {} = {}[{}];\n", old_name, cache_var, index)),
+            );
+            output.push_str(
+                &render_reactive_expression_statement_ast(&format!(
+                    "$structuralCheck({}, {}, \"{}\", \"{}\", \"cached\", \"{}\")",
+                    old_name, name, name, cx.function_name, scope_loc
+                ))
+                .unwrap_or_else(|| {
+                    format!(
+                        "$structuralCheck({}, {}, \"{}\", \"{}\", \"cached\", \"{}\");\n",
+                        old_name, name, name, cx.function_name, scope_loc
+                    )
+                }),
+            );
         }
         output.push_str("}\n");
         for stmt in &cache_store_stmts {
@@ -12543,11 +12603,25 @@ fn codegen_reactive_scope(
         output.push_str(&format!("if ({}) {{\n", condition_name));
         output.push_str(&computation);
         for (name, index) in &cache_loads {
-            output.push_str(&format!(
-                "$structuralCheck({}[{}], {}, \"{}\", \"{}\", \"recomputed\", \"{}\");\n",
-                cache_var, index, name, name, cx.function_name, scope_loc
-            ));
-            output.push_str(&format!("{} = {}[{}];\n", name, cache_var, index));
+            output.push_str(
+                &render_reactive_expression_statement_ast(&format!(
+                    "$structuralCheck({}[{}], {}, \"{}\", \"{}\", \"recomputed\", \"{}\")",
+                    cache_var, index, name, name, cx.function_name, scope_loc
+                ))
+                .unwrap_or_else(|| {
+                    format!(
+                        "$structuralCheck({}[{}], {}, \"{}\", \"{}\", \"recomputed\", \"{}\");\n",
+                        cache_var, index, name, name, cx.function_name, scope_loc
+                    )
+                }),
+            );
+            output.push_str(
+                &render_reactive_assignment_statement_ast(
+                    name,
+                    &format!("{}[{}]", cache_var, index),
+                )
+                .unwrap_or_else(|| format!("{} = {}[{}];\n", name, cache_var, index)),
+            );
         }
         output.push_str("}\n");
         output.push_str("}\n");
@@ -12605,10 +12679,21 @@ fn codegen_reactive_scope(
     // Early return value
     if let Some(early_return) = &scope.early_return_value {
         let name = identifier_name_with_cx(cx, &early_return.value);
-        output.push_str(&format!(
-            "if ({} !== Symbol.for(\"{}\")) {{\nreturn {};\n}}\n",
-            name, EARLY_RETURN_SENTINEL, name
-        ));
+        let consequent = render_reactive_return_statement_ast(Some(&name))
+            .unwrap_or_else(|| format!("return {};\n", name));
+        output.push_str(
+            &render_reactive_if_statement_ast(
+                &format!("{} !== Symbol.for(\"{}\")", name, EARLY_RETURN_SENTINEL),
+                &consequent,
+                None,
+            )
+            .unwrap_or_else(|| {
+                format!(
+                    "if ({} !== Symbol.for(\"{}\")) {{\nreturn {};\n}}\n",
+                    name, EARLY_RETURN_SENTINEL, name
+                )
+            }),
+        );
     }
 }
 
