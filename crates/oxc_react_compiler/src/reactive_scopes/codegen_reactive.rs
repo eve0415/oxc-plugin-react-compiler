@@ -132,8 +132,6 @@ pub struct CodegenResult {
     pub cache_size: u32,
     /// Whether the function needs the cache import.
     pub needs_cache_import: bool,
-    /// Outlined function declarations (name, params_str, body_str).
-    pub outlined_functions: Vec<(String, String, String)>,
     /// Rendered parameter names for this function body.
     pub param_names: Vec<String>,
     /// Whether the function needs the makeReadOnly import (enableEmitFreeze).
@@ -738,7 +736,6 @@ fn codegen_reactive_function_with_primitives(
         body: output,
         cache_size,
         needs_cache_import,
-        outlined_functions: Vec::new(),
         param_names,
         needs_freeze_import: false,
         has_fire_rewrite: false,

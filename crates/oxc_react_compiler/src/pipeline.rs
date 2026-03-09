@@ -5941,7 +5941,7 @@ fn try_compile_function<'a>(
         hir_outlined_functions: param_hir_outlined_functions,
     } = params_result;
 
-    let mut outlined = codegen_result.outlined_functions;
+    let mut outlined = Vec::new();
     outlined.extend(param_outlined_functions);
     outlined.extend(synthesized_outlined_functions);
     // Add HIR-level outlined functions
@@ -6148,7 +6148,7 @@ fn try_compile_function_with_name<'a>(
         hir_outlined_functions: param_hir_outlined_functions,
     } = params_result;
 
-    let mut outlined = codegen_result.outlined_functions;
+    let mut outlined = Vec::new();
     outlined.extend(param_outlined_functions);
     outlined.extend(synthesized_outlined_functions);
     for of in &pipeline_output.hir_outlined {
@@ -6362,7 +6362,7 @@ fn try_compile_arrow<'a>(
         hir_outlined_functions: param_hir_outlined_functions,
     } = params_result;
 
-    let mut outlined = codegen_result.outlined_functions;
+    let mut outlined = Vec::new();
     outlined.extend(param_outlined_functions);
     outlined.extend(synthesized_outlined_functions);
     for of in &pipeline_output.hir_outlined {
