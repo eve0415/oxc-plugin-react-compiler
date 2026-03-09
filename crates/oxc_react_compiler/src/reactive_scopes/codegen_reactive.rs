@@ -14243,13 +14243,13 @@ fn maybe_materialize_elided_named_declaration(cx: &mut Context, id: &Identifier)
     cx.elided_named_declarations.remove(&id.declaration_id);
     cx.mark_decl_runtime_emitted(id.declaration_id);
     if let Some(init_expr) = init {
-        if init_expr == "undefined" {
-            Some(format!("let {};\n", name))
-        } else {
-            Some(format!("let {} = {};\n", name, init_expr))
-        }
+        render_reactive_variable_statement_ast(
+            ast::VariableDeclarationKind::Let,
+            &name,
+            Some(&init_expr),
+        )
     } else {
-        Some(format!("let {};\n", name))
+        render_reactive_variable_statement_ast(ast::VariableDeclarationKind::Let, &name, None)
     }
 }
 
@@ -14313,7 +14313,11 @@ fn codegen_store(
                 // declarations even when their initializer is constant-propagated away.
                 cx.declare(&place.identifier);
                 cx.mark_decl_runtime_emitted(decl_id);
-                return Some(format!("let {};\n", name));
+                return render_reactive_variable_statement_ast(
+                    ast::VariableDeclarationKind::Let,
+                    &name,
+                    None,
+                );
             }
             let should_emit_fn_decl =
                 kind == InstructionKind::Function || cx.function_decl_decls.contains(&decl_id);
@@ -14324,7 +14328,11 @@ fn codegen_store(
             }
             cx.declare(&place.identifier);
             cx.mark_decl_runtime_emitted(decl_id);
-            Some(format!("const {} = {};\n", name, rhs))
+            render_reactive_variable_statement_ast(
+                ast::VariableDeclarationKind::Const,
+                &name,
+                Some(rhs),
+            )
         }
         InstructionKind::Let | InstructionKind::HoistedLet => {
             let decl_id = place.identifier.declaration_id;
@@ -14338,9 +14346,17 @@ fn codegen_store(
             cx.declare(&place.identifier);
             cx.mark_decl_runtime_emitted(decl_id);
             if rhs == "undefined" {
-                Some(format!("let {};\n", name))
+                render_reactive_variable_statement_ast(
+                    ast::VariableDeclarationKind::Let,
+                    &name,
+                    None,
+                )
             } else {
-                Some(format!("let {} = {};\n", name, rhs))
+                render_reactive_variable_statement_ast(
+                    ast::VariableDeclarationKind::Let,
+                    &name,
+                    Some(rhs),
+                )
             }
         }
         InstructionKind::Reassign => {
@@ -14369,7 +14385,7 @@ fn codegen_store(
                 );
                 None
             } else {
-                Some(format!("{};\n", expr))
+                render_reactive_assignment_statement_ast(&name, rhs)
             }
         }
         InstructionKind::Catch => {
@@ -14378,13 +14394,21 @@ fn codegen_store(
             // a named alias for the catch parameter.
             cx.declare(&place.identifier);
             cx.mark_decl_runtime_emitted(place.identifier.declaration_id);
-            Some(format!("const {} = {};\n", name, rhs))
+            render_reactive_variable_statement_ast(
+                ast::VariableDeclarationKind::Const,
+                &name,
+                Some(rhs),
+            )
         }
         InstructionKind::HoistedConst | InstructionKind::HoistedFunction => {
             // Should have been pruned by PruneHoistedContexts
             cx.declare(&place.identifier);
             cx.mark_decl_runtime_emitted(place.identifier.declaration_id);
-            Some(format!("const {} = {};\n", name, rhs))
+            render_reactive_variable_statement_ast(
+                ast::VariableDeclarationKind::Const,
+                &name,
+                Some(rhs),
+            )
         }
     }
 }
@@ -18362,18 +18386,93 @@ fn codegen_statements_with_oxc(statements: &[ast::Statement<'_>]) -> String {
         .to_string()
 }
 
-fn render_reactive_declare_local_statement_ast(name: &str) -> Option<String> {
+fn split_flow_cast_expression_source(expr: &str) -> Option<(&str, &str)> {
+    let trimmed = expr.trim();
+    let inner = trimmed.strip_prefix('(')?.strip_suffix(')')?;
+    let chars: Vec<(usize, char)> = inner.char_indices().collect();
+    let mut depth_paren = 0usize;
+    let mut depth_brace = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut ternary_depth = 0usize;
+    let mut colon_at: Option<usize> = None;
+
+    for (idx, (byte_idx, ch)) in chars.iter().enumerate() {
+        match ch {
+            '(' => depth_paren += 1,
+            ')' => depth_paren = depth_paren.saturating_sub(1),
+            '{' => depth_brace += 1,
+            '}' => depth_brace = depth_brace.saturating_sub(1),
+            '[' => depth_bracket += 1,
+            ']' => depth_bracket = depth_bracket.saturating_sub(1),
+            _ => {}
+        }
+
+        let at_top = depth_paren == 0 && depth_brace == 0 && depth_bracket == 0;
+        if !at_top {
+            continue;
+        }
+
+        let prev = if idx > 0 { chars[idx - 1].1 } else { '\0' };
+        let next = if idx + 1 < chars.len() {
+            chars[idx + 1].1
+        } else {
+            '\0'
+        };
+
+        match ch {
+            '?' if prev != '?' && next != '?' => {
+                ternary_depth += 1;
+            }
+            ':' => {
+                if ternary_depth > 0 {
+                    ternary_depth -= 1;
+                } else {
+                    colon_at = Some(*byte_idx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let colon = colon_at?;
+    let left = inner[..colon].trim();
+    let right = inner[colon + 1..].trim();
+    if left.is_empty() || right.is_empty() {
+        return None;
+    }
+    Some((left, right))
+}
+
+fn render_reactive_variable_statement_ast(
+    kind: ast::VariableDeclarationKind,
+    name: &str,
+    init: Option<&str>,
+) -> Option<String> {
+    if let Some(expr) = init.filter(|expr| split_flow_cast_expression_source(expr).is_some()) {
+        let keyword = match kind {
+            ast::VariableDeclarationKind::Const => "const",
+            _ => "let",
+        };
+        return Some(format!("{keyword} {name} = {expr};\n"));
+    }
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
+    let init_expression = match init.filter(|expr| *expr != "undefined") {
+        Some(expr) => Some(
+            parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), expr)
+                .ok()?,
+        ),
+        None => None,
+    };
     let statement = ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
         SPAN,
-        ast::VariableDeclarationKind::Let,
+        kind,
         builder.vec1(builder.variable_declarator(
             SPAN,
-            ast::VariableDeclarationKind::Let,
+            kind,
             builder.binding_pattern_binding_identifier(SPAN, builder.ident(name)),
             NONE,
-            None,
+            init_expression,
             false,
         )),
         false,
@@ -18381,10 +18480,42 @@ fn render_reactive_declare_local_statement_ast(name: &str) -> Option<String> {
     Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
 }
 
+fn render_reactive_declare_local_statement_ast(name: &str) -> Option<String> {
+    render_reactive_variable_statement_ast(ast::VariableDeclarationKind::Let, name, None)
+}
+
 fn build_identifier_assignment_statement_ast<'a>(
     builder: AstBuilder<'a>,
     target_name: &str,
     value_name: &str,
+) -> ast::Statement<'a> {
+    build_identifier_assignment_statement_ast_with_expression(
+        builder,
+        target_name,
+        builder.expression_identifier(SPAN, builder.ident(value_name)),
+    )
+}
+
+fn render_reactive_assignment_statement_ast(target_name: &str, rhs: &str) -> Option<String> {
+    if split_flow_cast_expression_source(rhs).is_some() {
+        return Some(format!("{target_name} = {rhs};\n"));
+    }
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let rhs_expression =
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), rhs).ok()?;
+    let statement = build_identifier_assignment_statement_ast_with_expression(
+        builder,
+        target_name,
+        rhs_expression,
+    );
+    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+}
+
+fn build_identifier_assignment_statement_ast_with_expression<'a>(
+    builder: AstBuilder<'a>,
+    target_name: &str,
+    rhs_expression: ast::Expression<'a>,
 ) -> ast::Statement<'a> {
     builder.statement_expression(
         SPAN,
@@ -18397,7 +18528,7 @@ fn build_identifier_assignment_statement_ast<'a>(
                     builder.ident(target_name),
                 ),
             ),
-            builder.expression_identifier(SPAN, builder.ident(value_name)),
+            rhs_expression,
         ),
     )
 }
