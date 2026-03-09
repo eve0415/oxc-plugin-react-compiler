@@ -13180,12 +13180,12 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                 init_code = filled_init;
             }
             let body = codegen_block(cx, loop_block);
+            let _ = loc;
             let single_line_header = format!("for ({}; {}; {})", init_code, test_expr, update_code);
             let multiline_header = single_line_header.len() > 80
                 || init_code.contains('\n')
                 || test_expr.contains('\n')
                 || update_code.contains('\n');
-            let _ = loc;
             if let Some(rendered) =
                 render_reactive_for_statement_ast(&init_code, &test_expr, &update_code, &body)
             {
@@ -13225,14 +13225,7 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                 codegen_place_to_expression(cx, test)
             };
             let body = codegen_block(cx, loop_block);
-            render_reactive_for_of_statement_ast(&kind, &lval, &collection_expr, &body).or_else(
-                || {
-                    Some(format!(
-                        "for ({} {} of {}) {{\n{}}}\n",
-                        kind, lval, collection_expr, body
-                    ))
-                },
-            )
+            render_reactive_for_of_statement_ast(&kind, &lval, &collection_expr, &body)
         }
         ReactiveTerminal::ForIn {
             init, loop_block, ..
@@ -13245,12 +13238,7 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                 init_out.trim().trim_end_matches(';').to_string()
             };
             let body = codegen_block(cx, loop_block);
-            render_reactive_for_in_statement_ast(&kind, &lval, &collection, &body).or_else(|| {
-                Some(format!(
-                    "for ({} {} in {}) {{\n{}}}\n",
-                    kind, lval, collection, body
-                ))
-            })
+            render_reactive_for_in_statement_ast(&kind, &lval, &collection, &body)
         }
         ReactiveTerminal::While {
             test, loop_block, ..
@@ -20248,8 +20236,38 @@ fn render_reactive_for_statement_ast(
     update: &str,
     body: &str,
 ) -> Option<String> {
-    let statement_source = format!("for ({init}; {test}; {update}) {{\n{body}}}");
-    render_single_statement_source_with_oxc(&statement_source)
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let init = parse_for_statement_init_ast(&allocator, init)?;
+    let test = if test.trim().is_empty() {
+        None
+    } else {
+        Some(parse_expression_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            test,
+        )
+        .ok()?)
+    };
+    let update = if update.trim().is_empty() {
+        None
+    } else {
+        Some(parse_expression_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            update,
+        )
+        .ok()?)
+    };
+    let body = builder.statement_block(
+        SPAN,
+        parse_statement_list_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), body)
+            .ok()?,
+    );
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_oxc(&builder.statement_for(SPAN, init, test, update, body))
+    ))
 }
 
 fn render_reactive_for_of_statement_ast(
@@ -20258,8 +20276,24 @@ fn render_reactive_for_of_statement_ast(
     collection: &str,
     body: &str,
 ) -> Option<String> {
-    let statement_source = format!("for ({kind} {lvalue} of {collection}) {{\n{body}}}");
-    render_single_statement_source_with_oxc(&statement_source)
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let left = parse_for_statement_left_ast(&allocator, kind, lvalue)?;
+    let right = parse_expression_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        collection,
+    )
+    .ok()?;
+    let body = builder.statement_block(
+        SPAN,
+        parse_statement_list_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), body)
+            .ok()?,
+    );
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_oxc(&builder.statement_for_of(SPAN, false, left, right, body))
+    ))
 }
 
 fn render_reactive_for_in_statement_ast(
@@ -20268,8 +20302,24 @@ fn render_reactive_for_in_statement_ast(
     collection: &str,
     body: &str,
 ) -> Option<String> {
-    let statement_source = format!("for ({kind} {lvalue} in {collection}) {{\n{body}}}");
-    render_single_statement_source_with_oxc(&statement_source)
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let left = parse_for_statement_left_ast(&allocator, kind, lvalue)?;
+    let right = parse_expression_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        collection,
+    )
+    .ok()?;
+    let body = builder.statement_block(
+        SPAN,
+        parse_statement_list_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), body)
+            .ok()?,
+    );
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_oxc(&builder.statement_for_in(SPAN, left, right, body))
+    ))
 }
 
 fn render_reactive_function_body_prologue_ast(
@@ -20407,15 +20457,67 @@ fn render_cached_inline_hook_callback_block_ast(
     Some(output)
 }
 
-fn render_single_statement_source_with_oxc(statement_source: &str) -> Option<String> {
-    let allocator = Allocator::default();
+fn parse_for_statement_init_ast<'a>(
+    allocator: &'a Allocator,
+    init: &str,
+) -> Option<Option<ast::ForStatementInit<'a>>> {
+    let trimmed = init.trim();
+    if trimmed.is_empty() {
+        return Some(None);
+    }
+    let source = if trimmed.ends_with(';') {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed};")
+    };
     let statement = parse_single_statement_for_ast_codegen(
-        &allocator,
+        allocator,
         SourceType::mjs().with_jsx(true),
-        statement_source,
+        &source,
     )
     .ok()?;
-    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+    match statement {
+        ast::Statement::VariableDeclaration(declaration) => {
+            Some(Some(ast::ForStatementInit::VariableDeclaration(declaration)))
+        }
+        ast::Statement::ExpressionStatement(expression) => {
+            Some(Some(ast::ForStatementInit::from(expression.unbox().expression)))
+        }
+        _ => None,
+    }
+}
+
+fn parse_for_statement_left_ast<'a>(
+    allocator: &'a Allocator,
+    kind: &str,
+    lvalue: &str,
+) -> Option<ast::ForStatementLeft<'a>> {
+    let statement_source = format!("let {lvalue} = __codex_loop_left;");
+    let statement = parse_single_statement_for_ast_codegen(
+        allocator,
+        SourceType::mjs().with_jsx(true),
+        &statement_source,
+    )
+    .ok()?;
+    let builder = AstBuilder::new(allocator);
+    match statement {
+        ast::Statement::VariableDeclaration(declaration) => {
+            let mut declaration = declaration.unbox();
+            declaration.kind = match kind {
+                "var" => ast::VariableDeclarationKind::Var,
+                "let" => ast::VariableDeclarationKind::Let,
+                _ => ast::VariableDeclarationKind::Const,
+            };
+            for declarator in declaration.declarations.iter_mut() {
+                declarator.kind = declaration.kind;
+                declarator.init = None;
+            }
+            Some(ast::ForStatementLeft::VariableDeclaration(
+                builder.alloc(declaration),
+            ))
+        }
+        _ => None,
+    }
 }
 
 fn build_identifier_assignment_statement_ast_with_expression<'a>(
@@ -21124,7 +21226,8 @@ mod tests {
         render_function_expression_ast, render_object_method_ast,
         render_primitive_expression_ast, render_property_access_expression_ast, render_pattern_with_oxc,
         render_reactive_function_body_prologue_ast, render_jsx_expression_ast,
-        render_jsx_fragment_ast,
+        render_jsx_fragment_ast, render_reactive_for_in_statement_ast,
+        render_reactive_for_of_statement_ast, render_reactive_for_statement_ast,
         render_method_call_expression_ast,
         render_ts_type_cast_expression_ast,
     };
@@ -21429,6 +21532,33 @@ mod tests {
         .expect("expected jsx element");
 
         assert_eq!(rendered, "<div value={value} />");
+    }
+
+    #[test]
+    fn renders_for_statement_via_ast() {
+        let rendered =
+            render_reactive_for_statement_ast("let i = 0", "i < 1", "i += 1", "work();")
+                .expect("expected for statement");
+
+        assert_eq!(rendered, "for (let i = 0; i < 1; i += 1) {\n  work();\n}\n");
+    }
+
+    #[test]
+    fn renders_for_of_statement_via_ast() {
+        let rendered =
+            render_reactive_for_of_statement_ast("const", "item", "items", "work(item);")
+                .expect("expected for-of statement");
+
+        assert_eq!(rendered, "for (const item of items) {\n  work(item);\n}\n");
+    }
+
+    #[test]
+    fn renders_for_in_statement_via_ast() {
+        let rendered =
+            render_reactive_for_in_statement_ast("const", "key", "items", "work(key);")
+                .expect("expected for-in statement");
+
+        assert_eq!(rendered, "for (const key in items) {\n  work(key);\n}\n");
     }
 
     #[test]
