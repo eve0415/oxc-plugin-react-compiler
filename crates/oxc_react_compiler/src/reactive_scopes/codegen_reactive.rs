@@ -9103,7 +9103,14 @@ fn maybe_codegen_fused_ternary_source_scope(
     let output_slot = cx.alloc_cache_slot();
     let decl_name = identifier_name_with_cx(cx, &decl.identifier);
     if !has_materialized_named_binding(cx, &decl.identifier) {
-        output.push_str(&format!("let {};\n", decl_name));
+        output.push_str(
+            &render_reactive_variable_statement_ast(
+                ast::VariableDeclarationKind::Let,
+                &decl_name,
+                None,
+            )
+            .unwrap_or_else(|| format!("let {};\n", decl_name)),
+        );
         cx.mark_decl_runtime_emitted(decl.identifier.declaration_id);
     }
     cx.declare(&decl.identifier);
@@ -9115,53 +9122,61 @@ fn maybe_codegen_fused_ternary_source_scope(
         );
     }
 
-    if let Some(cond_slot) = cond_slot {
-        output.push_str(&format!(
-            "if ({}[{}] !== {} || {}[{}] !== {}) {{\n{} = {} ? {} : {};\n{}[{}] = {};\n{}[{}] = {};\n{}[{}] = {};\n}} else {{\n{} = {}[{}];\n}}\n",
-            cache_var,
-            cond_slot,
-            cond_expr,
-            cache_var,
-            dep_slot,
-            dep_expr,
-            decl_name,
-            cond_expr,
-            consequent_expr,
-            alternate_expr,
-            cache_var,
-            cond_slot,
-            cond_expr,
-            cache_var,
-            dep_slot,
-            dep_expr,
-            cache_var,
-            output_slot,
-            decl_name,
-            decl_name,
-            cache_var,
-            output_slot
-        ));
+    let guard_test = if let Some(cond_slot) = cond_slot {
+        format!(
+            "{}[{}] !== {} || {}[{}] !== {}",
+            cache_var, cond_slot, cond_expr, cache_var, dep_slot, dep_expr
+        )
     } else {
-        output.push_str(&format!(
-            "if ({}[{}] !== {}) {{\n{} = {} ? {} : {};\n{}[{}] = {};\n{}[{}] = {};\n}} else {{\n{} = {}[{}];\n}}\n",
-            cache_var,
-            dep_slot,
-            dep_expr,
-            decl_name,
-            cond_expr,
-            consequent_expr,
-            alternate_expr,
-            cache_var,
-            dep_slot,
-            dep_expr,
-            cache_var,
-            output_slot,
-            decl_name,
-            decl_name,
-            cache_var,
-            output_slot
-        ));
+        format!("{}[{}] !== {}", cache_var, dep_slot, dep_expr)
+    };
+    let mut consequent = render_reactive_assignment_statement_ast(
+        &decl_name,
+        &format!("{} ? {} : {}", cond_expr, consequent_expr, alternate_expr),
+    )
+    .unwrap_or_else(|| {
+        format!(
+            "{} = {} ? {} : {};\n",
+            decl_name, cond_expr, consequent_expr, alternate_expr
+        )
+    });
+    if let Some(cond_slot) = cond_slot {
+        consequent.push_str(
+            &render_reactive_expression_statement_ast(&format!(
+                "{}[{}] = {}",
+                cache_var, cond_slot, cond_expr
+            ))
+            .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, cond_slot, cond_expr)),
+        );
     }
+    consequent.push_str(
+        &render_reactive_expression_statement_ast(&format!(
+            "{}[{}] = {}",
+            cache_var, dep_slot, dep_expr
+        ))
+        .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, dep_slot, dep_expr)),
+    );
+    consequent.push_str(
+        &render_reactive_expression_statement_ast(&format!(
+            "{}[{}] = {}",
+            cache_var, output_slot, decl_name
+        ))
+        .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, output_slot, decl_name)),
+    );
+    let alternate = render_reactive_assignment_statement_ast(
+        &decl_name,
+        &format!("{}[{}]", cache_var, output_slot),
+    )
+    .unwrap_or_else(|| format!("{} = {}[{}];\n", decl_name, cache_var, output_slot));
+    output.push_str(
+        &render_reactive_if_statement_ast(&guard_test, &consequent, Some(&alternate))
+            .unwrap_or_else(|| {
+                format!(
+                    "if ({}) {{\n{}}} else {{\n{}}}\n",
+                    guard_test, consequent, alternate
+                )
+            }),
+    );
 
     // The skipped ternary instruction's lvalue aliases the fused scope output.
     cx.set_temp_expr(
@@ -9695,23 +9710,43 @@ fn emit_zero_dep_target_guard(
     let output_slot = cx.alloc_cache_slot();
     let target_name = identifier_name_with_cx(cx, target_ident);
     if !has_materialized_named_binding(cx, target_ident) {
-        output.push_str(&format!("let {};\n", target_name));
+        output.push_str(
+            &render_reactive_variable_statement_ast(
+                ast::VariableDeclarationKind::Let,
+                &target_name,
+                None,
+            )
+            .unwrap_or_else(|| format!("let {};\n", target_name)),
+        );
         cx.mark_decl_runtime_emitted(target_ident.declaration_id);
     }
     cx.declare(target_ident);
-    output.push_str(&format!(
-        "if ({}[{}] === Symbol.for(\"{}\")) {{\n{}{}[{}] = {};\n}} else {{\n{} = {}[{}];\n}}\n",
-        cache_var,
-        output_slot,
-        MEMO_CACHE_SENTINEL,
-        computation_stmt,
-        cache_var,
-        output_slot,
-        target_name,
-        target_name,
-        cache_var,
-        output_slot
-    ));
+    let mut consequent = computation_stmt.to_string();
+    consequent.push_str(
+        &render_reactive_expression_statement_ast(&format!(
+            "{}[{}] = {}",
+            cache_var, output_slot, target_name
+        ))
+        .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, output_slot, target_name)),
+    );
+    let alternate = render_reactive_assignment_statement_ast(
+        &target_name,
+        &format!("{}[{}]", cache_var, output_slot),
+    )
+    .unwrap_or_else(|| format!("{} = {}[{}];\n", target_name, cache_var, output_slot));
+    let guard_test = format!(
+        "{}[{}] === Symbol.for(\"{}\")",
+        cache_var, output_slot, MEMO_CACHE_SENTINEL
+    );
+    output.push_str(
+        &render_reactive_if_statement_ast(&guard_test, &consequent, Some(&alternate))
+            .unwrap_or_else(|| {
+                format!(
+                    "if ({}) {{\n{}}} else {{\n{}}}\n",
+                    guard_test, consequent, alternate
+                )
+            }),
+    );
 }
 
 fn maybe_codegen_fused_zero_dep_ternary_default_scope(
@@ -9934,7 +9969,14 @@ fn maybe_codegen_fused_zero_dep_ternary_default_scope(
     let output_slot = cx.alloc_cache_slot();
 
     if !has_materialized_named_binding(cx, output_ident) {
-        output.push_str(&format!("let {};\n", output_name));
+        output.push_str(
+            &render_reactive_variable_statement_ast(
+                ast::VariableDeclarationKind::Let,
+                &output_name,
+                None,
+            )
+            .unwrap_or_else(|| format!("let {};\n", output_name)),
+        );
         cx.mark_decl_runtime_emitted(output_ident.declaration_id);
     }
     cx.declare(output_ident);
@@ -9945,23 +9987,37 @@ fn maybe_codegen_fused_zero_dep_ternary_default_scope(
         format!("{} ? {} : {}", cond_expr, dep_expr_cond, source_expr)
     };
 
-    output.push_str(&format!(
-        "if ({}[{}] !== {}) {{\n{} = {};\n{}[{}] = {};\n{}[{}] = {};\n}} else {{\n{} = {}[{}];\n}}\n",
-        cache_var,
-        dep_slot,
-        dep_expr_guard,
-        output_name,
-        rhs_expr,
-        cache_var,
-        dep_slot,
-        dep_expr_guard,
-        cache_var,
-        output_slot,
-        output_name,
-        output_name,
-        cache_var,
-        output_slot
-    ));
+    let mut consequent = render_reactive_assignment_statement_ast(&output_name, &rhs_expr)
+        .unwrap_or_else(|| format!("{} = {};\n", output_name, rhs_expr));
+    consequent.push_str(
+        &render_reactive_expression_statement_ast(&format!(
+            "{}[{}] = {}",
+            cache_var, dep_slot, dep_expr_guard
+        ))
+        .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, dep_slot, dep_expr_guard)),
+    );
+    consequent.push_str(
+        &render_reactive_expression_statement_ast(&format!(
+            "{}[{}] = {}",
+            cache_var, output_slot, output_name
+        ))
+        .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, output_slot, output_name)),
+    );
+    let alternate = render_reactive_assignment_statement_ast(
+        &output_name,
+        &format!("{}[{}]", cache_var, output_slot),
+    )
+    .unwrap_or_else(|| format!("{} = {}[{}];\n", output_name, cache_var, output_slot));
+    let guard_test = format!("{}[{}] !== {}", cache_var, dep_slot, dep_expr_guard);
+    output.push_str(
+        &render_reactive_if_statement_ast(&guard_test, &consequent, Some(&alternate))
+            .unwrap_or_else(|| {
+                format!(
+                    "if ({}) {{\n{}}} else {{\n{}}}\n",
+                    guard_test, consequent, alternate
+                )
+            }),
+    );
 
     cx.set_temp_expr(
         &ternary_lvalue.identifier,
@@ -18633,12 +18689,19 @@ fn is_quoted_string_literal_source(expr: &str) -> bool {
     matches!(first, '"' | '\'') && trimmed.ends_with(first) && trimmed.len() >= 2
 }
 
+fn contains_flow_cast_expression_source(expr: &str) -> bool {
+    crate::pipeline::rewrite_flow_cast_expressions(expr) != expr
+}
+
 fn render_reactive_variable_statement_ast(
     kind: ast::VariableDeclarationKind,
     name: &str,
     init: Option<&str>,
 ) -> Option<String> {
-    if let Some(expr) = init.filter(|expr| split_flow_cast_expression_source(expr).is_some()) {
+    if let Some(expr) = init.filter(|expr| {
+        split_flow_cast_expression_source(expr).is_some()
+            || contains_flow_cast_expression_source(expr)
+    }) {
         let keyword = match kind {
             ast::VariableDeclarationKind::Const => "const",
             _ => "let",
@@ -18687,7 +18750,9 @@ fn build_identifier_assignment_statement_ast<'a>(
 }
 
 fn render_reactive_assignment_statement_ast(target_name: &str, rhs: &str) -> Option<String> {
-    if split_flow_cast_expression_source(rhs).is_some() {
+    if split_flow_cast_expression_source(rhs).is_some()
+        || contains_flow_cast_expression_source(rhs)
+    {
         return Some(format!("{target_name} = {rhs};\n"));
     }
     let allocator = Allocator::default();
@@ -18703,7 +18768,9 @@ fn render_reactive_assignment_statement_ast(target_name: &str, rhs: &str) -> Opt
 }
 
 fn render_reactive_expression_statement_ast(expression: &str) -> Option<String> {
-    if split_flow_cast_expression_source(expression).is_some() {
+    if split_flow_cast_expression_source(expression).is_some()
+        || contains_flow_cast_expression_source(expression)
+    {
         return Some(format!("{expression};\n"));
     }
     if is_quoted_string_literal_source(expression) {
@@ -18771,6 +18838,12 @@ fn render_reactive_if_statement_ast(
     consequent_body: &str,
     alternate_body: Option<&str>,
 ) -> Option<String> {
+    if contains_flow_cast_expression_source(test)
+        || contains_flow_cast_expression_source(consequent_body)
+        || alternate_body.is_some_and(contains_flow_cast_expression_source)
+    {
+        return None;
+    }
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let parsed_test =
