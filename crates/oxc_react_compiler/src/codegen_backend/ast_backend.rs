@@ -2895,7 +2895,7 @@ fn try_build_compiled_function_body_from_hir<'a>(
     Some(builder.function_body(SPAN, builder.vec(), statements))
 }
 
-fn normalize_compiled_body_for_hir_match(body_source: &str) -> String {
+pub(crate) fn normalize_compiled_body_for_hir_match(body_source: &str) -> String {
     let flow_cast_normalized = normalize_generated_body_flow_cast_marker_calls(body_source);
     let iife_normalized = normalize_generated_body_iife_parenthesization(&flow_cast_normalized);
     if let Some(canonicalized) = canonicalize_body_source_for_hir_match(&iife_normalized) {

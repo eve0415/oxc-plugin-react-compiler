@@ -1350,6 +1350,15 @@ fn validate_outlined_function_codegen(
     Ok(())
 }
 
+fn outlined_function_needs_rendered_body(rendered_body: &str, hir_function: &HIRFunction) -> bool {
+    let Some(lowered_body) = crate::codegen_backend::hir_to_ast::try_lower_function_body(hir_function)
+    else {
+        return true;
+    };
+    crate::codegen_backend::ast_backend::normalize_compiled_body_for_hir_match(rendered_body)
+        != crate::codegen_backend::ast_backend::normalize_compiled_body_for_hir_match(&lowered_body)
+}
+
 fn dedupe_outlined_functions(outlined: &mut Vec<(String, String, String)>) {
     let debug = std::env::var("DEBUG_OUTLINE_DEDUPE").is_ok();
     if debug {
@@ -5926,17 +5935,14 @@ fn try_compile_function<'a>(
             options.environment.enable_change_variable_codegen,
             &pipeline_output.reserved_removed_names,
         );
-        outlined.push((of.name.clone(), params_str, body_str));
+        if outlined_function_needs_rendered_body(&body_str, &of.func) {
+            outlined.push((of.name.clone(), params_str, body_str));
+        }
     }
     dedupe_outlined_functions(&mut outlined);
     let mut hir_outlined_functions = param_hir_outlined_functions;
     hir_outlined_functions.extend(synthesized_hir_outlined_functions);
-    hir_outlined_functions.extend(outlined.iter().filter_map(|(outlined_name, _, _)| {
-        pipeline_hir_outlined_functions
-            .iter()
-            .find(|(hir_name, _)| hir_name == outlined_name)
-            .cloned()
-    }));
+    hir_outlined_functions.extend(pipeline_hir_outlined_functions.clone());
     dedupe_hir_outlined_functions(&mut hir_outlined_functions);
     let directives = extract_preserved_directives(body);
     let preserved_body_statements = collect_leading_preserved_body_statements(body);
@@ -6127,17 +6133,14 @@ fn try_compile_function_with_name<'a>(
             options.environment.enable_change_variable_codegen,
             &pipeline_output.reserved_removed_names,
         );
-        outlined.push((of.name.clone(), params_str, body_str));
+        if outlined_function_needs_rendered_body(&body_str, &of.func) {
+            outlined.push((of.name.clone(), params_str, body_str));
+        }
     }
     dedupe_outlined_functions(&mut outlined);
     let mut hir_outlined_functions = param_hir_outlined_functions;
     hir_outlined_functions.extend(synthesized_hir_outlined_functions);
-    hir_outlined_functions.extend(outlined.iter().filter_map(|(outlined_name, _, _)| {
-        pipeline_hir_outlined_functions
-            .iter()
-            .find(|(hir_name, _)| hir_name == outlined_name)
-            .cloned()
-    }));
+    hir_outlined_functions.extend(pipeline_hir_outlined_functions.clone());
     dedupe_hir_outlined_functions(&mut hir_outlined_functions);
     let directives = extract_preserved_directives(body);
     let preserved_body_statements = collect_leading_preserved_body_statements(body);
@@ -6336,17 +6339,14 @@ fn try_compile_arrow<'a>(
             options.environment.enable_change_variable_codegen,
             &pipeline_output.reserved_removed_names,
         );
-        outlined.push((of.name.clone(), params_str, body_str));
+        if outlined_function_needs_rendered_body(&body_str, &of.func) {
+            outlined.push((of.name.clone(), params_str, body_str));
+        }
     }
     dedupe_outlined_functions(&mut outlined);
     let mut hir_outlined_functions = param_hir_outlined_functions;
     hir_outlined_functions.extend(synthesized_hir_outlined_functions);
-    hir_outlined_functions.extend(outlined.iter().filter_map(|(outlined_name, _, _)| {
-        pipeline_hir_outlined_functions
-            .iter()
-            .find(|(hir_name, _)| hir_name == outlined_name)
-            .cloned()
-    }));
+    hir_outlined_functions.extend(pipeline_hir_outlined_functions.clone());
     dedupe_hir_outlined_functions(&mut hir_outlined_functions);
     let directives = extract_preserved_directives(&arrow.body);
     let preserved_body_statements = collect_leading_preserved_body_statements(&arrow.body);
