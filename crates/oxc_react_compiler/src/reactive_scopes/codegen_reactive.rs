@@ -13719,15 +13719,7 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
             cx.inline_identifier_aliases.remove(&decl_id);
             cx.elided_named_declarations.remove(&decl_id);
             cx.mark_decl_runtime_emitted(decl_id);
-            match lvalue.kind {
-                InstructionKind::Const | InstructionKind::HoistedConst => {
-                    Some(format!("let {};\n", name))
-                }
-                InstructionKind::Let | InstructionKind::HoistedLet => {
-                    Some(format!("let {};\n", name))
-                }
-                _ => Some(format!("let {};\n", name)),
-            }
+            render_reactive_declare_local_statement_ast(&name)
         }
         InstructionValue::Destructure { lvalue, value, .. } => {
             let kind = lvalue.kind;
@@ -13794,12 +13786,7 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
             }
 
             if (all_declared || kind == InstructionKind::Reassign) && !force_temp_declare {
-                // Object destructuring reassignment needs parens to avoid ambiguity with block
-                if matches!(&lvalue.pattern, crate::hir::types::Pattern::Object(_)) {
-                    Some(format!("({} = {});\n", lval, rhs))
-                } else {
-                    Some(format!("{} = {};\n", lval, rhs))
-                }
+                render_reactive_destructure_statement_ast(cx, &pattern, &rhs, None)
             } else {
                 // Declare all pattern operands
                 for p in operands {
@@ -13813,11 +13800,18 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
                         names.insert(name.clone());
                     }
                 }
-                let kw = match kind {
-                    InstructionKind::Const | InstructionKind::Function => "const",
-                    _ => "let",
+                let declaration_kind = match kind {
+                    InstructionKind::Const | InstructionKind::Function => {
+                        ast::VariableDeclarationKind::Const
+                    }
+                    _ => ast::VariableDeclarationKind::Let,
                 };
-                Some(format!("{} {} = {};\n", kw, lval, rhs))
+                render_reactive_destructure_statement_ast(
+                    cx,
+                    &pattern,
+                    &rhs,
+                    Some(declaration_kind),
+                )
             }
         }
         // No-op instructions
@@ -17125,6 +17119,263 @@ fn pattern_operands(pattern: &Pattern) -> Vec<&Place> {
     result
 }
 
+fn try_build_reactive_binding_pattern_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    cx: &mut Context,
+    pattern: &Pattern,
+) -> Option<ast::BindingPattern<'a>> {
+    match pattern {
+        Pattern::Array(arr) => {
+            let mut elements = builder.vec();
+            let mut rest = None;
+            for (index, item) in arr.items.iter().enumerate() {
+                match item {
+                    ArrayElement::Place(place) => {
+                        if rest.is_some() {
+                            return None;
+                        }
+                        let name = identifier_name_with_cx(cx, &place.identifier);
+                        elements.push(Some(
+                            builder.binding_pattern_binding_identifier(SPAN, builder.ident(&name)),
+                        ));
+                    }
+                    ArrayElement::Spread(place) => {
+                        if rest.is_some() || index + 1 != arr.items.len() {
+                            return None;
+                        }
+                        let name = identifier_name_with_cx(cx, &place.identifier);
+                        rest = Some(builder.alloc_binding_rest_element(
+                            SPAN,
+                            builder.binding_pattern_binding_identifier(SPAN, builder.ident(&name)),
+                        ));
+                    }
+                    ArrayElement::Hole => {
+                        if rest.is_some() {
+                            return None;
+                        }
+                        elements.push(None);
+                    }
+                }
+            }
+            Some(builder.binding_pattern_array_pattern(SPAN, elements, rest))
+        }
+        Pattern::Object(obj) => {
+            let mut properties = builder.vec();
+            let mut rest = None;
+            for (index, prop) in obj.properties.iter().enumerate() {
+                match prop {
+                    ObjectPropertyOrSpread::Property(property) => {
+                        let target_name = identifier_name_with_cx(cx, &property.place.identifier);
+                        let computed_key_source = match &property.key {
+                            ObjectPropertyKey::Computed(place) => {
+                                Some(codegen_place_to_expression(cx, place))
+                            }
+                            _ => None,
+                        };
+                        let (key, computed) = make_object_property_key_ast(
+                            builder,
+                            allocator,
+                            &property.key,
+                            computed_key_source.as_deref(),
+                        )?;
+                        let shorthand = matches!(
+                            &property.key,
+                            ObjectPropertyKey::Identifier(name) if name == &target_name
+                        );
+                        properties.push(builder.binding_property(
+                            SPAN,
+                            key,
+                            builder.binding_pattern_binding_identifier(
+                                SPAN,
+                                builder.ident(&target_name),
+                            ),
+                            shorthand,
+                            computed,
+                        ));
+                    }
+                    ObjectPropertyOrSpread::Spread(place) => {
+                        if rest.is_some() || index + 1 != obj.properties.len() {
+                            return None;
+                        }
+                        let name = identifier_name_with_cx(cx, &place.identifier);
+                        rest = Some(builder.alloc_binding_rest_element(
+                            SPAN,
+                            builder.binding_pattern_binding_identifier(SPAN, builder.ident(&name)),
+                        ));
+                    }
+                }
+            }
+            Some(builder.binding_pattern_object_pattern(SPAN, properties, rest))
+        }
+    }
+}
+
+fn try_build_reactive_assignment_target_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    cx: &mut Context,
+    pattern: &Pattern,
+) -> Option<ast::AssignmentTarget<'a>> {
+    match pattern {
+        Pattern::Array(arr) => {
+            let mut elements = builder.vec();
+            let mut rest = None;
+            for (index, item) in arr.items.iter().enumerate() {
+                match item {
+                    ArrayElement::Place(place) => {
+                        if rest.is_some() {
+                            return None;
+                        }
+                        let name = identifier_name_with_cx(cx, &place.identifier);
+                        elements.push(Some(ast::AssignmentTargetMaybeDefault::from(
+                            ast::AssignmentTarget::from(
+                                builder.simple_assignment_target_assignment_target_identifier(
+                                    SPAN,
+                                    builder.ident(&name),
+                                ),
+                            ),
+                        )));
+                    }
+                    ArrayElement::Spread(place) => {
+                        if rest.is_some() || index + 1 != arr.items.len() {
+                            return None;
+                        }
+                        let name = identifier_name_with_cx(cx, &place.identifier);
+                        rest = Some(builder.alloc_assignment_target_rest(
+                            SPAN,
+                            ast::AssignmentTarget::from(
+                                builder.simple_assignment_target_assignment_target_identifier(
+                                    SPAN,
+                                    builder.ident(&name),
+                                ),
+                            ),
+                        ));
+                    }
+                    ArrayElement::Hole => {
+                        if rest.is_some() {
+                            return None;
+                        }
+                        elements.push(None);
+                    }
+                }
+            }
+            Some(ast::AssignmentTarget::from(
+                builder.assignment_target_pattern_array_assignment_target(SPAN, elements, rest),
+            ))
+        }
+        Pattern::Object(obj) => {
+            let mut properties = builder.vec();
+            let mut rest = None;
+            for (index, prop) in obj.properties.iter().enumerate() {
+                match prop {
+                    ObjectPropertyOrSpread::Property(property) => {
+                        let target_name = identifier_name_with_cx(cx, &property.place.identifier);
+                        if matches!(
+                            &property.key,
+                            ObjectPropertyKey::Identifier(name) if name == &target_name
+                        ) {
+                            properties.push(
+                                builder
+                                    .assignment_target_property_assignment_target_property_identifier(
+                                        SPAN,
+                                        builder.identifier_reference(
+                                            SPAN,
+                                            builder.ident(&target_name),
+                                        ),
+                                        None,
+                                    ),
+                            );
+                            continue;
+                        }
+                        let computed_key_source = match &property.key {
+                            ObjectPropertyKey::Computed(place) => {
+                                Some(codegen_place_to_expression(cx, place))
+                            }
+                            _ => None,
+                        };
+                        let (key, computed) = make_object_property_key_ast(
+                            builder,
+                            allocator,
+                            &property.key,
+                            computed_key_source.as_deref(),
+                        )?;
+                        properties.push(
+                            builder.assignment_target_property_assignment_target_property_property(
+                                SPAN,
+                                key,
+                                ast::AssignmentTargetMaybeDefault::from(
+                                    ast::AssignmentTarget::from(
+                                        builder
+                                            .simple_assignment_target_assignment_target_identifier(
+                                                SPAN,
+                                                builder.ident(&target_name),
+                                            ),
+                                    ),
+                                ),
+                                computed,
+                            ),
+                        );
+                    }
+                    ObjectPropertyOrSpread::Spread(place) => {
+                        if rest.is_some() || index + 1 != obj.properties.len() {
+                            return None;
+                        }
+                        let name = identifier_name_with_cx(cx, &place.identifier);
+                        rest = Some(builder.alloc_assignment_target_rest(
+                            SPAN,
+                            ast::AssignmentTarget::from(
+                                builder.simple_assignment_target_assignment_target_identifier(
+                                    SPAN,
+                                    builder.ident(&name),
+                                ),
+                            ),
+                        ));
+                    }
+                }
+            }
+            Some(ast::AssignmentTarget::from(
+                builder.assignment_target_pattern_object_assignment_target(SPAN, properties, rest),
+            ))
+        }
+    }
+}
+
+fn render_reactive_destructure_statement_ast(
+    cx: &mut Context,
+    pattern: &Pattern,
+    rhs: &str,
+    declaration_kind: Option<ast::VariableDeclarationKind>,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let rhs_expression =
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), rhs).ok()?;
+    let statement = if let Some(kind) = declaration_kind {
+        let pattern = try_build_reactive_binding_pattern_ast(builder, &allocator, cx, pattern)?;
+        ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+            SPAN,
+            kind,
+            builder.vec1(builder.variable_declarator(
+                SPAN,
+                kind,
+                pattern,
+                NONE,
+                Some(rhs_expression),
+                false,
+            )),
+            false,
+        ))
+    } else {
+        let target = try_build_reactive_assignment_target_ast(builder, &allocator, cx, pattern)?;
+        builder.statement_expression(
+            SPAN,
+            builder.expression_assignment(SPAN, AssignmentOperator::Assign, target, rhs_expression),
+        )
+    };
+    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+}
+
 /// Upstream lowers destructuring declarations to mutable context vars through a
 /// temporary destructure followed by explicit assignments (e.g. `let [t0] = v; x = t0;`).
 /// Our lowered HIR may still carry `Destructure(Reassign)` directly into captured
@@ -18109,6 +18360,25 @@ fn codegen_statements_with_oxc(statements: &[ast::Statement<'_>]) -> String {
         .code
         .trim_end()
         .to_string()
+}
+
+fn render_reactive_declare_local_statement_ast(name: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let statement = ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+        SPAN,
+        ast::VariableDeclarationKind::Let,
+        builder.vec1(builder.variable_declarator(
+            SPAN,
+            ast::VariableDeclarationKind::Let,
+            builder.binding_pattern_binding_identifier(SPAN, builder.ident(name)),
+            NONE,
+            None,
+            false,
+        )),
+        false,
+    ));
+    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
 }
 
 fn build_identifier_assignment_statement_ast<'a>(
