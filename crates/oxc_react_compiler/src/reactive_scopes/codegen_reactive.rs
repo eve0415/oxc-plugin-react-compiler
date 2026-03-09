@@ -14055,26 +14055,13 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 } else {
                     call_expr
                 };
-                format!(
-                    "let {};\nlet {};\nif ($[{}] === Symbol.for(\"{}\")) {{\n{} = {};\n{} = {};\n$[{}] = {};\n$[{}] = {};\n}} else {{\n{} = $[{}];\n{} = $[{}];\n}}\n{};\n",
-                    cb_name,
-                    deps_name,
+                render_cached_inline_hook_callback_block_ast(
+                    &cb_name,
+                    &cb_expr,
                     cb_slot,
-                    MEMO_CACHE_SENTINEL,
-                    cb_name,
-                    cb_expr,
-                    deps_name,
-                    deps_expr,
-                    cb_slot,
-                    cb_name,
-                    deps_slot,
-                    deps_name,
-                    cb_name,
-                    cb_slot,
-                    deps_name,
-                    deps_slot,
-                    call_expr
-                )
+                    Some((&deps_name, &deps_expr, deps_slot)),
+                    &call_expr,
+                )?
             } else {
                 let slot = cx.alloc_cache_slot();
                 let call_expr = if *optional {
@@ -14087,19 +14074,9 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 } else {
                     call_expr
                 };
-                format!(
-                    "let {};\nif ($[{}] === Symbol.for(\"{}\")) {{\n{} = {};\n$[{}] = {};\n}} else {{\n{} = $[{}];\n}}\n{};\n",
-                    cb_name,
-                    slot,
-                    MEMO_CACHE_SENTINEL,
-                    cb_name,
-                    cb_expr,
-                    slot,
-                    cb_name,
-                    cb_name,
-                    slot,
-                    call_expr
-                )
+                render_cached_inline_hook_callback_block_ast(
+                    &cb_name, &cb_expr, slot, None, &call_expr,
+                )?
             };
             Some(pre)
         }
@@ -14172,26 +14149,13 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 } else {
                     call_expr
                 };
-                format!(
-                    "let {};\nlet {};\nif ($[{}] === Symbol.for(\"{}\")) {{\n{} = {};\n{} = {};\n$[{}] = {};\n$[{}] = {};\n}} else {{\n{} = $[{}];\n{} = $[{}];\n}}\n{};\n",
-                    cb_name,
-                    deps_name,
+                render_cached_inline_hook_callback_block_ast(
+                    &cb_name,
+                    &cb_expr,
                     cb_slot,
-                    MEMO_CACHE_SENTINEL,
-                    cb_name,
-                    cb_expr,
-                    deps_name,
-                    deps_expr,
-                    cb_slot,
-                    cb_name,
-                    deps_slot,
-                    deps_name,
-                    cb_name,
-                    cb_slot,
-                    deps_name,
-                    deps_slot,
-                    call_expr
-                )
+                    Some((&deps_name, &deps_expr, deps_slot)),
+                    &call_expr,
+                )?
             } else {
                 let slot = cx.alloc_cache_slot();
                 let call_expr = if *call_optional {
@@ -14204,19 +14168,9 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 } else {
                     call_expr
                 };
-                format!(
-                    "let {};\nif ($[{}] === Symbol.for(\"{}\")) {{\n{} = {};\n$[{}] = {};\n}} else {{\n{} = $[{}];\n}}\n{};\n",
-                    cb_name,
-                    slot,
-                    MEMO_CACHE_SENTINEL,
-                    cb_name,
-                    cb_expr,
-                    slot,
-                    cb_name,
-                    cb_name,
-                    slot,
-                    call_expr
-                )
+                render_cached_inline_hook_callback_block_ast(
+                    &cb_name, &cb_expr, slot, None, &call_expr,
+                )?
             };
             Some(pre)
         }
@@ -18941,6 +18895,67 @@ fn render_reactive_function_body_prologue_ast(
     } else {
         Some(output)
     }
+}
+
+fn render_cached_inline_hook_callback_block_ast(
+    callback_name: &str,
+    callback_expr: &str,
+    callback_slot: u32,
+    deps: Option<(&str, &str, u32)>,
+    call_expr: &str,
+) -> Option<String> {
+    let mut output = String::new();
+    output.push_str(&render_reactive_variable_statement_ast(
+        ast::VariableDeclarationKind::Let,
+        callback_name,
+        None,
+    )?);
+    if let Some((deps_name, _, _)) = deps {
+        output.push_str(&render_reactive_variable_statement_ast(
+            ast::VariableDeclarationKind::Let,
+            deps_name,
+            None,
+        )?);
+    }
+
+    let mut consequent = String::new();
+    consequent.push_str(&render_reactive_assignment_statement_ast(
+        callback_name,
+        callback_expr,
+    )?);
+    if let Some((deps_name, deps_expr, deps_slot)) = deps {
+        consequent.push_str(&render_reactive_assignment_statement_ast(
+            deps_name, deps_expr,
+        )?);
+        consequent.push_str(&render_reactive_expression_statement_ast(&format!(
+            "$[{}] = {}",
+            deps_slot, deps_name
+        ))?);
+    }
+    consequent.push_str(&render_reactive_expression_statement_ast(&format!(
+        "$[{}] = {}",
+        callback_slot, callback_name
+    ))?);
+
+    let mut alternate =
+        render_reactive_assignment_statement_ast(callback_name, &format!("$[{}]", callback_slot))?;
+    if let Some((deps_name, _, deps_slot)) = deps {
+        alternate.push_str(&render_reactive_assignment_statement_ast(
+            deps_name,
+            &format!("$[{}]", deps_slot),
+        )?);
+    }
+
+    output.push_str(&render_reactive_if_statement_ast(
+        &format!(
+            "$[{}] === Symbol.for(\"{}\")",
+            callback_slot, MEMO_CACHE_SENTINEL
+        ),
+        &consequent,
+        Some(&alternate),
+    )?);
+    output.push_str(&render_reactive_expression_statement_ast(call_expr)?);
+    Some(output)
 }
 
 fn render_single_statement_source_with_oxc(statement_source: &str) -> Option<String> {
