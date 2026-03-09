@@ -15111,9 +15111,13 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             name,
             expr_type,
         )),
-        InstructionValue::TaggedTemplateExpression { tag, raw, .. } => {
+        InstructionValue::TaggedTemplateExpression {
+            tag, raw, cooked, ..
+        } => {
             let tag_expr = codegen_place_to_expression(cx, tag);
-            ExprValue::primary(format!("{}`{}`", tag_expr, raw))
+            let expr = render_tagged_template_expression_ast(cx, tag, raw, cooked.as_deref())
+                .unwrap_or_else(|| format!("{}`{}`", tag_expr, raw));
+            ExprValue::primary(expr)
         }
         InstructionValue::TemplateLiteral {
             quasis, subexprs, ..
@@ -15154,7 +15158,9 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
         }
         InstructionValue::Await { value: val, .. } => {
             let expr = codegen_place_to_expression(cx, val);
-            ExprValue::new(format!("await {}", expr), ExprPrecedence::Unary)
+            let rendered = render_await_expression_ast(&expr)
+                .unwrap_or_else(|| format!("await {}", expr));
+            ExprValue::new(rendered, ExprPrecedence::Unary)
         }
         InstructionValue::GetIterator { collection, .. } => {
             codegen_place_expr_value(cx, collection)
@@ -15945,6 +15951,40 @@ fn render_meta_property_expression_ast(meta: &str, property: &str) -> Option<Str
         builder.identifier_name(SPAN, builder.ident(meta)),
         builder.identifier_name(SPAN, builder.ident(property)),
     );
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_tagged_template_expression_ast(
+    cx: &mut Context,
+    tag: &Place,
+    raw: &str,
+    cooked: Option<&str>,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let tag = parse_rendered_expression_ast(&allocator, &codegen_place_to_expression(cx, tag))?;
+    let quasi = builder.template_literal(
+        SPAN,
+        builder.vec1(builder.template_element(
+            SPAN,
+            ast::TemplateElementValue {
+                raw: builder.atom(raw),
+                cooked: cooked.map(|value| builder.atom(value)),
+            },
+            true,
+            false,
+        )),
+        builder.vec(),
+    );
+    let expression = builder.expression_tagged_template(SPAN, tag, NONE, quasi);
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_await_expression_ast(value: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let value = parse_rendered_expression_ast(&allocator, value)?;
+    let expression = builder.expression_await(SPAN, value);
     Some(codegen_expression_with_oxc(&expression))
 }
 
