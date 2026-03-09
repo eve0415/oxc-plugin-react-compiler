@@ -2874,6 +2874,7 @@ fn build_compiled_function_body<'a>(
         parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?
     };
 
+    wrap_function_hook_guard_body(builder, allocator, &mut function_body, cf, state);
     apply_preserved_directives(builder, &mut function_body, cf);
     prepend_cache_prologue_statements(builder, allocator, &mut function_body, cf, state);
     prepend_compiled_body_prefix_statements(
@@ -3615,6 +3616,66 @@ fn prepend_cache_prologue_statements<'a>(
     }
     statements.extend(body.statements.iter().map(|statement| statement.clone_in(allocator)));
     body.statements = statements;
+}
+
+fn wrap_function_hook_guard_body<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    body: &mut ast::FunctionBody<'a>,
+    cf: &CompiledFunction,
+    state: &AstRenderState,
+) {
+    if !cf.needs_function_hook_guard_wrapper || state.hook_guard_ident.is_empty() {
+        return;
+    }
+
+    let mut try_statements = builder.vec1(build_hook_guard_statement(
+        builder,
+        &state.hook_guard_ident,
+        crate::reactive_scopes::codegen_reactive::HOOK_GUARD_PUSH,
+    ));
+    try_statements.extend(
+        body.statements
+            .iter()
+            .map(|statement| statement.clone_in(allocator)),
+    );
+    let finalizer = builder.alloc_block_statement(
+        SPAN,
+        builder.vec1(build_hook_guard_statement(
+            builder,
+            &state.hook_guard_ident,
+            crate::reactive_scopes::codegen_reactive::HOOK_GUARD_POP,
+        )),
+    );
+
+    body.statements = builder.vec1(ast::Statement::TryStatement(builder.alloc_try_statement(
+        SPAN,
+        builder.alloc_block_statement(SPAN, try_statements),
+        None::<oxc_allocator::Box<'a, ast::CatchClause<'a>>>,
+        Some(finalizer),
+    )));
+}
+
+fn build_hook_guard_statement<'a>(
+    builder: AstBuilder<'a>,
+    hook_guard_ident: &str,
+    action: u8,
+) -> ast::Statement<'a> {
+    builder.statement_expression(
+        SPAN,
+        builder.expression_call(
+            SPAN,
+            builder.expression_identifier(SPAN, builder.ident(hook_guard_ident)),
+            NONE,
+            builder.vec1(ast::Argument::from(builder.expression_numeric_literal(
+                SPAN,
+                action as f64,
+                None,
+                NumberBase::Decimal,
+            ))),
+            false,
+        ),
+    )
 }
 
 fn prepend_compiled_body_prefix_statements<'a>(
@@ -4753,6 +4814,36 @@ function Component(props) {
     }
 
     #[test]
+    fn rewrites_function_hook_guard_wrapper_as_ast() {
+        let source = r#"function Component() {
+  return null;
+}"#;
+        let mut compiled_function = make_test_compiled_function(
+            "Component",
+            0,
+            source.len() as u32,
+            "return null;",
+            &[],
+            false,
+        );
+        compiled_function.needs_hook_guards = true;
+        compiled_function.needs_function_hook_guard_wrapper = true;
+        let state = AstRenderState {
+            hook_guard_ident: "hookGuard".to_string(),
+            ..empty_test_state(source_type_for_filename("fixture.jsx"))
+        };
+
+        let rewritten =
+            rewrite_single_statement_for_test_with_state("fixture.jsx", source, &compiled_function, state);
+
+        assert!(rewritten.contains("try {"));
+        assert!(rewritten.contains("hookGuard(0);"));
+        assert!(rewritten.contains("return null;"));
+        assert!(rewritten.contains("finally {"));
+        assert!(rewritten.contains("hookGuard(1);"));
+    }
+
+    #[test]
     fn rewrites_nested_arrow_body_from_hir_ast() {
         let source = "const FancyButton = (props) => null;";
         let allocator = Allocator::default();
@@ -4844,6 +4935,7 @@ function Component(props) {
             directives: vec![],
             hir_function: None,
             cache_prologue: None,
+            needs_function_hook_guard_wrapper: false,
             needs_instrument_forget: false,
             needs_emit_freeze: false,
             outlined_functions: vec![],

@@ -18,8 +18,8 @@ use crate::hir::visitors;
 pub const MEMO_CACHE_SENTINEL: &str = "react.memo_cache_sentinel";
 pub const EARLY_RETURN_SENTINEL: &str = "react.early_return_sentinel";
 pub const HOOK_GUARD_IDENT: &str = "$dispatcherGuard";
-const HOOK_GUARD_PUSH: u8 = 0;
-const HOOK_GUARD_POP: u8 = 1;
+pub(crate) const HOOK_GUARD_PUSH: u8 = 0;
+pub(crate) const HOOK_GUARD_POP: u8 = 1;
 const HOOK_GUARD_ALLOW: u8 = 2;
 const HOOK_GUARD_DISALLOW: u8 = 3;
 
@@ -154,6 +154,8 @@ pub struct CodegenResult {
     pub has_fire_rewrite: bool,
     /// Whether this function emitted runtime hook guards.
     pub needs_hook_guards: bool,
+    /// Whether this function needs the top-level hook guard try/finally wrapper.
+    pub needs_function_hook_guard_wrapper: bool,
     /// Whether this function emitted `$structuralCheck` calls.
     pub needs_structural_check_import: bool,
     /// Structured cache prologue metadata for AST emission.
@@ -323,6 +325,7 @@ pub struct CodegenReactiveOptions {
     pub enable_reset_cache_on_source_file_changes: bool,
     pub enable_name_anonymous_functions: bool,
     pub emit_directives_in_body: bool,
+    pub emit_function_hook_guard_wrapper_in_body: bool,
 }
 
 impl Default for CodegenReactiveOptions {
@@ -336,6 +339,7 @@ impl Default for CodegenReactiveOptions {
             enable_reset_cache_on_source_file_changes: false,
             enable_name_anonymous_functions: false,
             emit_directives_in_body: true,
+            emit_function_hook_guard_wrapper_in_body: true,
         }
     }
 }
@@ -456,6 +460,7 @@ impl Context {
             enable_reset_cache_on_source_file_changes: false,
             enable_name_anonymous_functions: self.enable_name_anonymous_functions,
             emit_directives_in_body: true,
+            emit_function_hook_guard_wrapper_in_body: true,
         }
     }
 }
@@ -714,7 +719,8 @@ fn codegen_reactive_function_with_primitives(
     } else {
         body
     };
-    if cx.emit_hook_guards && emit_function_hook_guard {
+    let needs_function_hook_guard_wrapper = cx.emit_hook_guards && emit_function_hook_guard;
+    if needs_function_hook_guard_wrapper && options.emit_function_hook_guard_wrapper_in_body {
         body = wrap_hook_guarded_block(&body, HOOK_GUARD_PUSH, HOOK_GUARD_POP);
     }
     body = prune_unused_const_literal_decls(&body);
@@ -794,7 +800,8 @@ fn codegen_reactive_function_with_primitives(
         param_names,
         needs_freeze_import: false,
         has_fire_rewrite: false,
-        needs_hook_guards: body.contains(HOOK_GUARD_IDENT),
+        needs_hook_guards: body.contains(HOOK_GUARD_IDENT) || needs_function_hook_guard_wrapper,
+        needs_function_hook_guard_wrapper,
         needs_structural_check_import: cx.needs_structural_check_import,
         cache_prologue,
         error: cx.codegen_error,

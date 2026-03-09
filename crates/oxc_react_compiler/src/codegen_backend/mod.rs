@@ -36,6 +36,7 @@ pub(crate) struct CompiledFunction {
     pub(crate) directives: Vec<String>,
     pub(crate) hir_function: Option<crate::hir::types::HIRFunction>,
     pub(crate) cache_prologue: Option<crate::reactive_scopes::codegen_reactive::CachePrologue>,
+    pub(crate) needs_function_hook_guard_wrapper: bool,
     pub(crate) needs_instrument_forget: bool,
     pub(crate) needs_emit_freeze: bool,
     pub(crate) outlined_functions: Vec<(String, String, String)>,
