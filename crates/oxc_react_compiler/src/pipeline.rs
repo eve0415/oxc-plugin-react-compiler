@@ -3966,37 +3966,6 @@ fn is_ident_continue_byte_for_transform_flag(byte: u8) -> bool {
     byte == b'_' || byte == b'$' || (byte as char).is_ascii_alphanumeric()
 }
 
-pub(crate) fn insert_blank_lines_for_guarded_cache_init(body: &str) -> String {
-    let lines: Vec<&str> = body.lines().collect();
-    if lines.len() < 5 {
-        return body.to_string();
-    }
-
-    let mut out: Vec<String> = Vec::with_capacity(lines.len() + 2);
-    let mut i = 0usize;
-    while i < lines.len() {
-        if i + 4 < lines.len()
-            && lines[i].trim_start().starts_with("const $ = _c(")
-            && lines[i + 1].trim_start().starts_with("if (")
-            && lines[i + 2].trim_start().starts_with("return ")
-            && lines[i + 3].trim() == "}"
-            && lines[i + 4].trim_start().starts_with("const ")
-        {
-            out.push(lines[i].to_string());
-            out.push(String::new());
-            out.push(lines[i + 1].to_string());
-            out.push(lines[i + 2].to_string());
-            out.push(lines[i + 3].to_string());
-            out.push(String::new());
-            i += 4;
-            continue;
-        }
-        out.push(lines[i].to_string());
-        i += 1;
-    }
-    out.join("\n")
-}
-
 fn should_preserve_leading_body_statement(stmt: &ast::Statement<'_>) -> bool {
     matches!(stmt, ast::Statement::TSEnumDeclaration(_))
 }

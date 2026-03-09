@@ -3289,7 +3289,6 @@ fn render_compiled_body_source(cf: &CompiledFunction, _state: &AstRenderState) -
     if !cf.directives.is_empty() {
         body = crate::pipeline::strip_directive_lines(&body, &cf.directives);
     }
-    body = crate::pipeline::insert_blank_lines_for_guarded_cache_init(&body);
     body
 }
 
