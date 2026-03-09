@@ -17372,7 +17372,7 @@ fn is_stable_setter_identifier(id: &Identifier) -> bool {
 // ---- Pattern codegen ----
 
 fn codegen_pattern(cx: &mut Context, pattern: &Pattern) -> String {
-    match pattern {
+    render_pattern_with_oxc(cx, pattern).unwrap_or_else(|| match pattern {
         Pattern::Array(arr) => {
             let items: Vec<String> = arr
                 .items
@@ -17410,7 +17410,24 @@ fn codegen_pattern(cx: &mut Context, pattern: &Pattern) -> String {
                 .collect();
             format!("{{{}}}", props.join(", "))
         }
+    })
+}
+
+fn render_pattern_with_oxc(cx: &mut Context, pattern: &Pattern) -> Option<String> {
+    const PLACEHOLDER: &str = "__codex_pattern_rhs";
+    let rendered = render_reactive_destructure_statement_ast(
+        cx,
+        pattern,
+        PLACEHOLDER,
+        Some(ast::VariableDeclarationKind::Let),
+    )?;
+    let trimmed = rendered.trim();
+    let body = trimmed.strip_prefix("let ")?;
+    let (lhs, rhs) = body.split_once(" = ")?;
+    if rhs.trim_end_matches(';').trim() != PLACEHOLDER {
+        return None;
     }
+    Some(lhs.trim().to_string())
 }
 
 fn pattern_operands(pattern: &Pattern) -> Vec<&Place> {
@@ -20041,19 +20058,89 @@ fn unicode_escape_non_ascii(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{HashMap, HashSet};
+
     use super::{
-        FunctionExpressionType, apply_optional_to_rendered_expr, function_expr_as_declaration,
-        function_expr_to_method_property,
+        CodegenReactiveOptions, Context, FunctionExpressionType, apply_optional_to_rendered_expr,
+        function_expr_as_declaration, function_expr_to_method_property,
         maybe_fill_for_header_initializer_from_update, reconstruct_for_init_declaration,
-        render_function_expression_ast, render_object_method_ast,
+        render_function_expression_ast, render_object_method_ast, render_pattern_with_oxc,
         render_reactive_function_body_prologue_ast,
     };
     use crate::hir::types::{
-        Argument, DeclarationId, DependencyPathEntry, Effect, Identifier, IdentifierId,
-        IdentifierName, MutableRange, ObjectPropertyKey, Place, ReactiveScopeDependency,
-        SourceLocation, Type,
+        Argument, ArrayElement, ArrayPattern, DeclarationId, DependencyPathEntry, Effect,
+        Identifier, IdentifierId, IdentifierName, MutableRange, ObjectProperty,
+        ObjectPropertyKey, ObjectPropertyOrSpread, ObjectPropertyType, ObjectPattern, Pattern,
+        Place, ReactiveScopeDependency, SourceLocation, Type,
     };
     use crate::reactive_scopes::codegen_reactive::CachePrologue;
+
+    fn test_context() -> Context {
+        let options = CodegenReactiveOptions::default();
+        Context {
+            next_cache_index: 0,
+            declarations: HashSet::new(),
+            runtime_emitted_declarations: HashSet::new(),
+            temp: HashMap::new(),
+            temp_by_identifier: HashMap::new(),
+            object_methods: HashMap::new(),
+            object_methods_store: Vec::new(),
+            callback_deps: HashMap::new(),
+            hook_callback_arg_decls: HashSet::new(),
+            resolved_names: HashMap::new(),
+            suppressed_temp_ids: Vec::new(),
+            hook_call_by_decl: HashMap::new(),
+            stable_ref_decls: HashSet::new(),
+            stable_setter_decls: HashSet::new(),
+            stable_effect_event_decls: HashSet::new(),
+            multi_source_decls: HashSet::new(),
+            decl_assignment_sources: HashMap::new(),
+            stable_ref_names: HashSet::new(),
+            unique_identifiers: HashSet::new(),
+            fbt_operands: HashSet::new(),
+            synthesized_names: HashMap::new(),
+            next_temp_index: 0,
+            temp_remap: HashMap::new(),
+            declared_names: HashSet::new(),
+            captured_in_child_functions: HashSet::new(),
+            mutable_captured_in_child_functions: HashSet::new(),
+            reassigned_decls: HashSet::new(),
+            read_declarations: HashSet::new(),
+            inline_primitive_literals: HashMap::new(),
+            capturable_primitive_literals: HashMap::new(),
+            non_local_binding_decls: HashSet::new(),
+            disable_memoization_features: options.disable_memoization_features,
+            disable_memoization_for_debugging: options.disable_memoization_for_debugging,
+            enable_change_variable_codegen: options.enable_change_variable_codegen,
+            emit_hook_guards: options.enable_emit_hook_guards,
+            enable_change_detection_for_debugging: options.enable_change_detection_for_debugging,
+            enable_name_anonymous_functions: options.enable_name_anonymous_functions,
+            needs_structural_check_import: false,
+            function_name: "<test>".to_string(),
+            param_display_names: HashMap::new(),
+            reserved_child_decl_names: HashSet::new(),
+            block_scope_declared_temp_names: Vec::new(),
+            declaration_name_overrides: HashMap::new(),
+            used_declaration_names: HashSet::new(),
+            preferred_decl_names: HashMap::new(),
+            codegen_error: None,
+            emitted_optional_dep_reads: HashSet::new(),
+            pending_manual_memo_reads: HashSet::new(),
+            manual_memo_root_decls: HashSet::new(),
+            manual_memo_dep_roots_by_id: HashMap::new(),
+            manual_memo_dep_roots_by_decl: HashMap::new(),
+            pruned_manual_memo_decls: HashSet::new(),
+            stable_zero_dep_decls: HashSet::new(),
+            scope_dependency_decls: HashSet::new(),
+            scope_dependency_overrides: HashMap::new(),
+            function_decl_decls: HashSet::new(),
+            jsx_only_component_tag_decls: HashSet::new(),
+            inline_identifier_aliases: HashMap::new(),
+            elided_named_declarations: HashSet::new(),
+            preserve_loop_header_inits: false,
+            block_scope_output_names: Vec::new(),
+        }
+    }
 
     fn named_place(id: u32, declaration_id: u32, name: &str) -> Place {
         Place {
@@ -20253,5 +20340,40 @@ mod tests {
             super::render_dependency_expression_ast("foo", &dep).expect("expected dependency");
 
         assert_eq!(rendered, "foo[\"bad-key\"]");
+    }
+
+    #[test]
+    fn renders_array_pattern_via_ast() {
+        let mut cx = test_context();
+        let pattern = Pattern::Array(ArrayPattern {
+            items: vec![
+                ArrayElement::Place(named_place(0, 0, "a")),
+                ArrayElement::Hole,
+                ArrayElement::Spread(named_place(1, 1, "rest")),
+            ],
+        });
+
+        let rendered = render_pattern_with_oxc(&mut cx, &pattern).expect("expected pattern");
+
+        assert_eq!(rendered, "[a, , ...rest]");
+    }
+
+    #[test]
+    fn renders_object_pattern_via_ast() {
+        let mut cx = test_context();
+        let pattern = Pattern::Object(ObjectPattern {
+            properties: vec![
+                ObjectPropertyOrSpread::Property(ObjectProperty {
+                        key: ObjectPropertyKey::Identifier("value".to_string()),
+                        place: named_place(0, 0, "value"),
+                        type_: ObjectPropertyType::Property,
+                    }),
+                ObjectPropertyOrSpread::Spread(named_place(1, 1, "rest")),
+            ],
+        });
+
+        let rendered = render_pattern_with_oxc(&mut cx, &pattern).expect("expected pattern");
+
+        assert_eq!(rendered, "{ value, ...rest }");
     }
 }
