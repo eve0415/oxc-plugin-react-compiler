@@ -15157,13 +15157,18 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                         ExprPrecedence::Relational
                     }
                 });
-            let expr = match type_annotation_kind {
+            let expr = render_ts_type_cast_expression_ast(
+                &value_expr,
+                type_annotation,
+                *type_annotation_kind,
+            )
+            .unwrap_or_else(|| match type_annotation_kind {
                 TypeAnnotationKind::Cast => format!("({}: {})", value_expr, type_annotation),
                 TypeAnnotationKind::As => format!("{} as {}", value_expr, type_annotation),
                 TypeAnnotationKind::Satisfies => {
                     format!("{} satisfies {}", value_expr, type_annotation)
                 }
-            };
+            });
             ExprValue::primary(expr)
         }
         InstructionValue::RegExpLiteral { pattern, flags, .. } => {
@@ -15649,6 +15654,25 @@ fn render_primitive_expression_ast(value: &PrimitiveValue) -> Option<String> {
         PrimitiveValue::Number(_) | PrimitiveValue::String(_) => return None,
     };
     Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_ts_type_cast_expression_ast(
+    value_expr: &str,
+    type_annotation: &str,
+    kind: TypeAnnotationKind,
+) -> Option<String> {
+    let expression = match kind {
+        TypeAnnotationKind::As => format!("{value_expr} as {type_annotation}"),
+        TypeAnnotationKind::Satisfies => format!("{value_expr} satisfies {type_annotation}"),
+        TypeAnnotationKind::Cast => return None,
+    };
+    let allocator = Allocator::default();
+    let expression =
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), &expression)
+            .ok()?;
+    Some(strip_top_level_parenthesized_expression(
+        codegen_expression_with_oxc(&expression),
+    ))
 }
 
 fn render_unary_expression_ast(operator: UnaryOperator, value: &str) -> Option<String> {
@@ -20911,13 +20935,14 @@ mod tests {
         render_function_expression_ast, render_object_method_ast,
         render_primitive_expression_ast, render_property_access_expression_ast, render_pattern_with_oxc,
         render_reactive_function_body_prologue_ast,
-        render_static_method_call_expression_ast,
+        render_static_method_call_expression_ast, render_ts_type_cast_expression_ast,
     };
     use crate::hir::types::{
         Argument, ArrayElement, ArrayPattern, DeclarationId, DependencyPathEntry, Effect,
         Identifier, IdentifierId, IdentifierName, MutableRange, ObjectProperty,
         ObjectPropertyKey, ObjectPropertyOrSpread, ObjectPropertyType, ObjectPattern, Pattern,
         Place, PrimitiveValue, PropertyLiteral, ReactiveScopeDependency, SourceLocation, Type,
+        TypeAnnotationKind,
     };
     use crate::reactive_scopes::codegen_reactive::CachePrologue;
 
@@ -21145,6 +21170,19 @@ mod tests {
             render_primitive_expression_ast(&PrimitiveValue::Number(42.0)).as_deref(),
             Some("42")
         );
+    }
+
+    #[test]
+    fn renders_ts_type_casts_via_ast() {
+        assert_eq!(
+            render_ts_type_cast_expression_ast("value", "Foo", TypeAnnotationKind::As).as_deref(),
+            Some("value as Foo")
+        );
+        let rendered =
+            render_ts_type_cast_expression_ast("value", "{ foo: string }", TypeAnnotationKind::Satisfies)
+                .expect("expected satisfies expression");
+        assert!(rendered.starts_with("value satisfies {"));
+        assert!(rendered.contains("foo: string"));
     }
 
     #[test]
