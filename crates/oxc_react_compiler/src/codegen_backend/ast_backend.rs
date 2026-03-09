@@ -14,6 +14,7 @@ use crate::CompileResult;
 
 use super::{
     CompiledBodyPayload, CompiledFunction, CompiledParam, ModuleEmitArgs,
+    SynthesizedDefaultParamCache,
 };
 
 struct AstRenderState {
@@ -2886,6 +2887,13 @@ fn build_compiled_function_body<'a>(
     wrap_function_hook_guard_body(builder, allocator, &mut function_body, cf, state);
     apply_preserved_directives(builder, &mut function_body, cf);
     prepend_cache_prologue_statements(builder, allocator, &mut function_body, cf, state);
+    prepend_synthesized_default_param_cache_statements(
+        builder,
+        allocator,
+        source_type,
+        &mut function_body,
+        cf,
+    )?;
     prepend_compiled_body_prefix_statements(
         builder,
         allocator,
@@ -3282,6 +3290,28 @@ fn build_rendered_outlined_function_statement<'a>(
         }
         _ => None,
     }
+}
+
+fn parse_expression_source<'a>(
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    expr_source: &str,
+) -> Result<ast::Expression<'a>, String> {
+    let wrapped = format!("({expr_source});");
+    for attempt_source_type in [source_type, source_type.with_typescript(true)] {
+        let Ok(mut statements) = parse_statements(
+            allocator,
+            attempt_source_type,
+            allocator.alloc_str(&wrapped),
+        ) else {
+            continue;
+        };
+        let Some(ast::Statement::ExpressionStatement(statement)) = statements.pop() else {
+            continue;
+        };
+        return Ok(statement.unbox().expression);
+    }
+    Err("failed to parse expression snippet".to_string())
 }
 
 fn normalize_generated_body_iife_parenthesization(body_source: &str) -> String {
@@ -3682,6 +3712,121 @@ fn prepend_cache_prologue_statements<'a>(
     body.statements = statements;
 }
 
+fn prepend_synthesized_default_param_cache_statements<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    body: &mut ast::FunctionBody<'a>,
+    cf: &CompiledFunction,
+) -> Option<()> {
+    let Some(default_cache) = cf.synthesized_default_param_cache.as_ref() else {
+        return Some(());
+    };
+    let cache_binding_name = cf
+        .cache_prologue
+        .as_ref()
+        .map(|cache_prologue| cache_prologue.binding_name.as_str())
+        .unwrap_or("$");
+    let insert_idx = cf.cache_prologue.as_ref().map_or(0, |cache_prologue| {
+        1 + usize::from(cache_prologue.fast_refresh.is_some())
+    });
+    let mut statements = builder.vec();
+    statements.extend(
+        body.statements[..insert_idx]
+            .iter()
+            .map(|statement| statement.clone_in(allocator)),
+    );
+    statements.extend(build_synthesized_default_param_cache_statements(
+        builder,
+        allocator,
+        source_type,
+        cache_binding_name,
+        default_cache,
+    )?);
+    statements.extend(
+        body.statements[insert_idx..]
+            .iter()
+            .map(|statement| statement.clone_in(allocator)),
+    );
+    body.statements = statements;
+    Some(())
+}
+
+fn build_synthesized_default_param_cache_statements<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    cache_binding_name: &str,
+    default_cache: &SynthesizedDefaultParamCache,
+) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
+    let value_expr =
+        parse_expression_source(allocator, source_type, &default_cache.value_expr).ok()?;
+    let undefined_check = builder.expression_binary(
+        SPAN,
+        builder.expression_identifier(SPAN, builder.ident(&default_cache.temp_name)),
+        BinaryOperator::StrictEquality,
+        builder.expression_identifier(SPAN, builder.ident("undefined")),
+    );
+    let assign_value = build_identifier_assignment_statement(
+        builder,
+        &default_cache.value_name,
+        builder.expression_conditional(
+            SPAN,
+            undefined_check,
+            value_expr,
+            builder.expression_identifier(SPAN, builder.ident(&default_cache.temp_name)),
+        ),
+    );
+    let else_block = builder.statement_block(
+        SPAN,
+        builder.vec1(build_identifier_assignment_statement(
+            builder,
+            &default_cache.value_name,
+            cache_member_slot_expression(builder, cache_binding_name, 1),
+        )),
+    );
+
+    Some(builder.vec_from_array([
+        build_let_declaration_statement(builder, &default_cache.value_name),
+        builder.statement_if(
+            SPAN,
+            builder.expression_binary(
+                SPAN,
+                cache_member_slot_expression(builder, cache_binding_name, 0),
+                BinaryOperator::StrictInequality,
+                builder.expression_identifier(SPAN, builder.ident(&default_cache.temp_name)),
+            ),
+            builder.statement_block(
+                SPAN,
+                builder.vec_from_array(
+                    [
+                        assign_value,
+                        build_cache_slot_assignment_statement(
+                            builder,
+                            cache_binding_name,
+                            0,
+                            builder.expression_identifier(
+                                SPAN,
+                                builder.ident(&default_cache.temp_name),
+                            ),
+                        ),
+                        build_cache_slot_assignment_statement(
+                            builder,
+                            cache_binding_name,
+                            1,
+                            builder.expression_identifier(
+                                SPAN,
+                                builder.ident(&default_cache.value_name),
+                            ),
+                        ),
+                    ],
+                ),
+            ),
+            Some(else_block),
+        ),
+    ]))
+}
+
 fn wrap_function_hook_guard_body<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
@@ -3738,6 +3883,73 @@ fn build_hook_guard_statement<'a>(
                 NumberBase::Decimal,
             ))),
             false,
+        ),
+    )
+}
+
+fn build_let_declaration_statement<'a>(builder: AstBuilder<'a>, name: &str) -> ast::Statement<'a> {
+    let pattern = builder.binding_pattern_binding_identifier(SPAN, builder.ident(name));
+    ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+        SPAN,
+        ast::VariableDeclarationKind::Let,
+        builder.vec1(builder.variable_declarator(
+            SPAN,
+            ast::VariableDeclarationKind::Let,
+            pattern,
+            NONE,
+            None,
+            false,
+        )),
+        false,
+    ))
+}
+
+fn build_identifier_assignment_statement<'a>(
+    builder: AstBuilder<'a>,
+    name: &str,
+    value: ast::Expression<'a>,
+) -> ast::Statement<'a> {
+    builder.statement_expression(
+        SPAN,
+        builder.expression_assignment(
+            SPAN,
+            AssignmentOperator::Assign,
+            ast::AssignmentTarget::from(
+                builder.simple_assignment_target_assignment_target_identifier(
+                    SPAN,
+                    builder.ident(name),
+                ),
+            ),
+            value,
+        ),
+    )
+}
+
+fn build_cache_slot_assignment_statement<'a>(
+    builder: AstBuilder<'a>,
+    cache_binding_name: &str,
+    slot: u32,
+    value: ast::Expression<'a>,
+) -> ast::Statement<'a> {
+    builder.statement_expression(
+        SPAN,
+        builder.expression_assignment(
+            SPAN,
+            AssignmentOperator::Assign,
+            ast::AssignmentTarget::from(ast::SimpleAssignmentTarget::from(
+                builder.member_expression_computed(
+                    SPAN,
+                    builder.expression_identifier(SPAN, builder.ident(cache_binding_name)),
+                    builder.expression_numeric_literal(
+                        SPAN,
+                        slot as f64,
+                        None,
+                        NumberBase::Decimal,
+                    ),
+                    false,
+                ),
+            )),
+            value,
         ),
     )
 }
@@ -4695,7 +4907,7 @@ mod tests {
     use oxc_span::SourceType;
 
     use crate::{
-        codegen_backend::CompiledOutlinedFunction,
+        codegen_backend::{CompiledOutlinedFunction, SynthesizedDefaultParamCache},
         environment::Environment,
         hir::types::{
             self, BasicBlock, BlockId, DeclarationId, Effect, HIR, HIRFunction, Identifier,
@@ -4707,10 +4919,9 @@ mod tests {
 
     use super::{
         AstRenderState, CompiledBodyPayload, CompiledFunction, CompiledParam,
-        codegen_statement_source, compute_transform_state,
-        maybe_gate_entrypoint_source, normalize_compiled_body_for_hir_match,
-        normalize_generated_body_flow_cast_marker_calls, parse_statements,
-        restore_flow_cast_marker_calls, source_type_for_filename,
+        codegen_statement_source, compute_transform_state, maybe_gate_entrypoint_source,
+        normalize_compiled_body_for_hir_match, normalize_generated_body_flow_cast_marker_calls,
+        parse_statements, restore_flow_cast_marker_calls, source_type_for_filename,
         try_rewrite_compiled_statement_ast,
     };
 
@@ -5122,6 +5333,7 @@ function Component(props) {
                     .collect(),
             ),
             param_destructurings: vec![],
+            synthesized_default_param_cache: None,
             is_async: false,
             is_generator: false,
             is_function_declaration: false,
@@ -5749,5 +5961,49 @@ function Component(props) {
         assert!(rewritten.contains("function Foo(props) {"));
         assert!(rewritten.contains("async function _temp(load, ...rest) {"));
         assert!(rewritten.contains("return await load(...rest);"));
+    }
+
+    #[test]
+    fn prepends_synthesized_default_param_cache_as_ast() {
+        let source = "function Foo(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "return value;",
+            &["t0"],
+            false,
+        );
+        compiled_function.is_function_declaration = true;
+        compiled_function.needs_cache_import = true;
+        compiled_function.cache_prologue =
+            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+                binding_name: "$".to_string(),
+                size: 2,
+                fast_refresh: None,
+            });
+        compiled_function.synthesized_default_param_cache = Some(SynthesizedDefaultParamCache {
+            value_name: "value".to_string(),
+            temp_name: "t0".to_string(),
+            value_expr: "props.value".to_string(),
+        });
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("const $ = _c(2);"));
+        assert!(rewritten.contains("let value;"));
+        assert!(rewritten.contains("if ($[0] !== t0) {"));
+        assert!(rewritten.contains("value = t0 === undefined ? props.value : t0;"));
+        assert!(rewritten.contains("$[1] = value;"));
+        assert!(rewritten.contains("return value;"));
     }
 }

@@ -29,6 +29,13 @@ pub(crate) struct CompiledOutlinedFunction {
     pub(crate) is_generator: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SynthesizedDefaultParamCache {
+    pub(crate) value_name: String,
+    pub(crate) temp_name: String,
+    pub(crate) value_expr: String,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CompiledFunction {
     pub(crate) name: String,
@@ -39,6 +46,7 @@ pub(crate) struct CompiledFunction {
     pub(crate) needs_cache_import: bool,
     pub(crate) compiled_params: Option<Vec<CompiledParam>>,
     pub(crate) param_destructurings: Vec<String>,
+    pub(crate) synthesized_default_param_cache: Option<SynthesizedDefaultParamCache>,
     pub(crate) is_async: bool,
     pub(crate) is_generator: bool,
     pub(crate) is_function_declaration: bool,

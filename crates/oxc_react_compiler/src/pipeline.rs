@@ -21,6 +21,7 @@ use sha2::Sha256;
 use crate::CompileResult;
 use crate::codegen_backend::{
     CompiledBodyPayload, CompiledFunction, CompiledOutlinedFunction, CompiledParam, ModuleEmitArgs,
+    SynthesizedDefaultParamCache,
 };
 use crate::error::CompilerError;
 use crate::hir::build;
@@ -5803,23 +5804,29 @@ fn try_compile_function<'a>(
 
     let codegen_result = pipeline_output.codegen_result;
     let mut generated_body = codegen_result.body.clone();
-    let mut synthesized_param_default_cache = false;
+    let mut synthesized_default_param_cache = None;
     let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
-    if let Some((synthesized, synthesized_hir_outlined)) =
+    if let Some((synthesized, synthesized_cache_plan, synthesized_hir_outlined)) =
         synthesize_default_param_cache_body(&generated_body, &params_result.destructurings)
     {
         generated_body = synthesized;
+        synthesized_default_param_cache = Some(synthesized_cache_plan);
         synthesized_hir_outlined_functions = synthesized_hir_outlined;
-        synthesized_param_default_cache = true;
     }
     let normalize_use_fire_binding_temps =
         pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite;
-    let mut cache_prologue = if synthesized_param_default_cache {
-        None
+    let mut cache_prologue = if synthesized_default_param_cache.is_some() {
+        Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+            binding_name: "$".to_string(),
+            size: 2,
+            fast_refresh: None,
+        })
     } else {
         codegen_result.cache_prologue.clone()
     };
-    if let Some(prologue) = cache_prologue.as_ref() {
+    if synthesized_default_param_cache.is_none()
+        && let Some(prologue) = cache_prologue.as_ref()
+    {
         if let Some(stripped_body) = strip_leading_cache_prologue(&generated_body, prologue) {
             generated_body = stripped_body;
         } else {
@@ -5887,7 +5894,7 @@ fn try_compile_function<'a>(
         && !name.is_empty();
     let needs_emit_freeze =
         options.environment.enable_emit_freeze && codegen_result.needs_cache_import;
-    let param_destructurings = if synthesized_param_default_cache {
+    let param_destructurings = if synthesized_default_param_cache.is_some() {
         vec![]
     } else if destructurings
         .iter()
@@ -5898,7 +5905,8 @@ fn try_compile_function<'a>(
         vec![]
     };
 
-    let needs_cache_import = codegen_result.needs_cache_import || synthesized_param_default_cache;
+    let needs_cache_import =
+        codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
     let body_payload = if !needs_cache_import
         && outlined_functions_are_hir_lowerable(&outlined, &pipeline_hir_outlined_functions)
     {
@@ -5916,6 +5924,7 @@ fn try_compile_function<'a>(
         needs_cache_import,
         compiled_params,
         param_destructurings,
+        synthesized_default_param_cache,
         is_async: func.r#async,
         is_generator: func.generator,
         is_function_declaration,
@@ -6024,23 +6033,29 @@ fn try_compile_function_with_name<'a>(
 
     let codegen_result = pipeline_output.codegen_result;
     let mut generated_body = codegen_result.body.clone();
-    let mut synthesized_param_default_cache = false;
+    let mut synthesized_default_param_cache = None;
     let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
-    if let Some((synthesized, synthesized_hir_outlined)) =
+    if let Some((synthesized, synthesized_cache_plan, synthesized_hir_outlined)) =
         synthesize_default_param_cache_body(&generated_body, &params_result.destructurings)
     {
         generated_body = synthesized;
+        synthesized_default_param_cache = Some(synthesized_cache_plan);
         synthesized_hir_outlined_functions = synthesized_hir_outlined;
-        synthesized_param_default_cache = true;
     }
     let normalize_use_fire_binding_temps =
         pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite;
-    let mut cache_prologue = if synthesized_param_default_cache {
-        None
+    let mut cache_prologue = if synthesized_default_param_cache.is_some() {
+        Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+            binding_name: "$".to_string(),
+            size: 2,
+            fast_refresh: None,
+        })
     } else {
         codegen_result.cache_prologue.clone()
     };
-    if let Some(prologue) = cache_prologue.as_ref() {
+    if synthesized_default_param_cache.is_none()
+        && let Some(prologue) = cache_prologue.as_ref()
+    {
         if let Some(stripped_body) = strip_leading_cache_prologue(&generated_body, prologue) {
             generated_body = stripped_body;
         } else {
@@ -6108,7 +6123,7 @@ fn try_compile_function_with_name<'a>(
         && !name.is_empty();
     let needs_emit_freeze =
         options.environment.enable_emit_freeze && codegen_result.needs_cache_import;
-    let param_destructurings = if synthesized_param_default_cache {
+    let param_destructurings = if synthesized_default_param_cache.is_some() {
         vec![]
     } else if destructurings
         .iter()
@@ -6119,7 +6134,8 @@ fn try_compile_function_with_name<'a>(
         vec![]
     };
 
-    let needs_cache_import = codegen_result.needs_cache_import || synthesized_param_default_cache;
+    let needs_cache_import =
+        codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
     let body_payload = if !needs_cache_import
         && outlined_functions_are_hir_lowerable(&outlined, &pipeline_hir_outlined_functions)
     {
@@ -6137,6 +6153,7 @@ fn try_compile_function_with_name<'a>(
         needs_cache_import,
         compiled_params,
         param_destructurings,
+        synthesized_default_param_cache,
         is_async: func.r#async,
         is_generator: func.generator,
         is_function_declaration: false,
@@ -6253,23 +6270,29 @@ fn try_compile_arrow<'a>(
 
     let codegen_result = pipeline_output.codegen_result;
     let mut generated_body = codegen_result.body.clone();
-    let mut synthesized_param_default_cache = false;
+    let mut synthesized_default_param_cache = None;
     let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
-    if let Some((synthesized, synthesized_hir_outlined)) =
+    if let Some((synthesized, synthesized_cache_plan, synthesized_hir_outlined)) =
         synthesize_default_param_cache_body(&generated_body, &params_result.destructurings)
     {
         generated_body = synthesized;
+        synthesized_default_param_cache = Some(synthesized_cache_plan);
         synthesized_hir_outlined_functions = synthesized_hir_outlined;
-        synthesized_param_default_cache = true;
     }
     let normalize_use_fire_binding_temps =
         pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite;
-    let mut cache_prologue = if synthesized_param_default_cache {
-        None
+    let mut cache_prologue = if synthesized_default_param_cache.is_some() {
+        Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+            binding_name: "$".to_string(),
+            size: 2,
+            fast_refresh: None,
+        })
     } else {
         codegen_result.cache_prologue.clone()
     };
-    if let Some(prologue) = cache_prologue.as_ref() {
+    if synthesized_default_param_cache.is_none()
+        && let Some(prologue) = cache_prologue.as_ref()
+    {
         if let Some(stripped_body) = strip_leading_cache_prologue(&generated_body, prologue) {
             generated_body = stripped_body;
         } else {
@@ -6337,7 +6360,7 @@ fn try_compile_arrow<'a>(
         && !name.is_empty();
     let needs_emit_freeze =
         options.environment.enable_emit_freeze && codegen_result.needs_cache_import;
-    let param_destructurings = if synthesized_param_default_cache {
+    let param_destructurings = if synthesized_default_param_cache.is_some() {
         vec![]
     } else if destructurings
         .iter()
@@ -6348,7 +6371,8 @@ fn try_compile_arrow<'a>(
         vec![]
     };
 
-    let needs_cache_import = codegen_result.needs_cache_import || synthesized_param_default_cache;
+    let needs_cache_import =
+        codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
     let body_payload = if !needs_cache_import
         && outlined_functions_are_hir_lowerable(&outlined, &pipeline_hir_outlined_functions)
     {
@@ -6366,6 +6390,7 @@ fn try_compile_arrow<'a>(
         needs_cache_import,
         compiled_params,
         param_destructurings,
+        synthesized_default_param_cache,
         is_async: arrow.r#async,
         is_generator: false,
         is_function_declaration: false,
@@ -6547,12 +6572,16 @@ fn parse_single_slot_memoized_default_body(
     Some(memoized_expr)
 }
 
-type DefaultParamCacheBody = (String, Vec<(String, HIRFunction)>);
+type DefaultParamCacheSynthesis = (
+    String,
+    SynthesizedDefaultParamCache,
+    Vec<(String, HIRFunction)>,
+);
 
 fn synthesize_default_param_cache_body(
     generated_body: &str,
     destructurings: &[String],
-) -> Option<DefaultParamCacheBody> {
+) -> Option<DefaultParamCacheSynthesis> {
     let debug_default_param_cache = std::env::var("DEBUG_DEFAULT_PARAM_CACHE").is_ok();
     let mut candidates = destructurings
         .iter()
@@ -6601,9 +6630,12 @@ fn synthesize_default_param_cache_body(
     };
 
     Some((
-        format!(
-            "const $ = _c(2);\nlet {name};\nif ($[0] !== {temp}) {{\n{name} = {temp} === undefined ? {rewritten_expr} : {temp};\n$[0] = {temp};\n$[1] = {name};\n}} else {{\n{name} = $[1];\n}}\n{return_stmt}"
-        ),
+        return_stmt,
+        SynthesizedDefaultParamCache {
+            value_name: name,
+            temp_name: temp,
+            value_expr: rewritten_expr,
+        },
         hir_outlined_functions,
     ))
 }
