@@ -6177,23 +6177,33 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
         format!("({})", seq_items.join(", "))
     };
 
-    output.push_str(&format!(
-        "if ({}[{}] !== {} || {}[{}] !== {}) {{\n",
-        cache_var, dep_slot, cond_expr, cache_var, decl_slot, dep_expr
-    ));
-    output.push_str(&format!("{cond_expr} ? {consequent_expr} : null;\n"));
-    output.push_str(&format!("{}[{}] = {};\n", cache_var, dep_slot, cond_expr));
-    output.push_str(&format!("{}[{}] = {};\n", cache_var, decl_slot, dep_expr));
+    let mut consequent = String::new();
+    consequent.push_str(&render_reactive_expression_statement_ast(&format!(
+        "{cond_expr} ? {consequent_expr} : null"
+    ))?);
+    consequent.push_str(&render_reactive_expression_statement_ast(&format!(
+        "{}[{}] = {}",
+        cache_var, dep_slot, cond_expr
+    ))?);
+    consequent.push_str(&render_reactive_expression_statement_ast(&format!(
+        "{}[{}] = {}",
+        cache_var, decl_slot, dep_expr
+    ))?);
     for line in cache_tail_lines {
-        output.push_str(&line);
-        output.push('\n');
+        consequent.push_str(&render_reactive_expression_statement_ast(&line)?);
     }
-    output.push_str("} else {\n");
+    let mut alternate = String::new();
     for line in else_passthrough {
-        output.push_str(&line);
-        output.push('\n');
+        alternate.push_str(&render_reactive_expression_statement_ast(&line)?);
     }
-    output.push_str("}\n");
+    output.push_str(&render_reactive_if_statement_ast(
+        &format!(
+            "{}[{}] !== {} || {}[{}] !== {}",
+            cache_var, dep_slot, cond_expr, cache_var, decl_slot, dep_expr
+        ),
+        &consequent,
+        Some(&alternate),
+    )?);
     debug_codegen_expr(
         "fused-named-test-scope-decl-ternary-statement",
         format!(
