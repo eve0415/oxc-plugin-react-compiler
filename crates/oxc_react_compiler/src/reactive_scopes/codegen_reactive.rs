@@ -7272,19 +7272,24 @@ fn maybe_codegen_fused_named_temp_logical_expression(
                         codegen_logical_operand_from_expr_value(right_ev, logical_prec);
                     let target_name = identifier_name_with_cx(&mut probe_cx, &lvalue.identifier);
                     let op = logical_operator_to_str(operator);
+                    let logical_expr = format!("{} {} {}", left_expr, op, right_expr);
 
                     if has_materialized_named_binding(&probe_cx, &lvalue.identifier) {
-                        output.push_str(&format!(
-                            "{} = {} {} {};\n",
-                            target_name, left_expr, op, right_expr
-                        ));
+                        output.push_str(
+                            &render_reactive_assignment_statement_ast(&target_name, &logical_expr)
+                                .unwrap_or_else(|| format!("{} = {};\n", target_name, logical_expr)),
+                        );
                     } else {
                         probe_cx.declare(&lvalue.identifier);
                         probe_cx.mark_decl_runtime_emitted(lvalue.identifier.declaration_id);
-                        output.push_str(&format!(
-                            "const {} = {} {} {};\n",
-                            target_name, left_expr, op, right_expr
-                        ));
+                        output.push_str(
+                            &render_reactive_variable_statement_ast(
+                                ast::VariableDeclarationKind::Const,
+                                &target_name,
+                                Some(&logical_expr),
+                            )
+                            .unwrap_or_else(|| format!("const {} = {};\n", target_name, logical_expr)),
+                        );
                     }
                     probe_cx.set_temp_expr(&lvalue.identifier, None);
                     *cx = probe_cx;
@@ -8746,7 +8751,10 @@ fn codegen_scope_computation_no_reset(
         {
             return output;
         }
-        output.push_str(&format!("{} = {};\n", target_name, rhs_expr));
+        output.push_str(
+            &render_reactive_assignment_statement_ast(&target_name, &rhs_expr)
+                .unwrap_or_else(|| format!("{} = {};\n", target_name, rhs_expr)),
+        );
         return output;
     }
 
