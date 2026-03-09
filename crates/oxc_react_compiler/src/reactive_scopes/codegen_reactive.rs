@@ -4253,10 +4253,18 @@ fn maybe_codegen_inverted_labeled_if_fallthrough(
         );
     }
 
-    let rewritten = format!(
-        "bb{}: if ({}) {{\nbreak bb{};\n}}\n{}break bb{};\n{}",
-        label.id.0, test_expr, label.id.0, fallthrough_code, cons_target.0, consequent_code
-    );
+    let label_name = format!("bb{}", label.id.0);
+    let target_label = format!("bb{}", cons_target.0);
+    let guarded_break = render_reactive_break_statement_ast(Some(&label_name))?;
+    let labeled_if = render_reactive_labeled_statement_ast(
+        &label_name,
+        render_reactive_if_statement_ast(&test_expr, &guarded_break, None)?.trim_end(),
+        false,
+    )?;
+    let mut rewritten = labeled_if;
+    rewritten.push_str(&fallthrough_code);
+    rewritten.push_str(&render_reactive_break_statement_ast(Some(&target_label))?);
+    rewritten.push_str(&consequent_code);
     Some((rewritten, consumed_following))
 }
 
@@ -4472,43 +4480,33 @@ fn maybe_codegen_labeled_if_adjacent_block(
     let Some(if_stmt) = codegen_terminal(cx, &term_stmt.terminal) else {
         bail!("codegen-terminal-none");
     };
-    let mut rewritten = format!("bb{}: {{\n", label.id.0);
+    let label_name = format!("bb{}", label.id.0);
+    let mut rewritten_body = String::new();
 
     let had_prefix_stmt = prefix_stmt.is_some();
     if let Some(prefix) = prefix_stmt {
-        rewritten.push_str("  ");
-        rewritten.push_str(prefix.trim());
-        rewritten.push('\n');
-        rewritten.push('\n');
+        rewritten_body.push_str(prefix.trim());
+        rewritten_body.push_str("\n\n");
     }
-
-    for line in if_stmt.trim_end().lines() {
-        if line.trim().is_empty() {
-            rewritten.push('\n');
-        } else {
-            rewritten.push_str("  ");
-            rewritten.push_str(line);
-            rewritten.push('\n');
-        }
-    }
-    if !had_prefix_stmt && !rewritten.ends_with("\n\n") {
+    rewritten_body.push_str(if_stmt.trim_end());
+    if had_prefix_stmt {
+        rewritten_body.push('\n');
+    } else {
         // Keep a spacer between `if (...)` and the following lifted statement.
-        rewritten.push('\n');
+        rewritten_body.push_str("\n\n");
     }
-    for line in following_stmt.trim_end().lines() {
-        if line.trim().is_empty() {
-            rewritten.push('\n');
-        } else {
-            rewritten.push_str("  ");
-            rewritten.push_str(line);
-            rewritten.push('\n');
-        }
-    }
-    rewritten.push_str("}\n");
+    rewritten_body.push_str(following_stmt.trim_end());
+    rewritten_body.push('\n');
+
+    let rewritten =
+        render_reactive_labeled_statement_ast(&label_name, &rewritten_body, true)?;
     let next_is_cache_store =
         next_emitted_statement_is_cache_store(cx, block, idx + 1 + consumed_following);
     if matches!(next_is_cache_store, Some(false)) {
-        rewritten.push('\n');
+        output.push_str(&rewritten);
+        output.push('\n');
+    } else {
+        output.push_str(&rewritten);
     }
     if debug {
         eprintln!(
@@ -4521,7 +4519,6 @@ fn maybe_codegen_labeled_if_adjacent_block(
             next_is_cache_store
         );
     }
-    output.push_str(&rewritten);
     Some(consumed_following)
 }
 
@@ -21522,6 +21519,7 @@ mod tests {
         render_function_expression_ast, render_object_method_ast,
         render_primitive_expression_ast, render_property_access_expression_ast, render_pattern_with_oxc,
         render_reactive_function_body_prologue_ast, render_jsx_expression_ast,
+        render_reactive_labeled_statement_ast,
         render_jsx_fragment_ast, render_reactive_for_in_statement_ast,
         render_reactive_for_of_statement_ast, render_reactive_for_statement_ast,
         render_hook_guarded_block_ast, render_hook_guarded_call_expression_ast,
@@ -21943,6 +21941,22 @@ mod tests {
         assert!(rendered.contains("return useMemo(cb, deps);"));
         assert!(rendered.contains("$dispatcherGuard(3);"));
         assert!(rendered.ends_with("})()"));
+    }
+
+    #[test]
+    fn renders_labeled_statement_via_ast() {
+        let rendered = render_reactive_labeled_statement_ast("bb1", "break bb1;", false)
+            .expect("expected labeled statement");
+
+        assert_eq!(rendered, "bb1: break bb1;\n");
+    }
+
+    #[test]
+    fn renders_labeled_block_via_ast() {
+        let rendered = render_reactive_labeled_statement_ast("bb1", "x = 1;\n\ny = 2;\n", true)
+            .expect("expected labeled block");
+
+        assert_eq!(rendered, "bb1: {\n  x = 1;\n  y = 2;\n}\n");
     }
 
     #[test]
