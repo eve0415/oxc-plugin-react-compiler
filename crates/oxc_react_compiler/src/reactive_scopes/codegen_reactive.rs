@@ -15033,11 +15033,11 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             ..
         } => {
             let obj = codegen_member_object_expression(cx, object);
-            let expr = if *optional || obj.contains("?.") {
+            let expr = if obj.contains("?.") {
                 format_property_access(&obj, property, *optional)
             } else {
-                render_property_access_expression_ast(&obj, property, false)
-                    .unwrap_or_else(|| format_property_access(&obj, property, false))
+                render_property_access_expression_ast(&obj, property, *optional)
+                    .unwrap_or_else(|| format_property_access(&obj, property, *optional))
             };
             ExprValue::primary(expr)
         }
