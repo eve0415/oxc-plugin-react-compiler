@@ -33,7 +33,6 @@ use crate::optimization::drop_manual_memoization;
 use crate::optimization::inline_iifes;
 use crate::options::{CompilationMode, PanicThreshold, PluginOptions};
 use crate::reactive_scopes::align_scopes;
-use crate::reactive_scopes::codegen;
 use crate::reactive_scopes::infer_reactive;
 use crate::reactive_scopes::infer_scope_variables;
 use crate::reactive_scopes::merge_overlapping_scopes;
@@ -1138,7 +1137,7 @@ fn codegen_outlined_function(
     func: &HIRFunction,
     enable_change_variable_codegen: bool,
     reserved_names: &std::collections::HashSet<String>,
-) -> (String, String) {
+) -> Option<(String, String)> {
     fn is_ident_char(ch: char) -> bool {
         ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()
     }
@@ -1216,18 +1215,18 @@ fn codegen_outlined_function(
             }
             _ => match direct_codegen() {
                 Some(fallback) => fallback,
-                None => return codegen::codegen_outlined_fn(func),
+                None => return None,
             },
         }
     } else {
         match direct_codegen() {
             Some(fallback) => fallback,
-            None => return codegen::codegen_outlined_fn(func),
+            None => return None,
         }
     };
 
     if codegen.error.is_some() {
-        return codegen::codegen_outlined_fn(func);
+        return None;
     }
 
     let mut rendered_params = Vec::with_capacity(func.params.len());
@@ -1270,7 +1269,7 @@ fn codegen_outlined_function(
     for (from, to) in rename_pairs {
         body = replace_identifier_tokens(&body, &from, &to);
     }
-    (rendered_params.join(", "), body)
+    Some((rendered_params.join(", "), body))
 }
 
 /// Upstream parity guard: outlined functions are codegen'd through the reactive
@@ -5930,11 +5929,20 @@ fn try_compile_function<'a>(
             FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
             return Ok(None);
         }
-        let (params_str, body_str) = codegen_outlined_function(
+        let Some((params_str, body_str)) = codegen_outlined_function(
             &of.func,
             options.environment.enable_change_variable_codegen,
             &pipeline_output.reserved_removed_names,
-        );
+        ) else {
+            if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
+                eprintln!(
+                    "[PIPELINE_FAIL] {}: outlined {} emitted no rendered body",
+                    name, of.name
+                );
+            }
+            FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
+            return Ok(None);
+        };
         if outlined_function_needs_rendered_body(&body_str, &of.func) {
             outlined.push((of.name.clone(), params_str, body_str));
         }
@@ -6128,11 +6136,20 @@ fn try_compile_function_with_name<'a>(
             FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
             return Ok(None);
         }
-        let (params_str, body_str) = codegen_outlined_function(
+        let Some((params_str, body_str)) = codegen_outlined_function(
             &of.func,
             options.environment.enable_change_variable_codegen,
             &pipeline_output.reserved_removed_names,
-        );
+        ) else {
+            if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
+                eprintln!(
+                    "[PIPELINE_FAIL] {}: outlined {} emitted no rendered body",
+                    name, of.name
+                );
+            }
+            FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
+            return Ok(None);
+        };
         if outlined_function_needs_rendered_body(&body_str, &of.func) {
             outlined.push((of.name.clone(), params_str, body_str));
         }
@@ -6334,11 +6351,20 @@ fn try_compile_arrow<'a>(
             FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
             return Ok(None);
         }
-        let (params_str, body_str) = codegen_outlined_function(
+        let Some((params_str, body_str)) = codegen_outlined_function(
             &of.func,
             options.environment.enable_change_variable_codegen,
             &pipeline_output.reserved_removed_names,
-        );
+        ) else {
+            if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
+                eprintln!(
+                    "[PIPELINE_FAIL] {}: outlined {} emitted no rendered body",
+                    name, of.name
+                );
+            }
+            FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
+            return Ok(None);
+        };
         if outlined_function_needs_rendered_body(&body_str, &of.func) {
             outlined.push((of.name.clone(), params_str, body_str));
         }
