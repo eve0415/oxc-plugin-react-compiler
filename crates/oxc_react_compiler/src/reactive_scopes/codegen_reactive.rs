@@ -20379,61 +20379,64 @@ fn render_reactive_function_body_prologue_ast(
     }
 }
 
+fn build_computed_member_expression_ast<'a>(
+    builder: AstBuilder<'a>,
+    object_name: &str,
+    slot_expr: ast::Expression<'a>,
+) -> ast::Expression<'a> {
+    ast::Expression::from(builder.member_expression_computed(
+        SPAN,
+        builder.expression_identifier(SPAN, builder.ident(object_name)),
+        slot_expr,
+        false,
+    ))
+}
+
+fn build_computed_member_assignment_statement_ast<'a>(
+    builder: AstBuilder<'a>,
+    object_name: &str,
+    slot_expr: ast::Expression<'a>,
+    value: ast::Expression<'a>,
+) -> ast::Statement<'a> {
+    let target = ast::AssignmentTarget::from(ast::SimpleAssignmentTarget::from(
+        builder.member_expression_computed(
+            SPAN,
+            builder.expression_identifier(SPAN, builder.ident(object_name)),
+            slot_expr,
+            false,
+        ),
+    ));
+    builder.statement_expression(
+        SPAN,
+        builder.expression_assignment(SPAN, AssignmentOperator::Assign, target, value),
+    )
+}
+
+fn build_symbol_for_call_expression_ast<'a>(
+    builder: AstBuilder<'a>,
+    value: &str,
+) -> ast::Expression<'a> {
+    builder.expression_call(
+        SPAN,
+        ast::Expression::from(builder.member_expression_static(
+            SPAN,
+            builder.expression_identifier(SPAN, builder.ident("Symbol")),
+            builder.identifier_name(SPAN, builder.ident("for")),
+            false,
+        )),
+        NONE,
+        builder.vec1(ast::Argument::from(
+            builder.expression_string_literal(SPAN, builder.atom(value), None),
+        )),
+        false,
+    )
+}
+
 fn build_fast_refresh_cache_reset_statement_ast<'a>(
     builder: AstBuilder<'a>,
     cache_prologue: &CachePrologue,
     fast_refresh: &FastRefreshPrologue,
 ) -> Option<ast::Statement<'a>> {
-    fn build_cache_slot_expression<'a>(
-        builder: AstBuilder<'a>,
-        binding_name: &str,
-        slot_expr: ast::Expression<'a>,
-    ) -> ast::Expression<'a> {
-        ast::Expression::from(builder.member_expression_computed(
-            SPAN,
-            builder.expression_identifier(SPAN, builder.ident(binding_name)),
-            slot_expr,
-            false,
-        ))
-    }
-
-    fn build_cache_slot_assignment_statement<'a>(
-        builder: AstBuilder<'a>,
-        binding_name: &str,
-        slot_expr: ast::Expression<'a>,
-        value: ast::Expression<'a>,
-    ) -> ast::Statement<'a> {
-        let target = ast::AssignmentTarget::from(ast::SimpleAssignmentTarget::from(
-            builder.member_expression_computed(
-                SPAN,
-                builder.expression_identifier(SPAN, builder.ident(binding_name)),
-                slot_expr,
-                false,
-            ),
-        ));
-        builder.statement_expression(
-            SPAN,
-            builder.expression_assignment(SPAN, AssignmentOperator::Assign, target, value),
-        )
-    }
-
-    fn build_symbol_for_expression<'a>(builder: AstBuilder<'a>, value: &str) -> ast::Expression<'a> {
-        builder.expression_call(
-            SPAN,
-            ast::Expression::from(builder.member_expression_static(
-                SPAN,
-                builder.expression_identifier(SPAN, builder.ident("Symbol")),
-                builder.identifier_name(SPAN, builder.ident("for")),
-                false,
-            )),
-            NONE,
-            builder.vec1(ast::Argument::from(
-                builder.expression_string_literal(SPAN, builder.atom(value), None),
-            )),
-            false,
-        )
-    }
-
     let hash_slot = builder.expression_numeric_literal(
         SPAN,
         fast_refresh.cache_index as f64,
@@ -20442,7 +20445,7 @@ fn build_fast_refresh_cache_reset_statement_ast<'a>(
     );
     let test = builder.expression_binary(
         SPAN,
-        build_cache_slot_expression(builder, &cache_prologue.binding_name, hash_slot),
+        build_computed_member_expression_ast(builder, &cache_prologue.binding_name, hash_slot),
         AstBinaryOperator::StrictInequality,
         builder.expression_string_literal(SPAN, builder.atom(&fast_refresh.hash), None),
     );
@@ -20486,11 +20489,11 @@ fn build_fast_refresh_cache_reset_statement_ast<'a>(
     );
     let loop_body = builder.statement_block(
         SPAN,
-        builder.vec1(build_cache_slot_assignment_statement(
+        builder.vec1(build_computed_member_assignment_statement_ast(
             builder,
             &cache_prologue.binding_name,
             builder.expression_identifier(SPAN, builder.ident(index_name)),
-            build_symbol_for_expression(builder, MEMO_CACHE_SENTINEL),
+            build_symbol_for_call_expression_ast(builder, MEMO_CACHE_SENTINEL),
         )),
     );
     let refresh_loop = builder.statement_for(
@@ -20501,7 +20504,7 @@ fn build_fast_refresh_cache_reset_statement_ast<'a>(
         loop_body,
     );
 
-    let hash_store = build_cache_slot_assignment_statement(
+    let hash_store = build_computed_member_assignment_statement_ast(
         builder,
         &cache_prologue.binding_name,
         builder.expression_numeric_literal(
@@ -20528,58 +20531,143 @@ fn render_cached_inline_hook_callback_block_ast(
     deps: Option<(&str, &str, u32)>,
     call_expr: &str,
 ) -> Option<String> {
-    let mut output = String::new();
-    output.push_str(&render_reactive_variable_statement_ast(
-        ast::VariableDeclarationKind::Let,
-        callback_name,
-        None,
-    )?);
-    if let Some((deps_name, _, _)) = deps {
-        output.push_str(&render_reactive_variable_statement_ast(
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let mut statements = builder.vec();
+
+    statements.push(ast::Statement::VariableDeclaration(
+        builder.alloc_variable_declaration(
+            SPAN,
             ast::VariableDeclarationKind::Let,
-            deps_name,
-            None,
-        )?);
-    }
-
-    let mut consequent = String::new();
-    consequent.push_str(&render_reactive_assignment_statement_ast(
-        callback_name,
-        callback_expr,
-    )?);
-    if let Some((deps_name, deps_expr, deps_slot)) = deps {
-        consequent.push_str(&render_reactive_assignment_statement_ast(
-            deps_name, deps_expr,
-        )?);
-        consequent.push_str(&render_reactive_expression_statement_ast(&format!(
-            "$[{}] = {}",
-            deps_slot, deps_name
-        ))?);
-    }
-    consequent.push_str(&render_reactive_expression_statement_ast(&format!(
-        "$[{}] = {}",
-        callback_slot, callback_name
-    ))?);
-
-    let mut alternate =
-        render_reactive_assignment_statement_ast(callback_name, &format!("$[{}]", callback_slot))?;
-    if let Some((deps_name, _, deps_slot)) = deps {
-        alternate.push_str(&render_reactive_assignment_statement_ast(
-            deps_name,
-            &format!("$[{}]", deps_slot),
-        )?);
-    }
-
-    output.push_str(&render_reactive_if_statement_ast(
-        &format!(
-            "$[{}] === Symbol.for(\"{}\")",
-            callback_slot, MEMO_CACHE_SENTINEL
+            builder.vec1(builder.variable_declarator(
+                SPAN,
+                ast::VariableDeclarationKind::Let,
+                builder.binding_pattern_binding_identifier(SPAN, builder.ident(callback_name)),
+                NONE,
+                None,
+                false,
+            )),
+            false,
         ),
-        &consequent,
-        Some(&alternate),
-    )?);
-    output.push_str(&render_reactive_expression_statement_ast(call_expr)?);
-    Some(output)
+    ));
+    if let Some((deps_name, _, _)) = deps {
+        statements.push(ast::Statement::VariableDeclaration(
+            builder.alloc_variable_declaration(
+                SPAN,
+                ast::VariableDeclarationKind::Let,
+                builder.vec1(builder.variable_declarator(
+                    SPAN,
+                    ast::VariableDeclarationKind::Let,
+                    builder.binding_pattern_binding_identifier(SPAN, builder.ident(deps_name)),
+                    NONE,
+                    None,
+                    false,
+                )),
+                false,
+            ),
+        ));
+    }
+
+    let mut consequent = builder.vec();
+    consequent.push(build_identifier_assignment_statement_ast_with_expression(
+        builder,
+        callback_name,
+        parse_expression_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            callback_expr,
+        )
+        .ok()?,
+    ));
+    if let Some((deps_name, deps_expr, deps_slot)) = deps {
+        consequent.push(build_identifier_assignment_statement_ast_with_expression(
+            builder,
+            deps_name,
+            parse_expression_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
+                deps_expr,
+            )
+            .ok()?,
+        ));
+        consequent.push(build_computed_member_assignment_statement_ast(
+            builder,
+            "$",
+            builder.expression_numeric_literal(SPAN, deps_slot as f64, None, NumberBase::Decimal),
+            builder.expression_identifier(SPAN, builder.ident(deps_name)),
+        ));
+    }
+    consequent.push(build_computed_member_assignment_statement_ast(
+        builder,
+        "$",
+        builder.expression_numeric_literal(
+            SPAN,
+            callback_slot as f64,
+            None,
+            NumberBase::Decimal,
+        ),
+        builder.expression_identifier(SPAN, builder.ident(callback_name)),
+    ));
+
+    let mut alternate = builder.vec1(build_identifier_assignment_statement_ast_with_expression(
+        builder,
+        callback_name,
+        build_computed_member_expression_ast(
+            builder,
+            "$",
+            builder.expression_numeric_literal(
+                SPAN,
+                callback_slot as f64,
+                None,
+                NumberBase::Decimal,
+            ),
+        ),
+    ));
+    if let Some((deps_name, _, deps_slot)) = deps {
+        alternate.push(build_identifier_assignment_statement_ast_with_expression(
+            builder,
+            deps_name,
+            build_computed_member_expression_ast(
+                builder,
+                "$",
+                builder.expression_numeric_literal(
+                    SPAN,
+                    deps_slot as f64,
+                    None,
+                    NumberBase::Decimal,
+                ),
+            ),
+        ));
+    }
+
+    let sentinel_test = builder.expression_binary(
+        SPAN,
+        build_computed_member_expression_ast(
+            builder,
+            "$",
+            builder.expression_numeric_literal(
+                SPAN,
+                callback_slot as f64,
+                None,
+                NumberBase::Decimal,
+            ),
+        ),
+        AstBinaryOperator::StrictEquality,
+        build_symbol_for_call_expression_ast(builder, MEMO_CACHE_SENTINEL),
+    );
+    statements.push(builder.statement_if(
+        SPAN,
+        sentinel_test,
+        builder.statement_block(SPAN, consequent),
+        Some(builder.statement_block(SPAN, alternate)),
+    ));
+    statements.push(builder.statement_expression(
+        SPAN,
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), call_expr)
+            .ok()?,
+    ));
+
+    Some(format!("{}\n", codegen_statements_with_oxc(&statements)))
 }
 
 fn parse_for_statement_init_ast<'a>(
@@ -21355,6 +21443,7 @@ mod tests {
         render_reactive_for_of_statement_ast, render_reactive_for_statement_ast,
         render_method_call_expression_ast,
         render_ts_type_cast_expression_ast,
+        render_cached_inline_hook_callback_block_ast,
     };
     use crate::hir::types::{
         Argument, ArrayElement, ArrayPattern, DeclarationId, DependencyPathEntry, Effect,
@@ -21746,6 +21835,24 @@ mod tests {
         assert!(rendered.contains("for (let i = 0; i < 2; i += 1)"));
         assert!(rendered.contains("$[i] = Symbol.for(\"react.memo_cache_sentinel\")"));
         assert!(rendered.contains("$[1] = \"hash\""));
+    }
+
+    #[test]
+    fn renders_cached_inline_hook_callback_block_via_ast() {
+        let rendered = render_cached_inline_hook_callback_block_ast(
+            "callback",
+            "() => value",
+            0,
+            Some(("deps", "[value]", 1)),
+            "useMemo(callback, deps)",
+        )
+        .expect("expected cached inline hook callback block");
+
+        assert!(rendered.contains("let callback;"));
+        assert!(rendered.contains("let deps;"));
+        assert!(rendered.contains("if ($[0] === Symbol.for(\"react.memo_cache_sentinel\"))"));
+        assert!(rendered.contains("$[1] = deps;"));
+        assert!(rendered.contains("useMemo(callback, deps);"));
     }
 
     #[test]
