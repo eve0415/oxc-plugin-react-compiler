@@ -599,9 +599,29 @@ fn try_rewrite_compiled_statement_ast<'a>(
         }
 
         let body_source = render_compiled_body_source(cf, state);
-        let function_body =
-            parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?;
-        let compiled_params = cf.compiled_params.as_deref()?;
+        let function_body = match parse_compiled_function_body(allocator, source_type, cf, &body_source) {
+            Ok(body) => body,
+            Err(err) => {
+                if std::env::var("DEBUG_AST_REWRITE_REASON").is_ok() {
+                    eprintln!(
+                        "[AST_REWRITE_REASON] file={} name={} reason=parse-body err={}",
+                        cf.name,
+                        cf.name,
+                        err
+                    );
+                }
+                return None;
+            }
+        };
+        let Some(compiled_params) = cf.compiled_params.as_deref() else {
+            if std::env::var("DEBUG_AST_REWRITE_REASON").is_ok() {
+                eprintln!(
+                    "[AST_REWRITE_REASON] file={} name={} reason=params-none",
+                    cf.name, cf.name
+                );
+            }
+            return None;
+        };
         let rewritten = if let Some(gate_name) = state
             .gating_local_name
             .as_deref()
@@ -627,6 +647,14 @@ fn try_rewrite_compiled_statement_ast<'a>(
             )
         };
         if !rewritten {
+            if std::env::var("DEBUG_AST_REWRITE_REASON").is_ok() {
+                eprintln!(
+                    "[AST_REWRITE_REASON] file={} name={} reason=rewrite-false stmt={}",
+                    cf.name,
+                    cf.name,
+                    stmt_source.replace('\n', "\\n")
+                );
+            }
             return None;
         }
 
