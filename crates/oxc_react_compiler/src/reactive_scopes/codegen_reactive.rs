@@ -14,7 +14,10 @@ use oxc_ast::{AstBuilder, NONE, ast};
 use oxc_codegen::{Codegen, CodegenOptions, IndentChar};
 use oxc_parser::Parser;
 use oxc_span::{SPAN, SourceType};
-use oxc_syntax::operator::AssignmentOperator;
+use oxc_syntax::operator::{
+    AssignmentOperator, BinaryOperator as AstBinaryOperator,
+    LogicalOperator as AstLogicalOperator, UnaryOperator as AstUnaryOperator,
+};
 
 use crate::environment::Environment;
 use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
@@ -14809,7 +14812,9 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             let prec = binary_operator_precedence(operator);
             let l = codegen_place_with_min_prec(cx, left, prec);
             let r = codegen_place_with_min_prec(cx, right, prec);
-            ExprValue::new(format!("{} {} {}", l, operator_to_str(operator), r), prec)
+            let expr = render_binary_expression_ast(&l, *operator, &r)
+                .unwrap_or_else(|| format!("{} {} {}", l, operator_to_str(operator), r));
+            ExprValue::new(expr, prec)
         }
         InstructionValue::UnaryExpression {
             value: operand,
@@ -14818,11 +14823,14 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
         } => {
             let expr = codegen_place_with_min_prec(cx, operand, ExprPrecedence::Unary);
             let op = unary_operator_to_str(operator);
-            if op.chars().all(|c| c.is_alphanumeric()) {
-                ExprValue::new(format!("{} {}", op, expr), ExprPrecedence::Unary)
-            } else {
-                ExprValue::new(format!("{}{}", op, expr), ExprPrecedence::Unary)
-            }
+            let rendered = render_unary_expression_ast(*operator, &expr).unwrap_or_else(|| {
+                if op.chars().all(|c| c.is_alphanumeric()) {
+                    format!("{} {}", op, expr)
+                } else {
+                    format!("{}{}", op, expr)
+                }
+            });
+            ExprValue::new(rendered, ExprPrecedence::Unary)
         }
         InstructionValue::CallExpression {
             callee,
@@ -15189,10 +15197,9 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             } else {
                 alt_ev.expr
             };
-            ExprValue::new(
-                format!("{} ? {} : {}", test_str, cons_str, alt_str),
-                ExprPrecedence::Conditional,
-            )
+            let expr = render_conditional_expression_ast(&test_str, &cons_str, &alt_str)
+                .unwrap_or_else(|| format!("{} ? {} : {}", test_str, cons_str, alt_str));
+            ExprValue::new(expr, ExprPrecedence::Conditional)
         }
         InstructionValue::ReactiveLogicalExpression {
             operator,
@@ -15217,10 +15224,9 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                     r = format!("(\n{}\n)", rhs_trimmed);
                 }
             }
-            ExprValue::new(
-                format!("{} {} {}", l, logical_operator_to_str(operator), r),
-                prec,
-            )
+            let expr = render_logical_expression_ast(&l, *operator, &r)
+                .unwrap_or_else(|| format!("{} {} {}", l, logical_operator_to_str(operator), r));
+            ExprValue::new(expr, prec)
         }
         InstructionValue::Ternary {
             test,
@@ -15241,10 +15247,9 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             } else {
                 alt_ev.expr
             };
-            ExprValue::new(
-                format!("{} ? {} : {}", test_str, cons_str, alt_str),
-                ExprPrecedence::Conditional,
-            )
+            let expr = render_conditional_expression_ast(&test_str, &cons_str, &alt_str)
+                .unwrap_or_else(|| format!("{} ? {} : {}", test_str, cons_str, alt_str));
+            ExprValue::new(expr, ExprPrecedence::Conditional)
         }
         InstructionValue::LogicalExpression {
             operator,
@@ -15263,12 +15268,9 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                     r = format!("(\n{}\n)", rhs_trimmed);
                 }
             }
-            let op = match operator {
-                LogicalOperator::And => "&&",
-                LogicalOperator::Or => "||",
-                LogicalOperator::NullishCoalescing => "??",
-            };
-            ExprValue::new(format!("{} {} {}", l, op, r), prec)
+            let expr = render_logical_expression_ast(&l, *operator, &r)
+                .unwrap_or_else(|| format!("{} {} {}", l, logical_operator_to_str(operator), r));
+            ExprValue::new(expr, prec)
         }
         // These should be handled in codegen_instruction_nullable directly
         InstructionValue::StoreLocal { .. }
@@ -15505,6 +15507,109 @@ fn apply_optional_to_rendered_expr(expr: &str, optional: bool) -> Option<String>
         }
         _ => return None,
     };
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn parse_rendered_expression_ast<'a>(
+    allocator: &'a Allocator,
+    expr: &str,
+) -> Option<ast::Expression<'a>> {
+    parse_expression_for_ast_codegen(allocator, SourceType::mjs().with_jsx(true), expr).ok()
+}
+
+fn lower_binary_operator_ast(operator: BinaryOperator) -> AstBinaryOperator {
+    match operator {
+        BinaryOperator::Eq => AstBinaryOperator::Equality,
+        BinaryOperator::NotEq => AstBinaryOperator::Inequality,
+        BinaryOperator::StrictEq => AstBinaryOperator::StrictEquality,
+        BinaryOperator::StrictNotEq => AstBinaryOperator::StrictInequality,
+        BinaryOperator::Lt => AstBinaryOperator::LessThan,
+        BinaryOperator::LtEq => AstBinaryOperator::LessEqualThan,
+        BinaryOperator::Gt => AstBinaryOperator::GreaterThan,
+        BinaryOperator::GtEq => AstBinaryOperator::GreaterEqualThan,
+        BinaryOperator::LShift => AstBinaryOperator::ShiftLeft,
+        BinaryOperator::RShift => AstBinaryOperator::ShiftRight,
+        BinaryOperator::URShift => AstBinaryOperator::ShiftRightZeroFill,
+        BinaryOperator::Add => AstBinaryOperator::Addition,
+        BinaryOperator::Sub => AstBinaryOperator::Subtraction,
+        BinaryOperator::Mul => AstBinaryOperator::Multiplication,
+        BinaryOperator::Div => AstBinaryOperator::Division,
+        BinaryOperator::Mod => AstBinaryOperator::Remainder,
+        BinaryOperator::Exp => AstBinaryOperator::Exponential,
+        BinaryOperator::BitOr => AstBinaryOperator::BitwiseOR,
+        BinaryOperator::BitXor => AstBinaryOperator::BitwiseXOR,
+        BinaryOperator::BitAnd => AstBinaryOperator::BitwiseAnd,
+        BinaryOperator::In => AstBinaryOperator::In,
+        BinaryOperator::InstanceOf => AstBinaryOperator::Instanceof,
+    }
+}
+
+fn lower_unary_operator_ast(operator: UnaryOperator) -> AstUnaryOperator {
+    match operator {
+        UnaryOperator::Minus => AstUnaryOperator::UnaryNegation,
+        UnaryOperator::Plus => AstUnaryOperator::UnaryPlus,
+        UnaryOperator::Not => AstUnaryOperator::LogicalNot,
+        UnaryOperator::BitNot => AstUnaryOperator::BitwiseNot,
+        UnaryOperator::TypeOf => AstUnaryOperator::Typeof,
+        UnaryOperator::Void => AstUnaryOperator::Void,
+    }
+}
+
+fn lower_logical_operator_ast(operator: LogicalOperator) -> AstLogicalOperator {
+    match operator {
+        LogicalOperator::And => AstLogicalOperator::And,
+        LogicalOperator::Or => AstLogicalOperator::Or,
+        LogicalOperator::NullishCoalescing => AstLogicalOperator::Coalesce,
+    }
+}
+
+fn render_binary_expression_ast(
+    left: &str,
+    operator: BinaryOperator,
+    right: &str,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let left = parse_rendered_expression_ast(&allocator, left)?;
+    let right = parse_rendered_expression_ast(&allocator, right)?;
+    let expression =
+        builder.expression_binary(SPAN, left, lower_binary_operator_ast(operator), right);
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_unary_expression_ast(operator: UnaryOperator, value: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let value = parse_rendered_expression_ast(&allocator, value)?;
+    let expression = builder.expression_unary(SPAN, lower_unary_operator_ast(operator), value);
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_logical_expression_ast(
+    left: &str,
+    operator: LogicalOperator,
+    right: &str,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let left = parse_rendered_expression_ast(&allocator, left)?;
+    let right = parse_rendered_expression_ast(&allocator, right)?;
+    let expression =
+        builder.expression_logical(SPAN, left, lower_logical_operator_ast(operator), right);
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_conditional_expression_ast(
+    test: &str,
+    consequent: &str,
+    alternate: &str,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let test = parse_rendered_expression_ast(&allocator, test)?;
+    let consequent = parse_rendered_expression_ast(&allocator, consequent)?;
+    let alternate = parse_rendered_expression_ast(&allocator, alternate)?;
+    let expression = builder.expression_conditional(SPAN, test, consequent, alternate);
     Some(codegen_expression_with_oxc(&expression))
 }
 
