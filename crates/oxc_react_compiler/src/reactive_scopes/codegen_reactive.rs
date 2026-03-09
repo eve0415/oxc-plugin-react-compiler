@@ -12871,7 +12871,6 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
         }
         ReactiveTerminal::Switch { test, cases, .. } => {
             let test_expr = codegen_place_to_expression(cx, test);
-            let mut result = format!("switch ({}) {{\n", test_expr);
             let block_codes: Vec<Option<String>> = cases
                 .iter()
                 .enumerate()
@@ -12902,6 +12901,8 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                     })
                 })
                 .collect();
+            let mut rendered_cases: Vec<(Option<String>, Option<String>)> =
+                Vec::with_capacity(cases.len());
             for (index, case) in cases.iter().enumerate() {
                 // Pre-compute block code to decide formatting and allow simple
                 // fallthrough cleanup against the following default case.
@@ -12915,31 +12916,44 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                         block_codes.get(index + 1).and_then(|c| c.as_deref()),
                     ));
                 }
-                let has_block = block_code
-                    .as_ref()
-                    .is_some_and(|code| !code.trim().is_empty());
-
-                if let Some(test) = &case.test {
-                    let test_expr = codegen_place_to_expression(cx, test);
-                    if has_block {
-                        // Put block on same line: `case X: { ... }`
-                        result.push_str(&format!("case {}: ", test_expr));
-                    } else {
-                        result.push_str(&format!("case {}:\n", test_expr));
-                    }
-                } else if has_block {
-                    result.push_str("default: ");
-                } else {
-                    result.push_str("default:\n");
-                }
-                if let Some(block_code) = &block_code
-                    && !block_code.trim().is_empty()
-                {
-                    result.push_str(&format!("{{\n{}}}\n", block_code));
-                }
+                rendered_cases.push((
+                    case.test
+                        .as_ref()
+                        .map(|test| codegen_place_to_expression(cx, test)),
+                    block_code.filter(|code| !code.trim().is_empty()),
+                ));
             }
-            result.push_str("}\n");
-            Some(result)
+            if let Some(rendered) =
+                render_reactive_switch_statement_ast(&test_expr, &rendered_cases)
+            {
+                Some(rendered)
+            } else {
+                let mut result = format!("switch ({}) {{\n", test_expr);
+                for (case_test, block_code) in rendered_cases {
+                    let has_block = block_code
+                        .as_ref()
+                        .is_some_and(|code| !code.trim().is_empty());
+
+                    if let Some(test_expr) = case_test {
+                        if has_block {
+                            result.push_str(&format!("case {}: ", test_expr));
+                        } else {
+                            result.push_str(&format!("case {}:\n", test_expr));
+                        }
+                    } else if has_block {
+                        result.push_str("default: ");
+                    } else {
+                        result.push_str("default:\n");
+                    }
+                    if let Some(block_code) = block_code
+                        && !block_code.trim().is_empty()
+                    {
+                        result.push_str(&format!("{{\n{}}}\n", block_code));
+                    }
+                }
+                result.push_str("}\n");
+                Some(result)
+            }
         }
         ReactiveTerminal::For {
             init,
@@ -18715,6 +18729,49 @@ fn render_reactive_try_statement_ast(
         Some(handler),
         Option::<oxc_allocator::Box<'_, ast::BlockStatement<'_>>>::None,
     );
+    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+}
+
+fn render_reactive_switch_statement_ast(
+    test: &str,
+    cases: &[(Option<String>, Option<String>)],
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let parsed_test =
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), test)
+            .ok()?;
+    let mut rendered_cases = builder.vec();
+    for (case_test, block_code) in cases {
+        let parsed_case_test = match case_test {
+            Some(case_test) => Some(
+                parse_expression_for_ast_codegen(
+                    &allocator,
+                    SourceType::mjs().with_jsx(true),
+                    case_test,
+                )
+                .ok()?,
+            ),
+            None => None,
+        };
+        let consequent = if let Some(block_code) = block_code {
+            builder.vec1(
+                builder.statement_block(
+                    SPAN,
+                    parse_statement_list_for_ast_codegen(
+                        &allocator,
+                        SourceType::mjs().with_jsx(true),
+                        block_code,
+                    )
+                    .ok()?,
+                ),
+            )
+        } else {
+            builder.vec()
+        };
+        rendered_cases.push(builder.switch_case(SPAN, parsed_case_test, consequent));
+    }
+    let statement = builder.statement_switch(SPAN, parsed_test, rendered_cases);
     Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
 }
 
