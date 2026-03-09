@@ -1,11 +1,13 @@
+use std::collections::HashSet;
+
 use oxc_allocator::{Allocator, CloneIn, Dummy};
 use oxc_ast::{AstBuilder, NONE, ast};
-use oxc_ast_visit::{VisitMut, walk_mut};
+use oxc_ast_visit::{Visit, VisitMut, walk, walk_mut};
 use oxc_codegen::{Codegen, CodegenOptions, IndentChar};
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SPAN, SourceType};
 use oxc_syntax::identifier::is_identifier_name;
-use oxc_syntax::operator::LogicalOperator;
+use oxc_syntax::operator::{AssignmentOperator, LogicalOperator};
 
 use crate::CompileResult;
 
@@ -2854,6 +2856,7 @@ fn build_compiled_function_body<'a>(
     )?;
     prepend_instrument_forget_statement(builder, allocator, &mut function_body, cf, state);
     align_runtime_identifier_references(builder, &mut function_body, cf, state);
+    apply_emit_freeze_to_cache_stores_ast(builder, allocator, &mut function_body, cf, state);
     Some(function_body)
 }
 
@@ -2864,7 +2867,6 @@ fn try_build_compiled_function_body_from_hir<'a>(
 ) -> Option<ast::FunctionBody<'a>> {
     if cf.body_payload != CompiledBodyPayload::LowerFromFinalHir
         || cf.needs_cache_import
-        || cf.needs_emit_freeze
     {
         return None;
     }
@@ -3282,22 +3284,10 @@ fn skip_quoted(source: &str, start_idx: usize) -> Option<usize> {
     None
 }
 
-fn render_compiled_body_source(cf: &CompiledFunction, state: &AstRenderState) -> String {
+fn render_compiled_body_source(cf: &CompiledFunction, _state: &AstRenderState) -> String {
     let mut body = cf.generated_body.clone();
     if !cf.directives.is_empty() {
         body = crate::pipeline::strip_directive_lines(&body, &cf.directives);
-    }
-    if cf.needs_emit_freeze {
-        let freeze_name = if cf.name.is_empty() {
-            "<anonymous>"
-        } else {
-            cf.name.as_str()
-        };
-        body = crate::pipeline::maybe_apply_emit_freeze_to_cache_stores(
-            &body,
-            &state.make_read_only_ident,
-            freeze_name,
-        );
     }
     body = crate::pipeline::insert_blank_lines_for_guarded_cache_init(&body);
     body
@@ -3469,6 +3459,7 @@ fn try_lower_compiled_statement_ast<'a>(
     };
     prepend_hir_body_prefix_statements(builder, allocator, source_type, function, cf)?;
     prepend_hir_instrument_forget_statement(builder, allocator, function, cf, state)?;
+    apply_emit_freeze_to_hir_function_body(builder, allocator, function, cf, state)?;
     statements.push(function_statement);
     for (outlined_name, _, _) in &cf.outlined_functions {
         let hir_function = cf
@@ -3520,6 +3511,20 @@ fn prepend_hir_instrument_forget_statement<'a>(
     Some(())
 }
 
+fn apply_emit_freeze_to_hir_function_body<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    function: &mut ast::Function<'a>,
+    cf: &CompiledFunction,
+    state: &AstRenderState,
+) -> Option<()> {
+    let body = function.body.as_mut()?;
+    let mut cloned_body = body.clone_in(allocator).unbox();
+    apply_emit_freeze_to_cache_stores_ast(builder, allocator, &mut cloned_body, cf, state);
+    function.body = Some(builder.alloc(cloned_body));
+    Some(())
+}
+
 fn align_runtime_identifier_references<'a>(
     builder: AstBuilder<'a>,
     body: &mut ast::FunctionBody<'a>,
@@ -3557,10 +3562,51 @@ fn align_runtime_identifier_references<'a>(
     renamer.visit_function_body(body);
 }
 
+fn apply_emit_freeze_to_cache_stores_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    body: &mut ast::FunctionBody<'a>,
+    cf: &CompiledFunction,
+    state: &AstRenderState,
+) {
+    if !cf.needs_emit_freeze || state.make_read_only_ident.is_empty() || cf.name.is_empty() {
+        return;
+    }
+
+    let mut collector = OutputCacheSlotCollector {
+        output_slots: HashSet::new(),
+    };
+    collector.visit_function_body(body);
+    if collector.output_slots.is_empty() {
+        return;
+    }
+
+    let mut rewriter = EmitFreezeCacheStoreRewriter {
+        builder,
+        allocator,
+        freeze_ident: state.make_read_only_ident.as_str(),
+        function_name: cf.name.as_str(),
+        output_slots: collector.output_slots,
+    };
+    rewriter.visit_function_body(body);
+}
+
 struct IdentifierReferenceRenamer<'a, 'rename> {
     builder: AstBuilder<'a>,
     cache_import_name: Option<&'rename str>,
     renames: Vec<(&'rename str, &'rename str)>,
+}
+
+struct OutputCacheSlotCollector {
+    output_slots: HashSet<(String, u32)>,
+}
+
+struct EmitFreezeCacheStoreRewriter<'a, 'rename> {
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    freeze_ident: &'rename str,
+    function_name: &'rename str,
+    output_slots: HashSet<(String, u32)>,
 }
 
 impl<'a> VisitMut<'a> for IdentifierReferenceRenamer<'a, '_> {
@@ -3581,6 +3627,120 @@ impl<'a> VisitMut<'a> for IdentifierReferenceRenamer<'a, '_> {
             .find(|(from, _)| it.name.as_str() == *from)
         {
             it.name = self.builder.ident(to);
+        }
+    }
+}
+
+impl<'a> Visit<'a> for OutputCacheSlotCollector {
+    fn visit_assignment_expression(&mut self, it: &ast::AssignmentExpression<'a>) {
+        if it.operator == AssignmentOperator::Assign
+            && let Some(_) = assignment_target_identifier_name(&it.left)
+            && let Some((cache_name, slot)) = expression_cache_access(&it.right)
+        {
+            self.output_slots.insert((cache_name.to_string(), slot));
+        }
+        walk::walk_assignment_expression(self, it);
+    }
+}
+
+impl<'a> VisitMut<'a> for EmitFreezeCacheStoreRewriter<'a, '_> {
+    fn visit_assignment_expression(&mut self, it: &mut ast::AssignmentExpression<'a>) {
+        walk_mut::walk_assignment_expression(self, it);
+        if it.operator != AssignmentOperator::Assign {
+            return;
+        }
+        let Some((cache_name, slot)) = assignment_target_cache_access(&it.left) else {
+            return;
+        };
+        if !self.output_slots.contains(&(cache_name.to_string(), slot))
+            || expression_references_identifier(&it.right, self.freeze_ident)
+        {
+            return;
+        }
+
+        let original_right = it.right.clone_in(self.allocator);
+        let freeze_call = self.builder.expression_call(
+            SPAN,
+            self.builder
+                .expression_identifier(SPAN, self.builder.ident(self.freeze_ident)),
+            NONE,
+            self.builder.vec_from_iter([
+                ast::Argument::from(original_right.clone_in(self.allocator)),
+                ast::Argument::from(self.builder.expression_string_literal(
+                    SPAN,
+                    self.builder.atom(self.function_name),
+                    None,
+                )),
+            ]),
+            false,
+        );
+        it.right = self.builder.expression_conditional(
+            SPAN,
+            self.builder.expression_identifier(SPAN, self.builder.ident("__DEV__")),
+            freeze_call,
+            original_right,
+        );
+    }
+}
+
+fn assignment_target_identifier_name<'a>(
+    target: &'a ast::AssignmentTarget<'a>,
+) -> Option<&'a str> {
+    match target {
+        ast::AssignmentTarget::AssignmentTargetIdentifier(identifier) => {
+            Some(identifier.name.as_str())
+        }
+        _ => None,
+    }
+}
+
+fn assignment_target_cache_access<'a>(
+    target: &'a ast::AssignmentTarget<'a>,
+) -> Option<(&'a str, u32)> {
+    match target {
+        ast::AssignmentTarget::ComputedMemberExpression(member) => member_cache_access(member),
+        _ => None,
+    }
+}
+
+fn expression_cache_access<'a>(expression: &'a ast::Expression<'a>) -> Option<(&'a str, u32)> {
+    match expression {
+        ast::Expression::ComputedMemberExpression(member) => member_cache_access(member),
+        _ => None,
+    }
+}
+
+fn member_cache_access<'a>(
+    member: &'a ast::ComputedMemberExpression<'a>,
+) -> Option<(&'a str, u32)> {
+    let ast::Expression::Identifier(object) = &member.object else {
+        return None;
+    };
+    let ast::Expression::NumericLiteral(slot) = &member.expression else {
+        return None;
+    };
+    let value = slot.value;
+    if value.fract() != 0.0 || value < 0.0 || value > u32::MAX as f64 {
+        return None;
+    }
+    Some((object.name.as_str(), value as u32))
+}
+
+fn expression_references_identifier(expression: &ast::Expression<'_>, ident: &str) -> bool {
+    let mut detector = IdentifierReferenceDetector { ident, found: false };
+    detector.visit_expression(expression);
+    detector.found
+}
+
+struct IdentifierReferenceDetector<'ident> {
+    ident: &'ident str,
+    found: bool,
+}
+
+impl<'a> Visit<'a> for IdentifierReferenceDetector<'_> {
+    fn visit_identifier_reference(&mut self, it: &ast::IdentifierReference<'a>) {
+        if it.name == self.ident {
+            self.found = true;
         }
     }
 }
@@ -3637,7 +3797,6 @@ fn can_emit_compiled_statement_ast(cf: &CompiledFunction) -> bool {
     cf.body_payload == CompiledBodyPayload::LowerFromFinalHir
         && cf.is_function_declaration
         && !cf.needs_cache_import
-        && !cf.needs_emit_freeze
 }
 
 fn maybe_gate_entrypoint_source(source: String, gate_name: &str) -> String {
@@ -4074,6 +4233,31 @@ function Component(props) {
 
         assert!(rewritten.contains("const FancyButton = (props) => {"));
         assert!(rewritten.contains("return props;"));
+    }
+
+    #[test]
+    fn rewrites_emit_freeze_cache_store_as_ast() {
+        let source = r#"function useFoo(props) {
+  return null;
+}"#;
+        let mut compiled_function = make_test_compiled_function(
+            "useFoo",
+            0,
+            source.len() as u32,
+            "let t0;\nif ($[0] !== props.value) {\n  t0 = props.value;\n  $[0] = props.value;\n  $[1] = t0;\n} else {\n  t0 = $[1];\n}\nreturn t0;",
+            &["props"],
+            false,
+        );
+        compiled_function.needs_emit_freeze = true;
+        let state = AstRenderState {
+            make_read_only_ident: "makeReadOnly".to_string(),
+            ..empty_test_state(source_type_for_filename("fixture.jsx"))
+        };
+
+        let rewritten =
+            rewrite_single_statement_for_test_with_state("fixture.jsx", source, &compiled_function, state);
+
+        assert!(rewritten.contains("$[1] = __DEV__ ? makeReadOnly(t0, \"useFoo\") : t0;"));
     }
 
     fn make_test_compiled_function(
