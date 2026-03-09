@@ -5029,7 +5029,11 @@ fn maybe_emit_reused_optional_dependency_reads(
     for dep in optional_deps {
         let dep_expr = codegen_dependency(cx, &dep);
         if dep_expr.contains("?.") && cx.emitted_optional_dep_reads.insert(dep_expr.clone()) {
-            output.push_str(&format!("{};\n", dep_expr));
+            if let Some(stmt) = render_reactive_expression_statement_ast(&dep_expr) {
+                output.push_str(&stmt);
+            } else {
+                output.push_str(&format!("{};\n", dep_expr));
+            }
         }
     }
 }
@@ -5108,10 +5112,17 @@ fn maybe_codegen_fused_nullish_self_reassign(
     } else {
         let name = identifier_name_with_cx(cx, &first_lvalue.identifier);
         if cx.has_declared(&first_lvalue.identifier) {
-            output.push_str(&format!("{} = {};\n", name, fused_expr));
+            output.push_str(&render_reactive_assignment_statement_ast(
+                &name,
+                &fused_expr,
+            )?);
         } else {
             cx.declare(&first_lvalue.identifier);
-            output.push_str(&format!("const {} = {};\n", name, fused_expr));
+            output.push_str(&render_reactive_variable_statement_ast(
+                ast::VariableDeclarationKind::Const,
+                &name,
+                Some(&fused_expr),
+            )?);
         }
         if second_lvalue.identifier.id != first_lvalue.identifier.id {
             cx.set_temp_expr(&second_lvalue.identifier, Some(ExprValue::primary(name)));
