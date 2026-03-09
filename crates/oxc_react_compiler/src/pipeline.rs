@@ -20,7 +20,7 @@ use sha2::Sha256;
 
 use crate::CompileResult;
 use crate::codegen_backend::{
-    CompiledBodyPayload, CompiledFunction, CompiledParam, ModuleEmitArgs,
+    CompiledBodyPayload, CompiledFunction, CompiledOutlinedFunction, CompiledParam, ModuleEmitArgs,
 };
 use crate::error::CompilerError;
 use crate::hir::build;
@@ -1128,7 +1128,7 @@ fn collect_named_identifiers_hir(func: &HIRFunction) -> std::collections::HashSe
     names
 }
 
-/// Convert an outlined HIR function to (params_str, body_str) for emission.
+/// Convert an outlined HIR function to rendered outlined metadata for emission.
 ///
 /// Prefer the reactive codegen path for parity with nested context/capture handling.
 /// Fall back to the legacy outlined emitter if reactive codegen reports an error.
@@ -1136,7 +1136,7 @@ fn codegen_outlined_function(
     func: &HIRFunction,
     enable_change_variable_codegen: bool,
     reserved_names: &std::collections::HashSet<String>,
-) -> Option<(String, String)> {
+) -> Option<CompiledOutlinedFunction> {
     fn is_ident_char(ch: char) -> bool {
         ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()
     }
@@ -1258,17 +1258,22 @@ fn codegen_outlined_function(
         if was_unnamed && emitted_name != source_name {
             rename_pairs.push((emitted_name.clone(), source_name.clone()));
         }
-        if is_spread {
-            rendered_params.push(format!("...{}", source_name));
-        } else {
-            rendered_params.push(source_name);
-        }
+        rendered_params.push(CompiledParam {
+            name: source_name,
+            is_rest: is_spread,
+        });
     }
     let mut body = codegen.body;
     for (from, to) in rename_pairs {
         body = replace_identifier_tokens(&body, &from, &to);
     }
-    Some((rendered_params.join(", "), body))
+    Some(CompiledOutlinedFunction {
+        name: func.id.as_ref()?.clone(),
+        params: rendered_params,
+        body,
+        is_async: func.async_,
+        is_generator: func.generator,
+    })
 }
 
 /// Upstream parity guard: outlined functions are codegen'd through the reactive
@@ -1349,7 +1354,8 @@ fn validate_outlined_function_codegen(
 }
 
 fn outlined_function_needs_rendered_body(rendered_body: &str, hir_function: &HIRFunction) -> bool {
-    let Some(lowered_body) = crate::codegen_backend::hir_to_ast::try_lower_function_body(hir_function)
+    let Some(lowered_body) =
+        crate::codegen_backend::hir_to_ast::try_lower_function_body(hir_function)
     else {
         return true;
     };
@@ -1357,25 +1363,25 @@ fn outlined_function_needs_rendered_body(rendered_body: &str, hir_function: &HIR
         != crate::codegen_backend::ast_backend::normalize_compiled_body_for_hir_match(&lowered_body)
 }
 
-fn dedupe_outlined_functions(outlined: &mut Vec<(String, String, String)>) {
+fn dedupe_outlined_functions(outlined: &mut Vec<CompiledOutlinedFunction>) {
     let debug = std::env::var("DEBUG_OUTLINE_DEDUPE").is_ok();
     if debug {
-        for (idx, (name, params, body)) in outlined.iter().enumerate() {
+        for (idx, outlined_function) in outlined.iter().enumerate() {
             eprintln!(
                 "[OUTLINE_DEDUPE] before idx={} name={} params={:?} body={:?}",
-                idx, name, params, body
+                idx, outlined_function.name, outlined_function.params, outlined_function.body
             );
         }
     }
     let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut kept_rev: Vec<(String, String, String)> = Vec::with_capacity(outlined.len());
-    for (name, params, body) in outlined.drain(..).rev() {
-        if seen_names.insert(name.clone()) {
-            kept_rev.push((name, params, body));
+    let mut kept_rev: Vec<CompiledOutlinedFunction> = Vec::with_capacity(outlined.len());
+    for outlined_function in outlined.drain(..).rev() {
+        if seen_names.insert(outlined_function.name.clone()) {
+            kept_rev.push(outlined_function);
         } else if debug {
             eprintln!(
                 "[OUTLINE_DEDUPE] drop-duplicate name={} params={:?} body={:?}",
-                name, params, body
+                outlined_function.name, outlined_function.params, outlined_function.body
             );
         }
     }
@@ -1389,9 +1395,7 @@ fn dedupe_hir_outlined_functions(outlined: &mut Vec<(String, HIRFunction)>) {
         for (idx, (name, hir_function)) in outlined.iter().enumerate() {
             eprintln!(
                 "[OUTLINE_DEDUPE] before idx={} name={} hir_id={:?}",
-                idx,
-                name,
-                hir_function.id
+                idx, name, hir_function.id
             );
         }
     }
@@ -5767,7 +5771,8 @@ fn try_compile_function<'a>(
 
     // Compute parameter destructuring (reactive codegen inlines these in body).
     let mut temp_counter = 0;
-    let params_result = params_to_result(&func.params, source, semantic, options, &mut temp_counter);
+    let params_result =
+        params_to_result(&func.params, source, semantic, options, &mut temp_counter);
 
     // Run the shared HIR pipeline (all passes from pruneMaybeThrows through codegen)
     let pipeline_output = match run_hir_pipeline_with_optional_retry(hir_func, name, options) {
@@ -5853,7 +5858,7 @@ fn try_compile_function<'a>(
             FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
             return Ok(None);
         }
-        let Some((params_str, body_str)) = codegen_outlined_function(
+        let Some(outlined_function) = codegen_outlined_function(
             &of.func,
             options.environment.enable_change_variable_codegen,
             &pipeline_output.reserved_removed_names,
@@ -5867,8 +5872,8 @@ fn try_compile_function<'a>(
             FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
             return Ok(None);
         };
-        if outlined_function_needs_rendered_body(&body_str, &of.func) {
-            outlined.push((of.name.clone(), params_str, body_str));
+        if outlined_function_needs_rendered_body(&outlined_function.body, &of.func) {
+            outlined.push(outlined_function);
         }
     }
     dedupe_outlined_functions(&mut outlined);
@@ -5884,7 +5889,9 @@ fn try_compile_function<'a>(
         options.environment.enable_emit_freeze && codegen_result.needs_cache_import;
     let param_destructurings = if synthesized_param_default_cache {
         vec![]
-    } else if destructurings.iter().any(|line| line.contains("=== undefined ?"))
+    } else if destructurings
+        .iter()
+        .any(|line| line.contains("=== undefined ?"))
     {
         destructurings.clone()
     } else {
@@ -5985,7 +5992,8 @@ fn try_compile_function_with_name<'a>(
 
     // Compute parameter destructuring (reactive codegen inlines these in body).
     let mut temp_counter = 0;
-    let params_result = params_to_result(&func.params, source, semantic, options, &mut temp_counter);
+    let params_result =
+        params_to_result(&func.params, source, semantic, options, &mut temp_counter);
 
     // Run the shared HIR pipeline
     let pipeline_output = match run_hir_pipeline_with_optional_retry(hir_func, name, options) {
@@ -6071,7 +6079,7 @@ fn try_compile_function_with_name<'a>(
             FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
             return Ok(None);
         }
-        let Some((params_str, body_str)) = codegen_outlined_function(
+        let Some(outlined_function) = codegen_outlined_function(
             &of.func,
             options.environment.enable_change_variable_codegen,
             &pipeline_output.reserved_removed_names,
@@ -6085,8 +6093,8 @@ fn try_compile_function_with_name<'a>(
             FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
             return Ok(None);
         };
-        if outlined_function_needs_rendered_body(&body_str, &of.func) {
-            outlined.push((of.name.clone(), params_str, body_str));
+        if outlined_function_needs_rendered_body(&outlined_function.body, &of.func) {
+            outlined.push(outlined_function);
         }
     }
     dedupe_outlined_functions(&mut outlined);
@@ -6102,7 +6110,9 @@ fn try_compile_function_with_name<'a>(
         options.environment.enable_emit_freeze && codegen_result.needs_cache_import;
     let param_destructurings = if synthesized_param_default_cache {
         vec![]
-    } else if destructurings.iter().any(|line| line.contains("=== undefined ?"))
+    } else if destructurings
+        .iter()
+        .any(|line| line.contains("=== undefined ?"))
     {
         destructurings.clone()
     } else {
@@ -6211,7 +6221,8 @@ fn try_compile_arrow<'a>(
 
     // Compute parameter destructuring (reactive codegen inlines these in body).
     let mut temp_counter = 0;
-    let params_result = params_to_result(&arrow.params, source, semantic, options, &mut temp_counter);
+    let params_result =
+        params_to_result(&arrow.params, source, semantic, options, &mut temp_counter);
 
     // Run the shared HIR pipeline
     let pipeline_output = match run_hir_pipeline_with_optional_retry(hir_func, name, options) {
@@ -6297,7 +6308,7 @@ fn try_compile_arrow<'a>(
             FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
             return Ok(None);
         }
-        let Some((params_str, body_str)) = codegen_outlined_function(
+        let Some(outlined_function) = codegen_outlined_function(
             &of.func,
             options.environment.enable_change_variable_codegen,
             &pipeline_output.reserved_removed_names,
@@ -6311,8 +6322,8 @@ fn try_compile_arrow<'a>(
             FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
             return Ok(None);
         };
-        if outlined_function_needs_rendered_body(&body_str, &of.func) {
-            outlined.push((of.name.clone(), params_str, body_str));
+        if outlined_function_needs_rendered_body(&outlined_function.body, &of.func) {
+            outlined.push(outlined_function);
         }
     }
     dedupe_outlined_functions(&mut outlined);
@@ -6328,7 +6339,9 @@ fn try_compile_arrow<'a>(
         options.environment.enable_emit_freeze && codegen_result.needs_cache_import;
     let param_destructurings = if synthesized_param_default_cache {
         vec![]
-    } else if destructurings.iter().any(|line| line.contains("=== undefined ?"))
+    } else if destructurings
+        .iter()
+        .any(|line| line.contains("=== undefined ?"))
     {
         destructurings.clone()
     } else {
@@ -6383,13 +6396,13 @@ struct ParamsResult {
 }
 
 fn outlined_functions_are_hir_lowerable(
-    outlined_functions: &[(String, String, String)],
+    outlined_functions: &[CompiledOutlinedFunction],
     hir_outlined_functions: &[(String, HIRFunction)],
 ) -> bool {
-    outlined_functions.iter().all(|(outlined_name, _, _)| {
+    outlined_functions.iter().all(|outlined| {
         hir_outlined_functions
             .iter()
-            .any(|(hir_name, _)| hir_name == outlined_name)
+            .any(|(hir_name, _)| hir_name == &outlined.name)
     })
 }
 
@@ -6440,9 +6453,7 @@ fn is_outlined_temp_expr(expr: &str) -> bool {
     suffix.is_empty() || suffix.chars().all(|ch| ch.is_ascii_digit())
 }
 
-fn rewrite_inline_empty_arrow_callback(
-    expr: &str,
-) -> (String, Vec<(String, HIRFunction)>) {
+fn rewrite_inline_empty_arrow_callback(expr: &str) -> (String, Vec<(String, HIRFunction)>) {
     let trimmed = expr.trim();
     let patterns = ["() =>{}", "() => {}"];
     for pattern in patterns {
@@ -6561,8 +6572,7 @@ fn synthesize_default_param_cache_body(
     }
 
     let return_stmt = format!("return {};", name);
-    let (rewritten_expr, hir_outlined_functions) =
-        if generated_body.trim() == return_stmt {
+    let (rewritten_expr, hir_outlined_functions) = if generated_body.trim() == return_stmt {
         if debug_default_param_cache {
             eprintln!(
                 "[DEFAULT_PARAM_CACHE] synthesize simple-return name={} temp={} expr={}",
@@ -6694,9 +6704,9 @@ fn params_to_result<'a>(
                         } else {
                             format!("_temp{}", outline_counter)
                         };
-                        if let Some(hir_function) =
-                            try_lower_default_outlined_arrow(&name, arrow, source, semantic, options)
-                        {
+                        if let Some(hir_function) = try_lower_default_outlined_arrow(
+                            &name, arrow, source, semantic, options,
+                        ) {
                             hir_outlined_functions.push((name.clone(), hir_function));
                             Some(name)
                         } else {

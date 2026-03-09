@@ -12,7 +12,9 @@ use oxc_syntax::operator::{AssignmentOperator, BinaryOperator, LogicalOperator};
 
 use crate::CompileResult;
 
-use super::{CompiledBodyPayload, CompiledFunction, CompiledParam, ModuleEmitArgs};
+use super::{
+    CompiledBodyPayload, CompiledFunction, CompiledParam, ModuleEmitArgs,
+};
 
 struct AstRenderState {
     source_type: SourceType,
@@ -45,8 +47,10 @@ const FLOW_CAST_MARKER_HELPER: &str = "__REACT_COMPILER_FLOW_CAST__";
 
 struct RenderedOutlinedFunction {
     name: String,
-    params: String,
+    params: Vec<CompiledParam>,
     body: String,
+    is_async: bool,
+    is_generator: bool,
     hir_function: Option<crate::hir::types::HIRFunction>,
 }
 
@@ -90,7 +94,11 @@ pub(crate) fn emit_module(
     }
 }
 
-fn compute_transform_state(source_type: SourceType, output_code: &str, source_untransformed: &str) -> bool {
+fn compute_transform_state(
+    source_type: SourceType,
+    output_code: &str,
+    source_untransformed: &str,
+) -> bool {
     let output = normalize_module_for_transform_flag(source_type, output_code);
     let source = normalize_module_for_transform_flag(source_type, source_untransformed);
     if output.normalized == source.normalized {
@@ -160,9 +168,9 @@ fn strip_nonsemantic_top_level_comments_for_transform_flag(
     for comment in comments {
         let comment_start = comment.span.start as usize;
         let comment_end = comment.span.end as usize;
-        let is_nested = statements.iter().any(|span| {
-            comment.span.start >= span.start && comment.span.end <= span.end
-        });
+        let is_nested = statements
+            .iter()
+            .any(|span| comment.span.start >= span.start && comment.span.end <= span.end);
 
         if is_nested {
             has_nested_comments = true;
@@ -647,15 +655,14 @@ fn try_rewrite_compiled_statement_ast<'a>(
             return None;
         }
 
-        let function_body =
-            build_compiled_function_body(
-                builder,
-                allocator,
-                source_type,
-                cf,
-                state,
-                find_original_compiled_function_body(stmt, cf),
-            )?;
+        let function_body = build_compiled_function_body(
+            builder,
+            allocator,
+            source_type,
+            cf,
+            state,
+            find_original_compiled_function_body(stmt, cf),
+        )?;
         let compiled_params = cf.compiled_params.as_deref()?;
         let rewritten = if let Some(gate_name) = state
             .gating_local_name
@@ -700,10 +707,12 @@ fn try_rewrite_compiled_statement_ast<'a>(
             continue;
         }
 
-        let source =
-            format_outlined_function_source(&outlined.name, &outlined.params, &outlined.body);
-        statements
-            .extend(parse_statements(allocator, source_type, allocator.alloc_str(&source)).ok()?);
+        statements.push(build_rendered_outlined_function_statement(
+            builder,
+            allocator,
+            source_type,
+            &outlined,
+        )?);
     }
     for cf in compiled {
         for (name, hir_function) in &cf.hir_outlined_functions {
@@ -740,15 +749,14 @@ fn try_build_gated_function_declaration_statements<'a>(
         &cf.name,
     );
 
-    let function_body =
-        build_compiled_function_body(
-            builder,
-            allocator,
-            state.source_type,
-            cf,
-            state,
-            find_original_compiled_function_body(stmt, cf),
-        )?;
+    let function_body = build_compiled_function_body(
+        builder,
+        allocator,
+        state.source_type,
+        cf,
+        state,
+        find_original_compiled_function_body(stmt, cf),
+    )?;
     let compiled_params = cf.compiled_params.as_deref()?;
 
     match stmt {
@@ -2898,9 +2906,7 @@ fn try_build_compiled_function_body_from_hir<'a>(
     cf: &CompiledFunction,
     state: &AstRenderState,
 ) -> Option<ast::FunctionBody<'a>> {
-    if cf.body_payload != CompiledBodyPayload::LowerFromFinalHir
-        || cf.needs_cache_import
-    {
+    if cf.body_payload != CompiledBodyPayload::LowerFromFinalHir || cf.needs_cache_import {
         return None;
     }
     let hir_function = cf.hir_function.as_ref()?;
@@ -2931,16 +2937,17 @@ pub(crate) fn normalize_compiled_body_for_hir_match(body_source: &str) -> String
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-    normalize_hir_match_destructuring_brace_spacing(
-        &normalize_hir_match_object_shorthand_pairs(&normalize_hir_match_multiline_brace_literals(
-            &normalized,
-        )),
-    )
+    normalize_hir_match_destructuring_brace_spacing(&normalize_hir_match_object_shorthand_pairs(
+        &normalize_hir_match_multiline_brace_literals(&normalized),
+    ))
 }
 
 fn canonicalize_body_source_for_hir_match(body_source: &str) -> Option<String> {
     let allocator = Allocator::default();
-    for source_type in [SourceType::mjs().with_jsx(true), SourceType::ts().with_jsx(true)] {
+    for source_type in [
+        SourceType::mjs().with_jsx(true),
+        SourceType::ts().with_jsx(true),
+    ] {
         let Ok(statements) =
             parse_statements(&allocator, source_type, allocator.alloc_str(body_source))
         else {
@@ -3158,8 +3165,24 @@ fn parse_compiled_function_body<'a>(
     cf: &CompiledFunction,
     body_source: &str,
 ) -> Result<ast::FunctionBody<'a>, String> {
-    let async_prefix = if cf.is_async { "async " } else { "" };
-    let generator_prefix = if cf.is_generator { "*" } else { "" };
+    parse_rendered_function_body(
+        allocator,
+        source_type,
+        cf.is_async,
+        cf.is_generator,
+        body_source,
+    )
+}
+
+fn parse_rendered_function_body<'a>(
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    is_async: bool,
+    is_generator: bool,
+    body_source: &str,
+) -> Result<ast::FunctionBody<'a>, String> {
+    let async_prefix = if is_async { "async " } else { "" };
+    let generator_prefix = if is_generator { "*" } else { "" };
     let mut attempts = vec![(source_type, body_source.to_string())];
     let iife_normalized = normalize_generated_body_iife_parenthesization(body_source);
     if iife_normalized != body_source {
@@ -3220,6 +3243,45 @@ fn parse_compiled_function_body<'a>(
         .body
         .map(|body| body.unbox())
         .ok_or_else(|| "wrapped function body missing body".to_string())
+}
+
+fn build_rendered_outlined_function_statement<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    outlined: &RenderedOutlinedFunction,
+) -> Option<ast::Statement<'a>> {
+    let body = parse_rendered_function_body(
+        allocator,
+        source_type,
+        outlined.is_async,
+        outlined.is_generator,
+        &outlined.body,
+    )
+    .ok()?;
+    let declaration = builder.declaration_function(
+        SPAN,
+        ast::FunctionType::FunctionDeclaration,
+        Some(builder.binding_identifier(SPAN, builder.atom(&outlined.name))),
+        outlined.is_generator,
+        outlined.is_async,
+        false,
+        NONE,
+        NONE,
+        make_compiled_formal_params(
+            builder,
+            ast::FormalParameterKind::FormalParameter,
+            &outlined.params,
+        ),
+        NONE,
+        Some(builder.alloc(body)),
+    );
+    match declaration {
+        ast::Declaration::FunctionDeclaration(function) => {
+            Some(ast::Statement::FunctionDeclaration(function))
+        }
+        _ => None,
+    }
 }
 
 fn normalize_generated_body_iife_parenthesization(body_source: &str) -> String {
@@ -3566,10 +3628,7 @@ fn apply_preserved_directives<'a>(
     );
 }
 
-fn build_directive<'a>(
-    builder: AstBuilder<'a>,
-    directive: &str,
-) -> Option<ast::Directive<'a>> {
+fn build_directive<'a>(builder: AstBuilder<'a>, directive: &str) -> Option<ast::Directive<'a>> {
     let value = parse_directive_literal_value(directive)?;
     Some(builder.directive(
         SPAN,
@@ -3615,7 +3674,11 @@ fn prepend_cache_prologue_statements<'a>(
             fast_refresh,
         ));
     }
-    statements.extend(body.statements.iter().map(|statement| statement.clone_in(allocator)));
+    statements.extend(
+        body.statements
+            .iter()
+            .map(|statement| statement.clone_in(allocator)),
+    );
     body.statements = statements;
 }
 
@@ -3740,7 +3803,9 @@ fn prepend_compiled_body_prefix_statements<'a>(
         return Some(());
     }
     let insert_idx = cache_import_name
-        .and_then(|cache_import_name| find_cache_initializer_index(&body.statements, cache_import_name))
+        .and_then(|cache_import_name| {
+            find_cache_initializer_index(&body.statements, cache_import_name)
+        })
         .map_or(0, |index| index + 1);
     let mut statements = builder.vec();
     statements.extend(
@@ -3819,12 +3884,7 @@ fn build_fast_refresh_reset_statement<'a>(
                         builder.ident(&fast_refresh.index_binding_name),
                     ),
                     NONE,
-                    Some(builder.expression_numeric_literal(
-                        SPAN,
-                        0.0,
-                        None,
-                        NumberBase::Decimal,
-                    )),
+                    Some(builder.expression_numeric_literal(SPAN, 0.0, None, NumberBase::Decimal)),
                     false,
                 )),
                 false,
@@ -3891,7 +3951,12 @@ fn build_fast_refresh_reset_statement<'a>(
             builder.expression_string_literal(SPAN, builder.atom(&fast_refresh.hash), None),
         ),
     ));
-    builder.statement_if(SPAN, test, builder.statement_block(SPAN, consequent_statements), None)
+    builder.statement_if(
+        SPAN,
+        test,
+        builder.statement_block(SPAN, consequent_statements),
+        None,
+    )
 }
 
 fn cache_member_slot_expression<'a>(
@@ -3966,34 +4031,36 @@ fn prepend_instrument_forget_statement<'a>(
         ]),
         false,
     );
-    let statement = builder.statement_if(
-        SPAN,
-        test,
-        builder.statement_expression(SPAN, call),
-        None,
-    );
+    let statement =
+        builder.statement_if(SPAN, test, builder.statement_expression(SPAN, call), None);
 
     let mut statements = builder.vec1(statement);
-    statements.extend(body.statements.iter().map(|statement| statement.clone_in(allocator)));
+    statements.extend(
+        body.statements
+            .iter()
+            .map(|statement| statement.clone_in(allocator)),
+    );
     body.statements = statements;
 }
 
 fn collect_rendered_outlined_functions(cf: &CompiledFunction) -> Vec<RenderedOutlinedFunction> {
     cf.outlined_functions
         .iter()
-        .map(|(fn_name, fn_params, fn_body)| {
+        .map(|outlined_function| {
             let hir_function = cf
                 .hir_outlined_functions
                 .iter()
-                .find(|(outlined_name, _)| outlined_name == fn_name)
+                .find(|(outlined_name, _)| outlined_name == &outlined_function.name)
                 .and_then(|(_, hir_function)| {
-                    outlined_hir_matches_rendered_body(fn_body, hir_function)
+                    outlined_hir_matches_rendered_body(&outlined_function.body, hir_function)
                         .then(|| hir_function.clone())
                 });
             RenderedOutlinedFunction {
-                name: fn_name.clone(),
-                params: fn_params.clone(),
-                body: fn_body.clone(),
+                name: outlined_function.name.clone(),
+                params: outlined_function.params.clone(),
+                body: outlined_function.body.clone(),
+                is_async: outlined_function.is_async,
+                is_generator: outlined_function.is_generator,
                 hir_function,
             }
         })
@@ -4235,7 +4302,10 @@ impl<'a> Visit<'a> for UseFireBindingCollector<'_> {
             && matches!(&call.callee, ast::Expression::Identifier(identifier) if identifier.name == "useFire")
             && let ast::BindingPattern::BindingIdentifier(ident) = &it.id
             && parse_temp_token_index(ident.name.as_str()).is_some()
-            && !self.declared_names.iter().any(|existing| existing == ident.name.as_str())
+            && !self
+                .declared_names
+                .iter()
+                .any(|existing| existing == ident.name.as_str())
         {
             self.declared_names.push(ident.name.to_string());
         }
@@ -4288,16 +4358,15 @@ impl<'a> VisitMut<'a> for EmitFreezeCacheStoreRewriter<'a, '_> {
         );
         it.right = self.builder.expression_conditional(
             SPAN,
-            self.builder.expression_identifier(SPAN, self.builder.ident("__DEV__")),
+            self.builder
+                .expression_identifier(SPAN, self.builder.ident("__DEV__")),
             freeze_call,
             original_right,
         );
     }
 }
 
-fn assignment_target_identifier_name<'a>(
-    target: &'a ast::AssignmentTarget<'a>,
-) -> Option<&'a str> {
+fn assignment_target_identifier_name<'a>(target: &'a ast::AssignmentTarget<'a>) -> Option<&'a str> {
     match target {
         ast::AssignmentTarget::AssignmentTargetIdentifier(identifier) => {
             Some(identifier.name.as_str())
@@ -4339,7 +4408,10 @@ fn member_cache_access<'a>(
 }
 
 fn expression_references_identifier(expression: &ast::Expression<'_>, ident: &str) -> bool {
-    let mut detector = IdentifierReferenceDetector { ident, found: false };
+    let mut detector = IdentifierReferenceDetector {
+        ident,
+        found: false,
+    };
     detector.visit_expression(expression);
     detector.found
 }
@@ -4401,9 +4473,7 @@ fn find_original_compiled_function_body<'a>(
         body: None,
     };
     finder.visit_statement(stmt);
-    finder
-        .body
-        .map(|body| unsafe { &*body })
+    finder.body.map(|body| unsafe { &*body })
 }
 
 struct OriginalCompiledFunctionBodyFinder<'a> {
@@ -4413,11 +4483,7 @@ struct OriginalCompiledFunctionBodyFinder<'a> {
 }
 
 impl<'a> Visit<'a> for OriginalCompiledFunctionBodyFinder<'a> {
-    fn visit_function(
-        &mut self,
-        it: &ast::Function<'a>,
-        flags: oxc_syntax::scope::ScopeFlags,
-    ) {
+    fn visit_function(&mut self, it: &ast::Function<'a>, flags: oxc_syntax::scope::ScopeFlags) {
         if self.body.is_none() && it.span.start == self.start && it.span.end == self.end {
             self.body = it.body.as_ref().map(|body| &**body as *const _);
             return;
@@ -4607,15 +4673,6 @@ fn codegen_statement_source(
     codegen_program(&program)
 }
 
-fn format_outlined_function_source(name: &str, params: &str, body: &str) -> String {
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        format!("function {}({}) {{}}", name, params)
-    } else {
-        format!("function {}({}) {{\n{}\n}}", name, params, trimmed)
-    }
-}
-
 #[cfg(test)]
 fn source_type_for_filename(filename: &str) -> SourceType {
     if filename.ends_with(".tsx") {
@@ -4638,20 +4695,22 @@ mod tests {
     use oxc_span::SourceType;
 
     use crate::{
+        codegen_backend::CompiledOutlinedFunction,
         environment::Environment,
         hir::types::{
             self, BasicBlock, BlockId, DeclarationId, Effect, HIR, HIRFunction, Identifier,
-            IdentifierId, IdentifierName, MutableRange, Place, ReactFunctionType,
-            SourceLocation, Terminal, Type,
+            IdentifierId, IdentifierName, MutableRange, Place, ReactFunctionType, SourceLocation,
+            Terminal, Type,
         },
         options::EnvironmentConfig,
     };
 
     use super::{
         AstRenderState, CompiledBodyPayload, CompiledFunction, CompiledParam,
-        codegen_statement_source, compute_transform_state, maybe_gate_entrypoint_source,
-        normalize_compiled_body_for_hir_match, normalize_generated_body_flow_cast_marker_calls,
-        parse_statements, restore_flow_cast_marker_calls, source_type_for_filename,
+        codegen_statement_source, compute_transform_state,
+        maybe_gate_entrypoint_source, normalize_compiled_body_for_hir_match,
+        normalize_generated_body_flow_cast_marker_calls, parse_statements,
+        restore_flow_cast_marker_calls, source_type_for_filename,
         try_rewrite_compiled_statement_ast,
     };
 
@@ -4798,8 +4857,14 @@ function Component(props) {
         let source = r#"function Component(x) {
   return x;
 }"#;
-        let mut compiled_function =
-            make_test_compiled_function("Component", 0, source.len() as u32, "return x;", &["x"], false);
+        let mut compiled_function = make_test_compiled_function(
+            "Component",
+            0,
+            source.len() as u32,
+            "return x;",
+            &["x"],
+            false,
+        );
         compiled_function.needs_instrument_forget = true;
         let state = AstRenderState {
             should_instrument_ident: "shouldInstrument".to_string(),
@@ -4808,8 +4873,12 @@ function Component(props) {
             ..empty_test_state(source_type_for_filename("fixture.jsx"))
         };
 
-        let rewritten =
-            rewrite_single_statement_for_test_with_state("fixture.jsx", source, &compiled_function, state);
+        let rewritten = rewrite_single_statement_for_test_with_state(
+            "fixture.jsx",
+            source,
+            &compiled_function,
+            state,
+        );
 
         assert!(rewritten.contains("if (DEV && shouldInstrument)"));
         assert!(rewritten.contains("useRenderCounter(\"Component\", \"fixture.jsx\")"));
@@ -4897,8 +4966,12 @@ function Component(props) {
             ..empty_test_state(source_type_for_filename("fixture.jsx"))
         };
 
-        let rewritten =
-            rewrite_single_statement_for_test_with_state("fixture.jsx", source, &compiled_function, state);
+        let rewritten = rewrite_single_statement_for_test_with_state(
+            "fixture.jsx",
+            source,
+            &compiled_function,
+            state,
+        );
 
         assert!(rewritten.contains("const cache = _cache(1);"));
         assert!(rewritten.contains("hookGuard(cache, loweredContext(structuralCheck));"));
@@ -4924,8 +4997,12 @@ function Component(props) {
             ..empty_test_state(source_type_for_filename("fixture.jsx"))
         };
 
-        let rewritten =
-            rewrite_single_statement_for_test_with_state("fixture.jsx", source, &compiled_function, state);
+        let rewritten = rewrite_single_statement_for_test_with_state(
+            "fixture.jsx",
+            source,
+            &compiled_function,
+            state,
+        );
 
         assert!(rewritten.contains("try {"));
         assert!(rewritten.contains("hookGuard(0);"));
@@ -5010,8 +5087,12 @@ function Component(props) {
             ..empty_test_state(source_type_for_filename("fixture.jsx"))
         };
 
-        let rewritten =
-            rewrite_single_statement_for_test_with_state("fixture.jsx", source, &compiled_function, state);
+        let rewritten = rewrite_single_statement_for_test_with_state(
+            "fixture.jsx",
+            source,
+            &compiled_function,
+            state,
+        );
 
         assert!(rewritten.contains("$[1] = __DEV__ ? makeReadOnly(t0, \"useFoo\") : t0;"));
     }
@@ -5623,5 +5704,50 @@ function Component(props) {
         assert!(rewritten.contains("function Foo_unoptimized({ prop1, prop2 }) {"));
         assert!(rewritten.contains("function Foo(arg0) {"));
         assert!(rewritten.contains("if (gate_result)"));
+    }
+
+    #[test]
+    fn appends_rendered_async_outlined_function_as_ast() {
+        let source = "function Foo(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "return <div />;",
+            &["props"],
+            false,
+        );
+        compiled_function.is_function_declaration = true;
+        compiled_function.outlined_functions = vec![CompiledOutlinedFunction {
+            name: "_temp".to_string(),
+            params: vec![
+                CompiledParam {
+                    name: "load".to_string(),
+                    is_rest: false,
+                },
+                CompiledParam {
+                    name: "rest".to_string(),
+                    is_rest: true,
+                },
+            ],
+            body: "return await load(...rest);".to_string(),
+            is_async: true,
+            is_generator: false,
+        }];
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("function Foo(props) {"));
+        assert!(rewritten.contains("async function _temp(load, ...rest) {"));
+        assert!(rewritten.contains("return await load(...rest);"));
     }
 }

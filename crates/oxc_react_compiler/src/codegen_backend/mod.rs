@@ -20,6 +20,15 @@ pub(crate) struct CompiledParam {
     pub(crate) is_rest: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompiledOutlinedFunction {
+    pub(crate) name: String,
+    pub(crate) params: Vec<CompiledParam>,
+    pub(crate) body: String,
+    pub(crate) is_async: bool,
+    pub(crate) is_generator: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CompiledFunction {
     pub(crate) name: String,
@@ -40,7 +49,7 @@ pub(crate) struct CompiledFunction {
     pub(crate) normalize_use_fire_binding_temps: bool,
     pub(crate) needs_instrument_forget: bool,
     pub(crate) needs_emit_freeze: bool,
-    pub(crate) outlined_functions: Vec<(String, String, String)>,
+    pub(crate) outlined_functions: Vec<CompiledOutlinedFunction>,
     pub(crate) hir_outlined_functions: Vec<(String, crate::hir::types::HIRFunction)>,
     pub(crate) has_fire_rewrite: bool,
     pub(crate) needs_hook_guards: bool,
