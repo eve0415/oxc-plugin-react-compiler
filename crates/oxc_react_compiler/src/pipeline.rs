@@ -2869,6 +2869,7 @@ fn run_reactive_passes(
                     .enable_reset_cache_on_source_file_changes
                     .unwrap_or(false),
                 enable_name_anonymous_functions: env_config.enable_name_anonymous_functions,
+                emit_directives_in_body: false,
             },
             fbt_operands.clone(),
         );
@@ -2948,20 +2949,14 @@ fn dememoize_reactive_terminal(terminal: &mut crate::hir::types::ReactiveTermina
     }
 }
 
-/// Extract directives from a function body that should be preserved in compiled output.
-/// Excludes opt-out directives ("use no forget", "use no memo") and "use memo" (opt-in).
-fn extract_preserved_directives(body: &ast::FunctionBody<'_>) -> Vec<String> {
+/// Extract directives from a function body that should be re-emitted in compiled output.
+///
+/// Even directives that affected compilation decisions, such as ignored opt-out directives,
+/// still belong in the emitted function body when compilation proceeds.
+fn extract_emitted_directives(body: &ast::FunctionBody<'_>) -> Vec<String> {
     body.directives
         .iter()
-        .filter_map(|d| {
-            let value = d.expression.value.as_str();
-            // Skip opt-out directives (they're consumed by the compiler, not preserved)
-            if OPT_OUT_DIRECTIVES.contains(&value) {
-                return None;
-            }
-            // Preserve "use memo" / "use forget" and all other directives
-            Some(format!("\"{}\"", value))
-        })
+        .map(|d| format!("\"{}\"", d.expression.value.as_str()))
         .collect()
 }
 
@@ -5951,7 +5946,7 @@ fn try_compile_function<'a>(
     hir_outlined_functions.extend(synthesized_hir_outlined_functions);
     hir_outlined_functions.extend(pipeline_hir_outlined_functions.clone());
     dedupe_hir_outlined_functions(&mut hir_outlined_functions);
-    let directives = extract_preserved_directives(body);
+    let directives = extract_emitted_directives(body);
     let preserved_body_statements = collect_leading_preserved_body_statements(body);
     let needs_instrument_forget = options.environment.enable_emit_instrument_forget
         && codegen_result.needs_cache_import
@@ -6157,7 +6152,7 @@ fn try_compile_function_with_name<'a>(
     hir_outlined_functions.extend(synthesized_hir_outlined_functions);
     hir_outlined_functions.extend(pipeline_hir_outlined_functions.clone());
     dedupe_hir_outlined_functions(&mut hir_outlined_functions);
-    let directives = extract_preserved_directives(body);
+    let directives = extract_emitted_directives(body);
     let preserved_body_statements = collect_leading_preserved_body_statements(body);
     let needs_instrument_forget = options.environment.enable_emit_instrument_forget
         && codegen_result.needs_cache_import
@@ -6371,7 +6366,7 @@ fn try_compile_arrow<'a>(
     hir_outlined_functions.extend(synthesized_hir_outlined_functions);
     hir_outlined_functions.extend(pipeline_hir_outlined_functions.clone());
     dedupe_hir_outlined_functions(&mut hir_outlined_functions);
-    let directives = extract_preserved_directives(&arrow.body);
+    let directives = extract_emitted_directives(&arrow.body);
     let preserved_body_statements = collect_leading_preserved_body_statements(&arrow.body);
     let needs_instrument_forget = options.environment.enable_emit_instrument_forget
         && codegen_result.needs_cache_import
@@ -7894,7 +7889,7 @@ mod tests {
 
     use crate::options::PluginOptions;
 
-    use super::params_to_result;
+    use super::{extract_emitted_directives, params_to_result};
 
     #[test]
     fn params_to_result_collects_hir_for_outlined_default_arrow() {
@@ -7927,6 +7922,28 @@ mod tests {
         assert_eq!(
             params_result.hir_outlined_functions[0].1.id.as_deref(),
             Some("_temp")
+        );
+    }
+
+    #[test]
+    fn extract_emitted_directives_keeps_ignored_opt_outs() {
+        let allocator = Allocator::default();
+        let source = "function Component() { 'use no forget'; 'use memo'; return 1; }";
+        let parser_ret = Parser::new(&allocator, source, SourceType::mjs()).parse();
+        assert!(
+            parser_ret.errors.is_empty(),
+            "parse errors: {:?}",
+            parser_ret.errors
+        );
+        let program = parser_ret.program;
+        let ast::Statement::FunctionDeclaration(function) = &program.body[0] else {
+            panic!("expected function declaration");
+        };
+        let body = function.body.as_ref().expect("expected function body");
+
+        assert_eq!(
+            extract_emitted_directives(body),
+            vec!["\"use no forget\"", "\"use memo\""]
         );
     }
 }

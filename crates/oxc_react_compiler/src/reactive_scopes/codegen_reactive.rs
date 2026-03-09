@@ -297,7 +297,7 @@ struct ObjectMethodInfo {
     lowered_func: LoweredFunction,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct CodegenReactiveOptions {
     pub disable_memoization_features: bool,
     pub disable_memoization_for_debugging: bool,
@@ -306,6 +306,22 @@ pub struct CodegenReactiveOptions {
     pub enable_change_detection_for_debugging: bool,
     pub enable_reset_cache_on_source_file_changes: bool,
     pub enable_name_anonymous_functions: bool,
+    pub emit_directives_in_body: bool,
+}
+
+impl Default for CodegenReactiveOptions {
+    fn default() -> Self {
+        Self {
+            disable_memoization_features: false,
+            disable_memoization_for_debugging: false,
+            enable_change_variable_codegen: false,
+            enable_emit_hook_guards: false,
+            enable_change_detection_for_debugging: false,
+            enable_reset_cache_on_source_file_changes: false,
+            enable_name_anonymous_functions: false,
+            emit_directives_in_body: true,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -423,6 +439,7 @@ impl Context {
             enable_change_detection_for_debugging: self.enable_change_detection_for_debugging,
             enable_reset_cache_on_source_file_changes: false,
             enable_name_anonymous_functions: self.enable_name_anonymous_functions,
+            emit_directives_in_body: true,
         }
     }
 }
@@ -692,8 +709,10 @@ fn codegen_reactive_function_with_primitives(
     // Build output with correct ordering: directives, then cache allocation, then body.
     // Upstream puts directives like "use no forget" before `const $ = _c(N);`.
     let mut output = String::new();
-    for directive in &func.directives {
-        output.push_str(&format!("\"{}\";\n", directive));
+    if options.emit_directives_in_body {
+        for directive in &func.directives {
+            output.push_str(&format!("\"{}\";\n", directive));
+        }
     }
     if cache_size > 0 {
         let cache_var = cx.synthesize_name("$");
