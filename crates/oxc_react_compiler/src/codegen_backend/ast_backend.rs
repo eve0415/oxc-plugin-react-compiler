@@ -681,7 +681,9 @@ fn try_rewrite_compiled_statement_ast<'a>(
     }
 
     let mut statements = builder.vec1(rewritten_stmt);
+    let mut emitted_hir_outlined_names = HashSet::new();
     for outlined in outlined_functions {
+        emitted_hir_outlined_names.insert(outlined.name.clone());
         if let Some(hir_function) = outlined.hir_function.as_ref()
             && let Some(statement) =
                 super::hir_to_ast::try_lower_function_declaration_ast(builder, hir_function)
@@ -694,6 +696,17 @@ fn try_rewrite_compiled_statement_ast<'a>(
             format_outlined_function_source(&outlined.name, &outlined.params, &outlined.body);
         statements
             .extend(parse_statements(allocator, source_type, allocator.alloc_str(&source)).ok()?);
+    }
+    for cf in compiled {
+        for (name, hir_function) in &cf.hir_outlined_functions {
+            if !emitted_hir_outlined_names.insert(name.clone()) {
+                continue;
+            }
+            statements.push(super::hir_to_ast::try_lower_function_declaration_ast(
+                builder,
+                hir_function,
+            )?);
+        }
     }
 
     Some(statements)
@@ -3689,12 +3702,19 @@ fn try_lower_compiled_statement_ast<'a>(
     prepend_hir_instrument_forget_statement(builder, allocator, function, cf, state)?;
     apply_emit_freeze_to_hir_function_body(builder, allocator, function, cf, state)?;
     statements.push(function_statement);
-    for (outlined_name, _, _) in &cf.outlined_functions {
-        let hir_function = cf
-            .hir_outlined_functions
-            .iter()
-            .find(|(hir_name, _)| hir_name == outlined_name)
-            .map(|(_, hir_function)| hir_function)?;
+    let mut emitted_hir_outlined_names = HashSet::new();
+    for outlined in collect_rendered_outlined_functions(cf) {
+        emitted_hir_outlined_names.insert(outlined.name.clone());
+        let hir_function = outlined.hir_function.as_ref()?;
+        statements.push(super::hir_to_ast::try_lower_function_declaration_ast(
+            builder,
+            hir_function,
+        )?);
+    }
+    for (name, hir_function) in &cf.hir_outlined_functions {
+        if !emitted_hir_outlined_names.insert(name.clone()) {
+            continue;
+        }
         statements.push(super::hir_to_ast::try_lower_function_declaration_ast(
             builder,
             hir_function,
