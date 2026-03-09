@@ -14906,20 +14906,41 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                 ),
             );
             let is_hook_call = !is_computed && Environment::is_hook_name(&prop);
-            let call_expr = if !*receiver_optional
-                && !*call_optional
-                && !recv.contains("?.")
-                && !recv.starts_with("new ")
-                && (is_computed || (!prop.starts_with('#') && is_valid_js_identifier_name(&prop)))
-            {
-                render_method_call_expression_ast(&recv, &prop, args, &rendered_args, is_computed)
-                    .unwrap_or_else(|| {
-                        if is_computed {
-                            format!("{}[{}]({})", recv, prop, args_str)
+            let call_expr = if !recv.contains("?.") && !recv.starts_with("new ") {
+                render_method_call_expression_with_options_ast(
+                    &recv,
+                    &prop,
+                    args,
+                    &rendered_args,
+                    is_computed,
+                    *receiver_optional,
+                    *call_optional,
+                )
+                .unwrap_or_else(|| {
+                    if is_computed {
+                        let opt_recv = if *receiver_optional { "?." } else { "" };
+                        if *call_optional {
+                            if should_break_optional_call_args(&rendered_args) {
+                                format!("{}{}[{}]?.(\n{})", recv, opt_recv, prop, args_str)
+                            } else {
+                                format!("{}{}[{}]?.({})", recv, opt_recv, prop, args_str)
+                            }
                         } else {
-                            format!("{}.{}({})", recv, prop, args_str)
+                            format!("{}{}[{}]({})", recv, opt_recv, prop, args_str)
                         }
-                    })
+                    } else {
+                        let dot = if *receiver_optional { "?." } else { "." };
+                        if *call_optional {
+                            if should_break_optional_call_args(&rendered_args) {
+                                format!("{}{}{}?.(\n{})", recv, dot, prop, args_str)
+                            } else {
+                                format!("{}{}{}?.({})", recv, dot, prop, args_str)
+                            }
+                        } else {
+                            format!("{}{}{}({})", recv, dot, prop, args_str)
+                        }
+                    }
+                })
             } else if is_computed {
                 let opt_recv = if *receiver_optional { "?." } else { "" };
                 if *call_optional {
@@ -15941,13 +15962,18 @@ fn render_call_expression_ast(
     ))
 }
 
-fn render_method_call_expression_ast(
+fn render_method_call_expression_with_options_ast(
     receiver: &str,
     property: &str,
     args: &[Argument],
     rendered_args: &[String],
     computed: bool,
+    receiver_optional: bool,
+    call_optional: bool,
 ) -> Option<String> {
+    if !computed && property.starts_with('#') {
+        return None;
+    }
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let receiver = parse_rendered_expression_ast(&allocator, receiver)?;
@@ -15957,17 +15983,17 @@ fn render_method_call_expression_ast(
             SPAN,
             receiver,
             parse_rendered_expression_ast(&allocator, property)?,
-            false,
+            receiver_optional,
         ))
     } else {
         ast::Expression::from(builder.member_expression_static(
             SPAN,
             receiver,
             builder.identifier_name(SPAN, builder.ident(property)),
-            false,
+            receiver_optional,
         ))
     };
-    let expression = builder.expression_call(SPAN, callee, NONE, args, false);
+    let expression = builder.expression_call(SPAN, callee, NONE, args, call_optional);
     Some(strip_top_level_parenthesized_expression(
         codegen_expression_with_oxc(&expression),
     ))
@@ -21559,7 +21585,7 @@ mod tests {
         render_jsx_fragment_ast, render_reactive_for_in_statement_ast,
         render_reactive_for_of_statement_ast, render_reactive_for_statement_ast,
         render_hook_guarded_block_ast, render_hook_guarded_call_expression_ast,
-        render_method_call_expression_ast,
+        render_method_call_expression_with_options_ast,
         render_ts_type_cast_expression_ast,
         render_cached_inline_hook_callback_block_ast, HOOK_GUARD_POP, HOOK_GUARD_PUSH,
     };
@@ -21788,11 +21814,13 @@ mod tests {
 
     #[test]
     fn renders_static_method_call_via_ast() {
-        let rendered = render_method_call_expression_ast(
+        let rendered = render_method_call_expression_with_options_ast(
             "value",
             "run",
             &[Argument::Place(named_place(0, 0, "arg"))],
             &["arg".to_string()],
+            false,
+            false,
             false,
         )
         .expect("expected method call");
@@ -21802,16 +21830,50 @@ mod tests {
 
     #[test]
     fn renders_computed_method_call_via_ast() {
-        let rendered = render_method_call_expression_ast(
+        let rendered = render_method_call_expression_with_options_ast(
             "value",
             "\"run\"",
             &[Argument::Place(named_place(0, 0, "arg"))],
             &["arg".to_string()],
             true,
+            false,
+            false,
         )
         .expect("expected computed method call");
 
         assert_eq!(rendered, "value[\"run\"](arg)");
+    }
+
+    #[test]
+    fn renders_optional_method_call_via_ast() {
+        let rendered = render_method_call_expression_with_options_ast(
+            "value",
+            "run",
+            &[Argument::Place(named_place(0, 0, "arg"))],
+            &["arg".to_string()],
+            false,
+            true,
+            true,
+        )
+        .expect("expected optional method call");
+
+        assert_eq!(rendered, "value?.run?.(arg)");
+    }
+
+    #[test]
+    fn renders_optional_computed_method_call_via_ast() {
+        let rendered = render_method_call_expression_with_options_ast(
+            "value",
+            "\"run\"",
+            &[Argument::Place(named_place(0, 0, "arg"))],
+            &["arg".to_string()],
+            true,
+            true,
+            true,
+        )
+        .expect("expected optional computed method call");
+
+        assert_eq!(rendered, "value?.[\"run\"]?.(arg)");
     }
 
     #[test]
