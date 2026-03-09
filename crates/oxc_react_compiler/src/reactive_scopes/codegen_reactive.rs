@@ -3213,7 +3213,7 @@ fn codegen_block_no_reset_with_options(
             return None;
         }
         let expr = codegen_place_to_expression(cx, place);
-        Some(format!("{};\n", expr))
+        render_reactive_expression_statement_ast(&expr)
     }
 
     fn maybe_codegen_store_context_with_value_tail(
@@ -13349,7 +13349,11 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                     // Check if the original name is referenced in the handler block
                     let original_used = handler_block_references_name(handler, &original_name);
                     let alias = if original_used {
-                        Some(format!("const {} = {};\n", original_name, temp_name))
+                        render_reactive_variable_statement_ast(
+                            ast::VariableDeclarationKind::Const,
+                            &original_name,
+                            Some(&temp_name),
+                        )
                     } else {
                         None
                     };
