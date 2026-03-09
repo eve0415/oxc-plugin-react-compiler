@@ -14797,7 +14797,9 @@ fn codegen_instruction_expr_with_prec_kind(
 fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> ExprValue {
     match value {
         InstructionValue::Primitive { value: prim, .. } => {
-            ExprValue::primary(codegen_primitive(prim))
+            let expr =
+                render_primitive_expression_ast(prim).unwrap_or_else(|| codegen_primitive(prim));
+            ExprValue::primary(expr)
         }
         InstructionValue::LoadLocal { place, .. } | InstructionValue::LoadContext { place, .. } => {
             codegen_place_expr_value(cx, place)
@@ -14936,7 +14938,17 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                 ),
             );
             let is_hook_call = !is_computed && Environment::is_hook_name(&prop);
-            let call_expr = if is_computed {
+            let call_expr = if !is_computed
+                && !*receiver_optional
+                && !*call_optional
+                && !recv.contains("?.")
+                && !recv.starts_with("new ")
+                && !prop.starts_with('#')
+                && is_valid_js_identifier_name(&prop)
+            {
+                render_static_method_call_expression_ast(&recv, &prop, args, &rendered_args)
+                    .unwrap_or_else(|| format!("{}.{}({})", recv, prop, args_str))
+            } else if is_computed {
                 let opt_recv = if *receiver_optional { "?." } else { "" };
                 if *call_optional {
                     if should_break_optional_call_args(&rendered_args) {
@@ -15017,7 +15029,13 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             ..
         } => {
             let obj = codegen_member_object_expression(cx, object);
-            ExprValue::primary(format_property_access(&obj, property, *optional))
+            let expr = if *optional || obj.contains("?.") {
+                format_property_access(&obj, property, *optional)
+            } else {
+                render_property_access_expression_ast(&obj, property, false)
+                    .unwrap_or_else(|| format_property_access(&obj, property, false))
+            };
+            ExprValue::primary(expr)
         }
         InstructionValue::PropertyStore {
             object,
@@ -15618,6 +15636,21 @@ fn render_binary_expression_ast(
     Some(codegen_expression_with_oxc(&expression))
 }
 
+fn render_primitive_expression_ast(value: &PrimitiveValue) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let expression = match value {
+        PrimitiveValue::Null => builder.expression_null_literal(SPAN),
+        PrimitiveValue::Undefined => builder.expression_identifier(SPAN, "undefined"),
+        PrimitiveValue::Boolean(value) => builder.expression_boolean_literal(SPAN, *value),
+        PrimitiveValue::Number(value) if !(*value == 0.0 && value.is_sign_negative()) && value.is_finite() => {
+            builder.expression_numeric_literal(SPAN, *value, None, NumberBase::Decimal)
+        }
+        PrimitiveValue::Number(_) | PrimitiveValue::String(_) => return None,
+    };
+    Some(codegen_expression_with_oxc(&expression))
+}
+
 fn render_unary_expression_ast(operator: UnaryOperator, value: &str) -> Option<String> {
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
@@ -15744,6 +15777,20 @@ fn render_property_store_expression_ast(
     )?;
     let expression = builder.expression_assignment(SPAN, AssignmentOperator::Assign, target, value);
     Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_property_access_expression_ast(
+    object: &str,
+    property: &PropertyLiteral,
+    optional: bool,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let object = parse_rendered_expression_ast(&allocator, object)?;
+    let expression = build_property_access_expression_ast(builder, object, property, optional);
+    Some(strip_top_level_parenthesized_expression(
+        codegen_expression_with_oxc(&expression),
+    ))
 }
 
 fn render_property_delete_expression_ast(object: &str, property: &PropertyLiteral) -> Option<String> {
@@ -15887,6 +15934,28 @@ fn render_call_expression_ast(
     let callee = parse_rendered_expression_ast(&allocator, callee)?;
     let args = render_arguments_ast(builder, &allocator, args, rendered_args)?;
     let expression = builder.expression_call(SPAN, callee, NONE, args, optional);
+    Some(strip_top_level_parenthesized_expression(
+        codegen_expression_with_oxc(&expression),
+    ))
+}
+
+fn render_static_method_call_expression_ast(
+    receiver: &str,
+    property: &str,
+    args: &[Argument],
+    rendered_args: &[String],
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let receiver = parse_rendered_expression_ast(&allocator, receiver)?;
+    let args = render_arguments_ast(builder, &allocator, args, rendered_args)?;
+    let callee = ast::Expression::from(builder.member_expression_static(
+        SPAN,
+        receiver,
+        builder.identifier_name(SPAN, builder.ident(property)),
+        false,
+    ));
+    let expression = builder.expression_call(SPAN, callee, NONE, args, false);
     Some(strip_top_level_parenthesized_expression(
         codegen_expression_with_oxc(&expression),
     ))
@@ -20839,14 +20908,16 @@ mod tests {
         CodegenReactiveOptions, Context, FunctionExpressionType, apply_optional_to_rendered_expr,
         function_expr_as_declaration, function_expr_to_method_property,
         maybe_fill_for_header_initializer_from_update, reconstruct_for_init_declaration,
-        render_function_expression_ast, render_object_method_ast, render_pattern_with_oxc,
+        render_function_expression_ast, render_object_method_ast,
+        render_primitive_expression_ast, render_property_access_expression_ast, render_pattern_with_oxc,
         render_reactive_function_body_prologue_ast,
+        render_static_method_call_expression_ast,
     };
     use crate::hir::types::{
         Argument, ArrayElement, ArrayPattern, DeclarationId, DependencyPathEntry, Effect,
         Identifier, IdentifierId, IdentifierName, MutableRange, ObjectProperty,
         ObjectPropertyKey, ObjectPropertyOrSpread, ObjectPropertyType, ObjectPattern, Pattern,
-        Place, ReactiveScopeDependency, SourceLocation, Type,
+        Place, PrimitiveValue, PropertyLiteral, ReactiveScopeDependency, SourceLocation, Type,
     };
     use crate::reactive_scopes::codegen_reactive::CachePrologue;
 
@@ -21027,6 +21098,53 @@ mod tests {
             .expect("expected filled header");
 
         assert_eq!(rendered, "const index = 0");
+    }
+
+    #[test]
+    fn renders_property_access_via_ast() {
+        let rendered =
+            render_property_access_expression_ast("value", &PropertyLiteral::String("inner".into()), false)
+                .expect("expected property access");
+
+        assert_eq!(rendered, "value.inner");
+    }
+
+    #[test]
+    fn renders_optional_property_access_via_ast() {
+        let rendered =
+            render_property_access_expression_ast("value", &PropertyLiteral::String("inner".into()), true)
+                .expect("expected optional property access");
+
+        assert_eq!(rendered, "value?.inner");
+    }
+
+    #[test]
+    fn renders_static_method_call_via_ast() {
+        let rendered = render_static_method_call_expression_ast(
+            "value",
+            "run",
+            &[Argument::Place(named_place(0, 0, "arg"))],
+            &["arg".to_string()],
+        )
+        .expect("expected method call");
+
+        assert_eq!(rendered, "value.run(arg)");
+    }
+
+    #[test]
+    fn renders_non_string_primitive_via_ast() {
+        assert_eq!(
+            render_primitive_expression_ast(&PrimitiveValue::Null).as_deref(),
+            Some("null")
+        );
+        assert_eq!(
+            render_primitive_expression_ast(&PrimitiveValue::Boolean(true)).as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            render_primitive_expression_ast(&PrimitiveValue::Number(42.0)).as_deref(),
+            Some("42")
+        );
     }
 
     #[test]
