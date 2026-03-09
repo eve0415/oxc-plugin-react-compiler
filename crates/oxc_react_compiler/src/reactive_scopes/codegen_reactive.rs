@@ -14993,7 +14993,9 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                 .iter()
                 .map(|p| codegen_object_property(cx, p))
                 .collect();
-            ExprValue::primary(format!("{{ {} }}", props.join(", ")))
+            let expr = render_object_expression_ast(cx, properties)
+                .unwrap_or_else(|| format!("{{ {} }}", props.join(", ")));
+            ExprValue::primary(expr)
         }
         InstructionValue::ArrayExpression { elements, .. } => {
             let elems: Vec<String> = elements
@@ -19044,20 +19046,19 @@ fn codegen_object_property_with_oxc(property: ast::ObjectPropertyKind<'_>) -> Op
     extract_single_object_property_source(&rendered)
 }
 
-fn render_object_method_ast(
+fn build_object_method_property_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
     key: &ObjectPropertyKey,
     computed_key_source: Option<&str>,
     params: &[Argument],
     param_names: &[String],
     body_source: &str,
-    directives: &[String],
     is_async: bool,
     is_generator: bool,
-) -> Option<String> {
-    let allocator = Allocator::default();
-    let builder = AstBuilder::new(&allocator);
+) -> Option<ast::ObjectPropertyKind<'a>> {
     let parsed_body = parse_function_body_for_ast_codegen(
-        &allocator,
+        allocator,
         SourceType::mjs().with_jsx(true),
         is_async,
         is_generator,
@@ -19079,8 +19080,8 @@ fn render_object_method_ast(
         Some(builder.alloc(parsed_body)),
     );
     let (property_key, computed) =
-        make_object_property_key_ast(builder, &allocator, key, computed_key_source)?;
-    let property = builder.object_property_kind_object_property(
+        make_object_property_key_ast(builder, allocator, key, computed_key_source)?;
+    Some(builder.object_property_kind_object_property(
         SPAN,
         ast::PropertyKind::Init,
         property_key,
@@ -19088,7 +19089,32 @@ fn render_object_method_ast(
         true,
         false,
         computed,
-    );
+    ))
+}
+
+fn render_object_method_ast(
+    key: &ObjectPropertyKey,
+    computed_key_source: Option<&str>,
+    params: &[Argument],
+    param_names: &[String],
+    body_source: &str,
+    directives: &[String],
+    is_async: bool,
+    is_generator: bool,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let property = build_object_method_property_ast(
+        builder,
+        &allocator,
+        key,
+        computed_key_source,
+        params,
+        param_names,
+        body_source,
+        is_async,
+        is_generator,
+    )?;
     let rendered = codegen_object_property_with_oxc(property)?;
     if directives.is_empty() {
         Some(rendered)
@@ -19097,14 +19123,15 @@ fn render_object_method_ast(
     }
 }
 
-fn function_expr_to_method_property(
+fn build_function_property_from_value_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
     key: &ObjectPropertyKey,
     computed_key_source: Option<&str>,
     value_source: &str,
-) -> Option<String> {
-    let allocator = Allocator::default();
+) -> Option<ast::ObjectPropertyKind<'a>> {
     let mut expression = parse_expression_for_ast_codegen(
-        &allocator,
+        allocator,
         SourceType::mjs().with_jsx(true),
         value_source,
     )
@@ -19118,11 +19145,10 @@ fn function_expr_to_method_property(
             _ => return None,
         }
     };
-    let builder = AstBuilder::new(&allocator);
     let function = ast::Expression::FunctionExpression(builder.alloc(function.unbox()));
     let (property_key, computed) =
-        make_object_property_key_ast(builder, &allocator, key, computed_key_source)?;
-    let property = builder.object_property_kind_object_property(
+        make_object_property_key_ast(builder, allocator, key, computed_key_source)?;
+    Some(builder.object_property_kind_object_property(
         SPAN,
         ast::PropertyKind::Init,
         property_key,
@@ -19130,8 +19156,159 @@ fn function_expr_to_method_property(
         true,
         false,
         computed,
-    );
+    ))
+}
+
+fn function_expr_to_method_property(
+    key: &ObjectPropertyKey,
+    computed_key_source: Option<&str>,
+    value_source: &str,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let property = build_function_property_from_value_ast(
+        builder,
+        &allocator,
+        key,
+        computed_key_source,
+        value_source,
+    )?;
     codegen_object_property_with_oxc(property)
+}
+
+fn is_identifier_expression_named(expression: &ast::Expression<'_>, name: &str) -> bool {
+    matches!(expression, ast::Expression::Identifier(identifier) if identifier.name == name)
+}
+
+fn render_object_expression_ast(
+    cx: &mut Context,
+    properties: &[ObjectPropertyOrSpread],
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let mut lowered = builder.vec();
+    for property in properties {
+        let property = match property {
+            ObjectPropertyOrSpread::Spread(place) => builder.object_property_kind_spread_property(
+                SPAN,
+                parse_rendered_expression_ast(&allocator, &codegen_place_to_expression(cx, place))?,
+            ),
+            ObjectPropertyOrSpread::Property(property) => match property.type_ {
+                ObjectPropertyType::Property => {
+                    let value = parse_rendered_expression_ast(
+                        &allocator,
+                        &codegen_place_to_expression(cx, &property.place),
+                    )?;
+                    let computed_key_source = match &property.key {
+                        ObjectPropertyKey::Computed(place) => {
+                            Some(codegen_place_to_expression(cx, place))
+                        }
+                        _ => None,
+                    };
+                    let (key, computed) = make_object_property_key_ast(
+                        builder,
+                        &allocator,
+                        &property.key,
+                        computed_key_source.as_deref(),
+                    )?;
+                    let shorthand = match &property.key {
+                        ObjectPropertyKey::Identifier(name) => {
+                            is_identifier_expression_named(&value, name)
+                        }
+                        ObjectPropertyKey::String(name) if is_valid_js_identifier(name) => {
+                            is_identifier_expression_named(&value, name)
+                        }
+                        _ => false,
+                    };
+                    builder.object_property_kind_object_property(
+                        SPAN,
+                        ast::PropertyKind::Init,
+                        key,
+                        value,
+                        false,
+                        shorthand,
+                        computed,
+                    )
+                }
+                ObjectPropertyType::Method => {
+                    let computed_key_source = match &property.key {
+                        ObjectPropertyKey::Computed(place) => {
+                            Some(codegen_place_to_expression(cx, place))
+                        }
+                        _ => None,
+                    };
+                    if let Some(&idx) = cx.object_methods.get(&property.place.identifier.id) {
+                        let lf = cx.object_methods_store[idx].lowered_func.clone();
+                        let inner_hir = lf.func.clone();
+                        let mut reactive_func =
+                            super::build_reactive_function::build_reactive_function(inner_hir);
+                        super::prune_unused_labels_reactive::prune_unused_labels(
+                            &mut reactive_func,
+                        );
+                        super::prune_unused_lvalues::prune_unused_lvalues(&mut reactive_func);
+                        let _ = super::prune_hoisted_contexts::prune_hoisted_contexts(
+                            &mut reactive_func,
+                        );
+                        let mut inner_result =
+                            codegen_reactive_function_with_options_and_fbt_operands(
+                                &reactive_func,
+                                cx.unique_identifiers.clone(),
+                                CodegenReactiveOptions {
+                                    enable_name_anonymous_functions: cx
+                                        .enable_name_anonymous_functions,
+                                    ..CodegenReactiveOptions::default()
+                                },
+                                cx.fbt_operands.clone(),
+                            );
+                        adopt_codegen_error(cx, inner_result.error.take());
+                        build_object_method_property_ast(
+                            builder,
+                            &allocator,
+                            &property.key,
+                            computed_key_source.as_deref(),
+                            &lf.func.params,
+                            &inner_result.param_names,
+                            inner_result.body.trim(),
+                            lf.func.async_,
+                            lf.func.generator,
+                        )?
+                    } else {
+                        let value_source = codegen_place_to_expression(cx, &property.place);
+                        if let Some(method_property) = build_function_property_from_value_ast(
+                            builder,
+                            &allocator,
+                            &property.key,
+                            computed_key_source.as_deref(),
+                            &value_source,
+                        ) {
+                            method_property
+                        } else {
+                            let value =
+                                parse_rendered_expression_ast(&allocator, &value_source)?;
+                            let (key, computed) = make_object_property_key_ast(
+                                builder,
+                                &allocator,
+                                &property.key,
+                                computed_key_source.as_deref(),
+                            )?;
+                            builder.object_property_kind_object_property(
+                                SPAN,
+                                ast::PropertyKind::Init,
+                                key,
+                                value,
+                                false,
+                                false,
+                                computed,
+                            )
+                        }
+                    }
+                }
+            },
+        };
+        lowered.push(property);
+    }
+    let expression = builder.expression_object(SPAN, lowered);
+    Some(codegen_expression_with_oxc(&expression))
 }
 
 fn codegen_expression_with_oxc(expression: &ast::Expression<'_>) -> String {
