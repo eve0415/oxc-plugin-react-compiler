@@ -14526,18 +14526,18 @@ fn codegen_instruction_expr_with_prec_kind(
                 {
                     emitted.push_str(&prefix);
                 }
-                emitted.push_str(&format!("{} = {};\n", name, rhs));
+                emitted.push_str(&render_reactive_assignment_statement_ast(&name, &rhs)?);
                 Some(emitted)
             } else {
                 cx.declare(&lvalue.identifier);
                 cx.mark_decl_runtime_emitted(lvalue.identifier.declaration_id);
-                let decl_kw = if matches!(lvalue.identifier.name, Some(IdentifierName::Promoted(_)))
-                {
-                    "let"
-                } else {
-                    "const"
-                };
-                Some(format!("{decl_kw} {} = {};\n", name, rhs))
+                let decl_kind =
+                    if matches!(lvalue.identifier.name, Some(IdentifierName::Promoted(_))) {
+                        ast::VariableDeclarationKind::Let
+                    } else {
+                        ast::VariableDeclarationKind::Const
+                    };
+                render_reactive_variable_statement_ast(decl_kind, &name, Some(&rhs))
             }
         }
     } else {
@@ -14562,7 +14562,7 @@ fn codegen_instruction_expr_with_prec_kind(
                         value
                     ),
                 );
-                Some(format!("{};\n", value))
+                render_reactive_expression_statement_ast(value)
             }
         } else {
             debug_codegen_expr(
@@ -14573,7 +14573,7 @@ fn codegen_instruction_expr_with_prec_kind(
                     value
                 ),
             );
-            Some(format!("{};\n", value))
+            render_reactive_expression_statement_ast(value)
         }
     }
 }
@@ -18578,6 +18578,19 @@ fn render_reactive_assignment_statement_ast(target_name: &str, rhs: &str) -> Opt
         target_name,
         rhs_expression,
     );
+    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+}
+
+fn render_reactive_expression_statement_ast(expression: &str) -> Option<String> {
+    if split_flow_cast_expression_source(expression).is_some() {
+        return Some(format!("{expression};\n"));
+    }
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let parsed_expression =
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), expression)
+            .ok()?;
+    let statement = builder.statement_expression(SPAN, parsed_expression);
     Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
 }
 
