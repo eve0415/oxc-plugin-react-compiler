@@ -571,6 +571,31 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 }
                 Some(statements)
             }
+            Terminal::Logical {
+                test, fallthrough, ..
+            }
+            | Terminal::Optional {
+                test, fallthrough, ..
+            }
+            | Terminal::Ternary {
+                test, fallthrough, ..
+            } => {
+                let mut statements = self.lower_block_sequence(
+                    *test,
+                    Some(*fallthrough),
+                    visiting_blocks,
+                    control_context,
+                )?;
+                if Some(*fallthrough) != stop_at {
+                    statements.extend(self.lower_block_sequence(
+                        *fallthrough,
+                        stop_at,
+                        visiting_blocks,
+                        control_context,
+                    )?);
+                }
+                Some(statements)
+            }
             Terminal::Unreachable { .. } => Some(self.builder.vec()),
             _ => None,
         }
