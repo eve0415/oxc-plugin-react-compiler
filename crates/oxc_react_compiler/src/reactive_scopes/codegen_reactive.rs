@@ -14,6 +14,7 @@ use oxc_ast::{AstBuilder, NONE, ast};
 use oxc_codegen::{Codegen, CodegenOptions, IndentChar};
 use oxc_parser::Parser;
 use oxc_span::{SPAN, SourceType};
+use oxc_syntax::operator::AssignmentOperator;
 
 use crate::environment::Environment;
 use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
@@ -17159,24 +17160,53 @@ fn maybe_codegen_captured_context_destructure_bridge(
                 return None;
             }
 
-            let mut temps = Vec::with_capacity(targets.len());
-            for idx in 0..targets.len() {
-                temps.push(format!("t{}", idx));
+            let allocator = Allocator::default();
+            let builder = AstBuilder::new(&allocator);
+            let rhs_expr =
+                parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), rhs)
+                    .ok()?;
+            let temp_names = (0..targets.len())
+                .map(|idx| format!("t{}", idx))
+                .collect::<Vec<_>>();
+            let elements = builder.vec_from_iter(temp_names.iter().map(|name| {
+                Some(builder.binding_pattern_binding_identifier(SPAN, builder.ident(name)))
+            }));
+            let array_pattern = builder.binding_pattern_array_pattern(SPAN, elements, NONE);
+            let mut statements = vec![ast::Statement::VariableDeclaration(
+                builder.alloc_variable_declaration(
+                    SPAN,
+                    ast::VariableDeclarationKind::Let,
+                    builder.vec1(builder.variable_declarator(
+                        SPAN,
+                        ast::VariableDeclarationKind::Let,
+                        array_pattern,
+                        NONE,
+                        Some(rhs_expr),
+                        false,
+                    )),
+                    false,
+                ),
+            )];
+            for (target, temp_name) in targets.iter().zip(temp_names.iter()) {
+                statements.push(build_identifier_assignment_statement_ast(
+                    builder,
+                    &identifier_name_with_cx(cx, &target.identifier),
+                    temp_name,
+                ));
             }
-
-            let mut emitted = format!("let [{}] = {};\n", temps.join(", "), rhs);
-            for (target, temp_name) in targets.iter().zip(temps.iter()) {
-                let target_name = identifier_name_with_cx(cx, &target.identifier);
-                emitted.push_str(&format!("{} = {};\n", target_name, temp_name));
-            }
-            Some(emitted)
+            Some(codegen_statements_with_oxc(&statements))
         }
         Pattern::Object(obj) => {
             if obj.properties.is_empty() {
                 return None;
             }
-            let mut temp_props: Vec<String> = Vec::new();
-            let mut assignments: Vec<String> = Vec::new();
+            let allocator = Allocator::default();
+            let builder = AstBuilder::new(&allocator);
+            let rhs_expr =
+                parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), rhs)
+                    .ok()?;
+            let mut properties = builder.vec();
+            let mut assignments = Vec::new();
 
             for (idx, prop) in obj.properties.iter().enumerate() {
                 let ObjectPropertyOrSpread::Property(property) = prop else {
@@ -17190,17 +17220,50 @@ fn maybe_codegen_captured_context_destructure_bridge(
                 }
 
                 let temp_name = format!("t{}", idx);
-                let key = codegen_object_property_key_str(&property.key);
-                temp_props.push(format!("{}: {}", key, temp_name));
-                let target_name = identifier_name_with_cx(cx, &property.place.identifier);
-                assignments.push(format!("{} = {};\n", target_name, temp_name));
+                let computed_key_source = match &property.key {
+                    ObjectPropertyKey::Computed(place) => {
+                        Some(codegen_place_to_expression(cx, place))
+                    }
+                    _ => None,
+                };
+                let (key, computed) = make_object_property_key_ast(
+                    builder,
+                    &allocator,
+                    &property.key,
+                    computed_key_source.as_deref(),
+                )?;
+                properties.push(builder.binding_property(
+                    SPAN,
+                    key,
+                    builder.binding_pattern_binding_identifier(SPAN, builder.ident(&temp_name)),
+                    false,
+                    computed,
+                ));
+                assignments.push(build_identifier_assignment_statement_ast(
+                    builder,
+                    &identifier_name_with_cx(cx, &property.place.identifier),
+                    &temp_name,
+                ));
             }
 
-            let mut emitted = format!("let {{{}}} = {};\n", temp_props.join(", "), rhs);
-            for assignment in assignments {
-                emitted.push_str(&assignment);
-            }
-            Some(emitted)
+            let object_pattern = builder.binding_pattern_object_pattern(SPAN, properties, NONE);
+            let mut statements = vec![ast::Statement::VariableDeclaration(
+                builder.alloc_variable_declaration(
+                    SPAN,
+                    ast::VariableDeclarationKind::Let,
+                    builder.vec1(builder.variable_declarator(
+                        SPAN,
+                        ast::VariableDeclarationKind::Let,
+                        object_pattern,
+                        NONE,
+                        Some(rhs_expr),
+                        false,
+                    )),
+                    false,
+                ),
+            )];
+            statements.extend(assignments);
+            Some(codegen_statements_with_oxc(&statements))
         }
     }
 }
@@ -18018,6 +18081,55 @@ fn codegen_statement_with_oxc(statement: &ast::Statement<'_>) -> String {
         .code
         .trim_end()
         .to_string()
+}
+
+fn codegen_statements_with_oxc(statements: &[ast::Statement<'_>]) -> String {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let program = builder.program(
+        SPAN,
+        SourceType::mjs().with_jsx(true),
+        "",
+        builder.vec(),
+        None,
+        builder.vec(),
+        builder.vec_from_iter(
+            statements
+                .iter()
+                .map(|statement| statement.clone_in(&allocator)),
+        ),
+    );
+    Codegen::new()
+        .with_options(CodegenOptions {
+            indent_char: IndentChar::Space,
+            indent_width: 2,
+            ..CodegenOptions::default()
+        })
+        .build(&program)
+        .code
+        .trim_end()
+        .to_string()
+}
+
+fn build_identifier_assignment_statement_ast<'a>(
+    builder: AstBuilder<'a>,
+    target_name: &str,
+    value_name: &str,
+) -> ast::Statement<'a> {
+    builder.statement_expression(
+        SPAN,
+        builder.expression_assignment(
+            SPAN,
+            AssignmentOperator::Assign,
+            ast::AssignmentTarget::from(
+                builder.simple_assignment_target_assignment_target_identifier(
+                    SPAN,
+                    builder.ident(target_name),
+                ),
+            ),
+            builder.expression_identifier(SPAN, builder.ident(value_name)),
+        ),
+    )
 }
 
 fn render_function_expression_ast(
