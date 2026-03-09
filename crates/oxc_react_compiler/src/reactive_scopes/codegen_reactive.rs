@@ -9,6 +9,12 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
+use oxc_allocator::{Allocator, CloneIn};
+use oxc_ast::{AstBuilder, NONE, ast};
+use oxc_codegen::{Codegen, CodegenOptions, IndentChar};
+use oxc_parser::Parser;
+use oxc_span::{SPAN, SourceType};
+
 use crate::environment::Environment;
 use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
 use crate::hir::object_shape::BUILT_IN_ARRAY_ID;
@@ -734,13 +740,13 @@ fn codegen_reactive_function_with_primitives(
         Some(CachePrologue {
             binding_name: cx.synthesize_name("$"),
             size: cache_size,
-            fast_refresh: fast_refresh_state
-                .as_ref()
-                .map(|(cache_index, hash)| FastRefreshPrologue {
+            fast_refresh: fast_refresh_state.as_ref().map(|(cache_index, hash)| {
+                FastRefreshPrologue {
                     cache_index: *cache_index,
                     hash: hash.clone(),
                     index_binding_name: cx.synthesize_name("$i"),
-                }),
+                }
+            }),
         })
     } else {
         None
@@ -14277,18 +14283,6 @@ fn codegen_store(
     }
 
     let name = identifier_name_with_cx(cx, &place.identifier);
-    let function_expr_as_declaration = |rhs: &str| -> Option<String> {
-        if let Some(rest) = rhs.strip_prefix("function(") {
-            return Some(format!("function {}({}", name, rest));
-        }
-        if let Some(rest) = rhs.strip_prefix("function*(") {
-            return Some(format!("function* {}({}", name, rest));
-        }
-        if rhs.starts_with("function ") || rhs.starts_with("function* ") {
-            return Some(rhs.to_string());
-        }
-        None
-    };
     if std::env::var("DEBUG_CODEGEN_STORE").is_ok() {
         eprintln!(
             "[CODEGEN_STORE] kind={:?} decl={} name={} has_outer_lvalue={} rhs={}",
@@ -14328,7 +14322,7 @@ fn codegen_store(
             }
             let should_emit_fn_decl =
                 kind == InstructionKind::Function || cx.function_decl_decls.contains(&decl_id);
-            if should_emit_fn_decl && let Some(fn_decl) = function_expr_as_declaration(rhs) {
+            if should_emit_fn_decl && let Some(fn_decl) = function_expr_as_declaration(&name, rhs) {
                 cx.declare(&place.identifier);
                 cx.mark_decl_runtime_emitted(decl_id);
                 return Some(format!("{fn_decl}\n"));
@@ -14340,7 +14334,7 @@ fn codegen_store(
         InstructionKind::Let | InstructionKind::HoistedLet => {
             let decl_id = place.identifier.declaration_id;
             if cx.function_decl_decls.contains(&decl_id)
-                && let Some(fn_decl) = function_expr_as_declaration(rhs)
+                && let Some(fn_decl) = function_expr_as_declaration(&name, rhs)
             {
                 cx.declare(&place.identifier);
                 cx.mark_decl_runtime_emitted(decl_id);
@@ -17642,6 +17636,320 @@ fn collect_inherited_decl_name_overrides_for_lowered_function(
 
 // ---- Function expression codegen ----
 
+fn make_reactive_formal_params<'a>(
+    builder: AstBuilder<'a>,
+    params: &[Argument],
+    param_names: &[String],
+) -> Option<oxc_allocator::Box<'a, ast::FormalParameters<'a>>> {
+    if params.len() != param_names.len() {
+        return None;
+    }
+    let mut items = builder.vec();
+    let mut rest = None;
+    for (param, name) in params.iter().zip(param_names) {
+        let pattern = builder.binding_pattern_binding_identifier(SPAN, builder.ident(name));
+        match param {
+            Argument::Place(_) => {
+                items.push(builder.plain_formal_parameter(SPAN, pattern));
+            }
+            Argument::Spread(_) => {
+                rest = Some(builder.alloc_formal_parameter_rest(
+                    SPAN,
+                    builder.vec(),
+                    builder.binding_rest_element(SPAN, pattern),
+                    NONE,
+                ));
+            }
+        }
+    }
+    Some(builder.alloc(builder.formal_parameters(
+        SPAN,
+        ast::FormalParameterKind::FormalParameter,
+        items,
+        rest,
+    )))
+}
+
+fn parse_function_body_for_ast_codegen<'a>(
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    is_async: bool,
+    is_generator: bool,
+    body_source: &str,
+) -> Result<ast::FunctionBody<'a>, String> {
+    let async_prefix = if is_async { "async " } else { "" };
+    let generator_prefix = if is_generator { "*" } else { "" };
+    let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(body_source);
+    let mut attempts = vec![
+        (source_type, body_source.to_string()),
+        (
+            source_type.with_typescript(true),
+            flow_cast_rewritten.clone(),
+        ),
+    ];
+    if flow_cast_rewritten != body_source {
+        attempts.push((source_type, flow_cast_rewritten));
+    }
+
+    for (attempt_source_type, attempt_body) in attempts {
+        let wrapper = format!(
+            "{}function {}__codex_codegen_body() {{\n{}\n}}",
+            async_prefix, generator_prefix, attempt_body
+        );
+        let wrapper = allocator.alloc_str(&wrapper);
+        let parsed = Parser::new(allocator, wrapper, attempt_source_type).parse();
+        if parsed.panicked || !parsed.errors.is_empty() {
+            continue;
+        }
+        let Some(ast::Statement::FunctionDeclaration(function)) =
+            parsed.program.body.into_iter().next()
+        else {
+            continue;
+        };
+        if let Some(body) = function.unbox().body {
+            return Ok(body.unbox());
+        }
+    }
+
+    Err("failed to parse nested function body".to_string())
+}
+
+fn parse_expression_for_ast_codegen<'a>(
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    expr_source: &str,
+) -> Result<ast::Expression<'a>, String> {
+    let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(expr_source);
+    let mut attempts = vec![
+        (source_type, expr_source.to_string()),
+        (
+            source_type.with_typescript(true),
+            flow_cast_rewritten.clone(),
+        ),
+    ];
+    if flow_cast_rewritten != expr_source {
+        attempts.push((source_type, flow_cast_rewritten));
+    }
+
+    for (attempt_source_type, attempt_expr) in attempts {
+        let wrapper = format!("const __codex_expr = {attempt_expr};");
+        let wrapper = allocator.alloc_str(&wrapper);
+        let parsed = Parser::new(allocator, wrapper, attempt_source_type).parse();
+        if parsed.panicked || !parsed.errors.is_empty() {
+            continue;
+        }
+        let Some(ast::Statement::VariableDeclaration(declaration)) =
+            parsed.program.body.into_iter().next()
+        else {
+            continue;
+        };
+        let Some(init) = declaration
+            .unbox()
+            .declarations
+            .into_iter()
+            .next()
+            .and_then(|declarator| declarator.init)
+        else {
+            continue;
+        };
+        return Ok(init);
+    }
+
+    Err("failed to parse nested expression".to_string())
+}
+
+fn single_return_expression_from_body<'a>(
+    allocator: &'a Allocator,
+    body: &ast::FunctionBody<'a>,
+) -> Option<ast::Expression<'a>> {
+    if !body.directives.is_empty() || body.statements.len() != 1 {
+        return None;
+    }
+    let ast::Statement::ReturnStatement(statement) = &body.statements[0] else {
+        return None;
+    };
+    statement
+        .argument
+        .as_ref()
+        .map(|expression| expression.clone_in(allocator))
+}
+
+fn wrap_named_anonymous_function_expression<'a>(
+    builder: AstBuilder<'a>,
+    expression: ast::Expression<'a>,
+    name_hint: &str,
+) -> ast::Expression<'a> {
+    let key_literal = builder.expression_string_literal(SPAN, builder.atom(name_hint), None);
+    let property = builder.object_property_kind_object_property(
+        SPAN,
+        ast::PropertyKind::Init,
+        ast::PropertyKey::from(builder.expression_string_literal(
+            SPAN,
+            builder.atom(name_hint),
+            None,
+        )),
+        expression,
+        false,
+        false,
+        false,
+    );
+    ast::Expression::from(builder.member_expression_computed(
+        SPAN,
+        builder.expression_object(SPAN, builder.vec1(property)),
+        key_literal,
+        false,
+    ))
+}
+
+fn codegen_expression_with_oxc(expression: &ast::Expression<'_>) -> String {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let program = builder.program(
+        SPAN,
+        SourceType::mjs().with_jsx(true),
+        "",
+        builder.vec(),
+        None,
+        builder.vec(),
+        builder.vec1(builder.statement_expression(SPAN, expression.clone_in(&allocator))),
+    );
+    let code = Codegen::new()
+        .with_options(CodegenOptions {
+            indent_char: IndentChar::Space,
+            indent_width: 2,
+            ..CodegenOptions::default()
+        })
+        .build(&program)
+        .code;
+    let trimmed = code.trim_end();
+    trimmed.strip_suffix(';').unwrap_or(trimmed).to_string()
+}
+
+fn codegen_statement_with_oxc(statement: &ast::Statement<'_>) -> String {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let program = builder.program(
+        SPAN,
+        SourceType::mjs().with_jsx(true),
+        "",
+        builder.vec(),
+        None,
+        builder.vec(),
+        builder.vec1(statement.clone_in(&allocator)),
+    );
+    Codegen::new()
+        .with_options(CodegenOptions {
+            indent_char: IndentChar::Space,
+            indent_width: 2,
+            ..CodegenOptions::default()
+        })
+        .build(&program)
+        .code
+        .trim_end()
+        .to_string()
+}
+
+fn render_function_expression_ast(
+    params: &[Argument],
+    param_names: &[String],
+    body_source: &str,
+    directives: &[String],
+    is_async: bool,
+    is_generator: bool,
+    name: Option<&str>,
+    fn_type: &FunctionExpressionType,
+    anonymous_name_hint: Option<&str>,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let source_type = SourceType::mjs().with_jsx(true);
+    let parsed_body = parse_function_body_for_ast_codegen(
+        &allocator,
+        source_type,
+        is_async,
+        is_generator,
+        body_source,
+    )
+    .ok()?;
+    let builder = AstBuilder::new(&allocator);
+    let formal_params = make_reactive_formal_params(builder, params, param_names)?;
+    let expression = match fn_type {
+        FunctionExpressionType::ArrowFunctionExpression => {
+            if directives.is_empty()
+                && let Some(return_expr) =
+                    single_return_expression_from_body(&allocator, &parsed_body)
+            {
+                builder.expression_arrow_function(
+                    SPAN,
+                    true,
+                    is_async,
+                    NONE,
+                    formal_params,
+                    NONE,
+                    builder.alloc(builder.function_body(
+                        SPAN,
+                        builder.vec(),
+                        builder.vec1(builder.statement_expression(SPAN, return_expr)),
+                    )),
+                )
+            } else {
+                builder.expression_arrow_function(
+                    SPAN,
+                    false,
+                    is_async,
+                    NONE,
+                    formal_params,
+                    NONE,
+                    builder.alloc(parsed_body),
+                )
+            }
+        }
+        FunctionExpressionType::FunctionExpression
+        | FunctionExpressionType::FunctionDeclaration => builder.expression_function(
+            SPAN,
+            ast::FunctionType::FunctionExpression,
+            name.map(|name| builder.binding_identifier(SPAN, builder.atom(name))),
+            is_generator,
+            is_async,
+            false,
+            NONE,
+            NONE,
+            formal_params,
+            NONE,
+            Some(builder.alloc(parsed_body)),
+        ),
+    };
+    let expression = if let Some(name_hint) = anonymous_name_hint {
+        wrap_named_anonymous_function_expression(builder, expression, name_hint)
+    } else {
+        expression
+    };
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn function_expr_as_declaration(name: &str, rhs: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let mut expression =
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), rhs).ok()?;
+    let function = loop {
+        match expression {
+            ast::Expression::FunctionExpression(function) => break function,
+            ast::Expression::ParenthesizedExpression(parenthesized) => {
+                expression = parenthesized.unbox().expression;
+            }
+            _ => return None,
+        }
+    };
+    let builder = AstBuilder::new(&allocator);
+    let mut function = function.unbox();
+    function.r#type = ast::FunctionType::FunctionDeclaration;
+    if function.id.is_none() {
+        function.id = Some(builder.binding_identifier(SPAN, builder.atom(name)));
+    }
+    Some(codegen_statement_with_oxc(
+        &ast::Statement::FunctionDeclaration(builder.alloc(function)),
+    ))
+}
+
 fn codegen_function_expression(
     cx: &mut Context,
     lowered_func: &LoweredFunction,
@@ -17687,69 +17995,82 @@ fn codegen_function_expression(
     );
     adopt_codegen_error(cx, inner_result.error.take());
 
-    let params = inner_result.param_names.join(", ");
-    let async_prefix = if lowered_func.func.async_ {
-        "async "
-    } else {
-        ""
-    };
-    let generator_star = if lowered_func.func.generator { "*" } else { "" };
     let body_trimmed = inner_result.body.trim();
-
-    let mut rendered = match fn_type {
-        FunctionExpressionType::ArrowFunctionExpression => {
-            // For arrow functions with single return statement and no directives, use expression body.
-            // The body may span multiple lines if the returned expression is multi-line
-            // (e.g., returning an arrow function whose body is multi-line).
-            let is_single_return = lowered_func.func.directives.is_empty()
-                && body_trimmed.starts_with("return ")
-                && body_trimmed.ends_with(';')
-                && is_single_statement(body_trimmed);
-            if is_single_return {
-                let expr = body_trimmed[7..body_trimmed.len() - 1].trim(); // strip "return " and ";"
-                let arrow_expr = if expr.starts_with('{') && expr.ends_with('}') {
-                    format!("({})", expr)
+    render_function_expression_ast(
+        &lowered_func.func.params,
+        &inner_result.param_names,
+        body_trimmed,
+        &lowered_func.func.directives,
+        lowered_func.func.async_,
+        lowered_func.func.generator,
+        name.as_deref(),
+        fn_type,
+        if cx.enable_name_anonymous_functions && name.is_none() {
+            lowered_func.func.id.as_deref()
+        } else {
+            None
+        },
+    )
+    .unwrap_or_else(|| {
+        let params = inner_result.param_names.join(", ");
+        let async_prefix = if lowered_func.func.async_ {
+            "async "
+        } else {
+            ""
+        };
+        let generator_star = if lowered_func.func.generator { "*" } else { "" };
+        let mut rendered = match fn_type {
+            FunctionExpressionType::ArrowFunctionExpression => {
+                let is_single_return = lowered_func.func.directives.is_empty()
+                    && body_trimmed.starts_with("return ")
+                    && body_trimmed.ends_with(';')
+                    && is_single_statement(body_trimmed);
+                if is_single_return {
+                    let expr = body_trimmed[7..body_trimmed.len() - 1].trim();
+                    let arrow_expr = if expr.starts_with('{') && expr.ends_with('}') {
+                        format!("({})", expr)
+                    } else {
+                        expr.to_string()
+                    };
+                    let inline_arrow = format!("{}({}) => {}", async_prefix, params, arrow_expr);
+                    if inline_arrow.len() > 60 {
+                        format!("{}({}) =>\n{}", async_prefix, params, arrow_expr)
+                    } else {
+                        inline_arrow
+                    }
+                } else if body_trimmed.is_empty() {
+                    format!("{}({}) => {{}}", async_prefix, params)
                 } else {
-                    expr.to_string()
-                };
-                let inline_arrow = format!("{}({}) => {}", async_prefix, params, arrow_expr);
-                if inline_arrow.len() > 60 {
-                    format!("{}({}) =>\n{}", async_prefix, params, arrow_expr)
-                } else {
-                    inline_arrow
+                    format!("{}({}) => {{\n{}\n}}", async_prefix, params, body_trimmed)
                 }
-            } else if body_trimmed.is_empty() {
-                format!("{}({}) => {{}}", async_prefix, params)
-            } else {
-                format!("{}({}) => {{\n{}\n}}", async_prefix, params, body_trimmed)
             }
-        }
-        FunctionExpressionType::FunctionExpression
-        | FunctionExpressionType::FunctionDeclaration => {
-            let fn_name = name.as_deref().unwrap_or("");
-            if fn_name.is_empty() {
-                format!(
-                    "{}function{}({}) {{\n{}\n}}",
-                    async_prefix, generator_star, params, body_trimmed
-                )
-            } else {
-                format!(
-                    "{}function{} {}({}) {{\n{}\n}}",
-                    async_prefix, generator_star, fn_name, params, body_trimmed
-                )
+            FunctionExpressionType::FunctionExpression
+            | FunctionExpressionType::FunctionDeclaration => {
+                let fn_name = name.as_deref().unwrap_or("");
+                if fn_name.is_empty() {
+                    format!(
+                        "{}function{}({}) {{\n{}\n}}",
+                        async_prefix, generator_star, params, body_trimmed
+                    )
+                } else {
+                    format!(
+                        "{}function{} {}({}) {{\n{}\n}}",
+                        async_prefix, generator_star, fn_name, params, body_trimmed
+                    )
+                }
             }
+        };
+
+        if cx.enable_name_anonymous_functions
+            && name.is_none()
+            && let Some(name_hint) = lowered_func.func.id.as_ref()
+        {
+            let key = escape_string(name_hint);
+            rendered = format!("{{ \"{key}\": {rendered} }}[\"{key}\"]");
         }
-    };
 
-    if cx.enable_name_anonymous_functions
-        && name.is_none()
-        && let Some(name_hint) = lowered_func.func.id.as_ref()
-    {
-        let key = escape_string(name_hint);
-        rendered = format!("{{ \"{key}\": {rendered} }}[\"{key}\"]");
-    }
-
-    rendered
+        rendered
+    })
 }
 
 /// Check if a code string is a single top-level statement (no semicolons at depth 0 except the trailing one).
@@ -18281,4 +18602,80 @@ fn unicode_escape_non_ascii(s: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        FunctionExpressionType, function_expr_as_declaration, render_function_expression_ast,
+    };
+    use crate::hir::types::{
+        Argument, DeclarationId, Effect, Identifier, IdentifierId, IdentifierName, MutableRange,
+        Place, SourceLocation, Type,
+    };
+
+    fn named_place(id: u32, declaration_id: u32, name: &str) -> Place {
+        Place {
+            identifier: Identifier {
+                id: IdentifierId::new(id),
+                declaration_id: DeclarationId::new(declaration_id),
+                name: Some(IdentifierName::Named(name.to_string())),
+                mutable_range: MutableRange::default(),
+                scope: None,
+                type_: Type::Poly,
+                loc: SourceLocation::Generated,
+            },
+            effect: Effect::Read,
+            reactive: false,
+            loc: SourceLocation::Generated,
+        }
+    }
+
+    #[test]
+    fn renders_named_function_expression_via_ast() {
+        let rendered = render_function_expression_ast(
+            &[Argument::Place(named_place(0, 0, "value"))],
+            &["value".to_string()],
+            "return value;",
+            &[],
+            false,
+            false,
+            Some("useFoo"),
+            &FunctionExpressionType::FunctionExpression,
+            None,
+        )
+        .expect("expected function expression");
+
+        assert!(rendered.contains("function useFoo(value)"));
+        assert!(rendered.contains("return value;"));
+    }
+
+    #[test]
+    fn renders_concise_arrow_function_via_ast() {
+        let rendered = render_function_expression_ast(
+            &[Argument::Place(named_place(0, 0, "value"))],
+            &["value".to_string()],
+            "return value;",
+            &[],
+            false,
+            false,
+            None,
+            &FunctionExpressionType::ArrowFunctionExpression,
+            None,
+        )
+        .expect("expected arrow expression");
+
+        assert!(rendered.contains("=>"));
+        assert!(!rendered.contains("return value;"));
+    }
+
+    #[test]
+    fn converts_function_expression_to_declaration_via_ast() {
+        let declaration =
+            function_expr_as_declaration("useFoo", "async function(value) {\n  return value;\n}")
+                .expect("expected function declaration");
+
+        assert!(declaration.starts_with("async function useFoo(value)"));
+        assert!(declaration.contains("return value;"));
+    }
 }
