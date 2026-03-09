@@ -645,6 +645,14 @@ fn try_rewrite_compiled_statement_ast<'a>(
         let body_source = render_compiled_body_source(cf, state);
         let mut function_body =
             parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?;
+        prepend_compiled_body_prefix_statements(
+            builder,
+            allocator,
+            source_type,
+            &mut function_body,
+            cf,
+            Some(&state.cache_import_name),
+        )?;
         prepend_instrument_forget_statement(builder, allocator, &mut function_body, cf, state);
         let compiled_params = cf.compiled_params.as_deref()?;
         let rewritten = if let Some(gate_name) = state
@@ -720,6 +728,14 @@ fn try_build_gated_function_declaration_statements<'a>(
     let body_source = render_compiled_body_source(cf, state);
     let mut function_body =
         parse_compiled_function_body(allocator, state.source_type, cf, &body_source).ok()?;
+    prepend_compiled_body_prefix_statements(
+        builder,
+        allocator,
+        state.source_type,
+        &mut function_body,
+        cf,
+        Some(&state.cache_import_name),
+    )?;
     prepend_instrument_forget_statement(builder, allocator, &mut function_body, cf, state);
     let compiled_params = cf.compiled_params.as_deref()?;
 
@@ -3225,23 +3241,6 @@ fn render_compiled_body_source(cf: &CompiledFunction, state: &AstRenderState) ->
     if state.cache_import_name != "_c" {
         body = body.replacen("_c(", &format!("{}(", state.cache_import_name), 1);
     }
-    if !cf.param_destructurings.is_empty() && !body.contains("=== undefined ?") {
-        let pruned: Vec<String> = cf
-            .param_destructurings
-            .iter()
-            .enumerate()
-            .map(|(i, destructuring)| {
-                let after: String = cf.param_destructurings[i + 1..].join("\n");
-                let context = format!("{}\n{}", body, after);
-                crate::pipeline::prune_unused_destructuring(destructuring, &context)
-            })
-            .collect();
-        body = crate::pipeline::insert_param_destructurings(&body, &pruned);
-    }
-    if !cf.preserved_body_statements.is_empty() {
-        body =
-            crate::pipeline::insert_preserved_body_statements(&body, &cf.preserved_body_statements);
-    }
     if !cf.directives.is_empty() {
         body = crate::pipeline::strip_directive_lines(&body, &cf.directives);
     }
@@ -3284,6 +3283,44 @@ fn render_compiled_body_source(cf: &CompiledFunction, state: &AstRenderState) ->
     }
     body = crate::pipeline::insert_blank_lines_for_guarded_cache_init(&body);
     body
+}
+
+fn prepend_compiled_body_prefix_statements<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    body: &mut ast::FunctionBody<'a>,
+    cf: &CompiledFunction,
+    cache_import_name: Option<&str>,
+) -> Option<()> {
+    let prefix_source = build_compiled_body_prefix_source(cf);
+    if prefix_source.is_empty() {
+        return Some(());
+    }
+
+    let prefix_statements = parse_statements(
+        allocator,
+        source_type,
+        allocator.alloc_str(prefix_source.as_str()),
+    )
+    .ok()?;
+    let insert_idx = cache_import_name
+        .and_then(|cache_import_name| find_cache_initializer_index(&body.statements, cache_import_name))
+        .map_or(0, |index| index + 1);
+    let mut statements = builder.vec();
+    statements.extend(
+        body.statements[..insert_idx]
+            .iter()
+            .map(|statement| statement.clone_in(allocator)),
+    );
+    statements.extend(prefix_statements);
+    statements.extend(
+        body.statements[insert_idx..]
+            .iter()
+            .map(|statement| statement.clone_in(allocator)),
+    );
+    body.statements = statements;
+    Some(())
 }
 
 fn prepend_instrument_forget_statement<'a>(
@@ -3395,6 +3432,21 @@ fn prepend_hir_body_prefix_statements<'a>(
     function: &mut ast::Function<'a>,
     cf: &CompiledFunction,
 ) -> Option<()> {
+    let body = function.body.as_ref()?;
+    let mut cloned_body = body.clone_in(allocator).unbox();
+    prepend_compiled_body_prefix_statements(
+        builder,
+        allocator,
+        source_type,
+        &mut cloned_body,
+        cf,
+        None,
+    )?;
+    function.body = Some(builder.alloc(cloned_body));
+    Some(())
+}
+
+fn build_compiled_body_prefix_source(cf: &CompiledFunction) -> String {
     let mut prefix_source = String::new();
     if !cf.param_destructurings.is_empty() && !cf.generated_body.contains("=== undefined ?") {
         for (index, destructuring) in cf.param_destructurings.iter().enumerate() {
@@ -3415,24 +3467,31 @@ fn prepend_hir_body_prefix_statements<'a>(
         prefix_source.push_str(statement.trim_end());
         prefix_source.push('\n');
     }
-    if prefix_source.is_empty() {
-        return Some(());
-    }
+    prefix_source
+}
 
-    let body = function.body.as_ref()?;
-    let mut statements = parse_statements(
-        allocator,
-        source_type,
-        allocator.alloc_str(prefix_source.as_str()),
-    )
-    .ok()?;
-    statements.extend(body.statements.iter().map(|statement| statement.clone_in(allocator)));
-    function.body = Some(builder.alloc_function_body(
-        body.span,
-        body.directives.clone_in(allocator),
-        statements,
-    ));
-    Some(())
+fn find_cache_initializer_index<'a>(
+    statements: &oxc_allocator::Vec<'a, ast::Statement<'a>>,
+    cache_import_name: &str,
+) -> Option<usize> {
+    statements
+        .iter()
+        .position(|statement| is_cache_initializer_statement(statement, cache_import_name))
+}
+
+fn is_cache_initializer_statement(statement: &ast::Statement<'_>, cache_import_name: &str) -> bool {
+    let ast::Statement::VariableDeclaration(declaration) = statement else {
+        return false;
+    };
+    declaration.declarations.iter().any(|declarator| {
+        let Some(ast::Expression::CallExpression(call)) = declarator.init.as_ref() else {
+            return false;
+        };
+        matches!(
+            &call.callee,
+            ast::Expression::Identifier(identifier) if identifier.name == cache_import_name
+        )
+    })
 }
 
 fn can_emit_compiled_statement_ast(cf: &CompiledFunction) -> bool {
@@ -3741,6 +3800,43 @@ function Component(props) {
 
         assert!(rewritten.contains("if (DEV && shouldInstrument)"));
         assert!(rewritten.contains("useRenderCounter(\"Component\", \"fixture.jsx\")"));
+    }
+
+    #[test]
+    fn rewrites_generated_prefix_statements_as_ast() {
+        let source = r#"const FancyButton = (props) => null;"#;
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::VariableDeclaration(variable) = statement else {
+            panic!("expected variable declaration");
+        };
+        let ast::Expression::ArrowFunctionExpression(arrow) = variable.declarations[0]
+            .init
+            .as_ref()
+            .expect("expected initializer")
+        else {
+            panic!("expected arrow function");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "FancyButton",
+            arrow.span.start,
+            arrow.span.end,
+            "return props;",
+            &["props"],
+            true,
+        );
+        compiled_function.param_destructurings = vec!["const value = props.value;".to_string()];
+        compiled_function.preserved_body_statements = vec!["track(value);".to_string()];
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("const value = props.value;"));
+        assert!(rewritten.contains("track(value);"));
+        assert!(rewritten.contains("return props;"));
     }
 
     fn make_test_compiled_function(
