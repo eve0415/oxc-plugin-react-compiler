@@ -71,11 +71,10 @@ pub(crate) fn emit_module(
         };
     }
 
-    let transformed = super::raw::emit_module(args, compiled.clone()).transformed;
-
     match try_emit_module(args, &compiled) {
         Ok(mut result) => {
-            result.transformed = transformed;
+            result.transformed =
+                compute_transform_state(args.source_type, &result.code, args.source_untransformed);
             result
         }
         Err(_) => CompileResult {
@@ -83,6 +82,148 @@ pub(crate) fn emit_module(
             code: args.source_untransformed.to_string(),
             map: None,
         },
+    }
+}
+
+fn compute_transform_state(source_type: SourceType, output_code: &str, source_untransformed: &str) -> bool {
+    let output = normalize_module_for_transform_flag(source_type, output_code);
+    let source = normalize_module_for_transform_flag(source_type, source_untransformed);
+    if output.normalized == source.normalized {
+        return false;
+    }
+    match (output.canonical, source.canonical) {
+        (Some(output_canonical), Some(source_canonical)) => output_canonical != source_canonical,
+        _ => true,
+    }
+}
+
+struct TransformFlagNormalization {
+    normalized: String,
+    canonical: Option<String>,
+}
+
+fn normalize_module_for_transform_flag(
+    source_type: SourceType,
+    code: &str,
+) -> TransformFlagNormalization {
+    let stripped = strip_nonsemantic_top_level_comments_for_transform_flag(source_type, code)
+        .unwrap_or_else(|| StrippedTransformFlagCode {
+            code: strip_leading_comments_for_transform_flag(code).to_string(),
+            has_nested_comments: code.contains("//") || code.contains("/*"),
+        });
+    let flow_marker_rewritten = rewrite_flow_cast_marker_calls(
+        &crate::pipeline::rewrite_flow_cast_expressions(&stripped.code),
+    );
+    let normalized = super::shared::normalize_for_transform_flag(&flow_marker_rewritten);
+    let canonical = if stripped.has_nested_comments {
+        None
+    } else {
+        canonicalize_module_for_transform_flag(source_type, &flow_marker_rewritten)
+    };
+    TransformFlagNormalization {
+        normalized,
+        canonical,
+    }
+}
+
+struct StrippedTransformFlagCode {
+    code: String,
+    has_nested_comments: bool,
+}
+
+fn strip_nonsemantic_top_level_comments_for_transform_flag(
+    source_type: SourceType,
+    code: &str,
+) -> Option<StrippedTransformFlagCode> {
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, code, source_type).parse();
+    if parsed.panicked || !parsed.errors.is_empty() {
+        return None;
+    }
+
+    let statements = parsed
+        .program
+        .body
+        .iter()
+        .map(GetSpan::span)
+        .collect::<Vec<_>>();
+    let comments = parsed.program.comments.iter().collect::<Vec<_>>();
+    let mut has_nested_comments = false;
+    let mut stripped = String::with_capacity(code.len());
+    let mut cursor = 0usize;
+
+    for comment in comments {
+        let comment_start = comment.span.start as usize;
+        let comment_end = comment.span.end as usize;
+        let is_nested = statements.iter().any(|span| {
+            comment.span.start >= span.start && comment.span.end <= span.end
+        });
+
+        if is_nested {
+            has_nested_comments = true;
+            continue;
+        }
+
+        if cursor < comment_start {
+            stripped.push_str(&code[cursor..comment_start]);
+        }
+        cursor = comment_end;
+    }
+
+    if cursor < code.len() {
+        stripped.push_str(&code[cursor..]);
+    }
+
+    Some(StrippedTransformFlagCode {
+        code: strip_leading_comments_for_transform_flag(&stripped).to_string(),
+        has_nested_comments,
+    })
+}
+
+fn canonicalize_module_for_transform_flag(source_type: SourceType, code: &str) -> Option<String> {
+    try_canonicalize_module(source_type, code)
+}
+
+fn try_canonicalize_module(source_type: SourceType, code: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, code, source_type).parse();
+    if parsed.panicked || !parsed.errors.is_empty() {
+        return None;
+    }
+    Some(codegen_program(&parsed.program))
+}
+
+fn strip_leading_comments_for_transform_flag(code: &str) -> &str {
+    let bytes = code.as_bytes();
+    let mut i = 0usize;
+    let len = bytes.len();
+    loop {
+        while i < len && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i + 1 >= len {
+            return &code[i..];
+        }
+        if bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            i += 2;
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            if i + 1 < len {
+                i += 2;
+            } else {
+                return "";
+            }
+            continue;
+        }
+        return &code[i..];
     }
 }
 
@@ -3382,10 +3523,11 @@ fn source_type_for_filename(filename: &str) -> SourceType {
 mod tests {
     use oxc_allocator::Allocator;
     use oxc_ast::{AstBuilder, ast};
+    use oxc_span::SourceType;
 
     use super::{
         AstRenderState, CompiledBodyPayload, CompiledFunction, CompiledParam,
-        codegen_statement_source, maybe_gate_entrypoint_source,
+        codegen_statement_source, compute_transform_state, maybe_gate_entrypoint_source,
         normalize_generated_body_flow_cast_marker_calls, parse_statements,
         restore_flow_cast_marker_calls, source_type_for_filename,
         try_rewrite_compiled_statement_ast,
@@ -3427,6 +3569,64 @@ const z = __REACT_COMPILER_FLOW_CAST__<Array<number>>([]);"#;
         let restored = restore_flow_cast_marker_calls(source);
         assert!(restored.contains("const y = (x: Foo);"));
         assert!(restored.contains("const z = ([]: Array<number>);"));
+    }
+
+    #[test]
+    fn transform_state_ignores_nonsemantic_top_level_comments() {
+        let source = r#"// @enableFire
+import { fire } from "react";
+/**
+ * Fixture note
+ */
+function Component(props) {
+  return null;
+}"#;
+        let output = r#"import { fire } from "react";
+function Component(props) {
+  return null;
+}"#;
+        assert!(!compute_transform_state(
+            SourceType::mjs().with_jsx(true),
+            output,
+            source,
+        ));
+    }
+
+    #[test]
+    fn transform_state_keeps_nested_comment_deltas_semantic() {
+        let source = r#"function Component(props) {
+  useHook();
+  // keep this inside the function body
+  mutate(props.value);
+}"#;
+        let output = r#"function Component(props) {
+  useHook();
+  mutate(props.value);
+}"#;
+        assert!(compute_transform_state(
+            SourceType::mjs().with_jsx(true),
+            output,
+            source,
+        ));
+    }
+
+    #[test]
+    fn transform_state_ignores_redundant_conditional_parentheses() {
+        let source = r#"function ternary(props) {
+  const a = props.a && props.b ? props.c || props.d : (props.e ?? props.f);
+  const b = props.a ? (props.b && props.c ? props.d : props.e) : props.f;
+  return a ? b : null;
+}"#;
+        let output = r#"function ternary(props) {
+  const a = props.a && props.b ? props.c || props.d : props.e ?? props.f;
+  const b = props.a ? props.b && props.c ? props.d : props.e : props.f;
+  return a ? b : null;
+}"#;
+        assert!(!compute_transform_state(
+            SourceType::mjs().with_jsx(true),
+            output,
+            source,
+        ));
     }
 
     fn make_test_compiled_function(
