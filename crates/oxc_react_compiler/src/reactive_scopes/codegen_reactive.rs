@@ -15004,7 +15004,9 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                     ArrayElement::Hole => String::new(),
                 })
                 .collect();
-            ExprValue::primary(format!("[{}]", elems.join(", ")))
+            let expr = render_array_expression_ast(cx, elements)
+                .unwrap_or_else(|| format!("[{}]", elems.join(", ")));
+            ExprValue::primary(expr)
         }
         InstructionValue::PropertyLoad {
             object,
@@ -15113,7 +15115,11 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
         }
         InstructionValue::TemplateLiteral {
             quasis, subexprs, ..
-        } => ExprValue::primary(codegen_template_literal(cx, quasis, subexprs)),
+        } => {
+            let expr = render_template_literal_ast(cx, quasis, subexprs)
+                .unwrap_or_else(|| codegen_template_literal(cx, quasis, subexprs));
+            ExprValue::primary(expr)
+        }
         InstructionValue::TypeCastExpression {
             value: val,
             type_annotation,
@@ -15140,7 +15146,9 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             ExprValue::primary(format!("/{}/{}", pattern, flags))
         }
         InstructionValue::MetaProperty { meta, property, .. } => {
-            ExprValue::primary(format!("{}.{}", meta, property))
+            let expr = render_meta_property_expression_ast(meta, property)
+                .unwrap_or_else(|| format!("{}.{}", meta, property));
+            ExprValue::primary(expr)
         }
         InstructionValue::Await { value: val, .. } => {
             let expr = codegen_place_to_expression(cx, val);
@@ -15826,6 +15834,70 @@ fn render_new_expression_ast(
         }
     }
     let expression = builder.expression_new(SPAN, callee, NONE, lowered_args);
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_array_expression_ast(cx: &mut Context, elements: &[ArrayElement]) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let mut lowered = builder.vec();
+    for element in elements {
+        let element = match element {
+            ArrayElement::Place(place) => ast::ArrayExpressionElement::from(
+                parse_rendered_expression_ast(&allocator, &codegen_place_to_expression(cx, place))?,
+            ),
+            ArrayElement::Spread(place) => builder.array_expression_element_spread_element(
+                SPAN,
+                parse_rendered_expression_ast(&allocator, &codegen_place_to_expression(cx, place))?,
+            ),
+            ArrayElement::Hole => builder.array_expression_element_elision(SPAN),
+        };
+        lowered.push(element);
+    }
+    let expression = builder.expression_array(SPAN, lowered);
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_template_literal_ast(
+    cx: &mut Context,
+    quasis: &[TemplateQuasi],
+    subexprs: &[Place],
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let mut expressions = builder.vec();
+    for place in subexprs {
+        expressions.push(parse_rendered_expression_ast(
+            &allocator,
+            &codegen_place_to_expression(cx, place),
+        )?);
+    }
+    let expression = builder.expression_template_literal(
+        SPAN,
+        builder.vec_from_iter(quasis.iter().enumerate().map(|(index, quasi)| {
+            builder.template_element(
+                SPAN,
+                ast::TemplateElementValue {
+                    raw: builder.atom(&quasi.raw),
+                    cooked: quasi.cooked.as_deref().map(|cooked| builder.atom(cooked)),
+                },
+                index + 1 == quasis.len(),
+                false,
+            )
+        })),
+        expressions,
+    );
+    Some(codegen_expression_with_oxc(&expression))
+}
+
+fn render_meta_property_expression_ast(meta: &str, property: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let expression = builder.expression_meta_property(
+        SPAN,
+        builder.identifier_name(SPAN, builder.ident(meta)),
+        builder.identifier_name(SPAN, builder.ident(property)),
+    );
     Some(codegen_expression_with_oxc(&expression))
 }
 
