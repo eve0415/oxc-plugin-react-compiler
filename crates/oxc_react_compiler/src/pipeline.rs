@@ -14,7 +14,9 @@
 use std::cell::{Cell, RefCell};
 
 use hmac::{Hmac, Mac};
+use oxc_allocator::CloneIn;
 use oxc_ast::ast;
+use oxc_ast_visit::{VisitMut, walk_mut};
 use oxc_span::GetSpan;
 use sha2::Sha256;
 
@@ -6464,16 +6466,99 @@ fn is_outlined_temp_expr(expr: &str) -> bool {
 
 fn rewrite_inline_empty_arrow_callback(expr: &str) -> (String, Vec<(String, HIRFunction)>) {
     let trimmed = expr.trim();
-    let patterns = ["() =>{}", "() => {}"];
-    for pattern in patterns {
-        if trimmed.matches(pattern).count() == 1 {
-            return (
-                trimmed.replacen(pattern, "_temp", 1),
-                vec![synthesized_empty_outlined_arrow_hir("_temp")],
-            );
+    for source_type in [
+        oxc_span::SourceType::mjs().with_jsx(true),
+        oxc_span::SourceType::ts().with_jsx(true),
+        oxc_span::SourceType::tsx(),
+    ] {
+        let allocator = oxc_allocator::Allocator::default();
+        let wrapper = format!("const __codex_expr = {trimmed};");
+        let mut parsed = oxc_parser::Parser::new(&allocator, &wrapper, source_type).parse();
+        if parsed.panicked || !parsed.errors.is_empty() {
+            continue;
         }
+        let Some(ast::Statement::VariableDeclaration(declaration)) =
+            parsed.program.body.first_mut()
+        else {
+            continue;
+        };
+        let Some(init) = declaration
+            .declarations
+            .first_mut()
+            .and_then(|declarator| declarator.init.as_mut())
+        else {
+            continue;
+        };
+        let builder = oxc_ast::AstBuilder::new(&allocator);
+        let mut rewriter = InlineEmptyArrowCallbackRewriter {
+            builder,
+            replacements: 0,
+        };
+        rewriter.visit_expression(init);
+        if rewriter.replacements != 1 {
+            continue;
+        }
+        return (
+            codegen_expression_source(init),
+            vec![synthesized_empty_outlined_arrow_hir("_temp")],
+        );
     }
     (trimmed.to_string(), vec![])
+}
+
+struct InlineEmptyArrowCallbackRewriter<'a> {
+    builder: oxc_ast::AstBuilder<'a>,
+    replacements: usize,
+}
+
+impl<'a> VisitMut<'a> for InlineEmptyArrowCallbackRewriter<'a> {
+    fn visit_expression(&mut self, expression: &mut ast::Expression<'a>) {
+        if is_inline_empty_arrow_expression(expression) {
+            self.replacements += 1;
+            if self.replacements == 1 {
+                *expression = self
+                    .builder
+                    .expression_identifier(oxc_span::SPAN, self.builder.ident("_temp"));
+            }
+            return;
+        }
+        walk_mut::walk_expression(self, expression);
+    }
+}
+
+fn is_inline_empty_arrow_expression(expression: &ast::Expression<'_>) -> bool {
+    let ast::Expression::ArrowFunctionExpression(arrow) = expression.without_parentheses() else {
+        return false;
+    };
+    !arrow.r#async
+        && !arrow.expression
+        && arrow.params.items.is_empty()
+        && arrow.params.rest.is_none()
+        && arrow.body.statements.is_empty()
+}
+
+fn codegen_expression_source(expression: &ast::Expression<'_>) -> String {
+    let allocator = oxc_allocator::Allocator::default();
+    let builder = oxc_ast::AstBuilder::new(&allocator);
+    let program = builder.program(
+        oxc_span::SPAN,
+        oxc_span::SourceType::mjs().with_jsx(true),
+        "",
+        builder.vec(),
+        None,
+        builder.vec(),
+        builder.vec1(builder.statement_expression(oxc_span::SPAN, expression.clone_in(&allocator))),
+    );
+    let code = oxc_codegen::Codegen::new()
+        .with_options(oxc_codegen::CodegenOptions {
+            indent_char: oxc_codegen::IndentChar::Space,
+            indent_width: 2,
+            ..oxc_codegen::CodegenOptions::default()
+        })
+        .build(&program)
+        .code;
+    let trimmed = code.trim_end();
+    trimmed.strip_suffix(';').unwrap_or(trimmed).to_string()
 }
 
 fn parse_single_slot_memoized_default_body(
@@ -7832,7 +7917,9 @@ mod tests {
 
     use crate::options::PluginOptions;
 
-    use super::{extract_emitted_directives, params_to_result};
+    use super::{
+        extract_emitted_directives, params_to_result, rewrite_inline_empty_arrow_callback,
+    };
 
     #[test]
     fn params_to_result_collects_hir_for_outlined_default_arrow() {
@@ -7888,5 +7975,23 @@ mod tests {
             extract_emitted_directives(body),
             vec!["\"use no forget\"", "\"use memo\""]
         );
+    }
+
+    #[test]
+    fn rewrite_inline_empty_arrow_callback_rewrites_single_empty_arrow() {
+        let (rewritten, outlined) = rewrite_inline_empty_arrow_callback("foo(() => {})");
+
+        assert_eq!(rewritten, "foo(_temp)");
+        assert_eq!(outlined.len(), 1);
+        assert_eq!(outlined[0].0, "_temp");
+    }
+
+    #[test]
+    fn rewrite_inline_empty_arrow_callback_skips_multiple_empty_arrows() {
+        let source = "foo(() => {}, () => {})";
+        let (rewritten, outlined) = rewrite_inline_empty_arrow_callback(source);
+
+        assert_eq!(rewritten, source);
+        assert!(outlined.is_empty());
     }
 }
