@@ -4,6 +4,7 @@ use oxc_codegen::{Codegen, CodegenOptions, IndentChar};
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SPAN, SourceType};
 use oxc_syntax::identifier::is_identifier_name;
+use oxc_syntax::operator::LogicalOperator;
 
 use crate::CompileResult;
 
@@ -642,8 +643,9 @@ fn try_rewrite_compiled_statement_ast<'a>(
         }
 
         let body_source = render_compiled_body_source(cf, state);
-        let function_body =
+        let mut function_body =
             parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?;
+        prepend_instrument_forget_statement(builder, allocator, &mut function_body, cf, state);
         let compiled_params = cf.compiled_params.as_deref()?;
         let rewritten = if let Some(gate_name) = state
             .gating_local_name
@@ -716,8 +718,9 @@ fn try_build_gated_function_declaration_statements<'a>(
     );
 
     let body_source = render_compiled_body_source(cf, state);
-    let function_body =
+    let mut function_body =
         parse_compiled_function_body(allocator, state.source_type, cf, &body_source).ok()?;
+    prepend_instrument_forget_statement(builder, allocator, &mut function_body, cf, state);
     let compiled_params = cf.compiled_params.as_deref()?;
 
     match stmt {
@@ -3243,31 +3246,13 @@ fn render_compiled_body_source(cf: &CompiledFunction, state: &AstRenderState) ->
         body = crate::pipeline::strip_directive_lines(&body, &cf.directives);
     }
 
-    let mut prologue = String::new();
     if !cf.directives.is_empty() {
-        let directives_str: String = cf
+        let directives_prefix: String = cf
             .directives
             .iter()
             .map(|d| format!("  {};\n", d))
             .collect();
-        prologue.push_str(&directives_str);
-    }
-    if cf.needs_instrument_forget {
-        let rendered_name = if cf.name.is_empty() {
-            "<anonymous>"
-        } else {
-            cf.name.as_str()
-        };
-        prologue.push_str(&format!(
-            "  if (DEV && {})\n    {}(\"{}\", \"{}\");\n",
-            state.should_instrument_ident,
-            state.use_render_counter_ident,
-            rendered_name,
-            state.instrument_source_path
-        ));
-    }
-    if !prologue.is_empty() {
-        body = format!("{}{}", prologue, body);
+        body = format!("{}{}", directives_prefix, body);
     }
     if cf.needs_emit_freeze {
         let freeze_name = if cf.name.is_empty() {
@@ -3299,6 +3284,58 @@ fn render_compiled_body_source(cf: &CompiledFunction, state: &AstRenderState) ->
     }
     body = crate::pipeline::insert_blank_lines_for_guarded_cache_init(&body);
     body
+}
+
+fn prepend_instrument_forget_statement<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    body: &mut ast::FunctionBody<'a>,
+    cf: &CompiledFunction,
+    state: &AstRenderState,
+) {
+    if !cf.needs_instrument_forget {
+        return;
+    }
+
+    let rendered_name = if cf.name.is_empty() {
+        "<anonymous>"
+    } else {
+        cf.name.as_str()
+    };
+    let test = builder.expression_logical(
+        SPAN,
+        builder.expression_identifier(SPAN, builder.ident("DEV")),
+        LogicalOperator::And,
+        builder.expression_identifier(SPAN, builder.ident(&state.should_instrument_ident)),
+    );
+    let call = builder.expression_call(
+        SPAN,
+        builder.expression_identifier(SPAN, builder.ident(&state.use_render_counter_ident)),
+        NONE,
+        builder.vec_from_iter([
+            ast::Argument::from(builder.expression_string_literal(
+                SPAN,
+                builder.atom(rendered_name),
+                None,
+            )),
+            ast::Argument::from(builder.expression_string_literal(
+                SPAN,
+                builder.atom(&state.instrument_source_path),
+                None,
+            )),
+        ]),
+        false,
+    );
+    let statement = builder.statement_if(
+        SPAN,
+        test,
+        builder.statement_expression(SPAN, call),
+        None,
+    );
+
+    let mut statements = builder.vec1(statement);
+    statements.extend(body.statements.iter().map(|statement| statement.clone_in(allocator)));
+    body.statements = statements;
 }
 
 fn collect_rendered_outlined_functions(cf: &CompiledFunction) -> Vec<RenderedOutlinedFunction> {
@@ -3682,6 +3719,28 @@ function Component(props) {
             output,
             source,
         ));
+    }
+
+    #[test]
+    fn rewrites_instrument_forget_prefix_as_ast_statement() {
+        let source = r#"function Component(x) {
+  return x;
+}"#;
+        let mut compiled_function =
+            make_test_compiled_function("Component", 0, source.len() as u32, "return x;", &["x"], false);
+        compiled_function.needs_instrument_forget = true;
+        let state = AstRenderState {
+            should_instrument_ident: "shouldInstrument".to_string(),
+            use_render_counter_ident: "useRenderCounter".to_string(),
+            instrument_source_path: "fixture.jsx".to_string(),
+            ..empty_test_state(source_type_for_filename("fixture.jsx"))
+        };
+
+        let rewritten =
+            rewrite_single_statement_for_test_with_state("fixture.jsx", source, &compiled_function, state);
+
+        assert!(rewritten.contains("if (DEV && shouldInstrument)"));
+        assert!(rewritten.contains("useRenderCounter(\"Component\", \"fixture.jsx\")"));
     }
 
     fn make_test_compiled_function(
