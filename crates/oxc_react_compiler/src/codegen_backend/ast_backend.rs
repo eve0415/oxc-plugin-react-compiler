@@ -2886,7 +2886,9 @@ fn normalize_compiled_body_for_hir_match(body_source: &str) -> String {
     let flow_cast_normalized = normalize_generated_body_flow_cast_marker_calls(body_source);
     let iife_normalized = normalize_generated_body_iife_parenthesization(&flow_cast_normalized);
     if let Some(canonicalized) = canonicalize_body_source_for_hir_match(&iife_normalized) {
-        return normalize_hir_match_multiline_brace_literals(&canonicalized);
+        return normalize_hir_match_object_shorthand_pairs(
+            &normalize_hir_match_multiline_brace_literals(&canonicalized),
+        );
     }
     let normalized = iife_normalized
         .lines()
@@ -2894,7 +2896,9 @@ fn normalize_compiled_body_for_hir_match(body_source: &str) -> String {
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-    normalize_hir_match_multiline_brace_literals(&normalized)
+    normalize_hir_match_object_shorthand_pairs(&normalize_hir_match_multiline_brace_literals(
+        &normalized,
+    ))
 }
 
 fn canonicalize_body_source_for_hir_match(body_source: &str) -> Option<String> {
@@ -2981,6 +2985,94 @@ fn normalize_hir_match_multiline_brace_literals(code: &str) -> String {
         i += 1;
     }
     result.join("\n")
+}
+
+fn normalize_hir_match_object_shorthand_pairs(code: &str) -> String {
+    code.lines()
+        .map(|line| {
+            let mut current = line.trim().to_string();
+            loop {
+                let next = collapse_hir_match_object_shorthand_pairs_once(&current);
+                if next == current {
+                    break current;
+                }
+                current = next;
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn collapse_hir_match_object_shorthand_pairs_once(line: &str) -> String {
+    let bytes = line.as_bytes();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        if ch == '{' || ch == ',' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            let key_start = j;
+            if key_start < bytes.len() && is_hir_match_ident_start(bytes[key_start] as char) {
+                j += 1;
+                while j < bytes.len() && is_hir_match_ident_continue(bytes[j] as char) {
+                    j += 1;
+                }
+                let key = &line[key_start..j];
+                let mut k = j;
+                while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                    k += 1;
+                }
+                if k < bytes.len() && bytes[k] == b':' {
+                    k += 1;
+                    while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                        k += 1;
+                    }
+                    let value_start = k;
+                    if value_start < bytes.len()
+                        && is_hir_match_ident_start(bytes[value_start] as char)
+                    {
+                        k += 1;
+                        while k < bytes.len() && is_hir_match_ident_continue(bytes[k] as char) {
+                            k += 1;
+                        }
+                        let value = &line[value_start..k];
+                        let mut suffix = k;
+                        while suffix < bytes.len() && bytes[suffix].is_ascii_whitespace() {
+                            suffix += 1;
+                        }
+                        if suffix < bytes.len()
+                            && matches!(bytes[suffix], b',' | b'}')
+                            && key == value
+                        {
+                            out.push(ch);
+                            out.push_str(&line[i + 1..key_start]);
+                            out.push_str(key);
+                            if suffix > k {
+                                out.push_str(&line[k..suffix]);
+                            }
+                            out.push(bytes[suffix] as char);
+                            i = suffix + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        out.push(ch);
+        i += 1;
+    }
+    out
+}
+
+fn is_hir_match_ident_start(ch: char) -> bool {
+    ch == '_' || ch == '$' || ch.is_ascii_alphabetic()
+}
+
+fn is_hir_match_ident_continue(ch: char) -> bool {
+    is_hir_match_ident_start(ch) || ch.is_ascii_digit()
 }
 
 fn is_basic_block_label_open_brace(line: &str) -> bool {
@@ -4149,6 +4241,19 @@ return {
 };"#;
         let rendered = r#"const country = Codes[code];
 return { name: country.name, code };"#;
+
+        assert_eq!(
+            normalize_compiled_body_for_hir_match(lowered),
+            normalize_compiled_body_for_hir_match(rendered)
+        );
+    }
+
+    #[test]
+    fn normalize_compiled_body_for_hir_match_canonicalizes_destructure_shorthand_pairs() {
+        let lowered = r#"const { id, render } = t0;
+return <Stringify key={id} render={render} />;"#;
+        let rendered = r#"const { id: id, render: render } = t0;
+return <Stringify key={id} render={render} />;"#;
 
         assert_eq!(
             normalize_compiled_body_for_hir_match(lowered),
