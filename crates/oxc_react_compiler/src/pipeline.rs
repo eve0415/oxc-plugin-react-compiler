@@ -5005,14 +5005,6 @@ fn conflicting_global_bailout(name: &str) -> CompilerError {
     })
 }
 
-pub(crate) fn count_param_slots(params_str: &str) -> usize {
-    params_str
-        .split(',')
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .count()
-}
-
 pub(crate) fn has_early_binding_reference(before: &str, ident: &str) -> bool {
     if ident.is_empty() {
         return false;
@@ -5898,7 +5890,7 @@ fn try_compile_function<'a>(
     }
 
     let ParamsResult {
-        params_str,
+        params_str: _params_str,
         compiled_params,
         destructurings,
         hir_outlined_functions: param_hir_outlined_functions,
@@ -5978,7 +5970,6 @@ fn try_compile_function<'a>(
         generated_body,
         body_payload,
         needs_cache_import,
-        params_str,
         compiled_params,
         param_destructurings,
         is_async: func.r#async,
@@ -6100,7 +6091,7 @@ fn try_compile_function_with_name<'a>(
     }
 
     let ParamsResult {
-        params_str,
+        params_str: _params_str,
         compiled_params,
         destructurings,
         hir_outlined_functions: param_hir_outlined_functions,
@@ -6180,7 +6171,6 @@ fn try_compile_function_with_name<'a>(
         generated_body,
         body_payload,
         needs_cache_import,
-        params_str,
         compiled_params,
         param_destructurings,
         is_async: func.r#async,
@@ -6310,7 +6300,7 @@ fn try_compile_arrow<'a>(
     }
 
     let ParamsResult {
-        params_str,
+        params_str: _params_str,
         compiled_params,
         destructurings,
         hir_outlined_functions: param_hir_outlined_functions,
@@ -6390,7 +6380,6 @@ fn try_compile_arrow<'a>(
         generated_body,
         body_payload,
         needs_cache_import,
-        params_str,
         compiled_params,
         param_destructurings,
         is_async: arrow.r#async,

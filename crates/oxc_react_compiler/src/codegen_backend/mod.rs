@@ -28,7 +28,6 @@ pub(crate) struct CompiledFunction {
     pub(crate) generated_body: String,
     pub(crate) body_payload: CompiledBodyPayload,
     pub(crate) needs_cache_import: bool,
-    pub(crate) params_str: String,
     pub(crate) compiled_params: Option<Vec<CompiledParam>>,
     pub(crate) param_destructurings: Vec<String>,
     pub(crate) is_async: bool,

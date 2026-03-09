@@ -876,7 +876,7 @@ fn build_early_reference_gated_function_declaration_statements<'a>(
     let gate_result_name = format!("{}_result", gate_name);
     let optimized_name = format!("{}_optimized", cf.name);
     let unoptimized_name = format!("{}_unoptimized", cf.name);
-    let param_count = crate::pipeline::count_param_slots(&cf.params_str);
+    let param_count = compiled_params.len();
     let wrapper_args = (0..param_count)
         .map(|i| format!("arg{i}"))
         .collect::<Vec<_>>();
@@ -4565,7 +4565,6 @@ function Component(props) {
             generated_body: generated_body.to_string(),
             body_payload: CompiledBodyPayload::GeneratedString,
             needs_cache_import: false,
-            params_str: params.join(", "),
             compiled_params: Some(
                 params
                     .iter()
@@ -5142,7 +5141,6 @@ function Component(props) {
         );
         compiled_function.needs_cache_import = true;
         compiled_function.is_function_declaration = true;
-        compiled_function.params_str = "t0".to_string();
         let mut state = empty_test_state(source_type_for_filename("fixture.jsx"));
         state.gating_local_name = Some("gate".to_string());
 
