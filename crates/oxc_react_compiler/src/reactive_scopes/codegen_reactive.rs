@@ -4320,28 +4320,9 @@ fn emit_labeled_statement(output: &mut String, label_id: BlockId, stmt: &str) {
     }
     let label = format!("bb{}", label_id.0);
     let needs_block_wrapper = labeled_statement_needs_block_wrapper(trimmed);
-    if let Some(rendered) =
-        render_reactive_labeled_statement_ast(&label, trimmed, needs_block_wrapper)
-    {
-        output.push_str(&rendered);
-    } else if needs_block_wrapper {
-        output.push_str(&format!("bb{}: {{\n", label_id.0));
-        for line in trimmed.lines() {
-            if line.trim().is_empty() {
-                output.push('\n');
-            } else {
-                output.push_str("  ");
-                output.push_str(line);
-                output.push('\n');
-            }
-        }
-        output.push_str("}\n");
-    } else {
-        output.push_str(&format!("bb{}: {}", label_id.0, trimmed));
-        if !trimmed.ends_with('\n') {
-            output.push('\n');
-        }
-    }
+    let rendered = render_reactive_labeled_statement_ast(&label, trimmed, needs_block_wrapper)
+        .expect("generated labeled statement should parse");
+    output.push_str(&rendered);
 }
 
 fn statement_references_label(stmt: &str, label_id: BlockId) -> bool {
