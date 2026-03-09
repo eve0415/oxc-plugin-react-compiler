@@ -14873,15 +14873,18 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                     callee_final, optional, rendered_args
                 ),
             );
-            let call_expr = if *optional {
-                if should_break_optional_call_args(&rendered_args) {
-                    format!("{}?.(\n{})", callee_final, args_str)
-                } else {
-                    format!("{}?.({})", callee_final, args_str)
-                }
-            } else {
-                format!("{}({})", callee_final, args_str)
-            };
+            let call_expr = render_call_expression_ast(&callee_final, args, &rendered_args, *optional)
+                .unwrap_or_else(|| {
+                    if *optional {
+                        if should_break_optional_call_args(&rendered_args) {
+                            format!("{}?.(\n{})", callee_final, args_str)
+                        } else {
+                            format!("{}?.({})", callee_final, args_str)
+                        }
+                    } else {
+                        format!("{}({})", callee_final, args_str)
+                    }
+                });
             if cx.emit_hook_guards && is_hook_call {
                 ExprValue::primary(wrap_hook_guarded_call_expression(&call_expr))
             } else {
@@ -14934,7 +14937,6 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             );
             let is_hook_call = !is_computed && Environment::is_hook_name(&prop);
             let call_expr = if is_computed {
-                // Bracket notation: x[expr]() or x?.[expr]() or x[expr]?.()
                 let opt_recv = if *receiver_optional { "?." } else { "" };
                 if *call_optional {
                     if should_break_optional_call_args(&rendered_args) {
@@ -14946,7 +14948,6 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                     format!("{}{}[{}]({})", recv, opt_recv, prop, args_str)
                 }
             } else {
-                // Dot notation: x.method() or x?.method()
                 let dot = if *receiver_optional { "?." } else { "." };
                 if *call_optional {
                     if should_break_optional_call_args(&rendered_args) {
@@ -14955,7 +14956,6 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                         format!("{}{}{}?.({})", recv, dot, prop, args_str)
                     }
                 } else {
-                    // Preserve upstream chain formatting for long `new ... .method()...` chains.
                     if !*receiver_optional
                         && recv.starts_with("new ")
                         && (recv.contains('\n')
@@ -15531,7 +15531,9 @@ fn apply_optional_to_rendered_expr(expr: &str, optional: bool) -> Option<String>
         }
         _ => return None,
     };
-    Some(codegen_expression_with_oxc(&expression))
+    Some(strip_top_level_parenthesized_expression(
+        codegen_expression_with_oxc(&expression),
+    ))
 }
 
 fn parse_rendered_expression_ast<'a>(
@@ -15839,6 +15841,49 @@ fn render_new_expression_ast(
     Some(codegen_expression_with_oxc(&expression))
 }
 
+fn render_arguments_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    args: &[Argument],
+    rendered_args: &[String],
+) -> Option<oxc_allocator::Vec<'a, ast::Argument<'a>>> {
+    if args.len() != rendered_args.len() {
+        return None;
+    }
+    let mut lowered = builder.vec();
+    for (arg, rendered) in args.iter().zip(rendered_args) {
+        match arg {
+            Argument::Place(_) => lowered.push(ast::Argument::from(
+                parse_rendered_expression_ast(allocator, rendered)?,
+            )),
+            Argument::Spread(_) => {
+                let expr = rendered.strip_prefix("...").unwrap_or(rendered);
+                lowered.push(builder.argument_spread_element(
+                    SPAN,
+                    parse_rendered_expression_ast(allocator, expr)?,
+                ));
+            }
+        }
+    }
+    Some(lowered)
+}
+
+fn render_call_expression_ast(
+    callee: &str,
+    args: &[Argument],
+    rendered_args: &[String],
+    optional: bool,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let callee = parse_rendered_expression_ast(&allocator, callee)?;
+    let args = render_arguments_ast(builder, &allocator, args, rendered_args)?;
+    let expression = builder.expression_call(SPAN, callee, NONE, args, optional);
+    Some(strip_top_level_parenthesized_expression(
+        codegen_expression_with_oxc(&expression),
+    ))
+}
+
 fn render_array_expression_ast(cx: &mut Context, elements: &[ArrayElement]) -> Option<String> {
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
@@ -15901,6 +15946,16 @@ fn render_meta_property_expression_ast(meta: &str, property: &str) -> Option<Str
         builder.identifier_name(SPAN, builder.ident(property)),
     );
     Some(codegen_expression_with_oxc(&expression))
+}
+
+fn strip_top_level_parenthesized_expression(expression: String) -> String {
+    let allocator = Allocator::default();
+    match parse_rendered_expression_ast(&allocator, &expression) {
+        Some(ast::Expression::ParenthesizedExpression(parenthesized)) => {
+            codegen_expression_with_oxc(&parenthesized.unbox().expression)
+        }
+        _ => expression,
+    }
 }
 
 // ---- Place & identifier helpers ----
@@ -20619,10 +20674,13 @@ fn update_op_to_str(op: &UpdateOperator) -> &'static str {
 /// Format a property access expression, using dot notation for string properties
 /// and bracket notation for numeric properties. Supports optional chaining.
 fn format_property_access(obj: &str, prop: &PropertyLiteral, optional: bool) -> String {
-    let obj = if (obj.contains(" as ") || obj.contains(" satisfies ")) && !obj.starts_with('(') {
-        format!("({})", obj)
+    let stripped = strip_redundant_member_object_parens(obj);
+    let obj = if (stripped.contains(" as ") || stripped.contains(" satisfies "))
+        && !stripped.starts_with('(')
+    {
+        format!("({})", stripped)
     } else {
-        obj.to_string()
+        stripped
     };
     match prop {
         PropertyLiteral::String(s) => {
@@ -20651,6 +20709,24 @@ fn format_property_access(obj: &str, prop: &PropertyLiteral, optional: bool) -> 
                 format!("{}[{}]", obj, n)
             }
         }
+    }
+}
+
+fn strip_redundant_member_object_parens(obj: &str) -> String {
+    let allocator = Allocator::default();
+    let Some(ast::Expression::ParenthesizedExpression(parenthesized)) =
+        parse_rendered_expression_ast(&allocator, obj)
+    else {
+        return obj.to_string();
+    };
+    let inner = parenthesized.unbox().expression;
+    match inner {
+        ast::Expression::CallExpression(_)
+        | ast::Expression::ChainExpression(_)
+        | ast::Expression::StaticMemberExpression(_)
+        | ast::Expression::ComputedMemberExpression(_)
+        | ast::Expression::PrivateFieldExpression(_) => codegen_expression_with_oxc(&inner),
+        _ => obj.to_string(),
     }
 }
 
