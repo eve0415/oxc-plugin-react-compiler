@@ -194,16 +194,15 @@ fn try_emit_module(
             continue;
         }
 
-        if stmt_compiled.len() == 1
-            && let Some(statements) = try_rewrite_compiled_statement_ast(
-                builder,
-                &allocator,
-                state.source_type,
-                args.source,
-                stmt,
-                stmt_compiled[0],
-                &state,
-            )
+        if let Some(statements) = try_rewrite_compiled_statement_ast(
+            builder,
+            &allocator,
+            state.source_type,
+            args.source,
+            stmt,
+            &stmt_compiled,
+            &state,
+        )
         {
             for statement in statements {
                 let statement_source =
@@ -568,47 +567,57 @@ fn try_rewrite_compiled_statement_ast<'a>(
     source_type: SourceType,
     source: &str,
     stmt: &ast::Statement<'_>,
-    cf: &CompiledFunction,
+    compiled: &[&CompiledFunction],
     state: &AstRenderState,
 ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
-    if state.gating_local_name.is_some()
-        && cf.needs_cache_import
-        && source[stmt.span().start as usize..stmt.span().end as usize].contains("FIXTURE_ENTRYPOINT")
-    {
-        return None;
-    }
-
-    let body_source = render_compiled_body_source(cf, state);
-    let function_body =
-        parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?;
-    let compiled_params = cf.compiled_params.as_deref()?;
     let mut rewritten_stmt = stmt.clone_in(allocator);
-    let rewritten = if let Some(gate_name) = state.gating_local_name.as_deref().filter(|_| cf.needs_cache_import) {
-        replace_compiled_function_in_statement_with_gate(
-            builder,
-            allocator,
-            &mut rewritten_stmt,
-            gate_name,
-            cf,
-            compiled_params,
-            &function_body,
-        )
-    } else {
-        replace_compiled_function_in_statement(
-            builder,
-            allocator,
-            &mut rewritten_stmt,
-            cf,
-            compiled_params,
-            &function_body,
-        )
-    };
-    if !rewritten {
-        return None;
+    let stmt_source = &source[stmt.span().start as usize..stmt.span().end as usize];
+    let mut outlined_functions = Vec::new();
+    for cf in compiled {
+        if state.gating_local_name.is_some()
+            && cf.needs_cache_import
+            && stmt_source.contains("FIXTURE_ENTRYPOINT")
+        {
+            return None;
+        }
+
+        let body_source = render_compiled_body_source(cf, state);
+        let function_body =
+            parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?;
+        let compiled_params = cf.compiled_params.as_deref()?;
+        let rewritten = if let Some(gate_name) = state
+            .gating_local_name
+            .as_deref()
+            .filter(|_| cf.needs_cache_import)
+        {
+            replace_compiled_function_in_statement_with_gate(
+                builder,
+                allocator,
+                &mut rewritten_stmt,
+                gate_name,
+                cf,
+                compiled_params,
+                &function_body,
+            )
+        } else {
+            replace_compiled_function_in_statement(
+                builder,
+                allocator,
+                &mut rewritten_stmt,
+                cf,
+                compiled_params,
+                &function_body,
+            )
+        };
+        if !rewritten {
+            return None;
+        }
+
+        outlined_functions.extend(collect_rendered_outlined_functions(cf));
     }
 
     let mut statements = builder.vec1(rewritten_stmt);
-    for outlined in collect_rendered_outlined_functions(cf) {
+    for outlined in outlined_functions {
         if let Some(hir_function) = outlined.hir_function.as_ref()
             && let Some(statement) =
                 super::hir_to_ast::try_lower_function_declaration_ast(builder, hir_function)
@@ -838,15 +847,17 @@ fn replace_compiled_function_in_statement_with_gate<'a>(
                 )
             })
         }
-        ast::Statement::ThrowStatement(throw_statement) => replace_compiled_function_in_expression_with_gate(
-            builder,
-            allocator,
-            &mut throw_statement.argument,
-            gate_name,
-            cf,
-            compiled_params,
-            function_body,
-        ),
+        ast::Statement::ThrowStatement(throw_statement) => {
+            replace_compiled_function_in_expression_with_gate(
+                builder,
+                allocator,
+                &mut throw_statement.argument,
+                gate_name,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
         ast::Statement::BlockStatement(block_statement) => {
             block_statement.body.iter_mut().any(|statement| {
                 replace_compiled_function_in_statement_with_gate(
@@ -1393,17 +1404,17 @@ fn replace_compiled_function_in_export_default_with_gate<'a>(
                 function_body,
             )
         }
-        ast::ExportDefaultDeclarationKind::TSInstantiationExpression(
-            instantiation_expression,
-        ) => replace_compiled_function_in_expression_with_gate(
-            builder,
-            allocator,
-            &mut instantiation_expression.expression,
-            gate_name,
-            cf,
-            compiled_params,
-            function_body,
-        ),
+        ast::ExportDefaultDeclarationKind::TSInstantiationExpression(instantiation_expression) => {
+            replace_compiled_function_in_expression_with_gate(
+                builder,
+                allocator,
+                &mut instantiation_expression.expression,
+                gate_name,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
         _ => false,
     }
 }
@@ -1707,22 +1718,20 @@ fn replace_compiled_function_in_expression_with_gate<'a>(
                 function_body,
             )
         }
-        ast::Expression::SequenceExpression(sequence_expression) => {
-            sequence_expression
-                .expressions
-                .iter_mut()
-                .any(|expression| {
-                    replace_compiled_function_in_expression_with_gate(
-                        builder,
-                        allocator,
-                        expression,
-                        gate_name,
-                        cf,
-                        compiled_params,
-                        function_body,
-                    )
-                })
-        }
+        ast::Expression::SequenceExpression(sequence_expression) => sequence_expression
+            .expressions
+            .iter_mut()
+            .any(|expression| {
+                replace_compiled_function_in_expression_with_gate(
+                    builder,
+                    allocator,
+                    expression,
+                    gate_name,
+                    cf,
+                    compiled_params,
+                    function_body,
+                )
+            }),
         ast::Expression::ConditionalExpression(conditional_expression) => {
             replace_compiled_function_in_conditional_expression_with_gate(
                 builder,
@@ -1833,7 +1842,7 @@ fn replace_compiled_function_in_call_expression<'a>(
     cf: &CompiledFunction,
     compiled_params: &[CompiledParam],
     function_body: &ast::FunctionBody<'a>,
-    ) -> bool {
+) -> bool {
     replace_compiled_function_in_expression(
         builder,
         allocator,
@@ -1890,7 +1899,7 @@ fn replace_compiled_function_in_assignment_expression<'a>(
     cf: &CompiledFunction,
     compiled_params: &[CompiledParam],
     function_body: &ast::FunctionBody<'a>,
-    ) -> bool {
+) -> bool {
     replace_compiled_function_in_expression(
         builder,
         allocator,
@@ -1928,7 +1937,7 @@ fn replace_compiled_function_in_conditional_expression<'a>(
     cf: &CompiledFunction,
     compiled_params: &[CompiledParam],
     function_body: &ast::FunctionBody<'a>,
-    ) -> bool {
+) -> bool {
     replace_compiled_function_in_expression(
         builder,
         allocator,
@@ -1996,7 +2005,7 @@ fn replace_compiled_function_in_logical_expression<'a>(
     cf: &CompiledFunction,
     compiled_params: &[CompiledParam],
     function_body: &ast::FunctionBody<'a>,
-    ) -> bool {
+) -> bool {
     replace_compiled_function_in_expression(
         builder,
         allocator,
@@ -2285,7 +2294,8 @@ fn convert_expression_to_export_default_kind<'a>(
     consequent: ast::Expression<'a>,
     alternate: ast::Expression<'a>,
 ) -> ast::ExportDefaultDeclarationKind<'a> {
-    let conditional = make_gate_conditional_expression(builder, gate_name, span, consequent, alternate);
+    let conditional =
+        make_gate_conditional_expression(builder, gate_name, span, consequent, alternate);
     match conditional {
         ast::Expression::FunctionExpression(function) => {
             ast::ExportDefaultDeclarationKind::FunctionExpression(function)
@@ -2293,7 +2303,9 @@ fn convert_expression_to_export_default_kind<'a>(
         ast::Expression::ArrowFunctionExpression(arrow) => {
             ast::ExportDefaultDeclarationKind::ArrowFunctionExpression(arrow)
         }
-        ast::Expression::CallExpression(call) => ast::ExportDefaultDeclarationKind::CallExpression(call),
+        ast::Expression::CallExpression(call) => {
+            ast::ExportDefaultDeclarationKind::CallExpression(call)
+        }
         ast::Expression::ConditionalExpression(conditional) => {
             ast::ExportDefaultDeclarationKind::ConditionalExpression(conditional)
         }
@@ -2315,7 +2327,9 @@ fn convert_expression_to_export_default_kind<'a>(
         ast::Expression::ObjectExpression(object) => {
             ast::ExportDefaultDeclarationKind::ObjectExpression(object)
         }
-        ast::Expression::TSAsExpression(ts_as) => ast::ExportDefaultDeclarationKind::TSAsExpression(ts_as),
+        ast::Expression::TSAsExpression(ts_as) => {
+            ast::ExportDefaultDeclarationKind::TSAsExpression(ts_as)
+        }
         ast::Expression::TSSatisfiesExpression(ts_satisfies) => {
             ast::ExportDefaultDeclarationKind::TSSatisfiesExpression(ts_satisfies)
         }
@@ -2965,7 +2979,39 @@ mod tests {
             source_type,
             source,
             &statement,
-            compiled_function,
+            &[compiled_function],
+            &state,
+        )
+        .expect("expected AST-native rewrite");
+        rewritten
+            .into_iter()
+            .map(|statement| {
+                codegen_statement_source(&allocator, source_type, &statement)
+                    .trim_end_matches('\n')
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn rewrite_single_statement_for_test_with_many(
+        filename: &str,
+        source: &str,
+        compiled_functions: &[&CompiledFunction],
+        state: AstRenderState,
+    ) -> String {
+        let allocator = Allocator::default();
+        let source_type = source_type_for_filename(filename);
+        let mut statements = parse_statements(&allocator, source_type, source).unwrap();
+        let statement = statements.pop().unwrap();
+        let builder = AstBuilder::new(&allocator);
+        let rewritten = try_rewrite_compiled_statement_ast(
+            builder,
+            &allocator,
+            source_type,
+            source,
+            &statement,
+            compiled_functions,
             &state,
         )
         .expect("expected AST-native rewrite");
@@ -3227,11 +3273,74 @@ mod tests {
             &compiled_function,
             state,
         );
-        assert!(
-            rewritten.contains(
-                "export default React.forwardRef(gate() ? function FancyButton(props, ref) {"
-            )
-        );
+        assert!(rewritten.contains(
+            "export default React.forwardRef(gate() ? function FancyButton(props, ref) {"
+        ));
         assert!(rewritten.contains(": function FancyButton(props, ref) {"));
+    }
+
+    #[test]
+    fn rewrites_multiple_gated_wrapped_functions_in_one_statement_as_ast() {
+        let source =
+            "const First = React.memo((first) => null), Second = React.memo((second) => null);";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::VariableDeclaration(variable) = statement else {
+            panic!("expected variable declaration");
+        };
+        let ast::Expression::CallExpression(first_call) = variable.declarations[0]
+            .init
+            .as_ref()
+            .expect("expected first initializer")
+        else {
+            panic!("expected first call initializer");
+        };
+        let ast::Expression::CallExpression(second_call) = variable.declarations[1]
+            .init
+            .as_ref()
+            .expect("expected second initializer")
+        else {
+            panic!("expected second call initializer");
+        };
+        let ast::Argument::ArrowFunctionExpression(first_arrow) = &first_call.arguments[0] else {
+            panic!("expected first arrow");
+        };
+        let ast::Argument::ArrowFunctionExpression(second_arrow) = &second_call.arguments[0] else {
+            panic!("expected second arrow");
+        };
+
+        let mut first = make_test_compiled_function(
+            "First",
+            first_arrow.span.start,
+            first_arrow.span.end,
+            "return <div />;",
+            &["first"],
+            true,
+        );
+        first.needs_cache_import = true;
+        let mut second = make_test_compiled_function(
+            "Second",
+            second_arrow.span.start,
+            second_arrow.span.end,
+            "return <span />;",
+            &["second"],
+            true,
+        );
+        second.needs_cache_import = true;
+        let mut state = empty_test_state(source_type_for_filename("fixture.jsx"));
+        state.gating_local_name = Some("gate".to_string());
+
+        let rewritten = rewrite_single_statement_for_test_with_many(
+            "fixture.jsx",
+            source,
+            &[&first, &second],
+            state,
+        );
+        assert!(rewritten.contains("React.memo(gate() ? (first) => {"));
+        assert!(rewritten.contains(": (first) => null)"));
+        assert!(rewritten.contains("React.memo(gate() ? (second) => {"));
+        assert!(rewritten.contains(": (second) => null)"));
     }
 }
