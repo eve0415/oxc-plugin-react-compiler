@@ -572,12 +572,10 @@ fn try_rewrite_compiled_statement_ast<'a>(
     if state.gating_local_name.is_some() && cf.needs_cache_import {
         return None;
     }
-    if cf.compiled_params.is_none() {
-        return None;
-    }
 
     let body_source = render_compiled_body_source(cf, state);
-    let function_body = parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?;
+    let function_body =
+        parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?;
     let compiled_params = cf.compiled_params.as_deref()?;
     let mut rewritten_stmt = stmt.clone_in(allocator);
     if !replace_compiled_function_in_statement(
@@ -601,12 +599,10 @@ fn try_rewrite_compiled_statement_ast<'a>(
             continue;
         }
 
-        let source = format_outlined_function_source(&outlined.name, &outlined.params, &outlined.body);
-        statements.extend(parse_statements(
-            allocator,
-            source_type,
-            allocator.alloc_str(&source),
-        ).ok()?);
+        let source =
+            format_outlined_function_source(&outlined.name, &outlined.params, &outlined.body);
+        statements
+            .extend(parse_statements(allocator, source_type, allocator.alloc_str(&source)).ok()?);
     }
 
     Some(statements)
@@ -625,25 +621,131 @@ fn replace_compiled_function_in_statement<'a>(
             if function.span.start == cf.start && function.span.end == cf.end =>
         {
             strip_compiled_function_signature_types(function);
-            function.params = make_compiled_formal_params(
-                builder,
-                function.params.kind,
-                compiled_params,
-            );
+            function.params =
+                make_compiled_formal_params(builder, function.params.kind, compiled_params);
             function.body = Some(make_function_body(builder, allocator, function_body));
             true
         }
-        ast::Statement::VariableDeclaration(variable) => variable
-            .declarations
-            .iter_mut()
-            .any(|declarator| replace_compiled_function_in_declarator(
+        ast::Statement::VariableDeclaration(variable) => {
+            variable.declarations.iter_mut().any(|declarator| {
+                replace_compiled_function_in_declarator(
+                    builder,
+                    allocator,
+                    declarator,
+                    cf,
+                    compiled_params,
+                    function_body,
+                )
+            })
+        }
+        ast::Statement::ExpressionStatement(expression_statement) => {
+            replace_compiled_function_in_expression(
                 builder,
                 allocator,
-                declarator,
+                &mut expression_statement.expression,
                 cf,
                 compiled_params,
                 function_body,
-            )),
+            )
+        }
+        ast::Statement::ReturnStatement(return_statement) => {
+            return_statement.argument.as_mut().is_some_and(|argument| {
+                replace_compiled_function_in_expression(
+                    builder,
+                    allocator,
+                    argument,
+                    cf,
+                    compiled_params,
+                    function_body,
+                )
+            })
+        }
+        ast::Statement::ThrowStatement(throw_statement) => replace_compiled_function_in_expression(
+            builder,
+            allocator,
+            &mut throw_statement.argument,
+            cf,
+            compiled_params,
+            function_body,
+        ),
+        ast::Statement::BlockStatement(block_statement) => {
+            block_statement.body.iter_mut().any(|statement| {
+                replace_compiled_function_in_statement(
+                    builder,
+                    allocator,
+                    statement,
+                    cf,
+                    compiled_params,
+                    function_body,
+                )
+            })
+        }
+        ast::Statement::IfStatement(if_statement) => {
+            replace_compiled_function_in_expression(
+                builder,
+                allocator,
+                &mut if_statement.test,
+                cf,
+                compiled_params,
+                function_body,
+            ) || replace_compiled_function_in_statement(
+                builder,
+                allocator,
+                &mut if_statement.consequent,
+                cf,
+                compiled_params,
+                function_body,
+            ) || if_statement.alternate.as_mut().is_some_and(|alternate| {
+                replace_compiled_function_in_statement(
+                    builder,
+                    allocator,
+                    alternate,
+                    cf,
+                    compiled_params,
+                    function_body,
+                )
+            })
+        }
+        ast::Statement::LabeledStatement(labeled_statement) => {
+            replace_compiled_function_in_statement(
+                builder,
+                allocator,
+                &mut labeled_statement.body,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::Statement::SwitchStatement(switch_statement) => {
+            replace_compiled_function_in_expression(
+                builder,
+                allocator,
+                &mut switch_statement.discriminant,
+                cf,
+                compiled_params,
+                function_body,
+            ) || switch_statement.cases.iter_mut().any(|case| {
+                case.test.as_mut().is_some_and(|test| {
+                    replace_compiled_function_in_expression(
+                        builder,
+                        allocator,
+                        test,
+                        cf,
+                        compiled_params,
+                        function_body,
+                    )
+                }) || case.consequent.iter_mut().any(|statement| {
+                    replace_compiled_function_in_statement(
+                        builder,
+                        allocator,
+                        statement,
+                        cf,
+                        compiled_params,
+                        function_body,
+                    )
+                })
+            })
+        }
         ast::Statement::ExportNamedDeclaration(export_named) => export_named
             .declaration
             .as_mut()
@@ -684,25 +786,23 @@ fn replace_compiled_function_in_declaration<'a>(
             if function.span.start == cf.start && function.span.end == cf.end =>
         {
             strip_compiled_function_signature_types(function);
-            function.params = make_compiled_formal_params(
-                builder,
-                function.params.kind,
-                compiled_params,
-            );
+            function.params =
+                make_compiled_formal_params(builder, function.params.kind, compiled_params);
             function.body = Some(make_function_body(builder, allocator, function_body));
             true
         }
-        ast::Declaration::VariableDeclaration(variable) => variable
-            .declarations
-            .iter_mut()
-            .any(|declarator| replace_compiled_function_in_declarator(
-                builder,
-                allocator,
-                declarator,
-                cf,
-                compiled_params,
-                function_body,
-            )),
+        ast::Declaration::VariableDeclaration(variable) => {
+            variable.declarations.iter_mut().any(|declarator| {
+                replace_compiled_function_in_declarator(
+                    builder,
+                    allocator,
+                    declarator,
+                    cf,
+                    compiled_params,
+                    function_body,
+                )
+            })
+        }
         _ => false,
     }
 }
@@ -720,11 +820,8 @@ fn replace_compiled_function_in_export_default<'a>(
             if function.span.start == cf.start && function.span.end == cf.end =>
         {
             strip_compiled_function_signature_types(function);
-            function.params = make_compiled_formal_params(
-                builder,
-                function.params.kind,
-                compiled_params,
-            );
+            function.params =
+                make_compiled_formal_params(builder, function.params.kind, compiled_params);
             function.body = Some(make_function_body(builder, allocator, function_body));
             true
         }
@@ -732,11 +829,8 @@ fn replace_compiled_function_in_export_default<'a>(
             if function.span.start == cf.start && function.span.end == cf.end =>
         {
             strip_compiled_function_signature_types(function);
-            function.params = make_compiled_formal_params(
-                builder,
-                function.params.kind,
-                compiled_params,
-            );
+            function.params =
+                make_compiled_formal_params(builder, function.params.kind, compiled_params);
             function.body = Some(make_function_body(builder, allocator, function_body));
             true
         }
@@ -744,11 +838,145 @@ fn replace_compiled_function_in_export_default<'a>(
             if arrow.span.start == cf.start && arrow.span.end == cf.end =>
         {
             strip_compiled_arrow_signature_types(arrow);
-            arrow.params =
-                make_compiled_formal_params(builder, arrow.params.kind, compiled_params);
+            arrow.params = make_compiled_formal_params(builder, arrow.params.kind, compiled_params);
             arrow.expression = false;
             arrow.body = make_function_body(builder, allocator, function_body);
             true
+        }
+        ast::ExportDefaultDeclarationKind::CallExpression(call_expression) => {
+            replace_compiled_function_in_call_expression(
+                builder,
+                allocator,
+                call_expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::ExportDefaultDeclarationKind::AssignmentExpression(assignment_expression) => {
+            replace_compiled_function_in_assignment_expression(
+                builder,
+                allocator,
+                assignment_expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::ExportDefaultDeclarationKind::ParenthesizedExpression(parenthesized_expression) => {
+            replace_compiled_function_in_expression(
+                builder,
+                allocator,
+                &mut parenthesized_expression.expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::ExportDefaultDeclarationKind::SequenceExpression(sequence_expression) => {
+            sequence_expression
+                .expressions
+                .iter_mut()
+                .any(|expression| {
+                    replace_compiled_function_in_expression(
+                        builder,
+                        allocator,
+                        expression,
+                        cf,
+                        compiled_params,
+                        function_body,
+                    )
+                })
+        }
+        ast::ExportDefaultDeclarationKind::ConditionalExpression(conditional_expression) => {
+            replace_compiled_function_in_conditional_expression(
+                builder,
+                allocator,
+                conditional_expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::ExportDefaultDeclarationKind::LogicalExpression(logical_expression) => {
+            replace_compiled_function_in_logical_expression(
+                builder,
+                allocator,
+                logical_expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::ExportDefaultDeclarationKind::ArrayExpression(array_expression) => {
+            replace_compiled_function_in_array_expression(
+                builder,
+                allocator,
+                array_expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::ExportDefaultDeclarationKind::ObjectExpression(object_expression) => {
+            replace_compiled_function_in_object_expression(
+                builder,
+                allocator,
+                object_expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::ExportDefaultDeclarationKind::TSAsExpression(ts_as_expression) => {
+            replace_compiled_function_in_expression(
+                builder,
+                allocator,
+                &mut ts_as_expression.expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::ExportDefaultDeclarationKind::TSSatisfiesExpression(ts_satisfies_expression) => {
+            replace_compiled_function_in_expression(
+                builder,
+                allocator,
+                &mut ts_satisfies_expression.expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::ExportDefaultDeclarationKind::TSNonNullExpression(ts_non_null_expression) => {
+            replace_compiled_function_in_expression(
+                builder,
+                allocator,
+                &mut ts_non_null_expression.expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::ExportDefaultDeclarationKind::TSTypeAssertion(type_assertion) => {
+            replace_compiled_function_in_expression(
+                builder,
+                allocator,
+                &mut type_assertion.expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::ExportDefaultDeclarationKind::TSInstantiationExpression(instantiation_expression) => {
+            replace_compiled_function_in_expression(
+                builder,
+                allocator,
+                &mut instantiation_expression.expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
         }
         _ => false,
     }
@@ -788,11 +1016,8 @@ fn replace_compiled_function_in_expression<'a>(
             if function.span.start == cf.start && function.span.end == cf.end =>
         {
             strip_compiled_function_signature_types(function);
-            function.params = make_compiled_formal_params(
-                builder,
-                function.params.kind,
-                compiled_params,
-            );
+            function.params =
+                make_compiled_formal_params(builder, function.params.kind, compiled_params);
             function.body = Some(make_function_body(builder, allocator, function_body));
             true
         }
@@ -800,13 +1025,352 @@ fn replace_compiled_function_in_expression<'a>(
             if arrow.span.start == cf.start && arrow.span.end == cf.end =>
         {
             strip_compiled_arrow_signature_types(arrow);
-            arrow.params =
-                make_compiled_formal_params(builder, arrow.params.kind, compiled_params);
+            arrow.params = make_compiled_formal_params(builder, arrow.params.kind, compiled_params);
             arrow.expression = false;
             arrow.body = make_function_body(builder, allocator, function_body);
             true
         }
+        ast::Expression::CallExpression(call_expression) => {
+            replace_compiled_function_in_call_expression(
+                builder,
+                allocator,
+                call_expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::Expression::AssignmentExpression(assignment_expression) => {
+            replace_compiled_function_in_assignment_expression(
+                builder,
+                allocator,
+                assignment_expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::Expression::ParenthesizedExpression(parenthesized_expression) => {
+            replace_compiled_function_in_expression(
+                builder,
+                allocator,
+                &mut parenthesized_expression.expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::Expression::SequenceExpression(sequence_expression) => sequence_expression
+            .expressions
+            .iter_mut()
+            .any(|expression| {
+                replace_compiled_function_in_expression(
+                    builder,
+                    allocator,
+                    expression,
+                    cf,
+                    compiled_params,
+                    function_body,
+                )
+            }),
+        ast::Expression::ConditionalExpression(conditional_expression) => {
+            replace_compiled_function_in_conditional_expression(
+                builder,
+                allocator,
+                conditional_expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::Expression::LogicalExpression(logical_expression) => {
+            replace_compiled_function_in_logical_expression(
+                builder,
+                allocator,
+                logical_expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::Expression::ArrayExpression(array_expression) => {
+            replace_compiled_function_in_array_expression(
+                builder,
+                allocator,
+                array_expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::Expression::ObjectExpression(object_expression) => {
+            replace_compiled_function_in_object_expression(
+                builder,
+                allocator,
+                object_expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::Expression::TSAsExpression(ts_as_expression) => {
+            replace_compiled_function_in_expression(
+                builder,
+                allocator,
+                &mut ts_as_expression.expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::Expression::TSSatisfiesExpression(ts_satisfies_expression) => {
+            replace_compiled_function_in_expression(
+                builder,
+                allocator,
+                &mut ts_satisfies_expression.expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::Expression::TSNonNullExpression(ts_non_null_expression) => {
+            replace_compiled_function_in_expression(
+                builder,
+                allocator,
+                &mut ts_non_null_expression.expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::Expression::TSTypeAssertion(type_assertion) => {
+            replace_compiled_function_in_expression(
+                builder,
+                allocator,
+                &mut type_assertion.expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
+        ast::Expression::TSInstantiationExpression(instantiation_expression) => {
+            replace_compiled_function_in_expression(
+                builder,
+                allocator,
+                &mut instantiation_expression.expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
         _ => false,
+    }
+}
+
+fn replace_compiled_function_in_call_expression<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    call_expression: &mut ast::CallExpression<'a>,
+    cf: &CompiledFunction,
+    compiled_params: &[CompiledParam],
+    function_body: &ast::FunctionBody<'a>,
+) -> bool {
+    replace_compiled_function_in_expression(
+        builder,
+        allocator,
+        &mut call_expression.callee,
+        cf,
+        compiled_params,
+        function_body,
+    ) || call_expression.arguments.iter_mut().any(|argument| {
+        replace_compiled_function_in_argument(
+            builder,
+            allocator,
+            argument,
+            cf,
+            compiled_params,
+            function_body,
+        )
+    })
+}
+
+fn replace_compiled_function_in_assignment_expression<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    assignment_expression: &mut ast::AssignmentExpression<'a>,
+    cf: &CompiledFunction,
+    compiled_params: &[CompiledParam],
+    function_body: &ast::FunctionBody<'a>,
+) -> bool {
+    replace_compiled_function_in_expression(
+        builder,
+        allocator,
+        &mut assignment_expression.right,
+        cf,
+        compiled_params,
+        function_body,
+    )
+}
+
+fn replace_compiled_function_in_conditional_expression<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    conditional_expression: &mut ast::ConditionalExpression<'a>,
+    cf: &CompiledFunction,
+    compiled_params: &[CompiledParam],
+    function_body: &ast::FunctionBody<'a>,
+) -> bool {
+    replace_compiled_function_in_expression(
+        builder,
+        allocator,
+        &mut conditional_expression.test,
+        cf,
+        compiled_params,
+        function_body,
+    ) || replace_compiled_function_in_expression(
+        builder,
+        allocator,
+        &mut conditional_expression.consequent,
+        cf,
+        compiled_params,
+        function_body,
+    ) || replace_compiled_function_in_expression(
+        builder,
+        allocator,
+        &mut conditional_expression.alternate,
+        cf,
+        compiled_params,
+        function_body,
+    )
+}
+
+fn replace_compiled_function_in_logical_expression<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    logical_expression: &mut ast::LogicalExpression<'a>,
+    cf: &CompiledFunction,
+    compiled_params: &[CompiledParam],
+    function_body: &ast::FunctionBody<'a>,
+) -> bool {
+    replace_compiled_function_in_expression(
+        builder,
+        allocator,
+        &mut logical_expression.left,
+        cf,
+        compiled_params,
+        function_body,
+    ) || replace_compiled_function_in_expression(
+        builder,
+        allocator,
+        &mut logical_expression.right,
+        cf,
+        compiled_params,
+        function_body,
+    )
+}
+
+fn replace_compiled_function_in_array_expression<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    array_expression: &mut ast::ArrayExpression<'a>,
+    cf: &CompiledFunction,
+    compiled_params: &[CompiledParam],
+    function_body: &ast::FunctionBody<'a>,
+) -> bool {
+    array_expression
+        .elements
+        .iter_mut()
+        .any(|element| match element {
+            ast::ArrayExpressionElement::SpreadElement(spread) => {
+                replace_compiled_function_in_expression(
+                    builder,
+                    allocator,
+                    &mut spread.argument,
+                    cf,
+                    compiled_params,
+                    function_body,
+                )
+            }
+            ast::ArrayExpressionElement::Elision(_) => false,
+            _ => {
+                let element_expression: &mut ast::Expression<'a> =
+                    unsafe { std::mem::transmute(element) };
+                replace_compiled_function_in_expression(
+                    builder,
+                    allocator,
+                    element_expression,
+                    cf,
+                    compiled_params,
+                    function_body,
+                )
+            }
+        })
+}
+
+fn replace_compiled_function_in_object_expression<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    object_expression: &mut ast::ObjectExpression<'a>,
+    cf: &CompiledFunction,
+    compiled_params: &[CompiledParam],
+    function_body: &ast::FunctionBody<'a>,
+) -> bool {
+    object_expression
+        .properties
+        .iter_mut()
+        .any(|property| match property {
+            ast::ObjectPropertyKind::ObjectProperty(property) => {
+                replace_compiled_function_in_expression(
+                    builder,
+                    allocator,
+                    &mut property.value,
+                    cf,
+                    compiled_params,
+                    function_body,
+                )
+            }
+            ast::ObjectPropertyKind::SpreadProperty(spread) => {
+                replace_compiled_function_in_expression(
+                    builder,
+                    allocator,
+                    &mut spread.argument,
+                    cf,
+                    compiled_params,
+                    function_body,
+                )
+            }
+        })
+}
+
+fn replace_compiled_function_in_argument<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    argument: &mut ast::Argument<'a>,
+    cf: &CompiledFunction,
+    compiled_params: &[CompiledParam],
+    function_body: &ast::FunctionBody<'a>,
+) -> bool {
+    match argument {
+        ast::Argument::SpreadElement(spread) => replace_compiled_function_in_expression(
+            builder,
+            allocator,
+            &mut spread.argument,
+            cf,
+            compiled_params,
+            function_body,
+        ),
+        _ => {
+            let argument_expression: &mut ast::Expression<'a> =
+                unsafe { std::mem::transmute(argument) };
+            replace_compiled_function_in_expression(
+                builder,
+                allocator,
+                argument_expression,
+                cf,
+                compiled_params,
+                function_body,
+            )
+        }
     }
 }
 
@@ -1116,8 +1680,7 @@ fn render_compiled_body_source(cf: &CompiledFunction, state: &AstRenderState) ->
 }
 
 fn collect_rendered_outlined_functions(cf: &CompiledFunction) -> Vec<RenderedOutlinedFunction> {
-    cf
-        .outlined_functions
+    cf.outlined_functions
         .iter()
         .map(|(fn_name, fn_params, fn_body)| {
             let hir_function = cf
@@ -1341,8 +1904,108 @@ fn source_type_for_filename(filename: &str) -> SourceType {
 #[cfg(test)]
 mod tests {
     use oxc_allocator::Allocator;
+    use oxc_ast::{AstBuilder, ast};
 
-    use super::{maybe_gate_entrypoint_source, parse_statements, source_type_for_filename};
+    use super::{
+        AstRenderState, CompiledBodyPayload, CompiledFunction, CompiledParam,
+        codegen_statement_source, maybe_gate_entrypoint_source, parse_statements,
+        source_type_for_filename, try_rewrite_compiled_statement_ast,
+    };
+
+    fn empty_test_state(source_type: oxc_span::SourceType) -> AstRenderState {
+        AstRenderState {
+            source_type,
+            cache_import_name: "_c".to_string(),
+            make_read_only_ident: String::new(),
+            should_instrument_ident: String::new(),
+            use_render_counter_ident: String::new(),
+            hook_guard_ident: String::new(),
+            structural_check_ident: String::new(),
+            lower_context_access_ident: String::new(),
+            lower_context_access_imported: String::new(),
+            gating_local_name: None,
+            imports_to_insert: vec![],
+            runtime_import_merge_plan: None,
+            instrument_source_path: String::new(),
+        }
+    }
+
+    fn make_test_compiled_function(
+        name: &str,
+        start: u32,
+        end: u32,
+        generated_body: &str,
+        params: &[&str],
+        is_arrow: bool,
+    ) -> CompiledFunction {
+        CompiledFunction {
+            name: name.to_string(),
+            start,
+            end,
+            generated_body: generated_body.to_string(),
+            body_payload: CompiledBodyPayload::GeneratedString,
+            needs_cache_import: false,
+            params_str: params.join(", "),
+            compiled_params: Some(
+                params
+                    .iter()
+                    .map(|name| CompiledParam {
+                        name: (*name).to_string(),
+                        is_rest: false,
+                    })
+                    .collect(),
+            ),
+            original_params_str: params.join(", "),
+            param_destructurings: vec![],
+            is_async: false,
+            is_generator: false,
+            is_arrow,
+            is_function_declaration: false,
+            body_start: start,
+            body_end: end,
+            directives: vec![],
+            preserved_body_statements: vec![],
+            hir_function: None,
+            needs_instrument_forget: false,
+            needs_emit_freeze: false,
+            outlined_functions: vec![],
+            hir_outlined_functions: vec![],
+            has_fire_rewrite: false,
+            needs_hook_guards: false,
+            needs_structural_check_import: false,
+            needs_lower_context_access: false,
+        }
+    }
+
+    fn rewrite_single_statement_for_test(
+        filename: &str,
+        source: &str,
+        compiled_function: &CompiledFunction,
+    ) -> String {
+        let allocator = Allocator::default();
+        let source_type = source_type_for_filename(filename);
+        let mut statements = parse_statements(&allocator, source_type, source).unwrap();
+        let statement = statements.pop().unwrap();
+        let builder = AstBuilder::new(&allocator);
+        let rewritten = try_rewrite_compiled_statement_ast(
+            builder,
+            &allocator,
+            source_type,
+            &statement,
+            compiled_function,
+            &empty_test_state(source_type),
+        )
+        .expect("expected AST-native rewrite");
+        rewritten
+            .into_iter()
+            .map(|statement| {
+                codegen_statement_source(&allocator, source_type, &statement)
+                    .trim_end_matches('\n')
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
     #[test]
     fn parses_jsx_statement_snippet() {
@@ -1363,5 +2026,150 @@ mod tests {
         let output = maybe_gate_entrypoint_source(input, "gate");
         assert!(output.contains("fn: gate() ? () =>{} : () =>{}"));
         assert!(output.contains("useHook: gate() ? () =>{} : () =>{}"));
+    }
+
+    #[test]
+    fn rewrites_memo_wrapped_function_expression_as_ast() {
+        let source =
+            "const FancyButton = React.memo(function FancyButton(props) { return null; });";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::VariableDeclaration(variable) = statement else {
+            panic!("expected variable declaration");
+        };
+        let ast::Expression::CallExpression(call) = variable.declarations[0]
+            .init
+            .as_ref()
+            .expect("expected initializer")
+        else {
+            panic!("expected call initializer");
+        };
+        let ast::Argument::FunctionExpression(function) = &call.arguments[0] else {
+            panic!("expected function expression argument");
+        };
+
+        let compiled_function = make_test_compiled_function(
+            "FancyButton",
+            function.span.start,
+            function.span.end,
+            "return <div />;",
+            &["props"],
+            false,
+        );
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+        assert!(rewritten.contains("React.memo(function FancyButton(props) {"));
+        assert!(rewritten.contains("return <div />;"));
+    }
+
+    #[test]
+    fn rewrites_assignment_arrow_expression_as_ast() {
+        let source = "FancyButton = () => null;";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::ExpressionStatement(expression_statement) = statement else {
+            panic!("expected expression statement");
+        };
+        let ast::Expression::AssignmentExpression(assignment) = &expression_statement.expression
+        else {
+            panic!("expected assignment expression");
+        };
+        let arrow = match &assignment.right {
+            ast::Expression::ArrowFunctionExpression(arrow) => arrow,
+            _ => panic!("expected arrow function"),
+        };
+
+        let compiled_function = make_test_compiled_function(
+            "FancyButton",
+            arrow.span.start,
+            arrow.span.end,
+            "return <div />;",
+            &[],
+            true,
+        );
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+        assert!(rewritten.contains("FancyButton = () => {"));
+        assert!(rewritten.contains("return <div />;"));
+    }
+
+    #[test]
+    fn rewrites_export_default_forward_ref_call_as_ast() {
+        let source =
+            "export default React.forwardRef(function FancyButton(props, ref) { return null; });";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::ExportDefaultDeclaration(export_default) = statement else {
+            panic!("expected export default declaration");
+        };
+        let ast::ExportDefaultDeclarationKind::CallExpression(call) = &export_default.declaration
+        else {
+            panic!("expected call export default");
+        };
+        let ast::Argument::FunctionExpression(function) = &call.arguments[0] else {
+            panic!("expected function expression argument");
+        };
+
+        let compiled_function = make_test_compiled_function(
+            "FancyButton",
+            function.span.start,
+            function.span.end,
+            "return <div />;",
+            &["props", "ref"],
+            false,
+        );
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+        assert!(
+            rewritten
+                .contains("export default React.forwardRef(function FancyButton(props, ref) {")
+        );
+        assert!(rewritten.contains("return <div />;"));
+    }
+
+    #[test]
+    fn rewrites_ts_as_wrapped_arrow_as_ast() {
+        let source = "const FancyButton = ((props) => null) as any;";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.tsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::VariableDeclaration(variable) = statement else {
+            panic!("expected variable declaration");
+        };
+        let ast::Expression::TSAsExpression(ts_as_expression) = variable.declarations[0]
+            .init
+            .as_ref()
+            .expect("expected initializer")
+        else {
+            panic!("expected ts as expression");
+        };
+        let ast::Expression::ParenthesizedExpression(parenthesized) = &ts_as_expression.expression
+        else {
+            panic!("expected parenthesized arrow");
+        };
+        let ast::Expression::ArrowFunctionExpression(arrow) = &parenthesized.expression else {
+            panic!("expected arrow function");
+        };
+
+        let compiled_function = make_test_compiled_function(
+            "FancyButton",
+            arrow.span.start,
+            arrow.span.end,
+            "return <div />;",
+            &["props"],
+            true,
+        );
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.tsx", source, &compiled_function);
+        assert!(rewritten.contains("const FancyButton = ((props) => {"));
+        assert!(rewritten.contains("return <div />;"));
+        assert!(rewritten.contains("}) as any;"));
     }
 }
