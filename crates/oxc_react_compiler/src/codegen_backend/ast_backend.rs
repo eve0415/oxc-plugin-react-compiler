@@ -572,6 +572,23 @@ fn try_rewrite_compiled_statement_ast<'a>(
 ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
     let mut rewritten_stmt = stmt.clone_in(allocator);
     let stmt_source = &source[stmt.span().start as usize..stmt.span().end as usize];
+    if compiled.len() == 1
+        && let Some(gate_name) = state
+            .gating_local_name
+            .as_deref()
+            .filter(|_| compiled[0].needs_cache_import)
+        && let Some(statements) = try_build_gated_function_declaration_statements(
+            builder,
+            allocator,
+            source,
+            stmt,
+            gate_name,
+            compiled[0],
+            state,
+        )
+    {
+        return Some(statements);
+    }
     let mut outlined_functions = Vec::new();
     for cf in compiled {
         if state.gating_local_name.is_some()
@@ -633,6 +650,235 @@ fn try_rewrite_compiled_statement_ast<'a>(
     }
 
     Some(statements)
+}
+
+fn try_build_gated_function_declaration_statements<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source: &str,
+    stmt: &ast::Statement<'_>,
+    gate_name: &str,
+    cf: &CompiledFunction,
+    state: &AstRenderState,
+) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
+    if cf.name.is_empty() {
+        return None;
+    }
+    if source[stmt.span().start as usize..stmt.span().end as usize].contains("FIXTURE_ENTRYPOINT") {
+        return None;
+    }
+    if crate::pipeline::has_early_binding_reference(
+        &source[..stmt.span().start as usize],
+        &cf.name,
+    ) {
+        return None;
+    }
+
+    let body_source = render_compiled_body_source(cf, state);
+    let function_body =
+        parse_compiled_function_body(allocator, state.source_type, cf, &body_source).ok()?;
+    let Some(compiled_params) = cf.compiled_params.as_deref() else {
+        return None;
+    };
+
+    match stmt {
+        ast::Statement::FunctionDeclaration(function)
+            if function.span.start == cf.start && function.span.end == cf.end =>
+        {
+            let Some(init) = build_gated_function_declaration_initializer(
+                builder,
+                allocator,
+                function,
+                gate_name,
+                cf,
+                compiled_params,
+                &function_body,
+            ) else {
+                return None;
+            };
+            Some(builder.vec1(build_const_function_statement(
+                builder,
+                stmt.span(),
+                &cf.name,
+                init,
+            )))
+        }
+        ast::Statement::ExportNamedDeclaration(export_named)
+            if matches!(
+                export_named.declaration.as_ref(),
+                Some(ast::Declaration::FunctionDeclaration(function))
+                    if function.span.start == cf.start && function.span.end == cf.end
+            ) =>
+        {
+            let ast::Declaration::FunctionDeclaration(function) =
+                export_named.declaration.as_ref().unwrap()
+            else {
+                unreachable!();
+            };
+            let Some(init) = build_gated_function_declaration_initializer(
+                builder,
+                allocator,
+                function,
+                gate_name,
+                cf,
+                compiled_params,
+                &function_body,
+            ) else {
+                return None;
+            };
+            Some(builder.vec1(build_exported_const_function_statement(
+                builder,
+                stmt.span(),
+                &cf.name,
+                init,
+            )))
+        }
+        ast::Statement::ExportDefaultDeclaration(export_default)
+            if matches!(
+                &export_default.declaration,
+                ast::ExportDefaultDeclarationKind::FunctionDeclaration(function)
+                    if function.span.start == cf.start && function.span.end == cf.end
+            ) =>
+        {
+            let ast::ExportDefaultDeclarationKind::FunctionDeclaration(function) =
+                &export_default.declaration
+            else {
+                unreachable!();
+            };
+            let Some(init) = build_gated_function_declaration_initializer(
+                builder,
+                allocator,
+                function,
+                gate_name,
+                cf,
+                compiled_params,
+                &function_body,
+            ) else {
+                return None;
+            };
+            let mut statements = builder.vec();
+            statements.push(build_const_function_statement(
+                builder,
+                stmt.span(),
+                &cf.name,
+                init,
+            ));
+            statements.push(build_export_default_identifier_statement(
+                builder,
+                stmt.span(),
+                &cf.name,
+            ));
+            Some(statements)
+        }
+        _ => None,
+    }
+}
+
+fn build_gated_function_declaration_initializer<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    function: &ast::Function<'_>,
+    gate_name: &str,
+    cf: &CompiledFunction,
+    compiled_params: &[CompiledParam],
+    function_body: &ast::FunctionBody<'a>,
+) -> Option<ast::Expression<'a>> {
+    let original = function_declaration_to_expression(builder, allocator, function);
+    let mut optimized = original.clone_in(allocator);
+    if !replace_compiled_function_in_expression(
+        builder,
+        allocator,
+        &mut optimized,
+        cf,
+        compiled_params,
+        function_body,
+    ) {
+        return None;
+    }
+    Some(make_gate_conditional_expression(
+        builder,
+        gate_name,
+        function.span,
+        optimized,
+        original,
+    ))
+}
+
+fn function_declaration_to_expression<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    function: &ast::Function<'_>,
+) -> ast::Expression<'a> {
+    let mut cloned = function.clone_in(allocator);
+    cloned.r#type = ast::FunctionType::FunctionExpression;
+    strip_compiled_function_signature_types(&mut cloned);
+    ast::Expression::FunctionExpression(builder.alloc(cloned))
+}
+
+fn build_const_function_statement<'a>(
+    builder: AstBuilder<'a>,
+    span: oxc_span::Span,
+    name: &str,
+    init: ast::Expression<'a>,
+) -> ast::Statement<'a> {
+    let pattern = builder.binding_pattern_binding_identifier(span, builder.ident(name));
+    ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+        span,
+        ast::VariableDeclarationKind::Const,
+        builder.vec1(builder.variable_declarator(
+            span,
+            ast::VariableDeclarationKind::Const,
+            pattern,
+            NONE,
+            Some(init),
+            false,
+        )),
+        false,
+    ))
+}
+
+fn build_exported_const_function_statement<'a>(
+    builder: AstBuilder<'a>,
+    span: oxc_span::Span,
+    name: &str,
+    init: ast::Expression<'a>,
+) -> ast::Statement<'a> {
+    let pattern = builder.binding_pattern_binding_identifier(span, builder.ident(name));
+    let declaration = ast::Declaration::VariableDeclaration(builder.alloc_variable_declaration(
+        span,
+        ast::VariableDeclarationKind::Const,
+        builder.vec1(builder.variable_declarator(
+            span,
+            ast::VariableDeclarationKind::Const,
+            pattern,
+            NONE,
+            Some(init),
+            false,
+        )),
+        false,
+    ));
+    ast::Statement::ExportNamedDeclaration(builder.alloc_export_named_declaration(
+        span,
+        Some(declaration),
+        builder.vec(),
+        None,
+        ast::ImportOrExportKind::Value,
+        NONE,
+    ))
+}
+
+fn build_export_default_identifier_statement<'a>(
+    builder: AstBuilder<'a>,
+    span: oxc_span::Span,
+    name: &str,
+) -> ast::Statement<'a> {
+    ast::Statement::ExportDefaultDeclaration(builder.alloc_export_default_declaration(
+        span,
+        ast::ExportDefaultDeclarationKind::Identifier(builder.alloc_identifier_reference(
+            span,
+            builder.atom(name),
+        )),
+    ))
 }
 
 fn replace_compiled_function_in_statement<'a>(
@@ -3342,5 +3588,83 @@ mod tests {
         assert!(rewritten.contains(": (first) => null)"));
         assert!(rewritten.contains("React.memo(gate() ? (second) => {"));
         assert!(rewritten.contains(": (second) => null)"));
+    }
+
+    #[test]
+    fn rewrites_gated_export_named_function_declaration_as_ast() {
+        let source = "export function Bar(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::ExportNamedDeclaration(export_named) = statement else {
+            panic!("expected export named declaration");
+        };
+        let ast::Declaration::FunctionDeclaration(function) =
+            export_named.declaration.as_ref().expect("expected declaration")
+        else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Bar",
+            function.span.start,
+            function.span.end,
+            "return <div />;",
+            &["props"],
+            false,
+        );
+        compiled_function.needs_cache_import = true;
+        compiled_function.is_function_declaration = true;
+        let mut state = empty_test_state(source_type_for_filename("fixture.jsx"));
+        state.gating_local_name = Some("gate".to_string());
+
+        let rewritten = rewrite_single_statement_for_test_with_state(
+            "fixture.jsx",
+            source,
+            &compiled_function,
+            state,
+        );
+        assert!(rewritten.contains("export const Bar = gate() ? function Bar(props) {"));
+        assert!(rewritten.contains(": function Bar(props) {"));
+    }
+
+    #[test]
+    fn rewrites_gated_export_default_function_declaration_as_ast() {
+        let source = "export default function Bar(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::ExportDefaultDeclaration(export_default) = statement else {
+            panic!("expected export default declaration");
+        };
+        let ast::ExportDefaultDeclarationKind::FunctionDeclaration(function) =
+            &export_default.declaration
+        else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Bar",
+            function.span.start,
+            function.span.end,
+            "return <div />;",
+            &["props"],
+            false,
+        );
+        compiled_function.needs_cache_import = true;
+        compiled_function.is_function_declaration = true;
+        let mut state = empty_test_state(source_type_for_filename("fixture.jsx"));
+        state.gating_local_name = Some("gate".to_string());
+
+        let rewritten = rewrite_single_statement_for_test_with_state(
+            "fixture.jsx",
+            source,
+            &compiled_function,
+            state,
+        );
+        assert!(rewritten.contains("const Bar = gate() ? function Bar(props) {"));
+        assert!(rewritten.contains("export default Bar;"));
     }
 }
