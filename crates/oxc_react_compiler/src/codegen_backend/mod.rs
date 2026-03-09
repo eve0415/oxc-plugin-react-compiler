@@ -34,7 +34,6 @@ pub(crate) struct CompiledFunction {
     pub(crate) is_generator: bool,
     pub(crate) is_function_declaration: bool,
     pub(crate) directives: Vec<String>,
-    pub(crate) preserved_body_statements: Vec<String>,
     pub(crate) hir_function: Option<crate::hir::types::HIRFunction>,
     pub(crate) cache_prologue: Option<crate::reactive_scopes::codegen_reactive::CachePrologue>,
     pub(crate) needs_instrument_forget: bool,

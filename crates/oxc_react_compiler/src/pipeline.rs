@@ -15,7 +15,6 @@ use std::cell::{Cell, RefCell};
 
 use hmac::{Hmac, Mac};
 use oxc_ast::ast;
-use oxc_codegen::{Codegen, CodegenOptions, Context as CodegenContext, Gen, IndentChar};
 use oxc_span::GetSpan;
 use sha2::Sha256;
 
@@ -3935,58 +3934,8 @@ fn is_ident_continue_byte_for_transform_flag(byte: u8) -> bool {
     byte == b'_' || byte == b'$' || (byte as char).is_ascii_alphanumeric()
 }
 
-fn should_preserve_leading_body_statement(stmt: &ast::Statement<'_>) -> bool {
+pub(crate) fn should_preserve_leading_body_statement(stmt: &ast::Statement<'_>) -> bool {
     matches!(stmt, ast::Statement::TSEnumDeclaration(_))
-}
-
-fn codegen_preserved_body_statement(stmt: &ast::Statement<'_>) -> String {
-    let options = CodegenOptions {
-        indent_char: IndentChar::Space,
-        indent_width: 2,
-        initial_indent: 0,
-        ..CodegenOptions::default()
-    };
-    let mut codegen = Codegen::new().with_options(options);
-    stmt.r#gen(&mut codegen, CodegenContext::default());
-    let rendered = codegen
-        .into_source_text()
-        .trim_end_matches('\n')
-        .to_string();
-    match stmt {
-        ast::Statement::TSEnumDeclaration(_) => ensure_trailing_comma_in_enum_members(&rendered),
-        _ => rendered,
-    }
-}
-
-fn collect_leading_preserved_body_statements(body: &ast::FunctionBody<'_>) -> Vec<String> {
-    let mut preserved = Vec::new();
-    for stmt in &body.statements {
-        if should_preserve_leading_body_statement(stmt) {
-            preserved.push(codegen_preserved_body_statement(stmt));
-            continue;
-        }
-        break;
-    }
-    preserved
-}
-
-fn ensure_trailing_comma_in_enum_members(rendered: &str) -> String {
-    let mut lines: Vec<String> = rendered.lines().map(str::to_string).collect();
-    if lines.len() < 3 {
-        return rendered.to_string();
-    }
-
-    let Some(last_member_idx) = lines.iter().rposition(|line| {
-        let trimmed = line.trim();
-        !trimmed.is_empty() && trimmed != "}"
-    }) else {
-        return rendered.to_string();
-    };
-
-    if !lines[last_member_idx].trim_end().ends_with(',') {
-        lines[last_member_idx].push(',');
-    }
-    lines.join("\n")
 }
 
 fn is_identifier_char(c: char) -> bool {
@@ -6023,7 +5972,6 @@ fn try_compile_function<'a>(
     hir_outlined_functions.extend(pipeline_hir_outlined_functions.clone());
     dedupe_hir_outlined_functions(&mut hir_outlined_functions);
     let directives = extract_emitted_directives(body);
-    let preserved_body_statements = collect_leading_preserved_body_statements(body);
     let needs_instrument_forget = options.environment.enable_emit_instrument_forget
         && codegen_result.needs_cache_import
         && !name.is_empty();
@@ -6060,7 +6008,6 @@ fn try_compile_function<'a>(
         is_generator: func.generator,
         is_function_declaration,
         directives,
-        preserved_body_statements,
         hir_function: Some(pipeline_output.final_hir_snapshot),
         cache_prologue,
         needs_instrument_forget,
@@ -6242,7 +6189,6 @@ fn try_compile_function_with_name<'a>(
     hir_outlined_functions.extend(pipeline_hir_outlined_functions.clone());
     dedupe_hir_outlined_functions(&mut hir_outlined_functions);
     let directives = extract_emitted_directives(body);
-    let preserved_body_statements = collect_leading_preserved_body_statements(body);
     let needs_instrument_forget = options.environment.enable_emit_instrument_forget
         && codegen_result.needs_cache_import
         && !name.is_empty();
@@ -6279,7 +6225,6 @@ fn try_compile_function_with_name<'a>(
         is_generator: func.generator,
         is_function_declaration: false,
         directives,
-        preserved_body_statements,
         hir_function: Some(pipeline_output.final_hir_snapshot),
         cache_prologue,
         needs_instrument_forget,
@@ -6469,7 +6414,6 @@ fn try_compile_arrow<'a>(
     hir_outlined_functions.extend(pipeline_hir_outlined_functions.clone());
     dedupe_hir_outlined_functions(&mut hir_outlined_functions);
     let directives = extract_emitted_directives(&arrow.body);
-    let preserved_body_statements = collect_leading_preserved_body_statements(&arrow.body);
     let needs_instrument_forget = options.environment.enable_emit_instrument_forget
         && codegen_result.needs_cache_import
         && !name.is_empty();
@@ -6506,7 +6450,6 @@ fn try_compile_arrow<'a>(
         is_generator: false,
         is_function_declaration: false,
         directives,
-        preserved_body_statements,
         hir_function: Some(pipeline_output.final_hir_snapshot),
         cache_prologue,
         needs_instrument_forget,

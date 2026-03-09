@@ -648,7 +648,14 @@ fn try_rewrite_compiled_statement_ast<'a>(
         }
 
         let function_body =
-            build_compiled_function_body(builder, allocator, source_type, cf, state)?;
+            build_compiled_function_body(
+                builder,
+                allocator,
+                source_type,
+                cf,
+                state,
+                find_original_compiled_function_body(stmt, cf),
+            )?;
         let compiled_params = cf.compiled_params.as_deref()?;
         let rewritten = if let Some(gate_name) = state
             .gating_local_name
@@ -734,7 +741,14 @@ fn try_build_gated_function_declaration_statements<'a>(
     );
 
     let function_body =
-        build_compiled_function_body(builder, allocator, state.source_type, cf, state)?;
+        build_compiled_function_body(
+            builder,
+            allocator,
+            state.source_type,
+            cf,
+            state,
+            find_original_compiled_function_body(stmt, cf),
+        )?;
     let compiled_params = cf.compiled_params.as_deref()?;
 
     match stmt {
@@ -2849,6 +2863,7 @@ fn build_compiled_function_body<'a>(
     source_type: SourceType,
     cf: &CompiledFunction,
     state: &AstRenderState,
+    original_body: Option<&ast::FunctionBody<'_>>,
 ) -> Option<ast::FunctionBody<'a>> {
     let mut function_body = if let Some(function_body) =
         try_build_compiled_function_body_from_hir(builder, cf, state)
@@ -2867,6 +2882,7 @@ fn build_compiled_function_body<'a>(
         source_type,
         &mut function_body,
         cf,
+        original_body,
         Some(&state.cache_import_name),
     )?;
     prepend_instrument_forget_statement(builder, allocator, &mut function_body, cf, state);
@@ -3607,19 +3623,15 @@ fn prepend_compiled_body_prefix_statements<'a>(
     source_type: SourceType,
     body: &mut ast::FunctionBody<'a>,
     cf: &CompiledFunction,
+    original_body: Option<&ast::FunctionBody<'_>>,
     cache_import_name: Option<&str>,
 ) -> Option<()> {
     let prefix_source = build_compiled_body_prefix_source(cf);
-    if prefix_source.is_empty() {
+    let preserved_original_statements =
+        collect_preserved_original_body_statements(allocator, original_body);
+    if prefix_source.is_empty() && preserved_original_statements.is_empty() {
         return Some(());
     }
-
-    let prefix_statements = parse_statements(
-        allocator,
-        source_type,
-        allocator.alloc_str(prefix_source.as_str()),
-    )
-    .ok()?;
     let insert_idx = cache_import_name
         .and_then(|cache_import_name| find_cache_initializer_index(&body.statements, cache_import_name))
         .map_or(0, |index| index + 1);
@@ -3629,7 +3641,17 @@ fn prepend_compiled_body_prefix_statements<'a>(
             .iter()
             .map(|statement| statement.clone_in(allocator)),
     );
-    statements.extend(prefix_statements);
+    if !prefix_source.is_empty() {
+        statements.extend(
+            parse_statements(
+                allocator,
+                source_type,
+                allocator.alloc_str(prefix_source.as_str()),
+            )
+            .ok()?,
+        );
+    }
+    statements.extend(preserved_original_statements);
     statements.extend(
         body.statements[insert_idx..]
             .iter()
@@ -3928,6 +3950,7 @@ fn prepend_hir_body_prefix_statements<'a>(
         &mut cloned_body,
         cf,
         None,
+        None,
     )?;
     function.body = Some(builder.alloc(cloned_body));
     Some(())
@@ -4196,14 +4219,67 @@ fn build_compiled_body_prefix_source(cf: &CompiledFunction) -> String {
             prefix_source.push('\n');
         }
     }
-    for statement in &cf.preserved_body_statements {
-        if statement.trim().is_empty() {
-            continue;
-        }
-        prefix_source.push_str(statement.trim_end());
-        prefix_source.push('\n');
-    }
     prefix_source
+}
+
+fn collect_preserved_original_body_statements<'a>(
+    allocator: &'a Allocator,
+    original_body: Option<&ast::FunctionBody<'_>>,
+) -> oxc_allocator::Vec<'a, ast::Statement<'a>> {
+    let mut statements = oxc_allocator::Vec::new_in(allocator);
+    let Some(original_body) = original_body else {
+        return statements;
+    };
+    for statement in &original_body.statements {
+        if !crate::pipeline::should_preserve_leading_body_statement(statement) {
+            break;
+        }
+        statements.push(statement.clone_in(allocator));
+    }
+    statements
+}
+
+fn find_original_compiled_function_body<'a>(
+    stmt: &'a ast::Statement<'a>,
+    cf: &CompiledFunction,
+) -> Option<&'a ast::FunctionBody<'a>> {
+    let mut finder = OriginalCompiledFunctionBodyFinder {
+        start: cf.start,
+        end: cf.end,
+        body: None,
+    };
+    finder.visit_statement(stmt);
+    finder
+        .body
+        .map(|body| unsafe { &*body })
+}
+
+struct OriginalCompiledFunctionBodyFinder<'a> {
+    start: u32,
+    end: u32,
+    body: Option<*const ast::FunctionBody<'a>>,
+}
+
+impl<'a> Visit<'a> for OriginalCompiledFunctionBodyFinder<'a> {
+    fn visit_function(
+        &mut self,
+        it: &ast::Function<'a>,
+        flags: oxc_syntax::scope::ScopeFlags,
+    ) {
+        if self.body.is_none() && it.span.start == self.start && it.span.end == self.end {
+            self.body = it.body.as_ref().map(|body| &**body as *const _);
+            return;
+        }
+        walk::walk_function(self, it, flags);
+    }
+
+    fn visit_arrow_function_expression(&mut self, it: &ast::ArrowFunctionExpression<'a>) {
+        if self.body.is_none() && it.span.start == self.start && it.span.end == self.end {
+            self.body = Some(&*it.body as *const _);
+            return;
+        }
+        walk::walk_arrow_function_expression(self, it);
+    }
 }
 
 fn find_cache_initializer_index<'a>(
@@ -4589,10 +4665,10 @@ function Component(props) {
 
     #[test]
     fn rewrites_generated_prefix_statements_as_ast() {
-        let source = r#"const FancyButton = (props) => null;"#;
+        let source = r#"const FancyButton = (props) => { enum Color { Red } return null; };"#;
         let allocator = Allocator::default();
         let mut statements =
-            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+            parse_statements(&allocator, source_type_for_filename("fixture.ts"), source).unwrap();
         let statement = statements.pop().unwrap();
         let ast::Statement::VariableDeclaration(variable) = statement else {
             panic!("expected variable declaration");
@@ -4614,13 +4690,11 @@ function Component(props) {
             true,
         );
         compiled_function.param_destructurings = vec!["const value = props.value;".to_string()];
-        compiled_function.preserved_body_statements = vec!["track(value);".to_string()];
 
-        let rewritten =
-            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+        let rewritten = rewrite_single_statement_for_test("fixture.ts", source, &compiled_function);
 
         assert!(rewritten.contains("const value = props.value;"));
-        assert!(rewritten.contains("track(value);"));
+        assert!(rewritten.contains("enum Color"));
         assert!(rewritten.contains("return props;"));
     }
 
@@ -4768,7 +4842,6 @@ function Component(props) {
             is_generator: false,
             is_function_declaration: false,
             directives: vec![],
-            preserved_body_statements: vec![],
             hir_function: None,
             cache_prologue: None,
             needs_instrument_forget: false,
