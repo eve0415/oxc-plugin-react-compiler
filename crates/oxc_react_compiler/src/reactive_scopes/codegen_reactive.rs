@@ -10371,33 +10371,59 @@ fn maybe_codegen_fused_effect_callback_empty_array_scope(
     let deps_expr = codegen_instruction_value_ev(cx, &deps_instr.value)
         .wrap_if_needed(ExprPrecedence::Assignment);
 
+    let mut rendered = String::new();
     if !has_materialized_named_binding(cx, &callback_ident) {
-        output.push_str(&format!("let {};\n", callback_name));
+        rendered.push_str(&render_reactive_variable_statement_ast(
+            ast::VariableDeclarationKind::Let,
+            &callback_name,
+            None,
+        )?);
         cx.mark_decl_runtime_emitted(callback_ident.declaration_id);
     }
     if !has_materialized_named_binding(cx, &deps_ident) {
-        output.push_str(&format!("let {};\n", deps_name));
+        rendered.push_str(&render_reactive_variable_statement_ast(
+            ast::VariableDeclarationKind::Let,
+            &deps_name,
+            None,
+        )?);
         cx.mark_decl_runtime_emitted(deps_ident.declaration_id);
     }
     cx.declare(&callback_ident);
     cx.declare(&deps_ident);
 
-    output.push_str(&format!(
-        "if ({}[{}] === Symbol.for(\"{}\")) {{\n",
-        cache_var, callback_slot, MEMO_CACHE_SENTINEL
-    ));
-    output.push_str(&format!("{} = {};\n", callback_name, callback_expr));
-    output.push_str(&format!("{} = {};\n", deps_name, deps_expr));
-    output.push_str(&format!(
-        "{}[{}] = {};\n{}[{}] = {};\n",
-        cache_var, callback_slot, callback_name, cache_var, deps_slot, deps_name
-    ));
-    output.push_str("} else {\n");
-    output.push_str(&format!(
-        "{} = {}[{}];\n{} = {}[{}];\n",
-        callback_name, cache_var, callback_slot, deps_name, cache_var, deps_slot
-    ));
-    output.push_str("}\n");
+    let consequent = format!(
+        "{}{}{}{}",
+        render_reactive_assignment_statement_ast(&callback_name, &callback_expr)?,
+        render_reactive_assignment_statement_ast(&deps_name, &deps_expr)?,
+        render_reactive_expression_statement_ast(&format!(
+            "{}[{}] = {}",
+            cache_var, callback_slot, callback_name
+        ))?,
+        render_reactive_expression_statement_ast(&format!(
+            "{}[{}] = {}",
+            cache_var, deps_slot, deps_name
+        ))?,
+    );
+    let alternate = format!(
+        "{}{}",
+        render_reactive_assignment_statement_ast(
+            &callback_name,
+            &format!("{}[{}]", cache_var, callback_slot),
+        )?,
+        render_reactive_assignment_statement_ast(
+            &deps_name,
+            &format!("{}[{}]", cache_var, deps_slot),
+        )?,
+    );
+    rendered.push_str(&render_reactive_if_statement_ast(
+        &format!(
+            "{}[{}] === Symbol.for(\"{}\")",
+            cache_var, callback_slot, MEMO_CACHE_SENTINEL
+        ),
+        &consequent,
+        Some(&alternate),
+    )?);
+    output.push_str(&rendered);
 
     cx.stable_zero_dep_decls
         .insert(callback_ident.declaration_id);
