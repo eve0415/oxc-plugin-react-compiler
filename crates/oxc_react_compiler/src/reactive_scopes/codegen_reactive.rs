@@ -7710,8 +7710,10 @@ fn maybe_codegen_fused_method_call_eval_order(
             consumed_top_level
         ),
     );
-    output.push_str(&call_expr);
-    output.push_str(";\n");
+    output.push_str(
+        &render_reactive_expression_statement_ast(&call_expr)
+            .unwrap_or_else(|| format!("{call_expr};\n")),
+    );
     Some(consumed_top_level)
 }
 
@@ -8032,8 +8034,10 @@ fn maybe_codegen_fused_method_call_destructure_assignment(
                         start, idx, recv, prop, assign_arg_index
                     ),
                 );
-                output.push_str(&call_expr);
-                output.push_str(";\n");
+                output.push_str(
+                    &render_reactive_expression_statement_ast(&call_expr)
+                        .unwrap_or_else(|| format!("{call_expr};\n")),
+                );
                 return Some(idx - start + 1);
             }
             _ => {
