@@ -2885,12 +2885,110 @@ fn try_build_compiled_function_body_from_hir<'a>(
 fn normalize_compiled_body_for_hir_match(body_source: &str) -> String {
     let flow_cast_normalized = normalize_generated_body_flow_cast_marker_calls(body_source);
     let iife_normalized = normalize_generated_body_iife_parenthesization(&flow_cast_normalized);
-    iife_normalized
+    if let Some(canonicalized) = canonicalize_body_source_for_hir_match(&iife_normalized) {
+        return normalize_hir_match_multiline_brace_literals(&canonicalized);
+    }
+    let normalized = iife_normalized
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    normalize_hir_match_multiline_brace_literals(&normalized)
+}
+
+fn canonicalize_body_source_for_hir_match(body_source: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    for source_type in [SourceType::mjs().with_jsx(true), SourceType::ts().with_jsx(true)] {
+        let Ok(statements) =
+            parse_statements(&allocator, source_type, allocator.alloc_str(body_source))
+        else {
+            continue;
+        };
+        let builder = AstBuilder::new(&allocator);
+        let program = builder.program(
+            SPAN,
+            source_type,
+            "",
+            builder.vec(),
+            None,
+            builder.vec(),
+            statements,
+        );
+        return Some(codegen_program(&program).trim().to_string());
+    }
+    None
+}
+
+fn normalize_hir_match_multiline_brace_literals(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        let is_bb_label_block = is_basic_block_label_open_brace(trimmed);
+        let ends_with_open_brace = trimmed.ends_with('{');
+        let is_obj_literal_start = (trimmed.ends_with("= {")
+            || trimmed.ends_with(": {")
+            || trimmed == "{"
+            || trimmed.ends_with("({")
+            || trimmed.ends_with(", {")
+            || trimmed.ends_with("? {")
+            || trimmed == "return {"
+            || (trimmed.starts_with("return {") && ends_with_open_brace)
+            || (trimmed.contains("= {") && ends_with_open_brace && trimmed.contains("() {")))
+            && !trimmed.starts_with("if ")
+            && !trimmed.starts_with("} else")
+            && !trimmed.starts_with("for ")
+            && !trimmed.starts_with("while ")
+            && !trimmed.starts_with("do {")
+            && !trimmed.starts_with("try {")
+            && !trimmed.starts_with("catch")
+            && !trimmed.starts_with("switch ")
+            && !trimmed.starts_with("function ")
+            && !trimmed.contains("=> {")
+            && !is_bb_label_block;
+
+        if is_obj_literal_start {
+            let open_braces = trimmed.matches('{').count();
+            let close_braces = trimmed.matches('}').count();
+            let net = open_braces as i32 - close_braces as i32;
+            if net > 0 {
+                let mut parts = vec![trimmed.to_string()];
+                let mut j = i + 1;
+                let mut depth = net;
+                while j < lines.len() && depth > 0 {
+                    let t = lines[j].trim();
+                    depth += t.matches('{').count() as i32 - t.matches('}').count() as i32;
+                    parts.push(t.to_string());
+                    j += 1;
+                }
+                let total_len: usize = parts.iter().map(|p| p.len()).sum::<usize>() + parts.len();
+                if total_len <= 200 {
+                    result.push(
+                        parts
+                            .join(" ")
+                            .replace("  ", " ")
+                            .replace(", }", " }")
+                            .replace(",}", " }"),
+                    );
+                    i = j;
+                    continue;
+                }
+            }
+        }
+        result.push(trimmed.to_string());
+        i += 1;
+    }
+    result.join("\n")
+}
+
+fn is_basic_block_label_open_brace(line: &str) -> bool {
+    if !line.starts_with("bb") || !line.ends_with(": {") {
+        return false;
+    }
+    let digits = &line[2..line.len() - 3];
+    !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit())
 }
 
 fn outlined_hir_matches_rendered_body(
@@ -2900,8 +2998,9 @@ fn outlined_hir_matches_rendered_body(
     let Some(lowered_body) = super::hir_to_ast::try_lower_function_body(hir_function) else {
         return false;
     };
-    normalize_compiled_body_for_hir_match(&lowered_body)
-        == normalize_compiled_body_for_hir_match(rendered_body)
+    let lowered = normalize_compiled_body_for_hir_match(&lowered_body);
+    let rendered = normalize_compiled_body_for_hir_match(rendered_body);
+    lowered == rendered
 }
 
 fn parse_compiled_function_body<'a>(
@@ -3998,8 +4097,8 @@ mod tests {
     use super::{
         AstRenderState, CompiledBodyPayload, CompiledFunction, CompiledParam,
         codegen_statement_source, compute_transform_state, maybe_gate_entrypoint_source,
-        normalize_generated_body_flow_cast_marker_calls, parse_statements,
-        restore_flow_cast_marker_calls, source_type_for_filename,
+        normalize_compiled_body_for_hir_match, normalize_generated_body_flow_cast_marker_calls,
+        parse_statements, restore_flow_cast_marker_calls, source_type_for_filename,
         try_rewrite_compiled_statement_ast,
     };
 
@@ -4039,6 +4138,22 @@ const z = __REACT_COMPILER_FLOW_CAST__<Array<number>>([]);"#;
         let restored = restore_flow_cast_marker_calls(source);
         assert!(restored.contains("const y = (x: Foo);"));
         assert!(restored.contains("const z = ([]: Array<number>);"));
+    }
+
+    #[test]
+    fn normalize_compiled_body_for_hir_match_canonicalizes_multiline_object_literals() {
+        let lowered = r#"const country = Codes[code];
+return {
+  name: country.name,
+  code
+};"#;
+        let rendered = r#"const country = Codes[code];
+return { name: country.name, code };"#;
+
+        assert_eq!(
+            normalize_compiled_body_for_hir_match(lowered),
+            normalize_compiled_body_for_hir_match(rendered)
+        );
     }
 
     #[test]
