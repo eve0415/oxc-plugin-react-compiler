@@ -6498,7 +6498,10 @@ fn maybe_codegen_fused_named_test_reassign_then_ternary_branch(
             temp_name, assign_target_names, test_expr, assign_expr, assign_idx, ternary_idx
         ),
     );
-    output.push_str(&fused_stmt);
+    output.push_str(
+        &render_reactive_expression_statement_ast(fused_stmt.trim_end_matches(";\n"))
+            .unwrap_or(fused_stmt),
+    );
     Some(ternary_idx - start + 1)
 }
 
@@ -6710,7 +6713,7 @@ fn maybe_codegen_fused_reassign_then_ternary_branch(
         return None;
     }
 
-    let fused_stmt = format!("{test_expr} ? {fused_consequent} : {fused_alternate};\n");
+    let fused_stmt = format!("{test_expr} ? {fused_consequent} : {fused_alternate}");
     debug_codegen_expr(
         "fused-reassign-ternary-branch",
         format!(
@@ -6718,7 +6721,10 @@ fn maybe_codegen_fused_reassign_then_ternary_branch(
             target_names, consequent_assign, alternate_assign, test_expr, start, ternary_idx
         ),
     );
-    output.push_str(&fused_stmt);
+    output.push_str(
+        &render_reactive_expression_statement_ast(&fused_stmt)
+            .unwrap_or_else(|| format!("{fused_stmt};\n")),
+    );
     *cx = probe_cx;
     Some(ternary_idx - start + 1)
 }
@@ -7046,7 +7052,10 @@ fn maybe_codegen_fused_reassign_stmt_into_following_logical(
                         bridge_exprs
                     ),
                 );
-                output.push_str(&format!("{combined_expr};\n"));
+                output.push_str(
+                    &render_reactive_expression_statement_ast(&combined_expr)
+                        .unwrap_or_else(|| format!("{combined_expr};\n")),
+                );
                 *cx = probe_cx;
                 return Some(idx - start + 1);
             }
