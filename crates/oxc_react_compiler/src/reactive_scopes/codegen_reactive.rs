@@ -18960,13 +18960,14 @@ fn render_jsx_expression_ast(
         JsxTag::BuiltinTag(name) => name.as_str(),
         JsxTag::Component(_) | JsxTag::Fragment => "",
     };
-    if !props.is_empty() || SINGLE_CHILD_FBT_TAGS.contains(&tag_name) {
+    if SINGLE_CHILD_FBT_TAGS.contains(&tag_name) {
         return None;
     }
 
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let opening_name = render_jsx_element_name_ast(builder, &allocator, cx, tag)?;
+    let attributes = render_jsx_attributes_ast(builder, &allocator, cx, props)?;
     let jsx_children = render_jsx_children_ast(builder, &allocator, cx, children.as_deref().unwrap_or(&[]))?;
     let closing_element = if jsx_children.is_empty() {
         None
@@ -18978,7 +18979,7 @@ fn render_jsx_expression_ast(
     };
     let expression = builder.expression_jsx_element(
         SPAN,
-        builder.alloc_jsx_opening_element(SPAN, opening_name, NONE, builder.vec()),
+        builder.alloc_jsx_opening_element(SPAN, opening_name, NONE, attributes),
         jsx_children,
         closing_element,
     );
@@ -19128,6 +19129,52 @@ fn render_jsx_children_ast<'a>(
         lowered.push(render_jsx_child_ast(builder, allocator, cx, child)?);
     }
     Some(lowered)
+}
+
+fn render_jsx_attributes_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    cx: &mut Context,
+    props: &[JsxAttribute],
+) -> Option<oxc_allocator::Vec<'a, ast::JSXAttributeItem<'a>>> {
+    let mut attributes = builder.vec();
+    for prop in props {
+        match prop {
+            JsxAttribute::Attribute { name, place } => {
+                if cx.fbt_operands.contains(&place.identifier.id) {
+                    return None;
+                }
+                let expression =
+                    parse_rendered_expression_ast(allocator, &codegen_place_expr_value(cx, place).expr)?;
+                let value = match expression {
+                    ast::Expression::StringLiteral(_)
+                    | ast::Expression::JSXElement(_)
+                    | ast::Expression::JSXFragment(_) => return None,
+                    expression => Some(ast::JSXAttributeValue::ExpressionContainer(
+                        builder.alloc_jsx_expression_container(
+                            SPAN,
+                            ast::JSXExpression::from(expression),
+                        ),
+                    )),
+                };
+                attributes.push(builder.jsx_attribute_item_attribute(
+                    SPAN,
+                    builder.jsx_attribute_name_identifier(SPAN, builder.atom(name)),
+                    value,
+                ));
+            }
+            JsxAttribute::SpreadAttribute { argument } => {
+                attributes.push(builder.jsx_attribute_item_spread_attribute(
+                    SPAN,
+                    parse_rendered_expression_ast(
+                        allocator,
+                        &codegen_place_to_expression(cx, argument),
+                    )?,
+                ));
+            }
+        }
+    }
+    Some(attributes)
 }
 
 fn collect_inherited_decl_name_overrides_for_lowered_function(
@@ -21145,7 +21192,7 @@ mod tests {
     };
     use crate::hir::types::{
         Argument, ArrayElement, ArrayPattern, DeclarationId, DependencyPathEntry, Effect,
-        Identifier, IdentifierId, IdentifierName, JsxTag, MutableRange, ObjectProperty,
+        Identifier, IdentifierId, IdentifierName, JsxAttribute, JsxTag, MutableRange, ObjectProperty,
         ObjectPropertyKey, ObjectPropertyOrSpread, ObjectPropertyType, ObjectPattern, Pattern,
         Place, PrimitiveValue, PropertyLiteral, ReactiveScopeDependency, SourceLocation, Type,
         TypeAnnotationKind,
@@ -21427,6 +21474,23 @@ mod tests {
         .expect("expected jsx element");
 
         assert_eq!(rendered, "<div>{value}</div>");
+    }
+
+    #[test]
+    fn renders_simple_jsx_expression_prop_via_ast() {
+        let mut cx = test_context();
+        let rendered = render_jsx_expression_ast(
+            &mut cx,
+            &JsxTag::BuiltinTag("div".to_string()),
+            &[JsxAttribute::Attribute {
+                name: "value".to_string(),
+                place: named_place(1, 1, "value"),
+            }],
+            &None,
+        )
+        .expect("expected jsx element");
+
+        assert_eq!(rendered, "<div value={value} />");
     }
 
     #[test]
