@@ -12982,7 +12982,11 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                 || test_expr.contains('\n')
                 || update_code.contains('\n');
             let _ = loc;
-            if multiline_header {
+            if let Some(rendered) =
+                render_reactive_for_statement_ast(&init_code, &test_expr, &update_code, &body)
+            {
+                Some(rendered)
+            } else if multiline_header {
                 Some(format!(
                     "for (\n{};\n{};\n{}) {{\n{}}}\n",
                     init_code, test_expr, update_code, body
@@ -13017,10 +13021,14 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                 codegen_place_to_expression(cx, test)
             };
             let body = codegen_block(cx, loop_block);
-            Some(format!(
-                "for ({} {} of {}) {{\n{}}}\n",
-                kind, lval, collection_expr, body
-            ))
+            render_reactive_for_of_statement_ast(&kind, &lval, &collection_expr, &body).or_else(
+                || {
+                    Some(format!(
+                        "for ({} {} of {}) {{\n{}}}\n",
+                        kind, lval, collection_expr, body
+                    ))
+                },
+            )
         }
         ReactiveTerminal::ForIn {
             init, loop_block, ..
@@ -13033,10 +13041,12 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                 init_out.trim().trim_end_matches(';').to_string()
             };
             let body = codegen_block(cx, loop_block);
-            Some(format!(
-                "for ({} {} in {}) {{\n{}}}\n",
-                kind, lval, collection, body
-            ))
+            render_reactive_for_in_statement_ast(&kind, &lval, &collection, &body).or_else(|| {
+                Some(format!(
+                    "for ({} {} in {}) {{\n{}}}\n",
+                    kind, lval, collection, body
+                ))
+            })
         }
         ReactiveTerminal::While {
             test, loop_block, ..
@@ -18786,6 +18796,50 @@ fn render_reactive_switch_statement_ast(
     }
     let statement = builder.statement_switch(SPAN, parsed_test, rendered_cases);
     Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+}
+
+fn render_reactive_for_statement_ast(
+    init: &str,
+    test: &str,
+    update: &str,
+    body: &str,
+) -> Option<String> {
+    let statement_source = format!("for ({init}; {test}; {update}) {{\n{body}}}");
+    render_single_statement_source_with_oxc(&statement_source)
+}
+
+fn render_reactive_for_of_statement_ast(
+    kind: &str,
+    lvalue: &str,
+    collection: &str,
+    body: &str,
+) -> Option<String> {
+    let statement_source = format!("for ({kind} {lvalue} of {collection}) {{\n{body}}}");
+    render_single_statement_source_with_oxc(&statement_source)
+}
+
+fn render_reactive_for_in_statement_ast(
+    kind: &str,
+    lvalue: &str,
+    collection: &str,
+    body: &str,
+) -> Option<String> {
+    let statement_source = format!("for ({kind} {lvalue} in {collection}) {{\n{body}}}");
+    render_single_statement_source_with_oxc(&statement_source)
+}
+
+fn render_single_statement_source_with_oxc(statement_source: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let statements = parse_statement_list_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        statement_source,
+    )
+    .ok()?;
+    if statements.len() != 1 {
+        return None;
+    }
+    Some(format!("{}\n", codegen_statement_with_oxc(&statements[0])))
 }
 
 fn build_identifier_assignment_statement_ast_with_expression<'a>(
