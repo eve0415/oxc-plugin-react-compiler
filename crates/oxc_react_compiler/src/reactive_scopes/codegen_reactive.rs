@@ -12172,10 +12172,9 @@ fn instruction_has_autodeps_placeholder(cx: &mut Context, instr: &ReactiveInstru
         | InstructionValue::MethodCall { args, .. } => args.as_slice(),
         _ => return false,
     };
-    args.iter().map(|arg| codegen_argument(cx, arg)).any(|arg| {
-        let trimmed = arg.trim();
-        trimmed == "AUTODEPS" || trimmed.ends_with(".AUTODEPS")
-    })
+    args.iter()
+        .map(|arg| codegen_argument(cx, arg))
+        .any(|arg| rendered_expr_is_autodeps_placeholder(&arg))
 }
 
 fn instruction_has_callback_and_array_args(cx: &mut Context, instr: &ReactiveInstruction) -> bool {
@@ -14781,9 +14780,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
             let callee_expr = codegen_place_to_expression(cx, callee);
             let mut rendered_args: Vec<String> =
                 args.iter().map(|a| codegen_argument(cx, a)).collect();
-            let autodeps_index = rendered_args
-                .iter()
-                .position(|arg| arg == "AUTODEPS" || arg.ends_with(".AUTODEPS"))?;
+            let autodeps_index = find_rendered_autodeps_index(&rendered_args)?;
             let hook_name = callee
                 .identifier
                 .name
@@ -14884,9 +14881,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
             }
             let mut rendered_args: Vec<String> =
                 args.iter().map(|a| codegen_argument(cx, a)).collect();
-            let autodeps_index = rendered_args
-                .iter()
-                .position(|arg| arg == "AUTODEPS" || arg.ends_with(".AUTODEPS"))?;
+            let autodeps_index = find_rendered_autodeps_index(&rendered_args)?;
             maybe_replace_autodeps_with_inferred_deps(cx, &prop, args, &mut rendered_args, true);
             if cx.disable_memoization_features {
                 let call_expr = render_method_call_expression_with_options_ast(
@@ -16103,6 +16098,42 @@ fn rendered_expr_is_array_seed_like(expr: &str) -> bool {
         }
         _ => false,
     }
+}
+
+fn rendered_expr_is_autodeps_placeholder(expr: &str) -> bool {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let allocator = Allocator::default();
+    let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) else {
+        return false;
+    };
+    match expression.without_parentheses() {
+        ast::Expression::Identifier(identifier) => identifier.name == "AUTODEPS",
+        ast::Expression::StaticMemberExpression(member) => member.property.name == "AUTODEPS",
+        ast::Expression::ComputedMemberExpression(member) => matches!(
+            member.expression.without_parentheses(),
+            ast::Expression::StringLiteral(literal) if literal.value == "AUTODEPS"
+        ),
+        ast::Expression::ChainExpression(chain) => match &chain.expression {
+            ast::ChainElement::StaticMemberExpression(member) => {
+                member.property.name == "AUTODEPS"
+            }
+            ast::ChainElement::ComputedMemberExpression(member) => matches!(
+                member.expression.without_parentheses(),
+                ast::Expression::StringLiteral(literal) if literal.value == "AUTODEPS"
+            ),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn find_rendered_autodeps_index(rendered_args: &[String]) -> Option<usize> {
+    rendered_args
+        .iter()
+        .position(|arg| rendered_expr_is_autodeps_placeholder(arg))
 }
 
 fn lower_binary_operator_ast(operator: BinaryOperator) -> AstBinaryOperator {
@@ -17565,9 +17596,7 @@ fn maybe_replace_autodeps_with_inferred_deps(
     }
     let effect_like_hook = is_effect_like_hook_name(&hook_candidate);
 
-    let autodeps_index = rendered_args
-        .iter()
-        .position(|arg| arg == "AUTODEPS" || arg.ends_with(".AUTODEPS"));
+    let autodeps_index = find_rendered_autodeps_index(rendered_args);
     let Some(autodeps_index) = autodeps_index else {
         if effect_like_hook {
             maybe_refine_effect_hook_dependency_array_from_callback_deps(
@@ -22173,6 +22202,7 @@ mod tests {
         build_function_property_from_value_ast, build_object_method_property_ast,
         codegen_expression_with_flow_cast_restore, function_expr_as_declaration,
         maybe_fill_for_header_initializer_from_update, reconstruct_for_init_declaration,
+        rendered_expr_is_autodeps_placeholder,
         rendered_expr_is_array_literal, rendered_expr_is_array_seed_like,
         rendered_expr_is_function_like,
         render_function_expression_ast,
@@ -22377,6 +22407,15 @@ mod tests {
         assert!(rendered_expr_is_array_seed_like("input ?? []"));
         assert!(rendered_expr_is_array_seed_like("t0"));
         assert!(!rendered_expr_is_array_seed_like("deps"));
+    }
+
+    #[test]
+    fn detects_rendered_autodeps_placeholders_via_ast() {
+        assert!(rendered_expr_is_autodeps_placeholder("AUTODEPS"));
+        assert!(rendered_expr_is_autodeps_placeholder("ReactCompilerRuntime.AUTODEPS"));
+        assert!(rendered_expr_is_autodeps_placeholder("runtime?.AUTODEPS"));
+        assert!(rendered_expr_is_autodeps_placeholder("runtime[\"AUTODEPS\"]"));
+        assert!(!rendered_expr_is_autodeps_placeholder("deps"));
     }
 
     #[test]
