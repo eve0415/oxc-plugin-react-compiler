@@ -4978,19 +4978,38 @@ fn pop_last_simple_statement_line(output: &mut String) -> Option<String> {
 
 fn is_literal_init_assignment_line(line: &str) -> bool {
     let trimmed = line.trim();
-    let body = if let Some(rest) = trimmed.strip_prefix("const ") {
-        rest
-    } else if let Some(rest) = trimmed.strip_prefix("let ") {
-        rest
-    } else if let Some(rest) = trimmed.strip_prefix("var ") {
-        rest
-    } else {
-        trimmed
+    let allocator = Allocator::default();
+    let Ok(statement) = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        trimmed,
+    ) else {
+        return false;
     };
-    body.ends_with(" = [];")
-        || body.ends_with(" = {};")
-        || body.ends_with("=[];")
-        || body.ends_with("={};")
+    match statement {
+        ast::Statement::VariableDeclaration(declaration) => declaration
+            .unbox()
+            .declarations
+            .into_iter()
+            .next()
+            .and_then(|declarator| declarator.init)
+            .is_some_and(|init| is_empty_array_or_object_literal_expression(&init)),
+        ast::Statement::ExpressionStatement(statement) => match statement.unbox().expression {
+            ast::Expression::AssignmentExpression(assignment) => {
+                is_empty_array_or_object_literal_expression(&assignment.right)
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn is_empty_array_or_object_literal_expression(expression: &ast::Expression<'_>) -> bool {
+    match expression.without_parentheses() {
+        ast::Expression::ArrayExpression(array) => array.elements.is_empty(),
+        ast::Expression::ObjectExpression(object) => object.properties.is_empty(),
+        _ => false,
+    }
 }
 
 fn next_emitted_statement_is_cache_store(
