@@ -12535,7 +12535,13 @@ fn codegen_reactive_scope(
     }
     for dep_expr in &selected_dep_exprs {
         let index = cx.alloc_cache_slot();
-        let comparison = format!("{}[{}] !== {}", cache_var, index, dep_expr);
+        let comparison = render_cache_slot_comparison_expression_ast(
+            &cache_var,
+            index,
+            BinaryOperator::StrictNotEq,
+            dep_expr,
+        )
+        .expect("dependency comparison should stay on AST path");
         if cx.enable_change_variable_codegen {
             let change_name = cx.synthesize_name(&format!("c_{}", index));
             change_var_stmts.push(
@@ -12551,11 +12557,8 @@ fn codegen_reactive_scope(
             change_exprs.push(comparison);
         }
         cache_store_stmts.push(
-            render_reactive_expression_statement_ast(&format!(
-                "{}[{}] = {}",
-                cache_var, index, dep_expr
-            ))
-            .expect("dependency cache store should stay on AST path"),
+            render_cache_slot_store_statement_ast(&cache_var, index, dep_expr)
+                .expect("dependency cache store should stay on AST path"),
         );
     }
     let active_dep_exprs: HashSet<String> = selected_dep_exprs.iter().cloned().collect();
@@ -12653,18 +12656,23 @@ fn codegen_reactive_scope(
     let mut test_condition = if change_exprs.is_empty() {
         // No dependencies - check if first output is sentinel
         if let Some(first_idx) = first_output_index {
-            format!(
-                "{}[{}] === Symbol.for(\"{}\")",
-                cache_var, first_idx, MEMO_CACHE_SENTINEL
+            render_cache_slot_comparison_expression_ast(
+                &cache_var,
+                first_idx,
+                BinaryOperator::StrictEq,
+                &format!("Symbol.for(\"{}\")", MEMO_CACHE_SENTINEL),
             )
+            .expect("memo sentinel comparison should stay on AST path")
         } else {
             "true".to_string()
         }
     } else {
-        change_exprs.join(" || ")
+        render_logical_chain_expression_ast(&change_exprs, LogicalOperator::Or)
+            .expect("memo change condition should stay on AST path")
     };
     if cx.disable_memoization_for_debugging {
-        test_condition = format!("{} || true", test_condition);
+        test_condition = render_logical_expression_ast(&test_condition, LogicalOperator::Or, "true")
+            .expect("debug memo change condition should stay on AST path");
     }
 
     // Generate computation block
@@ -12700,18 +12708,15 @@ fn codegen_reactive_scope(
     // Build cache store statements for outputs
     for (name, index) in &cache_loads {
         cache_store_stmts.push(
-            render_reactive_expression_statement_ast(&format!(
-                "{}[{}] = {}",
-                cache_var, index, name
-            ))
-            .expect("scope output cache store should stay on AST path"),
+            render_cache_slot_store_statement_ast(&cache_var, *index, name)
+                .expect("scope output cache store should stay on AST path"),
         );
     }
 
     // Build cache load statements for outputs
     for (name, index) in &cache_loads {
         cache_load_stmts.push(
-            render_reactive_assignment_statement_ast(name, &format!("{}[{}]", cache_var, index))
+            render_cache_slot_load_assignment_statement_ast(name, &cache_var, *index)
                 .expect("scope output cache load should stay on AST path"),
         );
     }
@@ -12738,7 +12743,10 @@ fn codegen_reactive_scope(
                 &render_reactive_variable_statement_ast(
                     ast::VariableDeclarationKind::Let,
                     &old_name,
-                    Some(&format!("{}[{}]", cache_var, index)),
+                    Some(
+                        &render_cache_slot_access_expression_ast(&cache_var, *index)
+                            .expect("cached old-value access should stay on AST path"),
+                    ),
                 )
                 .expect("cached old-value declaration should stay on AST path"),
             );
@@ -12751,8 +12759,13 @@ fn codegen_reactive_scope(
             );
         }
         output.push_str(
-            &render_reactive_if_statement_ast(&format!("!{}", condition_name), &cached_body, None)
-                .expect("cached structural check guard should stay on AST path"),
+            &render_reactive_if_statement_ast(
+                &render_unary_expression_ast(UnaryOperator::Not, &condition_name)
+                    .expect("cached structural check condition should stay on AST path"),
+                &cached_body,
+                None,
+            )
+            .expect("cached structural check guard should stay on AST path"),
         );
         for stmt in &cache_store_stmts {
             output.push_str(stmt);
@@ -12767,11 +12780,8 @@ fn codegen_reactive_scope(
                 .expect("recomputed structural check should stay on AST path"),
             );
             recomputed_body.push_str(
-                &render_reactive_assignment_statement_ast(
-                    name,
-                    &format!("{}[{}]", cache_var, index),
-                )
-                .expect("recomputed cache load should stay on AST path"),
+                &render_cache_slot_load_assignment_statement_ast(name, &cache_var, *index)
+                    .expect("recomputed cache load should stay on AST path"),
             );
         }
         output.push_str(
@@ -15856,6 +15866,51 @@ fn render_computed_store_expression_ast(object: &str, property: &str, value: &st
     ));
     let expression = builder.expression_assignment(SPAN, AssignmentOperator::Assign, target, value);
     Some(codegen_expression_with_flow_cast_restore(&expression))
+}
+
+fn render_cache_slot_access_expression_ast(cache_var: &str, index: u32) -> Option<String> {
+    render_computed_access_expression_ast(cache_var, &index.to_string(), false)
+}
+
+fn render_cache_slot_store_statement_ast(
+    cache_var: &str,
+    index: u32,
+    value: &str,
+) -> Option<String> {
+    let expression = render_computed_store_expression_ast(cache_var, &index.to_string(), value)?;
+    render_reactive_expression_statement_ast(&expression)
+}
+
+fn render_cache_slot_load_assignment_statement_ast(
+    name: &str,
+    cache_var: &str,
+    index: u32,
+) -> Option<String> {
+    let value = render_cache_slot_access_expression_ast(cache_var, index)?;
+    render_reactive_assignment_statement_ast(name, &value)
+}
+
+fn render_cache_slot_comparison_expression_ast(
+    cache_var: &str,
+    index: u32,
+    operator: BinaryOperator,
+    value: &str,
+) -> Option<String> {
+    let left = render_cache_slot_access_expression_ast(cache_var, index)?;
+    render_binary_expression_ast(&left, operator, value)
+}
+
+fn render_logical_chain_expression_ast(
+    expressions: &[String],
+    operator: LogicalOperator,
+) -> Option<String> {
+    let mut iter = expressions.iter();
+    let first = iter.next()?.clone();
+    let mut combined = first;
+    for expr in iter {
+        combined = render_logical_expression_ast(&combined, operator, expr)?;
+    }
+    Some(combined)
 }
 
 fn render_computed_delete_expression_ast(object: &str, property: &str) -> Option<String> {
