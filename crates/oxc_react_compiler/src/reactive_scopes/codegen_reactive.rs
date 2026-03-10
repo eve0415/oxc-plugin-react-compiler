@@ -10050,7 +10050,7 @@ fn emit_zero_dep_target_guard(
         &cache_var,
         output_slot,
         BinaryOperator::StrictEq,
-        &format!("Symbol.for(\"{}\")", MEMO_CACHE_SENTINEL),
+        &render_symbol_for_call_expression_source(MEMO_CACHE_SENTINEL),
     )
     .expect("memo cache guard should stay on AST path");
     output.push_str(
@@ -10832,7 +10832,7 @@ fn maybe_codegen_fused_effect_callback_empty_array_scope(
             &cache_var,
             callback_slot,
             BinaryOperator::StrictEq,
-            &format!("Symbol.for(\"{}\")", MEMO_CACHE_SENTINEL),
+            &render_symbol_for_call_expression_source(MEMO_CACHE_SENTINEL),
         )
         .expect("memo callback sentinel guard should stay on AST path"),
         &consequent,
@@ -12866,7 +12866,7 @@ fn codegen_reactive_scope(
                 &cache_var,
                 first_idx,
                 BinaryOperator::StrictEq,
-                &format!("Symbol.for(\"{}\")", MEMO_CACHE_SENTINEL),
+                &render_symbol_for_call_expression_source(MEMO_CACHE_SENTINEL),
             )
             .expect("memo sentinel comparison should stay on AST path")
         } else {
@@ -13083,7 +13083,12 @@ fn codegen_reactive_scope(
             .expect("early return should stay on AST path");
         output.push_str(
             &render_reactive_if_statement_ast(
-                &format!("{} !== Symbol.for(\"{}\")", name, EARLY_RETURN_SENTINEL),
+                &render_binary_expression_ast(
+                    &name,
+                    BinaryOperator::StrictNotEq,
+                    &render_symbol_for_call_expression_source(EARLY_RETURN_SENTINEL),
+                )
+                .expect("early return sentinel guard should stay on AST path"),
                 &consequent,
                 None,
             )
@@ -16127,6 +16132,12 @@ fn render_cache_slot_comparison_expression_ast(
 ) -> Option<String> {
     let left = render_cache_slot_access_expression_ast(cache_var, index)?;
     render_binary_expression_ast(&left, operator, value)
+}
+
+fn render_symbol_for_call_expression_source(value: &str) -> String {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    codegen_expression_with_flow_cast_restore(&build_symbol_for_call_expression_ast(builder, value))
 }
 
 fn render_logical_chain_expression_ast(
