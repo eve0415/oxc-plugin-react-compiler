@@ -4746,7 +4746,7 @@ fn emit_labeled_statement(output: &mut String, label_id: BlockId, stmt: &str) {
 
 fn statement_references_label(stmt: &str, label_id: BlockId) -> bool {
     let label = format!("bb{}", label_id.0);
-    stmt.contains(&format!("break {label}")) || stmt.contains(&format!("continue {label}"))
+    rendered_statement_references_label(stmt, &label)
 }
 
 fn maybe_codegen_labeled_if_adjacent_block(
@@ -4837,7 +4837,7 @@ fn maybe_codegen_labeled_if_adjacent_block(
     if following_stmt.trim().is_empty() {
         bail!("following-stmt-empty");
     }
-    if following_stmt.trim_start().starts_with("$[") {
+    if rendered_statement_is_cache_store(&following_stmt) {
         bail!("following-is-cache-store");
     }
 
@@ -5081,6 +5081,93 @@ fn rendered_statement_is_cache_store(stmt: &str) -> bool {
                 ast::Expression::Identifier(identifier) if identifier.name == "$"
             )
     )
+}
+
+fn rendered_statement_references_label(stmt: &str, label: &str) -> bool {
+    fn statement_references_label_ast(statement: &ast::Statement<'_>, label: &str) -> bool {
+        match statement {
+            ast::Statement::BreakStatement(break_statement) => break_statement
+                .label
+                .as_ref()
+                .is_some_and(|identifier| identifier.name == label),
+            ast::Statement::ContinueStatement(continue_statement) => continue_statement
+                .label
+                .as_ref()
+                .is_some_and(|identifier| identifier.name == label),
+            ast::Statement::BlockStatement(block) => block
+                .body
+                .iter()
+                .any(|statement| statement_references_label_ast(statement, label)),
+            ast::Statement::IfStatement(if_statement) => {
+                statement_references_label_ast(&if_statement.consequent, label)
+                    || if_statement
+                        .alternate
+                        .as_ref()
+                        .is_some_and(|statement| statement_references_label_ast(statement, label))
+            }
+            ast::Statement::LabeledStatement(labeled) => {
+                statement_references_label_ast(&labeled.body, label)
+            }
+            ast::Statement::ForStatement(for_statement) => {
+                statement_references_label_ast(&for_statement.body, label)
+            }
+            ast::Statement::ForInStatement(for_statement) => {
+                statement_references_label_ast(&for_statement.body, label)
+            }
+            ast::Statement::ForOfStatement(for_statement) => {
+                statement_references_label_ast(&for_statement.body, label)
+            }
+            ast::Statement::WhileStatement(while_statement) => {
+                statement_references_label_ast(&while_statement.body, label)
+            }
+            ast::Statement::DoWhileStatement(do_while_statement) => {
+                statement_references_label_ast(&do_while_statement.body, label)
+            }
+            ast::Statement::WithStatement(with_statement) => {
+                statement_references_label_ast(&with_statement.body, label)
+            }
+            ast::Statement::SwitchStatement(switch_statement) => switch_statement
+                .cases
+                .iter()
+                .flat_map(|case| case.consequent.iter())
+                .any(|statement| statement_references_label_ast(statement, label)),
+            ast::Statement::TryStatement(try_statement) => {
+                try_statement
+                    .block
+                    .body
+                    .iter()
+                    .any(|statement| statement_references_label_ast(statement, label))
+                    || try_statement.handler.as_ref().is_some_and(|handler| {
+                        handler
+                            .body
+                            .body
+                            .iter()
+                            .any(|statement| statement_references_label_ast(statement, label))
+                    })
+                    || try_statement.finalizer.as_ref().is_some_and(|finalizer| {
+                        finalizer
+                            .body
+                            .iter()
+                            .any(|statement| statement_references_label_ast(statement, label))
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    let trimmed = stmt.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let allocator = Allocator::default();
+    let Ok(statements) =
+        parse_statement_list_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), trimmed)
+    else {
+        return false;
+    };
+    statements
+        .iter()
+        .any(|statement| statement_references_label_ast(statement, label))
 }
 
 fn should_insert_blank_after_labeled_if(
@@ -22283,6 +22370,7 @@ mod tests {
         maybe_fill_for_header_initializer_from_update, reconstruct_for_init_declaration,
         is_readonly_console_callee,
         rendered_statement_is_cache_store,
+        rendered_statement_references_label,
         rendered_expr_is_autodeps_placeholder,
         rendered_expr_is_array_literal, rendered_expr_is_array_seed_like,
         rendered_expr_is_function_like, rendered_expr_is_jsx_like,
@@ -22528,6 +22616,22 @@ mod tests {
         assert!(rendered_statement_is_cache_store("$[0] = value;"));
         assert!(!rendered_statement_is_cache_store("value = $[0];"));
         assert!(!rendered_statement_is_cache_store("const cache = $[0];"));
+    }
+
+    #[test]
+    fn detects_rendered_label_references_via_ast() {
+        assert!(rendered_statement_references_label(
+            "bb1: while (cond) { continue bb1; }",
+            "bb1"
+        ));
+        assert!(rendered_statement_references_label(
+            "bb1: { if (cond) break bb1; }",
+            "bb1"
+        ));
+        assert!(!rendered_statement_references_label(
+            "bb2: { break bb2; }",
+            "bb1"
+        ));
     }
 
     #[test]
