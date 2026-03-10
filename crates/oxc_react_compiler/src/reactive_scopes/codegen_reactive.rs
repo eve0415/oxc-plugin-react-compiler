@@ -14934,7 +14934,6 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                 &mut rendered_args,
                 true,
             );
-            let args_str = join_call_arguments(&rendered_args);
             // Wrap arrow/functions in parens for IIFE callee position.
             let callee_trimmed = callee_expr.trim_start();
             let needs_wrap = callee_expr.contains("=>")
@@ -14955,17 +14954,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                 ),
             );
             let call_expr = render_call_expression_ast(&callee_final, args, &rendered_args, *optional)
-                .unwrap_or_else(|| {
-                    if *optional {
-                        if should_break_optional_call_args(&rendered_args) {
-                            format!("{}?.(\n{})", callee_final, args_str)
-                        } else {
-                            format!("{}?.({})", callee_final, args_str)
-                        }
-                    } else {
-                        format!("{}({})", callee_final, args_str)
-                    }
-                });
+                .expect("generated call expression should parse");
             if cx.emit_hook_guards && is_hook_call {
                 ExprValue::primary(guard_hook_call_expression(call_expr))
             } else {
