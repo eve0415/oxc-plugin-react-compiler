@@ -6807,7 +6807,7 @@ fn maybe_codegen_fused_reassign_then_ternary_branch(
     );
     output.push_str(
         &render_reactive_expression_statement_ast(&fused_stmt)
-            .unwrap_or_else(|| format!("{fused_stmt};\n")),
+            .expect("fused ternary branch should stay on AST path"),
     );
     *cx = probe_cx;
     Some(ternary_idx - start + 1)
@@ -7138,7 +7138,7 @@ fn maybe_codegen_fused_reassign_stmt_into_following_logical(
                 );
                 output.push_str(
                     &render_reactive_expression_statement_ast(&combined_expr)
-                        .unwrap_or_else(|| format!("{combined_expr};\n")),
+                        .expect("fused logical reassign should stay on AST path"),
                 );
                 *cx = probe_cx;
                 return Some(idx - start + 1);
