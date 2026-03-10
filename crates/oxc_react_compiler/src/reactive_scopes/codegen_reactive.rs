@@ -5892,7 +5892,8 @@ fn rewrite_named_test_reassign_ternary_in_scope_computation(computation: &str) -
                 .trim()
                 .starts_with(&format!("{}.push(", assign_target))
         {
-            let assign_expr = format!("{} = {}", assign_target, assign_rhs);
+            let assign_expr = render_assignment_expression_ast(&assign_target, &assign_rhs)
+                .expect("prop push ternary assignment should stay on AST path");
             let alternate_expr = render_sequence_expression_ast(&[assign_expr], &ternary_alternate)
                 .expect("prop push ternary alternate should stay on AST path");
             let rewritten_expr =
@@ -8447,10 +8448,11 @@ fn maybe_codegen_fused_method_call_destructure_assignment(
                     }
                 }
 
-                let pattern_expr = codegen_pattern(cx, &pattern);
                 let rhs_expr =
                     codegen_place_with_min_prec(cx, &value_place, ExprPrecedence::Assignment);
-                let assignment_expr = format!("({} = {})", pattern_expr, rhs_expr);
+                let assignment_expr =
+                    render_reactive_pattern_assignment_expression_ast(cx, &pattern, &rhs_expr)
+                        .expect("generated pattern assignment expression should parse");
 
                 let recv = codegen_member_object_expression(cx, receiver);
                 let (prop, is_computed) = resolve_method_property(cx, property, &recv);
@@ -15006,7 +15008,8 @@ fn codegen_store(
                     return None;
                 }
             }
-            let expr = format!("{} = {}", name, rhs);
+            let expr = render_assignment_expression_ast(&name, rhs)
+                .expect("generated assignment expression should parse");
             if let Some(lvalue) = &instr.lvalue {
                 if std::env::var("DEBUG_CODEGEN_STORE").is_ok() {
                     eprintln!(
@@ -16339,15 +16342,18 @@ fn render_computed_delete_expression_ast(object: &str, property: &str) -> Option
     Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
-fn render_global_store_expression_ast(name: &str, value: &str) -> Option<String> {
+fn render_assignment_expression_ast(target: &str, value: &str) -> Option<String> {
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
+    let target = parse_rendered_expression_ast(&allocator, target)?;
     let value = parse_rendered_expression_ast(&allocator, value)?;
-    let target = ast::AssignmentTarget::from(
-        builder.simple_assignment_target_assignment_target_identifier(SPAN, builder.ident(name)),
-    );
+    let target = expression_to_assignment_target_ast(builder, target)?;
     let expression = builder.expression_assignment(SPAN, AssignmentOperator::Assign, target, value);
     Some(codegen_expression_with_flow_cast_restore(&expression))
+}
+
+fn render_global_store_expression_ast(name: &str, value: &str) -> Option<String> {
+    render_assignment_expression_ast(name, value)
 }
 
 fn render_update_expression_ast(
@@ -18790,6 +18796,24 @@ fn render_reactive_destructure_statement_ast(
     Some(format!(
         "{}\n",
         codegen_statement_with_flow_cast_restore(&statement)
+    ))
+}
+
+fn render_reactive_pattern_assignment_expression_ast(
+    cx: &mut Context,
+    pattern: &Pattern,
+    rhs: &str,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let rhs_expression =
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), rhs).ok()?;
+    let target = try_build_reactive_assignment_target_ast(builder, &allocator, cx, pattern)?;
+    let expression =
+        builder.expression_assignment(SPAN, AssignmentOperator::Assign, target, rhs_expression);
+    Some(format!(
+        "({})",
+        codegen_expression_with_flow_cast_restore(&expression)
     ))
 }
 
@@ -21875,6 +21899,7 @@ mod tests {
         codegen_expression_with_flow_cast_restore, function_expr_as_declaration,
         maybe_fill_for_header_initializer_from_update, reconstruct_for_init_declaration,
         render_function_expression_ast,
+        render_assignment_expression_ast,
         render_computed_access_expression_ast, render_primitive_expression_ast,
         render_property_access_expression_ast, render_pattern_with_oxc,
         render_reactive_function_body_prologue_ast, render_jsx_expression_ast,
@@ -22142,6 +22167,15 @@ mod tests {
                 .expect("expected property access");
 
         assert_eq!(rendered, "value.inner");
+    }
+
+    #[test]
+    fn renders_assignment_expression_via_ast() {
+        let rendered =
+            render_assignment_expression_ast("value.inner", "next")
+                .expect("expected assignment expression");
+
+        assert_eq!(rendered, "value.inner = next");
     }
 
     #[test]
