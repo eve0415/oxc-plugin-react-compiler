@@ -6749,4 +6749,83 @@ function Component(props) {
         assert!(rewritten.contains("$[1] = value;"));
         assert!(rewritten.contains("return value;"));
     }
+
+    #[test]
+    fn builds_return_identifier_body_from_shape_without_generated_source() {
+        let source = "function Foo(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "return value;",
+            &["props"],
+            false,
+        );
+        compiled_function.generated_body = None;
+        compiled_function.generated_body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(
+                "value".to_string(),
+            );
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("function Foo(props) {"));
+        assert!(rewritten.contains("return value;"));
+    }
+
+    #[test]
+    fn builds_single_slot_memoized_body_from_shape_without_generated_source() {
+        let source = "function Foo(t0) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "let __memo; if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) { __memo = props.value; $[0] = __memo; } else { __memo = $[0]; } let value = t0 === undefined ? __memo : t0; return value;",
+            &["t0"],
+            false,
+        );
+        compiled_function.generated_body = None;
+        compiled_function.generated_body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
+                value_name: "value".to_string(),
+                value_kind: ast::VariableDeclarationKind::Let,
+                temp_name: "t0".to_string(),
+                memoized_expr: "props.value".to_string(),
+            };
+        compiled_function.needs_cache_import = true;
+        compiled_function.cache_prologue =
+            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+                binding_name: "$".to_string(),
+                size: 1,
+                fast_refresh: None,
+            });
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("const $ = _c(1);"));
+        assert!(rewritten.contains("let __memo;"));
+        assert!(rewritten.contains("if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {"));
+        assert!(rewritten.contains("__memo = props.value;"));
+        assert!(rewritten.contains("$[0] = __memo;"));
+        assert!(rewritten.contains("let value = t0 === undefined ? __memo : t0;"));
+        assert!(rewritten.contains("return value;"));
+    }
 }

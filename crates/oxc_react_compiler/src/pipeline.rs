@@ -5803,17 +5803,23 @@ fn try_compile_function<'a>(
     } else {
         CompiledBodyPayload::GeneratedString
     };
+    let generated_body_shape = codegen_result.body_shape.clone();
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
         start: func.span.start,
         end: func.span.end,
         generated_body: if body_payload == CompiledBodyPayload::GeneratedString {
-            generated_body
+            match &generated_body_shape {
+                crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown => {
+                    generated_body
+                }
+                _ => None,
+            }
         } else {
             None
         },
-        generated_body_shape: codegen_result.body_shape.clone(),
+        generated_body_shape,
         body_payload,
         needs_cache_import,
         compiled_params,
@@ -6018,17 +6024,23 @@ fn try_compile_function_with_name<'a>(
     } else {
         CompiledBodyPayload::GeneratedString
     };
+    let generated_body_shape = codegen_result.body_shape.clone();
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
         start: func.span.start,
         end: func.span.end,
         generated_body: if body_payload == CompiledBodyPayload::GeneratedString {
-            generated_body
+            match &generated_body_shape {
+                crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown => {
+                    generated_body
+                }
+                _ => None,
+            }
         } else {
             None
         },
-        generated_body_shape: codegen_result.body_shape.clone(),
+        generated_body_shape,
         body_payload,
         needs_cache_import,
         compiled_params,
@@ -6241,17 +6253,23 @@ fn try_compile_arrow<'a>(
     } else {
         CompiledBodyPayload::GeneratedString
     };
+    let generated_body_shape = codegen_result.body_shape.clone();
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
         start: arrow.span.start,
         end: arrow.span.end,
         generated_body: if body_payload == CompiledBodyPayload::GeneratedString {
-            generated_body
+            match &generated_body_shape {
+                crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown => {
+                    generated_body
+                }
+                _ => None,
+            }
         } else {
             None
         },
-        generated_body_shape: codegen_result.body_shape.clone(),
+        generated_body_shape,
         body_payload,
         needs_cache_import,
         compiled_params,
