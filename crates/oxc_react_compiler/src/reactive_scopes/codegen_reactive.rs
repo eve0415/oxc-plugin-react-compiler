@@ -15349,7 +15349,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                 alt_ev.expr
             };
             let expr = render_conditional_expression_ast(&test_str, &cons_str, &alt_str)
-                .unwrap_or_else(|| format!("{} ? {} : {}", test_str, cons_str, alt_str));
+                .expect("generated reactive conditional expression should parse");
             ExprValue::new(expr, ExprPrecedence::Conditional)
         }
         InstructionValue::ReactiveLogicalExpression {
@@ -15376,7 +15376,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                 }
             }
             let expr = render_logical_expression_ast(&l, *operator, &r)
-                .unwrap_or_else(|| format!("{} {} {}", l, logical_operator_to_str(operator), r));
+                .expect("generated reactive logical expression should parse");
             ExprValue::new(expr, prec)
         }
         InstructionValue::Ternary {
@@ -15399,7 +15399,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                 alt_ev.expr
             };
             let expr = render_conditional_expression_ast(&test_str, &cons_str, &alt_str)
-                .unwrap_or_else(|| format!("{} ? {} : {}", test_str, cons_str, alt_str));
+                .expect("generated ternary expression should parse");
             ExprValue::new(expr, ExprPrecedence::Conditional)
         }
         InstructionValue::LogicalExpression {
@@ -15420,7 +15420,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                 }
             }
             let expr = render_logical_expression_ast(&l, *operator, &r)
-                .unwrap_or_else(|| format!("{} {} {}", l, logical_operator_to_str(operator), r));
+                .expect("generated logical expression should parse");
             ExprValue::new(expr, prec)
         }
         // These should be handled in codegen_instruction_nullable directly
