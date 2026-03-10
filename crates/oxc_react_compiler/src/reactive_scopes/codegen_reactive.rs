@@ -165,7 +165,7 @@ pub enum GeneratedBodyShape {
 
 pub struct CodegenResult {
     /// Generated function body without rendered directives/cache prologue statements.
-    pub body_without_cache_prologue: String,
+    pub body_without_cache_prologue: Option<String>,
     /// Structured shape of the emitted body for downstream AST-based rewrites.
     pub body_shape: GeneratedBodyShape,
     /// Number of cache slots used.
@@ -763,7 +763,8 @@ fn codegen_reactive_function_with_primitives(
     let body_shape = analyze_generated_body_shape(&body);
 
     CodegenResult {
-        body_without_cache_prologue: body.clone(),
+        body_without_cache_prologue: matches!(body_shape, GeneratedBodyShape::Unknown)
+            .then_some(body.clone()),
         body_shape,
         cache_size,
         needs_cache_import,
@@ -21814,7 +21815,8 @@ fn codegen_statements_with_flow_cast_restore<'a>(statements: &[ast::Statement<'a
 struct FunctionBodyRenderSpec<'a> {
     params: &'a [Argument],
     param_names: &'a [String],
-    body_source: &'a str,
+    body_source: Option<&'a str>,
+    body_shape: &'a GeneratedBodyShape,
     directives: &'a [String],
     cache_prologue: Option<&'a CachePrologue>,
     needs_function_hook_guard_wrapper: bool,
@@ -21829,6 +21831,135 @@ struct FunctionExpressionRenderSpec<'a> {
     anonymous_name_hint: Option<&'a str>,
 }
 
+fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    spec: &FunctionBodyRenderSpec<'_>,
+) -> Option<ast::FunctionBody<'a>> {
+    match spec.body_shape {
+        GeneratedBodyShape::Unknown => None,
+        GeneratedBodyShape::ReturnIdentifier(name) => Some(builder.function_body(
+            SPAN,
+            builder.vec(),
+            builder.vec1(builder.statement_return(
+                SPAN,
+                Some(builder.expression_identifier(SPAN, builder.ident(name))),
+            )),
+        )),
+        GeneratedBodyShape::SingleSlotMemoizedReturn {
+            value_name,
+            value_kind,
+            temp_name,
+            memoized_expr,
+        } => {
+            let cache_binding_name = &spec.cache_prologue?.binding_name;
+            let memo_name = "__memo";
+            let memo_expr = parse_expression_for_ast_codegen(
+                allocator,
+                SourceType::mjs().with_jsx(true),
+                memoized_expr,
+            )
+            .ok()?;
+            let conditional = builder.expression_conditional(
+                SPAN,
+                builder.expression_binary(
+                    SPAN,
+                    builder.expression_identifier(SPAN, builder.ident(temp_name)),
+                    AstBinaryOperator::StrictEquality,
+                    builder.expression_identifier(SPAN, builder.ident("undefined")),
+                ),
+                builder.expression_identifier(SPAN, builder.ident(memo_name)),
+                builder.expression_identifier(SPAN, builder.ident(temp_name)),
+            );
+            let consequent = builder.vec_from_iter([
+                build_identifier_assignment_statement_ast_with_expression(
+                    builder, memo_name, memo_expr,
+                ),
+                build_computed_member_assignment_statement_ast(
+                    builder,
+                    cache_binding_name,
+                    builder.expression_numeric_literal(SPAN, 0.0, None, NumberBase::Decimal),
+                    builder.expression_identifier(SPAN, builder.ident(memo_name)),
+                ),
+            ]);
+            let alternate =
+                builder.vec1(build_identifier_assignment_statement_ast_with_expression(
+                    builder,
+                    memo_name,
+                    build_computed_member_expression_ast(
+                        builder,
+                        cache_binding_name,
+                        builder.expression_numeric_literal(SPAN, 0.0, None, NumberBase::Decimal),
+                    ),
+                ));
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec_from_iter([
+                    ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+                        SPAN,
+                        ast::VariableDeclarationKind::Let,
+                        builder.vec1(
+                            builder.variable_declarator(
+                                SPAN,
+                                ast::VariableDeclarationKind::Let,
+                                builder.binding_pattern_binding_identifier(
+                                    SPAN,
+                                    builder.ident(memo_name),
+                                ),
+                                NONE,
+                                None,
+                                false,
+                            ),
+                        ),
+                        false,
+                    )),
+                    builder.statement_if(
+                        SPAN,
+                        builder.expression_binary(
+                            SPAN,
+                            build_computed_member_expression_ast(
+                                builder,
+                                cache_binding_name,
+                                builder.expression_numeric_literal(
+                                    SPAN,
+                                    0.0,
+                                    None,
+                                    NumberBase::Decimal,
+                                ),
+                            ),
+                            AstBinaryOperator::StrictEquality,
+                            build_symbol_for_call_expression_ast(builder, MEMO_CACHE_SENTINEL),
+                        ),
+                        builder.statement_block(SPAN, consequent),
+                        Some(builder.statement_block(SPAN, alternate)),
+                    ),
+                    ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+                        SPAN,
+                        *value_kind,
+                        builder.vec1(builder.variable_declarator(
+                            SPAN,
+                            *value_kind,
+                            builder.binding_pattern_binding_identifier(
+                                SPAN,
+                                builder.ident(value_name),
+                            ),
+                            NONE,
+                            Some(conditional),
+                            false,
+                        )),
+                        false,
+                    )),
+                    builder.statement_return(
+                        SPAN,
+                        Some(builder.expression_identifier(SPAN, builder.ident(value_name))),
+                    ),
+                ]),
+            ))
+        }
+    }
+}
+
 fn build_object_method_property_ast<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
@@ -21836,14 +21967,20 @@ fn build_object_method_property_ast<'a>(
     computed_key_source: Option<&str>,
     spec: &FunctionBodyRenderSpec<'_>,
 ) -> Option<ast::ObjectPropertyKind<'a>> {
-    let parsed_body = parse_function_body_for_ast_codegen(
-        allocator,
-        SourceType::mjs().with_jsx(true),
-        spec.is_async,
-        spec.is_generator,
-        spec.body_source,
-    )
-    .ok()?;
+    let parsed_body = if let Some(body) =
+        build_function_body_from_generated_shape_for_ast_codegen(builder, allocator, spec)
+    {
+        body
+    } else {
+        parse_function_body_for_ast_codegen(
+            allocator,
+            SourceType::mjs().with_jsx(true),
+            spec.is_async,
+            spec.is_generator,
+            spec.body_source?,
+        )
+        .ok()?
+    };
     let mut parsed_body = parsed_body;
     apply_function_body_preludes_ast(
         builder,
@@ -22006,7 +22143,18 @@ fn render_object_expression_ast(
                             &FunctionBodyRenderSpec {
                                 params: &lf.func.params,
                                 param_names: &inner_result.param_names,
-                                body_source: inner_result.body_without_cache_prologue.trim(),
+                                body_source: matches!(
+                                    inner_result.body_shape,
+                                    GeneratedBodyShape::Unknown
+                                )
+                                .then(|| {
+                                    inner_result
+                                        .body_without_cache_prologue
+                                        .as_deref()
+                                        .map(str::trim)
+                                })
+                                .flatten(),
+                                body_shape: &inner_result.body_shape,
                                 directives: &lf.func.directives,
                                 cache_prologue: inner_result.cache_prologue.as_ref(),
                                 needs_function_hook_guard_wrapper: inner_result
@@ -23058,14 +23206,22 @@ fn build_identifier_assignment_statement_ast_with_expression<'a>(
 fn render_function_expression_ast(spec: &FunctionExpressionRenderSpec<'_>) -> Option<String> {
     let allocator = Allocator::default();
     let source_type = SourceType::mjs().with_jsx(true);
-    let parsed_body = parse_function_body_for_ast_codegen(
+    let parsed_body = if let Some(body) = build_function_body_from_generated_shape_for_ast_codegen(
+        AstBuilder::new(&allocator),
         &allocator,
-        source_type,
-        spec.body.is_async,
-        spec.body.is_generator,
-        spec.body.body_source,
-    )
-    .ok()?;
+        &spec.body,
+    ) {
+        body
+    } else {
+        parse_function_body_for_ast_codegen(
+            &allocator,
+            source_type,
+            spec.body.is_async,
+            spec.body.is_generator,
+            spec.body.body_source?,
+        )
+        .ok()?
+    };
     let mut parsed_body = parsed_body;
     let builder = AstBuilder::new(&allocator);
     let formal_params =
@@ -23213,7 +23369,15 @@ fn render_lowered_function_expression_source(
         body: FunctionBodyRenderSpec {
             params: &lowered_func.func.params,
             param_names: &inner_result.param_names,
-            body_source: inner_result.body_without_cache_prologue.trim(),
+            body_source: matches!(inner_result.body_shape, GeneratedBodyShape::Unknown)
+                .then(|| {
+                    inner_result
+                        .body_without_cache_prologue
+                        .as_deref()
+                        .map(str::trim)
+                })
+                .flatten(),
+            body_shape: &inner_result.body_shape,
             directives: &lowered_func.func.directives,
             cache_prologue: inner_result.cache_prologue.as_ref(),
             needs_function_hook_guard_wrapper: inner_result.needs_function_hook_guard_wrapper,
@@ -23741,7 +23905,8 @@ mod tests {
             body: FunctionBodyRenderSpec {
                 params: &[Argument::Place(named_place(0, 0, "value"))],
                 param_names: &["value".to_string()],
-                body_source: "return value;",
+                body_source: Some("return value;"),
+                body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown,
                 directives: &[],
                 cache_prologue: None,
                 needs_function_hook_guard_wrapper: false,
@@ -23764,7 +23929,8 @@ mod tests {
             body: FunctionBodyRenderSpec {
                 params: &[Argument::Place(named_place(0, 0, "value"))],
                 param_names: &["value".to_string()],
-                body_source: "return value;",
+                body_source: Some("return value;"),
+                body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown,
                 directives: &[],
                 cache_prologue: None,
                 needs_function_hook_guard_wrapper: false,
@@ -23793,7 +23959,8 @@ mod tests {
             body: FunctionBodyRenderSpec {
                 params: &[Argument::Place(named_place(0, 0, "value"))],
                 param_names: &["value".to_string()],
-                body_source: "return value;",
+                body_source: Some("return value;"),
+                body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown,
                 directives: &directives,
                 cache_prologue: Some(&cache_prologue),
                 needs_function_hook_guard_wrapper: false,
@@ -23817,7 +23984,8 @@ mod tests {
             body: FunctionBodyRenderSpec {
                 params: &[Argument::Place(named_place(0, 0, "value"))],
                 param_names: &["value".to_string()],
-                body_source: "return useMemo(value);",
+                body_source: Some("return useMemo(value);"),
+                body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown,
                 directives: &[],
                 cache_prologue: None,
                 needs_function_hook_guard_wrapper: true,
@@ -24152,7 +24320,8 @@ mod tests {
             &FunctionBodyRenderSpec {
                 params: &[Argument::Place(named_place(0, 0, "value"))],
                 param_names: &["value".to_string()],
-                body_source: "return value;",
+                body_source: Some("return value;"),
+                body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown,
                 directives: &[],
                 cache_prologue: None,
                 needs_function_hook_guard_wrapper: false,
@@ -24186,7 +24355,8 @@ mod tests {
             &FunctionBodyRenderSpec {
                 params: &[Argument::Place(named_place(0, 0, "value"))],
                 param_names: &["value".to_string()],
-                body_source: "return value;",
+                body_source: Some("return value;"),
+                body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown,
                 directives: &directives,
                 cache_prologue: Some(&cache_prologue),
                 needs_function_hook_guard_wrapper: false,

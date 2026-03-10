@@ -1182,6 +1182,37 @@ fn codegen_outlined_function(
         out
     }
 
+    fn rename_generated_body_shape(
+        body_shape: &mut crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
+        from: &str,
+        to: &str,
+    ) {
+        match body_shape {
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown => {}
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(
+                name,
+            ) => {
+                if name == from {
+                    *name = to.to_string();
+                }
+            }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
+                value_name,
+                temp_name,
+                memoized_expr,
+                ..
+            } => {
+                if value_name == from {
+                    *value_name = to.to_string();
+                }
+                if temp_name == from {
+                    *temp_name = to.to_string();
+                }
+                *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
+            }
+        }
+    }
+
     let retry_no_memo_mode = RETRY_NO_MEMO_MODE.with(|flag| flag.get());
     let direct_codegen = || {
         let mut reactive_fn = build_reactive_function::build_reactive_function(func.clone());
@@ -1262,10 +1293,13 @@ fn codegen_outlined_function(
             is_rest: is_spread,
         });
     }
-    let body_shape = codegen.body_shape;
+    let mut body_shape = codegen.body_shape;
     let mut body = codegen.body_without_cache_prologue;
     for (from, to) in rename_pairs {
-        body = replace_identifier_tokens(&body, &from, &to);
+        if let Some(rendered_body) = body.as_mut() {
+            *rendered_body = replace_identifier_tokens(rendered_body, &from, &to);
+        }
+        rename_generated_body_shape(&mut body_shape, &from, &to);
     }
     Some(CompiledOutlinedFunction {
         name: func.id.as_ref()?.clone(),
@@ -1274,7 +1308,7 @@ fn codegen_outlined_function(
             body_shape,
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown
         ) {
-            Some(body)
+            body
         } else {
             None
         },
@@ -6479,7 +6513,7 @@ fn prepare_generated_body(
     codegen_result: &codegen_reactive::CodegenResult,
     prefix_statements: &[CompiledParamPrefixStatement],
 ) -> PreparedGeneratedBody {
-    let mut generated_body = Some(codegen_result.body_without_cache_prologue.clone());
+    let mut generated_body = codegen_result.body_without_cache_prologue.clone();
     let mut synthesized_default_param_cache = None;
     let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
     if let Some((synthesized_cache_plan, synthesized_hir_outlined)) =
