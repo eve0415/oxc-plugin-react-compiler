@@ -3457,10 +3457,7 @@ fn codegen_block_no_reset_with_options(
             | InstructionValue::StoreContext { value, .. } => {
                 if let Some(Some(expr_value)) = cx.temp.get(&value.identifier.declaration_id) {
                     let expr = expr_value.expr.trim_start();
-                    if expr.starts_with("function ")
-                        || expr.starts_with("async function ")
-                        || expr.contains("=>")
-                    {
+                    if rendered_expr_is_function_like(expr) {
                         return &instr.loc;
                     }
                 }
@@ -12190,14 +12187,12 @@ fn instruction_has_callback_and_array_args(cx: &mut Context, instr: &ReactiveIns
         _ => return false,
     };
     let rendered_args: Vec<String> = args.iter().map(|arg| codegen_argument(cx, arg)).collect();
-    let has_callback_arg = rendered_args.iter().any(|arg| {
-        let trimmed = arg.trim();
-        trimmed.contains("=>") || trimmed.starts_with("function")
-    }) || args.iter().any(is_function_argument);
-    let has_array_arg = rendered_args.iter().any(|arg| {
-        let trimmed = arg.trim();
-        trimmed.starts_with('[') && trimmed.ends_with(']')
-    }) || args.iter().any(is_array_argument);
+    let has_callback_arg =
+        rendered_args.iter().any(|arg| rendered_expr_is_function_like(arg))
+            || args.iter().any(is_function_argument);
+    let has_array_arg =
+        rendered_args.iter().any(|arg| rendered_expr_is_array_literal(arg))
+            || args.iter().any(is_array_argument);
     has_callback_arg && has_array_arg
 }
 
@@ -14805,12 +14800,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 &mut rendered_args,
                 hook_is_direct,
             );
-            let callee_trimmed = callee_expr.trim_start();
-            let needs_wrap = callee_expr.contains("=>")
-                || callee_trimmed.starts_with("function ")
-                || callee_trimmed.starts_with("function*")
-                || callee_trimmed.starts_with("async function ")
-                || callee_trimmed.starts_with("async function*");
+            let needs_wrap = rendered_expr_is_function_like(&callee_expr);
             let callee_final = if needs_wrap {
                 format!("({})", callee_expr)
             } else {
@@ -14829,7 +14819,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
             }
             let callback_index = (0..autodeps_index).rev().find(|idx| {
                 let arg = rendered_args[*idx].trim();
-                arg.contains("=>") || arg.starts_with("function")
+                rendered_expr_is_function_like(arg)
             })?;
             let mut call_args = rendered_args.clone();
             let cb_expr = call_args[callback_index].clone();
@@ -14920,7 +14910,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
             }
             let callback_index = (0..autodeps_index).rev().find(|idx| {
                 let arg = rendered_args[*idx].trim();
-                arg.contains("=>") || arg.starts_with("function")
+                rendered_expr_is_function_like(arg)
             })?;
             let mut call_args = rendered_args.clone();
             let cb_expr = call_args[callback_index].clone();
@@ -15422,12 +15412,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                 true,
             );
             // Wrap arrow/functions in parens for IIFE callee position.
-            let callee_trimmed = callee_expr.trim_start();
-            let needs_wrap = callee_expr.contains("=>")
-                || callee_trimmed.starts_with("function ")
-                || callee_trimmed.starts_with("function*")
-                || callee_trimmed.starts_with("async function ")
-                || callee_trimmed.starts_with("async function*");
+            let needs_wrap = rendered_expr_is_function_like(&callee_expr);
             let callee_final = if needs_wrap {
                 format!("({})", callee_expr)
             } else {
@@ -16066,6 +16051,33 @@ fn parse_rendered_expression_ast<'a>(
     expr: &str,
 ) -> Option<ast::Expression<'a>> {
     parse_expression_for_ast_codegen(allocator, SourceType::mjs().with_jsx(true), expr).ok()
+}
+
+fn rendered_expr_is_function_like(expr: &str) -> bool {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let allocator = Allocator::default();
+    let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) else {
+        return false;
+    };
+    matches!(
+        expression.without_parentheses(),
+        ast::Expression::FunctionExpression(_) | ast::Expression::ArrowFunctionExpression(_)
+    )
+}
+
+fn rendered_expr_is_array_literal(expr: &str) -> bool {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let allocator = Allocator::default();
+    let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) else {
+        return false;
+    };
+    matches!(expression.without_parentheses(), ast::Expression::ArrayExpression(_))
 }
 
 fn lower_binary_operator_ast(operator: BinaryOperator) -> AstBinaryOperator {
@@ -22136,6 +22148,7 @@ mod tests {
         build_function_property_from_value_ast, build_object_method_property_ast,
         codegen_expression_with_flow_cast_restore, function_expr_as_declaration,
         maybe_fill_for_header_initializer_from_update, reconstruct_for_init_declaration,
+        rendered_expr_is_array_literal, rendered_expr_is_function_like,
         render_function_expression_ast,
         render_assignment_expression_ast,
         render_computed_access_expression_ast, render_primitive_expression_ast,
@@ -22316,6 +22329,20 @@ mod tests {
 
         assert!(declaration.starts_with("async function useFoo(value)"));
         assert!(declaration.contains("return value;"));
+    }
+
+    #[test]
+    fn detects_rendered_function_shapes_via_ast() {
+        assert!(rendered_expr_is_function_like("value => value"));
+        assert!(rendered_expr_is_function_like("(async function(value) { return value; })"));
+        assert!(!rendered_expr_is_function_like("callback(value)"));
+    }
+
+    #[test]
+    fn detects_rendered_array_literals_via_ast() {
+        assert!(rendered_expr_is_array_literal("[value, other]"));
+        assert!(rendered_expr_is_array_literal("([])"));
+        assert!(!rendered_expr_is_array_literal("deps"));
     }
 
     #[test]
