@@ -5015,6 +5015,172 @@ fn is_empty_array_or_object_literal_expression(expression: &ast::Expression<'_>)
     }
 }
 
+fn rendered_expr_is_empty_array_literal(expr: &str) -> bool {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let allocator = Allocator::default();
+    let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) else {
+        return false;
+    };
+    matches!(
+        expression.without_parentheses(),
+        ast::Expression::ArrayExpression(array) if array.elements.is_empty()
+    )
+}
+
+fn rendered_expr_root_identifier_name(expr: &str) -> Option<String> {
+    fn root_identifier_name<'a>(expression: &'a ast::Expression<'a>) -> Option<String> {
+        match expression.without_parentheses() {
+            ast::Expression::Identifier(identifier) => Some(identifier.name.to_string()),
+            ast::Expression::StaticMemberExpression(member) => root_identifier_name(&member.object),
+            ast::Expression::ComputedMemberExpression(member) => root_identifier_name(&member.object),
+            ast::Expression::ChainExpression(chain) => match &chain.expression {
+                ast::ChainElement::StaticMemberExpression(member) => root_identifier_name(&member.object),
+                ast::ChainElement::ComputedMemberExpression(member) => root_identifier_name(&member.object),
+                ast::ChainElement::CallExpression(call) => root_identifier_name(&call.callee),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let allocator = Allocator::default();
+    let expression = parse_rendered_expression_ast(&allocator, trimmed)?;
+    root_identifier_name(&expression)
+}
+
+fn rendered_expr_contains_assignment_to_target(expr: &str, target: &str, rhs_expr: &str) -> bool {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let allocator = Allocator::default();
+    let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) else {
+        return false;
+    };
+
+    struct TargetAssignmentDetector<'a> {
+        target: &'a str,
+        rhs_expr: &'a str,
+        found: bool,
+    }
+
+    impl<'a> Visit<'a> for TargetAssignmentDetector<'_> {
+        fn visit_expression(&mut self, expression: &ast::Expression<'a>) {
+            if self.found {
+                return;
+            }
+            if let ast::Expression::AssignmentExpression(assignment) = expression.without_parentheses()
+                && assignment.operator == AssignmentOperator::Assign
+                && let ast::AssignmentTarget::AssignmentTargetIdentifier(identifier) = &assignment.left
+                && identifier.name == self.target
+                && codegen_expression_with_flow_cast_restore(&assignment.right) == self.rhs_expr
+            {
+                self.found = true;
+                return;
+            }
+            walk::walk_expression(self, expression);
+        }
+    }
+
+    let mut detector = TargetAssignmentDetector {
+        target,
+        rhs_expr,
+        found: false,
+    };
+    detector.visit_expression(&expression);
+    detector.found
+}
+
+fn rendered_expr_contains_push_call_on_target(expr: &str, target: &str) -> bool {
+    fn callee_is_push_on_target(callee: &ast::Expression<'_>, target: &str) -> bool {
+        match callee.without_parentheses() {
+            ast::Expression::StaticMemberExpression(member) => {
+                member.property.name == "push"
+                    && matches!(
+                        member.object.without_parentheses(),
+                        ast::Expression::Identifier(identifier) if identifier.name == target
+                    )
+            }
+            _ => false,
+        }
+    }
+
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let allocator = Allocator::default();
+    let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) else {
+        return false;
+    };
+
+    struct PushCallDetector<'a> {
+        target: &'a str,
+        found: bool,
+    }
+
+    impl<'a> Visit<'a> for PushCallDetector<'_> {
+        fn visit_expression(&mut self, expression: &ast::Expression<'a>) {
+            if self.found {
+                return;
+            }
+            let is_match = match expression.without_parentheses() {
+                ast::Expression::CallExpression(call) => {
+                    callee_is_push_on_target(&call.callee, self.target)
+                }
+                ast::Expression::ChainExpression(chain) => match &chain.expression {
+                    ast::ChainElement::CallExpression(call) => {
+                        callee_is_push_on_target(&call.callee, self.target)
+                    }
+                    _ => false,
+                },
+                _ => false,
+            };
+            if is_match {
+                self.found = true;
+                return;
+            }
+            walk::walk_expression(self, expression);
+        }
+    }
+
+    let mut detector = PushCallDetector {
+        target,
+        found: false,
+    };
+    detector.visit_expression(&expression);
+    detector.found
+}
+
+fn rendered_statement_is_push_call_on_target(stmt: &str, target: &str) -> bool {
+    let trimmed = stmt.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let allocator = Allocator::default();
+    let Ok(statement) = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        trimmed,
+    ) else {
+        return false;
+    };
+    let ast::Statement::ExpressionStatement(expression_statement) = statement else {
+        return false;
+    };
+    rendered_expr_contains_push_call_on_target(
+        &codegen_expression_with_flow_cast_restore(&expression_statement.expression),
+        target,
+    )
+}
+
 fn next_emitted_statement_is_cache_store(
     cx: &mut Context,
     block: &[ReactiveStatement],
@@ -6245,15 +6411,13 @@ fn rewrite_named_test_reassign_ternary_in_scope_computation(computation: &str) -
             && ternary_test == test_name
             && ternary_consequent == temp_name
             && contains_identifier_token(&ternary_alternate, &assign_target)
-            && assign_rhs == "[]"
-            && test_expr.starts_with("props.")
-            && consequent_expr.contains(&format!("{} = []", assign_target))
-            && consequent_expr.contains(&format!("{}.push(", assign_target))
-            && ternary_alternate.contains(&format!("{}.push(", assign_target))
+            && rendered_expr_is_empty_array_literal(&assign_rhs)
+            && rendered_expr_root_identifier_name(&test_expr).as_deref() == Some("props")
+            && rendered_expr_contains_assignment_to_target(&consequent_expr, &assign_target, "[]")
+            && rendered_expr_contains_push_call_on_target(&consequent_expr, &assign_target)
+            && rendered_expr_contains_push_call_on_target(&ternary_alternate, &assign_target)
             && i > 0
-            && lines[i - 1]
-                .trim()
-                .starts_with(&format!("{}.push(", assign_target))
+            && rendered_statement_is_push_call_on_target(&lines[i - 1], &assign_target)
         {
             let assign_expr = render_assignment_expression_ast(&assign_target, &assign_rhs)
                 .expect("prop push ternary assignment should stay on AST path");
@@ -22447,12 +22611,17 @@ mod tests {
         maybe_fill_for_header_initializer_from_update, reconstruct_for_init_declaration,
         is_readonly_console_callee,
         rendered_statement_is_cache_store,
+        rendered_statement_is_push_call_on_target,
         rendered_statement_references_label,
         rendered_expr_is_autodeps_placeholder,
         rendered_expr_contains_optional_chain,
         rendered_expr_contains_logical_or,
+        rendered_expr_contains_assignment_to_target,
         rendered_expr_is_array_literal, rendered_expr_is_array_seed_like,
+        rendered_expr_is_empty_array_literal,
         rendered_expr_is_function_like, rendered_expr_is_jsx_like,
+        rendered_expr_root_identifier_name,
+        rendered_expr_contains_push_call_on_target,
         parse_rendered_expression_ast,
         render_function_expression_ast,
         render_assignment_expression_ast,
@@ -22735,6 +22904,26 @@ mod tests {
         assert!(rendered_expr_contains_optional_chain("(value?.prop).next"));
         assert!(!rendered_expr_contains_optional_chain("value.prop"));
         assert!(!rendered_expr_contains_optional_chain("value ?? fallback"));
+    }
+
+    #[test]
+    fn detects_props_push_rewrite_shapes_via_ast() {
+        assert!(rendered_expr_is_empty_array_literal("[]"));
+        assert_eq!(
+            rendered_expr_root_identifier_name("props.items.value").as_deref(),
+            Some("props")
+        );
+        assert!(rendered_expr_contains_assignment_to_target(
+            "items = [], items.push(node)",
+            "items",
+            "[]"
+        ));
+        assert!(rendered_expr_contains_push_call_on_target(
+            "items = [], items.push(node)",
+            "items"
+        ));
+        assert!(rendered_statement_is_push_call_on_target("items.push(prev);", "items"));
+        assert!(!rendered_statement_is_push_call_on_target("other.push(prev);", "items"));
     }
 
     #[test]
