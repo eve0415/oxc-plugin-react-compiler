@@ -21698,45 +21698,42 @@ fn maybe_fill_for_header_initializer_from_update(
     init_code: &str,
     update_code: &str,
 ) -> Option<String> {
-    fn parse_single_declaration_header(init: &str) -> Option<(ast::VariableDeclarationKind, String)> {
-        let init = init.trim();
-        let (kind, name) = if let Some(name) = init.strip_prefix("let ") {
-            (ast::VariableDeclarationKind::Let, name)
-        } else if let Some(name) = init.strip_prefix("const ") {
-            (ast::VariableDeclarationKind::Const, name)
-        } else if let Some(name) = init.strip_prefix("var ") {
-            (ast::VariableDeclarationKind::Var, name)
-        } else {
-            return None;
-        };
-        let name = name.trim();
-        if name.is_empty() || !is_simple_identifier_name(name) {
-            return None;
-        }
-        Some((kind, name.to_string()))
-    }
-
+    let allocator = Allocator::default();
     let init = init_code.trim();
+    if init.is_empty() {
+        return None;
+    }
+    let statement_source = format!("{init} = __codex_fill;");
+    let statement = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        &statement_source,
+    )
+    .ok()?;
+    let ast::Statement::VariableDeclaration(declaration) = statement else {
+        return None;
+    };
+    if declaration.declarations.len() != 1 {
+        return None;
+    }
+    let declarator = declaration.declarations.first()?;
+    let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id else {
+        return None;
+    };
     let update = update_code.trim();
-    if init.is_empty() || update.is_empty() {
+    if update.is_empty() || !is_inlineable_primitive_literal_expression(update) {
         return None;
     }
-    if init.contains('=') || init.contains(',') {
-        return None;
-    }
-    if !update.is_empty() && update.contains(';') {
-        return None;
-    }
-    if !is_inlineable_primitive_literal_expression(update) {
-        return None;
-    }
-    let is_decl =
-        init.starts_with("let ") || init.starts_with("const ") || init.starts_with("var ");
-    if !is_decl {
-        return None;
-    }
-    let (kind, name) = parse_single_declaration_header(init)?;
-    render_variable_declaration_header_ast(kind, &[(name, Some(update.to_string()))])
+    let update_expr =
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), update)
+            .ok()?;
+    render_variable_declaration_header_ast(
+        declaration.kind,
+        &[(
+            identifier.name.to_string(),
+            Some(codegen_expression_with_flow_cast_restore(&update_expr)),
+        )],
+    )
 }
 
 fn reconstruct_for_init_declaration(code: &str) -> Option<String> {
@@ -21746,84 +21743,71 @@ fn reconstruct_for_init_declaration(code: &str) -> Option<String> {
         init: Option<String>,
     }
 
-    fn parse_decl_line(line: &str) -> Option<(&str, &str)> {
-        let line = line.trim().trim_end_matches(';').trim();
-        let (kind, rest) = if let Some(rest) = line.strip_prefix("let ") {
-            ("let", rest)
-        } else if let Some(rest) = line.strip_prefix("const ") {
-            ("const", rest)
-        } else if let Some(rest) = line.strip_prefix("var ") {
-            ("var", rest)
-        } else {
-            return None;
-        };
-        let rest = rest.trim();
-        if rest.is_empty() {
-            return None;
-        }
-        Some((kind, rest))
-    }
-
-    fn parse_simple_assignment_line(line: &str) -> Option<(String, String)> {
-        let line = line.trim().trim_end_matches(';').trim();
-        let (lhs, rhs) = line.split_once('=')?;
-        let lhs = lhs.trim();
-        let rhs = rhs.trim();
-        if lhs.is_empty() || rhs.is_empty() || !is_simple_identifier_name(lhs) {
-            return None;
-        }
-        Some((lhs.to_string(), rhs.to_string()))
-    }
-
+    let allocator = Allocator::default();
+    let statements =
+        parse_statement_list_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), code)
+            .ok()?;
     let mut declarators: Vec<Declarator> = Vec::new();
-    let mut header_kind: Option<&str> = None;
+    let mut header_kind: Option<ast::VariableDeclarationKind> = None;
 
-    for line in code.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        if let Some((kind, decl_src)) = parse_decl_line(trimmed) {
-            let kind = if kind == "var" { "let" } else { kind };
-            header_kind = Some(match (header_kind, kind) {
-                (Some("let"), _) | (_, "let") => "let",
-                (Some(existing), _) => existing,
-                (None, current) => current,
-            });
-            let (name, init) = if let Some((name, init)) = decl_src.split_once('=') {
-                (name.trim().to_string(), Some(init.trim().to_string()))
-            } else {
-                (decl_src.to_string(), None)
-            };
-            if name.is_empty() {
-                return None;
+    for statement in statements {
+        match statement {
+            ast::Statement::VariableDeclaration(declaration) => {
+                let kind = match declaration.kind {
+                    ast::VariableDeclarationKind::Const => ast::VariableDeclarationKind::Const,
+                    _ => ast::VariableDeclarationKind::Let,
+                };
+                header_kind = Some(match (header_kind, kind) {
+                    (Some(ast::VariableDeclarationKind::Let), _) => {
+                        ast::VariableDeclarationKind::Let
+                    }
+                    (_, ast::VariableDeclarationKind::Let) => ast::VariableDeclarationKind::Let,
+                    (Some(existing), _) => existing,
+                    (None, current) => current,
+                });
+                for declarator in &declaration.declarations {
+                    let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id
+                    else {
+                        return None;
+                    };
+                    declarators.push(Declarator {
+                        name: identifier.name.to_string(),
+                        init: declarator
+                            .init
+                            .as_ref()
+                            .map(codegen_expression_with_flow_cast_restore),
+                    });
+                }
             }
-            declarators.push(Declarator { name, init });
-            continue;
+            ast::Statement::ExpressionStatement(expression_statement) => {
+                let ast::Expression::AssignmentExpression(assignment) =
+                    &expression_statement.expression
+                else {
+                    return None;
+                };
+                if assignment.operator != AssignmentOperator::Assign {
+                    return None;
+                }
+                let ast::AssignmentTarget::AssignmentTargetIdentifier(identifier) =
+                    &assignment.left
+                else {
+                    return None;
+                };
+                let last = declarators.last_mut()?;
+                if last.init.is_some() || last.name != identifier.name.as_str() {
+                    return None;
+                }
+                last.init = Some(codegen_expression_with_flow_cast_restore(&assignment.right));
+            }
+            _ => return None,
         }
-
-        if let Some((lhs, rhs)) = parse_simple_assignment_line(trimmed)
-            && let Some(last) = declarators.last_mut()
-            && last.init.is_none()
-            && last.name == lhs
-        {
-            last.init = Some(rhs);
-            continue;
-        }
-
-        return None;
     }
 
     if declarators.is_empty() {
         return None;
     }
 
-    let kind = match header_kind.unwrap_or("let") {
-        "const" => ast::VariableDeclarationKind::Const,
-        "var" => ast::VariableDeclarationKind::Var,
-        _ => ast::VariableDeclarationKind::Let,
-    };
+    let kind = header_kind.unwrap_or(ast::VariableDeclarationKind::Let);
     render_variable_declaration_header_ast(
         kind,
         &declarators
