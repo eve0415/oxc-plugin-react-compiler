@@ -1262,6 +1262,7 @@ fn codegen_outlined_function(
             is_rest: is_spread,
         });
     }
+    let body_shape = codegen.body_shape;
     let mut body = codegen.body_without_cache_prologue;
     for (from, to) in rename_pairs {
         body = replace_identifier_tokens(&body, &from, &to);
@@ -1269,8 +1270,15 @@ fn codegen_outlined_function(
     Some(CompiledOutlinedFunction {
         name: func.id.as_ref()?.clone(),
         params: rendered_params,
-        body,
-        body_shape: codegen.body_shape,
+        body: if matches!(
+            body_shape,
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown
+        ) {
+            body
+        } else {
+            String::new()
+        },
+        body_shape,
         directives: func
             .directives
             .iter()
