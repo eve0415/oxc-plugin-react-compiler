@@ -6851,7 +6851,8 @@ fn maybe_codegen_fused_reassign_then_ternary_branch(
         return None;
     }
 
-    let fused_stmt = format!("{test_expr} ? {fused_consequent} : {fused_alternate}");
+    let fused_stmt = render_conditional_expression_ast(&test_expr, &fused_consequent, &fused_alternate)
+        .expect("fused ternary branch should stay on AST path");
     debug_codegen_expr(
         "fused-reassign-ternary-branch",
         format!(
@@ -7409,8 +7410,9 @@ fn maybe_codegen_fused_named_temp_logical_expression(
                     let right_expr =
                         codegen_logical_operand_from_expr_value(right_ev, logical_prec);
                     let target_name = identifier_name_with_cx(&mut probe_cx, &lvalue.identifier);
-                    let op = logical_operator_to_str(operator);
-                    let logical_expr = format!("{} {} {}", left_expr, op, right_expr);
+                    let logical_expr =
+                        render_logical_expression_ast(&left_expr, *operator, &right_expr)
+                            .expect("fused logical expression should stay on AST path");
 
                     if has_materialized_named_binding(&probe_cx, &lvalue.identifier) {
                         output.push_str(
@@ -9583,28 +9585,38 @@ fn maybe_codegen_fused_zero_dep_literal_store_scope(
         };
         let logical_prec = logical_operator_precedence(operator);
         let left_expr = codegen_logical_operand(cx, left, logical_prec);
-        let logical_op = logical_operator_to_str(operator);
         let right_is_store_result =
             store_result_decl.is_some_and(|decl| right.identifier.declaration_id == decl);
         let right_expr = if right_is_store_result {
-            format!("({} = {})", target_name, source_expr)
+            render_global_store_expression_ast(&target_name, &source_expr)
+                .expect("fused logical store expression should stay on AST path")
         } else {
             let right_expr_raw = codegen_place_to_expression(cx, right);
             if *operator == LogicalOperator::And && right_expr_raw == "null" {
-                format!("(({} = {}), null)", target_name, source_expr)
+                render_sequence_expression_ast(
+                    &[render_global_store_expression_ast(&target_name, &source_expr)
+                        .expect("fused logical store expression should stay on AST path")],
+                    "null",
+                )
+                .expect("fused logical null sequence should stay on AST path")
             } else {
                 return None;
             }
         };
         consumed_following = logical_idx + 1;
-        format!("{} {} {};\n", left_expr, logical_op, right_expr)
+        render_reactive_expression_statement_ast(
+            &render_logical_expression_ast(&left_expr, *operator, &right_expr)
+                .expect("fused logical statement should stay on AST path"),
+        )
+        .expect("fused logical statement should stay on AST path")
     } else {
         if let Some(store_result_decl) = store_result_decl
             && reactive_block_uses_declaration(&following_stmts[1..], store_result_decl)
         {
             return None;
         }
-        format!("{} = {};\n", target_name, source_expr)
+        render_reactive_assignment_statement_ast(&target_name, &source_expr)
+            .expect("fused zero-dep assignment should stay on AST path")
     };
 
     if !has_direct_return_tail_for_decl(
