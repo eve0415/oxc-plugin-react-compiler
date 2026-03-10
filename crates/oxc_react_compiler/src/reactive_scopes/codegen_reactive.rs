@@ -13401,12 +13401,21 @@ fn codegen_reactive_scope(
 /// Generate a terminal statement.
 fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<String> {
     fn extract_single_labeled_break_target(code: &str) -> Option<String> {
-        let line = code.trim();
-        if line.starts_with("break bb") && line.ends_with(';') && !line.contains('\n') {
-            Some(line.to_string())
-        } else {
-            None
+        let allocator = Allocator::default();
+        let statement = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            code.trim(),
+        )
+        .ok()?;
+        let ast::Statement::BreakStatement(statement) = statement else {
+            return None;
+        };
+        let label = statement.unbox().label?;
+        if !label.name.starts_with("bb") {
+            return None;
         }
+        Some(format!("break {};", label.name))
     }
 
     fn trim_trailing_labeled_break_if_matches_default(
