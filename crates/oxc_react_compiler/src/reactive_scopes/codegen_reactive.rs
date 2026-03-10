@@ -166,8 +166,8 @@ pub enum GeneratedBodyShape {
 pub struct CodegenResult {
     /// Generated function body (statements inside the function).
     pub body: String,
-    /// Whether `body` still includes rendered cache prologue statements.
-    pub body_includes_cache_prologue: bool,
+    /// Generated function body without rendered cache prologue statements.
+    pub body_without_cache_prologue: String,
     /// Structured shape of the emitted body for downstream AST-based rewrites.
     pub body_shape: GeneratedBodyShape,
     /// Number of cache slots used.
@@ -809,7 +809,7 @@ fn codegen_reactive_function_with_primitives(
 
     CodegenResult {
         body: output,
-        body_includes_cache_prologue: rendered_cache_prologue.is_some(),
+        body_without_cache_prologue: body.clone(),
         body_shape,
         cache_size,
         needs_cache_import,

@@ -4963,35 +4963,6 @@ pub(crate) fn strip_directive_lines(body: &str, directives: &[String]) -> String
     out
 }
 
-fn strip_leading_cache_prologue(
-    body: &str,
-    cache_prologue: &crate::reactive_scopes::codegen_reactive::CachePrologue,
-) -> Option<String> {
-    let allocator = oxc_allocator::Allocator::default();
-    let (wrapper_prefix_len, function_body) = parse_wrapped_function_body(&allocator, body)?;
-    let mut stripped_count = 0usize;
-    let statements = &function_body.statements;
-    if !matches_cache_initializer_statement(statements.get(stripped_count)?, cache_prologue) {
-        return None;
-    }
-    stripped_count += 1;
-    if let Some(fast_refresh) = &cache_prologue.fast_refresh {
-        if !matches_fast_refresh_reset_statement(
-            statements.get(stripped_count)?,
-            cache_prologue,
-            fast_refresh,
-        ) {
-            return None;
-        }
-        stripped_count += 1;
-    }
-    if stripped_count >= statements.len() {
-        return Some(String::new());
-    }
-    let body_offset = statements[stripped_count - 1].span().end as usize - wrapper_prefix_len;
-    Some(body[body_offset..].trim_start_matches(['\n', '\r']).to_string())
-}
-
 fn parse_wrapped_function_body<'a>(
     allocator: &'a oxc_allocator::Allocator,
     body: &str,
@@ -5035,288 +5006,6 @@ fn parse_wrapped_function_body<'a>(
     }
     None
 }
-
-fn matches_cache_initializer_statement(
-    statement: &ast::Statement<'_>,
-    cache_prologue: &crate::reactive_scopes::codegen_reactive::CachePrologue,
-) -> bool {
-    let ast::Statement::VariableDeclaration(declaration) = statement else {
-        return false;
-    };
-    if declaration.kind != ast::VariableDeclarationKind::Const || declaration.declarations.len() != 1 {
-        return false;
-    }
-    let declarator = &declaration.declarations[0];
-    let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id else {
-        return false;
-    };
-    if identifier.name.as_str() != cache_prologue.binding_name {
-        return false;
-    }
-    let Some(init) = declarator.init.as_ref() else {
-        return false;
-    };
-    let ast::Expression::CallExpression(call) = init.without_parentheses() else {
-        return false;
-    };
-    if call.optional || call.arguments.len() != 1 {
-        return false;
-    }
-    if !matches!(
-        call.callee.without_parentheses(),
-        ast::Expression::Identifier(identifier) if identifier.name == "_c"
-    ) {
-        return false;
-    }
-    matches_numeric_slot_argument(call.arguments[0].to_expression(), cache_prologue.size)
-}
-
-fn matches_fast_refresh_reset_statement(
-    statement: &ast::Statement<'_>,
-    cache_prologue: &crate::reactive_scopes::codegen_reactive::CachePrologue,
-    fast_refresh: &crate::reactive_scopes::codegen_reactive::FastRefreshPrologue,
-) -> bool {
-    let ast::Statement::IfStatement(if_statement) = statement else {
-        return false;
-    };
-    if if_statement.alternate.is_some()
-        || !matches_fast_refresh_reset_test(&if_statement.test, cache_prologue, fast_refresh)
-    {
-        return false;
-    }
-    let ast::Statement::BlockStatement(block) = &if_statement.consequent else {
-        return false;
-    };
-    if block.body.len() != 2 {
-        return false;
-    }
-    matches_fast_refresh_reset_loop(&block.body[0], cache_prologue, fast_refresh)
-        && matches_fast_refresh_hash_store(&block.body[1], cache_prologue, fast_refresh)
-}
-
-fn matches_fast_refresh_reset_test(
-    expression: &ast::Expression<'_>,
-    cache_prologue: &crate::reactive_scopes::codegen_reactive::CachePrologue,
-    fast_refresh: &crate::reactive_scopes::codegen_reactive::FastRefreshPrologue,
-) -> bool {
-    let ast::Expression::BinaryExpression(binary) = expression.without_parentheses() else {
-        return false;
-    };
-    binary.operator == oxc_syntax::operator::BinaryOperator::StrictInequality
-        && matches_cache_access(
-            &binary.left,
-            &cache_prologue.binding_name,
-            SlotMatcher::Exact(fast_refresh.cache_index),
-        )
-        && matches_string_literal(&binary.right, &fast_refresh.hash)
-}
-
-fn matches_fast_refresh_reset_loop(
-    statement: &ast::Statement<'_>,
-    cache_prologue: &crate::reactive_scopes::codegen_reactive::CachePrologue,
-    fast_refresh: &crate::reactive_scopes::codegen_reactive::FastRefreshPrologue,
-) -> bool {
-    let ast::Statement::ForStatement(for_statement) = statement else {
-        return false;
-    };
-    let Some(ast::ForStatementInit::VariableDeclaration(init_decl)) = &for_statement.init else {
-        return false;
-    };
-    if init_decl.kind != ast::VariableDeclarationKind::Let || init_decl.declarations.len() != 1 {
-        return false;
-    }
-    let init_decl = &init_decl.declarations[0];
-    let ast::BindingPattern::BindingIdentifier(binding) = &init_decl.id else {
-        return false;
-    };
-    if binding.name.as_str() != fast_refresh.index_binding_name
-        || !init_decl
-            .init
-            .as_ref()
-            .is_some_and(|init| matches_numeric_slot_argument(init, 0))
-    {
-        return false;
-    }
-    let Some(test) = &for_statement.test else {
-        return false;
-    };
-    let ast::Expression::BinaryExpression(test) = test.without_parentheses() else {
-        return false;
-    };
-    if test.operator != oxc_syntax::operator::BinaryOperator::LessThan
-        || !matches_identifier(&test.left, &fast_refresh.index_binding_name)
-        || !matches_numeric_slot_argument(&test.right, cache_prologue.size)
-    {
-        return false;
-    }
-    let Some(update) = &for_statement.update else {
-        return false;
-    };
-    let ast::Expression::AssignmentExpression(update) = update.without_parentheses() else {
-        return false;
-    };
-    if update.operator != oxc_syntax::operator::AssignmentOperator::Addition
-        || !matches_assignment_target_identifier(&update.left, &fast_refresh.index_binding_name)
-        || !matches_numeric_slot_argument(&update.right, 1)
-    {
-        return false;
-    }
-    let ast::Statement::BlockStatement(body) = &for_statement.body else {
-        return false;
-    };
-    if body.body.len() != 1 {
-        return false;
-    }
-    matches_cache_assignment(
-        &body.body[0],
-        &cache_prologue.binding_name,
-        SlotMatcher::Identifier(&fast_refresh.index_binding_name),
-        ValueMatcher::MemoSentinel,
-    )
-}
-
-fn matches_fast_refresh_hash_store(
-    statement: &ast::Statement<'_>,
-    cache_prologue: &crate::reactive_scopes::codegen_reactive::CachePrologue,
-    fast_refresh: &crate::reactive_scopes::codegen_reactive::FastRefreshPrologue,
-) -> bool {
-    matches_cache_assignment(
-        statement,
-        &cache_prologue.binding_name,
-        SlotMatcher::Exact(fast_refresh.cache_index),
-        ValueMatcher::String(&fast_refresh.hash),
-    )
-}
-
-enum SlotMatcher<'a> {
-    Exact(u32),
-    Identifier(&'a str),
-}
-
-enum ValueMatcher<'a> {
-    MemoSentinel,
-    String(&'a str),
-}
-
-fn matches_cache_assignment(
-    statement: &ast::Statement<'_>,
-    cache_name: &str,
-    slot_matcher: SlotMatcher<'_>,
-    value_matcher: ValueMatcher<'_>,
-) -> bool {
-    let ast::Statement::ExpressionStatement(expression_statement) = statement else {
-        return false;
-    };
-    let ast::Expression::AssignmentExpression(assignment) =
-        expression_statement.expression.without_parentheses()
-    else {
-        return false;
-    };
-    if assignment.operator != oxc_syntax::operator::AssignmentOperator::Assign {
-        return false;
-    }
-    matches_assignment_target_cache_access(&assignment.left, cache_name, slot_matcher)
-        && matches_value_expression(&assignment.right, value_matcher)
-}
-
-fn matches_assignment_target_cache_access(
-    target: &ast::AssignmentTarget<'_>,
-    cache_name: &str,
-    slot_matcher: SlotMatcher<'_>,
-) -> bool {
-    let ast::AssignmentTarget::ComputedMemberExpression(member) = target else {
-        return false;
-    };
-    if member.optional {
-        return false;
-    }
-    matches_cache_member_expression(&member.object, &member.expression, cache_name, slot_matcher)
-}
-
-fn matches_cache_access(
-    expression: &ast::Expression<'_>,
-    cache_name: &str,
-    slot_matcher: SlotMatcher<'_>,
-) -> bool {
-    let ast::Expression::ComputedMemberExpression(member) = expression.without_parentheses() else {
-        return false;
-    };
-    if member.optional {
-        return false;
-    }
-    matches_cache_member_expression(&member.object, &member.expression, cache_name, slot_matcher)
-}
-
-fn matches_cache_member_expression(
-    object: &ast::Expression<'_>,
-    slot: &ast::Expression<'_>,
-    cache_name: &str,
-    slot_matcher: SlotMatcher<'_>,
-) -> bool {
-    if !matches_identifier(object, cache_name) {
-        return false;
-    }
-    match slot_matcher {
-        SlotMatcher::Exact(expected) => matches_numeric_slot_argument(slot, expected),
-        SlotMatcher::Identifier(expected) => matches_identifier(slot, expected),
-    }
-}
-
-fn matches_identifier(expression: &ast::Expression<'_>, expected: &str) -> bool {
-    matches!(
-        expression.without_parentheses(),
-        ast::Expression::Identifier(identifier) if identifier.name == expected
-    )
-}
-
-fn matches_assignment_target_identifier(
-    target: &ast::AssignmentTarget<'_>,
-    expected: &str,
-) -> bool {
-    matches!(
-        target,
-        ast::AssignmentTarget::AssignmentTargetIdentifier(identifier) if identifier.name == expected
-    )
-}
-
-fn matches_numeric_slot_argument(expression: &ast::Expression<'_>, expected: u32) -> bool {
-    let ast::Expression::NumericLiteral(number) = expression.without_parentheses() else {
-        return false;
-    };
-    number.value == expected as f64
-}
-
-fn matches_string_literal(expression: &ast::Expression<'_>, expected: &str) -> bool {
-    matches!(
-        expression.without_parentheses(),
-        ast::Expression::StringLiteral(literal) if literal.value == expected
-    )
-}
-
-fn matches_value_expression(expression: &ast::Expression<'_>, matcher: ValueMatcher<'_>) -> bool {
-    match matcher {
-        ValueMatcher::MemoSentinel => {
-            let ast::Expression::CallExpression(call) = expression.without_parentheses() else {
-                return false;
-            };
-            if call.optional || call.arguments.len() != 1 {
-                return false;
-            }
-            let ast::Expression::StaticMemberExpression(member) = call.callee.without_parentheses() else {
-                return false;
-            };
-            !member.optional
-                && member.property.name == "for"
-                && matches_identifier(&member.object, "Symbol")
-                && matches_string_literal(
-                    call.arguments[0].to_expression(),
-                    crate::reactive_scopes::codegen_reactive::MEMO_CACHE_SENTINEL,
-                )
-        }
-        ValueMatcher::String(expected) => matches_string_literal(expression, expected),
-    }
-}
-
 
 fn is_valid_js_identifier(name: &str) -> bool {
     let mut chars = name.chars();
@@ -6855,7 +6544,7 @@ fn prepare_generated_body(
     directives: &[String],
     prefix_statements: &[CompiledParamPrefixStatement],
 ) -> PreparedGeneratedBody {
-    let mut generated_body = Some(codegen_result.body.clone());
+    let mut generated_body = Some(codegen_result.body_without_cache_prologue.clone());
     let mut synthesized_default_param_cache = None;
     let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
     if let Some((synthesized_cache_plan, synthesized_hir_outlined)) =
@@ -6868,7 +6557,7 @@ fn prepare_generated_body(
     if let Some(body) = generated_body.as_mut() {
         *body = strip_directive_lines(body, directives);
     }
-    let mut cache_prologue = if synthesized_default_param_cache.is_some() {
+    let cache_prologue = if synthesized_default_param_cache.is_some() {
         Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
             binding_name: "$".to_string(),
             size: 2,
@@ -6877,17 +6566,6 @@ fn prepare_generated_body(
     } else {
         codegen_result.cache_prologue.clone()
     };
-    if synthesized_default_param_cache.is_none()
-        && codegen_result.body_includes_cache_prologue
-        && let Some(prologue) = cache_prologue.as_ref()
-        && let Some(body) = generated_body.as_mut()
-    {
-        if let Some(stripped_body) = strip_leading_cache_prologue(body, prologue) {
-            *body = stripped_body;
-        } else {
-            cache_prologue = None;
-        }
-    }
 
     PreparedGeneratedBody {
         generated_body,
