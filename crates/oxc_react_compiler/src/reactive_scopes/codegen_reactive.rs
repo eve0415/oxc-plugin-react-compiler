@@ -5563,10 +5563,17 @@ fn rewrite_named_test_reassign_ternary_in_scope_computation(computation: &str) -
                 .starts_with(&format!("{}.push(", assign_target))
         {
             let assign_expr = format!("{} = {}", assign_target, assign_rhs);
-            out.push(format!(
-                "{}{} ? {} : (({}), {});",
-                indent, test_expr, consequent_expr, assign_expr, ternary_alternate
-            ));
+            let alternate_expr = render_sequence_expression_ast(&[assign_expr], &ternary_alternate)
+                .expect("prop push ternary alternate should stay on AST path");
+            let rewritten_expr =
+                render_conditional_expression_ast(&test_expr, &consequent_expr, &alternate_expr)
+                    .expect("prop push ternary should stay on AST path");
+            out.push(
+                render_indented_expression_statement_ast(&indent, &rewritten_expr)
+                    .expect("prop push ternary statement should stay on AST path")
+                    .trim_end_matches('\n')
+                    .to_string(),
+            );
             i += 4;
             continue;
         }
@@ -5653,10 +5660,19 @@ fn rewrite_named_temp_ternary_in_scope_computation(computation: &str) -> String 
             continue;
         }
 
-        out.push(format!(
-            "{}{} ? {} : {};",
-            indent, rewritten_test, rewritten_consequent, rewritten_alternate
-        ));
+        let rewritten_expr =
+            render_conditional_expression_ast(
+                &rewritten_test,
+                &rewritten_consequent,
+                &rewritten_alternate,
+            )
+            .expect("named temp ternary should stay on AST path");
+        out.push(
+            render_indented_expression_statement_ast(&indent, &rewritten_expr)
+                .expect("named temp ternary statement should stay on AST path")
+                .trim_end_matches('\n')
+                .to_string(),
+        );
         i = j + 1;
     }
 
@@ -6545,31 +6561,44 @@ fn maybe_codegen_fused_named_test_reassign_then_ternary_branch(
         .iter()
         .any(|target| contains_identifier_token(&alternate_expr, target));
     let fused_stmt = if consequent_uses_target != alternate_uses_target {
-        if consequent_uses_target {
-            format!(
-                "{} ? (({}), {}) : {};\n",
-                test_expr, assign_expr, consequent_expr, alternate_expr
-            )
+        let consequent_branch = if consequent_uses_target {
+            render_sequence_expression_ast(&[assign_expr.clone()], &consequent_expr)
+                .expect("fused ternary consequent should stay on AST path")
         } else {
-            format!(
-                "{} ? {} : (({}), {});\n",
-                test_expr, consequent_expr, assign_expr, alternate_expr
-            )
-        }
+            consequent_expr.clone()
+        };
+        let alternate_branch = if alternate_uses_target {
+            render_sequence_expression_ast(&[assign_expr.clone()], &alternate_expr)
+                .expect("fused ternary alternate should stay on AST path")
+        } else {
+            alternate_expr.clone()
+        };
+        let fused_expr =
+            render_conditional_expression_ast(&test_expr, &consequent_branch, &alternate_branch)
+                .expect("fused ternary branch should stay on AST path");
+        render_reactive_expression_statement_ast(&fused_expr)
+            .expect("fused ternary statement should stay on AST path")
     } else if consequent_uses_target && alternate_uses_target {
         let assign_trimmed = assign_expr.trim();
         let consequent_has_assign = consequent_expr.contains(assign_trimmed);
         let alternate_has_assign = alternate_expr.contains(assign_trimmed);
         if consequent_has_assign && !alternate_has_assign {
-            format!(
-                "{} ? {} : (({}), {});\n",
-                test_expr, consequent_expr, assign_expr, alternate_expr
-            )
+            let alternate_branch = render_sequence_expression_ast(&[assign_expr.clone()], &alternate_expr)
+                .expect("fused ternary alternate should stay on AST path");
+            let fused_expr =
+                render_conditional_expression_ast(&test_expr, &consequent_expr, &alternate_branch)
+                    .expect("fused ternary branch should stay on AST path");
+            render_reactive_expression_statement_ast(&fused_expr)
+                .expect("fused ternary statement should stay on AST path")
         } else if alternate_has_assign && !consequent_has_assign {
-            format!(
-                "{} ? (({}), {}) : {};\n",
-                test_expr, assign_expr, consequent_expr, alternate_expr
-            )
+            let consequent_branch =
+                render_sequence_expression_ast(&[assign_expr.clone()], &consequent_expr)
+                    .expect("fused ternary consequent should stay on AST path");
+            let fused_expr =
+                render_conditional_expression_ast(&test_expr, &consequent_branch, &alternate_expr)
+                    .expect("fused ternary branch should stay on AST path");
+            render_reactive_expression_statement_ast(&fused_expr)
+                .expect("fused ternary statement should stay on AST path")
         } else {
             return None;
         }
@@ -6584,8 +6613,7 @@ fn maybe_codegen_fused_named_test_reassign_then_ternary_branch(
         ),
     );
     output.push_str(
-        &render_reactive_expression_statement_ast(fused_stmt.trim_end_matches(";\n"))
-            .unwrap_or(fused_stmt),
+        &fused_stmt,
     );
     Some(ternary_idx - start + 1)
 }
@@ -15579,6 +15607,29 @@ fn render_conditional_expression_ast(
     let alternate = parse_rendered_expression_ast(&allocator, alternate)?;
     let expression = builder.expression_conditional(SPAN, test, consequent, alternate);
     Some(codegen_expression_with_flow_cast_restore(&expression))
+}
+
+fn indent_rendered_statement(statement: &str, indent: &str) -> String {
+    if indent.is_empty() {
+        return statement.to_string();
+    }
+    let mut out = String::new();
+    for segment in statement.split_inclusive('\n') {
+        if segment.trim().is_empty() {
+            out.push_str(segment);
+        } else {
+            out.push_str(indent);
+            out.push_str(segment);
+        }
+    }
+    out
+}
+
+fn render_indented_expression_statement_ast(indent: &str, expression: &str) -> Option<String> {
+    Some(indent_rendered_statement(
+        &render_reactive_expression_statement_ast(expression)?,
+        indent,
+    ))
 }
 
 fn expression_to_simple_assignment_target_ast<'a>(
