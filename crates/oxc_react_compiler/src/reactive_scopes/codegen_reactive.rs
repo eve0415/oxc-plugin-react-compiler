@@ -15140,7 +15140,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
         } => {
             let obj = codegen_member_object_expression(cx, object);
             let expr = render_property_access_expression_ast(&obj, property, *optional)
-                .unwrap_or_else(|| format_property_access(&obj, property, *optional));
+                .expect("generated property load should parse");
             ExprValue::primary(expr)
         }
         InstructionValue::PropertyStore {
@@ -15152,16 +15152,15 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             let obj = codegen_member_object_expression(cx, object);
             let v = codegen_place_to_expression(cx, val);
             let expr = render_property_store_expression_ast(&obj, property, &v)
-                .unwrap_or_else(|| format!("{} = {}", format_property_access(&obj, property, false), v));
+                .expect("generated property store should parse");
             ExprValue::new(expr, ExprPrecedence::Assignment)
         }
         InstructionValue::PropertyDelete {
             object, property, ..
         } => {
             let obj = codegen_member_object_expression(cx, object);
-            let expr = render_property_delete_expression_ast(&obj, property).unwrap_or_else(|| {
-                format!("delete {}", format_property_access(&obj, property, false))
-            });
+            let expr = render_property_delete_expression_ast(&obj, property)
+                .expect("generated property delete should parse");
             ExprValue::new(expr, ExprPrecedence::Unary)
         }
         InstructionValue::ComputedLoad {
