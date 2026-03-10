@@ -1329,6 +1329,9 @@ fn contains_identifier_token(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return false;
     }
+    if let Some(found) = rendered_source_references_identifier(haystack, needle) {
+        return found;
+    }
     let mut start = 0usize;
     while let Some(found) = haystack[start..].find(needle) {
         let idx = start + found;
@@ -1349,6 +1352,41 @@ fn contains_identifier_token(haystack: &str, needle: &str) -> bool {
         start = end;
     }
     false
+}
+
+fn rendered_source_references_identifier(source: &str, ident: &str) -> Option<bool> {
+    let trimmed = source.trim();
+    if trimmed.is_empty() {
+        return Some(false);
+    }
+    let allocator = Allocator::default();
+    if let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) {
+        let mut detector = IdentifierReferenceDetector {
+            ident,
+            found: false,
+        };
+        detector.visit_expression(&expression);
+        return Some(detector.found);
+    }
+    let body = parse_function_body_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        false,
+        false,
+        trimmed,
+    )
+    .ok()?;
+    let mut detector = IdentifierReferenceDetector {
+        ident,
+        found: false,
+    };
+    for statement in &body.statements {
+        detector.visit_statement(statement);
+        if detector.found {
+            return Some(true);
+        }
+    }
+    Some(false)
 }
 
 fn statement_references_identifier(statement: &ast::Statement<'_>, ident: &str) -> bool {
@@ -22846,6 +22884,7 @@ mod tests {
         rendered_expr_contains_push_call_on_target,
         strip_optional_chain_receiver_parens,
         normalize_root_optional_dependency,
+        contains_identifier_token,
         prune_unused_const_literal_decls,
         strip_trailing_bare_return,
         strip_terminal_current_path,
@@ -23242,6 +23281,14 @@ mod tests {
             prune_unused_const_literal_decls("const used = 1;\nreturn used;\n", false, false),
             "const used = 1;\nreturn used;\n"
         );
+    }
+
+    #[test]
+    fn detects_identifier_tokens_via_ast() {
+        assert!(contains_identifier_token("value.prop", "value"));
+        assert!(contains_identifier_token("if (value) {\n  work(value);\n}", "value"));
+        assert!(!contains_identifier_token("valueProp", "value"));
+        assert!(!contains_identifier_token("\"value\";", "value"));
     }
 
     #[test]
