@@ -15091,14 +15091,8 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             }
         }
         InstructionValue::NewExpression { callee, args, .. } => {
-            let callee_expr = codegen_place_to_expression(cx, callee);
-            let args_str = args
-                .iter()
-                .map(|a| codegen_argument(cx, a))
-                .collect::<Vec<_>>()
-                .join(", ");
             let expr = render_new_expression_ast(cx, callee, args)
-                .unwrap_or_else(|| format!("new {}({})", callee_expr, args_str));
+                .expect("generated new expression should parse");
             ExprValue::primary(expr)
         }
         InstructionValue::ObjectExpression { properties, .. } => {
@@ -15114,16 +15108,8 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             ExprValue::primary(expr)
         }
         InstructionValue::ArrayExpression { elements, .. } => {
-            let elems: Vec<String> = elements
-                .iter()
-                .map(|e| match e {
-                    ArrayElement::Place(p) => codegen_place_to_expression(cx, p),
-                    ArrayElement::Spread(p) => format!("...{}", codegen_place_to_expression(cx, p)),
-                    ArrayElement::Hole => String::new(),
-                })
-                .collect();
             let expr = render_array_expression_ast(cx, elements)
-                .unwrap_or_else(|| format!("[{}]", elems.join(", ")));
+                .expect("generated array expression should parse");
             ExprValue::primary(expr)
         }
         InstructionValue::PropertyLoad {
