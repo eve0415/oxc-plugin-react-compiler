@@ -3343,6 +3343,7 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_outlined_function_order(&lines_normalized);
     lines_normalized = normalize_function_decl_trailing_semicolon(&lines_normalized);
     lines_normalized = normalize_arrow_expr_trailing_semicolon(&lines_normalized);
+    lines_normalized = normalize_parenthesized_arrow_initializers(&lines_normalized);
     lines_normalized = normalize_change_detection_locations(&lines_normalized);
 
     if debug_steps {
@@ -8064,6 +8065,38 @@ fn normalize_arrow_expr_trailing_semicolon(code: &str) -> String {
         .join("\n")
 }
 
+/// OXC may wrap an arrow initializer in one extra pair of parentheses when
+/// printing from AST, e.g. `let f = ((x) => x);`. That is cosmetic.
+fn normalize_parenthesized_arrow_initializers(code: &str) -> String {
+    code.lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            let Some(eq_idx) = trimmed.find("= ((") else {
+                return trimmed.to_string();
+            };
+            if !trimmed[eq_idx + 4..].contains("=>") {
+                return trimmed.to_string();
+            }
+            let body_end = if trimmed.ends_with(");") {
+                trimmed.len() - 2
+            } else if trimmed.ends_with(')') {
+                trimmed.len() - 1
+            } else {
+                return trimmed.to_string();
+            };
+            if body_end <= eq_idx + 3 {
+                return trimmed.to_string();
+            }
+            let mut normalized = String::with_capacity(trimmed.len());
+            normalized.push_str(&trimmed[..eq_idx + 2]);
+            normalized.push_str(&trimmed[eq_idx + 3..body_end]);
+            normalized.push_str(&trimmed[body_end + 1..]);
+            normalized
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -8442,5 +8475,15 @@ mod tests {
         let input = "let cb = () =>\n<Component />\n;";
         let expected = "let cb = () =>\n<Component />;";
         assert_eq!(normalize_jsx_semicolon_on_own_line(input), expected);
+    }
+
+    #[test]
+    fn normalize_parenthesized_arrow_initializers_strips_outer_wrapper() {
+        let input = "let callback = ((value) =>{ref.current = value });";
+        let expected = "let callback = (value) =>{ref.current = value };";
+        assert_eq!(
+            super::normalize_parenthesized_arrow_initializers(input),
+            expected
+        );
     }
 }

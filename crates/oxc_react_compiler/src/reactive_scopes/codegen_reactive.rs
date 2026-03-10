@@ -1104,12 +1104,6 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
             let Some(init) = declarator.init.as_ref() else {
                 break;
             };
-            if matches!(
-                init.without_parentheses(),
-                ast::Expression::ArrowFunctionExpression(_)
-            ) {
-                break;
-            }
             bindings.push(GeneratedBinding {
                 kind: declaration.kind,
                 name,
