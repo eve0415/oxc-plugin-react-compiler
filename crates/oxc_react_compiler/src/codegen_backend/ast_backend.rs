@@ -67,7 +67,7 @@ pub(crate) fn emit_module(
                 && let Some(hir_function) = compiled_function.hir_function.as_ref()
                 && let Some(lowered_body) = super::hir_to_ast::try_lower_function_body(hir_function)
             {
-                compiled_function.generated_body = lowered_body;
+                compiled_function.generated_body = Some(lowered_body);
             }
             compiled_function
         })
@@ -2873,7 +2873,7 @@ fn build_compiled_function_body<'a>(
     {
         function_body
     } else {
-        let body_source = cf.generated_body.clone();
+        let body_source = cf.generated_body.clone()?;
         parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?
     };
 
@@ -5868,7 +5868,7 @@ function Component(props) {
             name: name.to_string(),
             start,
             end,
-            generated_body: generated_body.to_string(),
+            generated_body: Some(generated_body.to_string()),
             body_payload: CompiledBodyPayload::GeneratedString,
             needs_cache_import: false,
             compiled_params: Some(

@@ -6189,7 +6189,8 @@ fn try_compile_function<'a>(
         name: name.to_string(),
         start: func.span.start,
         end: func.span.end,
-        generated_body,
+        generated_body: (body_payload == CompiledBodyPayload::GeneratedString)
+            .then_some(generated_body),
         body_payload,
         needs_cache_import,
         compiled_params,
@@ -6399,7 +6400,8 @@ fn try_compile_function_with_name<'a>(
         name: name.to_string(),
         start: func.span.start,
         end: func.span.end,
-        generated_body,
+        generated_body: (body_payload == CompiledBodyPayload::GeneratedString)
+            .then_some(generated_body),
         body_payload,
         needs_cache_import,
         compiled_params,
@@ -6617,7 +6619,8 @@ fn try_compile_arrow<'a>(
         name: name.to_string(),
         start: arrow.span.start,
         end: arrow.span.end,
-        generated_body,
+        generated_body: (body_payload == CompiledBodyPayload::GeneratedString)
+            .then_some(generated_body),
         body_payload,
         needs_cache_import,
         compiled_params,
