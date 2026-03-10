@@ -5796,7 +5796,7 @@ fn try_compile_function<'a>(
     let mut synthesized_default_param_cache = None;
     let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
     if let Some((synthesized, synthesized_cache_plan, synthesized_hir_outlined)) =
-        synthesize_default_param_cache_body(&generated_body, &params_result.prefix_statements)
+        synthesize_default_param_cache_body(&codegen_result.body_shape, &params_result.prefix_statements)
     {
         generated_body = synthesized;
         synthesized_default_param_cache = Some(synthesized_cache_plan);
@@ -6027,7 +6027,7 @@ fn try_compile_function_with_name<'a>(
     let mut synthesized_default_param_cache = None;
     let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
     if let Some((synthesized, synthesized_cache_plan, synthesized_hir_outlined)) =
-        synthesize_default_param_cache_body(&generated_body, &params_result.prefix_statements)
+        synthesize_default_param_cache_body(&codegen_result.body_shape, &params_result.prefix_statements)
     {
         generated_body = synthesized;
         synthesized_default_param_cache = Some(synthesized_cache_plan);
@@ -6266,7 +6266,7 @@ fn try_compile_arrow<'a>(
     let mut synthesized_default_param_cache = None;
     let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
     if let Some((synthesized, synthesized_cache_plan, synthesized_hir_outlined)) =
-        synthesize_default_param_cache_body(&generated_body, &params_result.prefix_statements)
+        synthesize_default_param_cache_body(&codegen_result.body_shape, &params_result.prefix_statements)
     {
         generated_body = synthesized;
         synthesized_default_param_cache = Some(synthesized_cache_plan);
@@ -6561,139 +6561,6 @@ fn codegen_expression_source(expression: &ast::Expression<'_>) -> String {
     trimmed.strip_suffix(';').unwrap_or(trimmed).to_string()
 }
 
-fn codegen_statement_source(statement: &ast::Statement<'_>) -> String {
-    let allocator = oxc_allocator::Allocator::default();
-    let builder = oxc_ast::AstBuilder::new(&allocator);
-    let program = builder.program(
-        oxc_span::SPAN,
-        oxc_span::SourceType::mjs().with_jsx(true),
-        "",
-        builder.vec(),
-        None,
-        builder.vec(),
-        builder.vec1(statement.clone_in(&allocator)),
-    );
-    oxc_codegen::Codegen::new()
-        .with_options(oxc_codegen::CodegenOptions {
-            indent_char: oxc_codegen::IndentChar::Space,
-            indent_width: 2,
-            ..oxc_codegen::CodegenOptions::default()
-        })
-        .build(&program)
-        .code
-        .trim()
-        .to_string()
-}
-
-fn parse_single_slot_memoized_default_body(
-    generated_body: &str,
-    name: &str,
-    temp: &str,
-) -> Option<String> {
-    for source_type in [
-        oxc_span::SourceType::mjs().with_jsx(true),
-        oxc_span::SourceType::ts().with_jsx(true),
-        oxc_span::SourceType::tsx(),
-    ] {
-        let allocator = oxc_allocator::Allocator::default();
-        let wrapper = format!("function __codex() {{\n{generated_body}\n}}");
-        let parsed = oxc_parser::Parser::new(&allocator, &wrapper, source_type).parse();
-        if parsed.panicked || !parsed.errors.is_empty() {
-            continue;
-        }
-        let Some(ast::Statement::FunctionDeclaration(function)) = parsed.program.body.first() else {
-            continue;
-        };
-        let Some(body) = function.body.as_ref() else {
-            continue;
-        };
-        let statements = &body.statements;
-        if statements.len() != 5 {
-            continue;
-        }
-        if codegen_statement_source(&statements[0]) != "const $ = _c(1);" {
-            continue;
-        }
-
-        let memo_decl_source = codegen_statement_source(&statements[1]);
-        let Some(memo_var) = memo_decl_source
-            .strip_prefix("let ")
-            .and_then(|source| source.strip_suffix(';'))
-            .map(str::trim)
-            .filter(|name| is_valid_binding_identifier(name))
-            .map(str::to_string)
-        else {
-            continue;
-        };
-
-        let ast::Statement::IfStatement(if_statement) = &statements[2] else {
-            continue;
-        };
-        if codegen_expression_source(&if_statement.test)
-            != "$[0] === Symbol.for(\"react.memo_cache_sentinel\")"
-        {
-            continue;
-        }
-        let Some(alternate) = if_statement.alternate.as_ref() else {
-            continue;
-        };
-        let ast::Statement::BlockStatement(consequent_block) = &if_statement.consequent else {
-            continue;
-        };
-        let ast::Statement::BlockStatement(alternate_block) = alternate else {
-            continue;
-        };
-        if consequent_block.body.len() != 2 || alternate_block.body.len() != 1 {
-            continue;
-        }
-
-        let assign_prefix = format!("{memo_var} = ");
-        let consequent_assign = codegen_statement_source(&consequent_block.body[0]);
-        let Some(memoized_expr) = consequent_assign
-            .strip_prefix(&assign_prefix)
-            .and_then(|source| source.strip_suffix(';'))
-            .map(str::trim)
-            .filter(|expr| !expr.is_empty())
-            .map(str::to_string)
-        else {
-            continue;
-        };
-        if codegen_statement_source(&consequent_block.body[1]) != format!("$[0] = {};", memo_var) {
-            continue;
-        }
-        if codegen_statement_source(&alternate_block.body[0]) != format!("{memo_var} = $[0];") {
-            continue;
-        }
-
-        let value_decl_source = codegen_statement_source(&statements[3]);
-        let let_prefix = format!("let {name} = {temp} === undefined ? ");
-        let const_prefix = format!("const {name} = {temp} === undefined ? ");
-        let value_prefix = if value_decl_source.starts_with(&let_prefix) {
-            let_prefix
-        } else if value_decl_source.starts_with(&const_prefix) {
-            const_prefix
-        } else {
-            continue;
-        };
-        let suffix = format!(" : {};", temp);
-        let Some(ternary_true_expr) = value_decl_source
-            .strip_prefix(&value_prefix)
-            .and_then(|source| source.strip_suffix(&suffix))
-            .map(str::trim)
-        else {
-            continue;
-        };
-        if ternary_true_expr != memo_var {
-            continue;
-        }
-        if codegen_statement_source(&statements[4]) != format!("return {};", name) {
-            continue;
-        }
-        return Some(memoized_expr);
-    }
-    None
-}
-
 type DefaultParamCacheSynthesis = (
     String,
     SynthesizedDefaultParamCache,
@@ -6701,7 +6568,7 @@ type DefaultParamCacheSynthesis = (
 );
 
 fn synthesize_default_param_cache_body(
-    generated_body: &str,
+    body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
     prefix_statements: &[CompiledParamPrefixStatement],
 ) -> Option<DefaultParamCacheSynthesis> {
     let debug_default_param_cache = std::env::var("DEBUG_DEFAULT_PARAM_CACHE").is_ok();
@@ -6723,32 +6590,41 @@ fn synthesize_default_param_cache_body(
     }
 
     let return_stmt = format!("return {};", name);
-    let (rewritten_expr, hir_outlined_functions) = if generated_body.trim() == return_stmt {
-        if debug_default_param_cache {
-            eprintln!(
-                "[DEFAULT_PARAM_CACHE] synthesize simple-return name={} temp={} expr={}",
-                name, temp, expr
-            );
-        }
-        rewrite_inline_empty_arrow_callback(&expr)
-    } else {
-        let memoized_expr = parse_single_slot_memoized_default_body(generated_body, &name, &temp)?;
-        if is_outlined_temp_expr(&memoized_expr) {
+    let (rewritten_expr, hir_outlined_functions) = match body_shape {
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(return_name)
+            if return_name == &name =>
+        {
             if debug_default_param_cache {
                 eprintln!(
-                    "[DEFAULT_PARAM_CACHE] skip: memoized outlined-temp expr={}",
-                    memoized_expr
+                    "[DEFAULT_PARAM_CACHE] synthesize simple-return name={} temp={} expr={}",
+                    name, temp, expr
                 );
             }
-            return None;
+            rewrite_inline_empty_arrow_callback(&expr)
         }
-        if debug_default_param_cache {
-            eprintln!(
-                "[DEFAULT_PARAM_CACHE] synthesize memoized-single-slot name={} temp={} expr={}",
-                name, temp, memoized_expr
-            );
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
+            value_name,
+            temp_name,
+            memoized_expr,
+        } if value_name == &name && temp_name == &temp => {
+            if is_outlined_temp_expr(memoized_expr) {
+                if debug_default_param_cache {
+                    eprintln!(
+                        "[DEFAULT_PARAM_CACHE] skip: memoized outlined-temp expr={}",
+                        memoized_expr
+                    );
+                }
+                return None;
+            }
+            if debug_default_param_cache {
+                eprintln!(
+                    "[DEFAULT_PARAM_CACHE] synthesize memoized-single-slot name={} temp={} expr={}",
+                    name, temp, memoized_expr
+                );
+            }
+            rewrite_inline_empty_arrow_callback(memoized_expr)
         }
-        rewrite_inline_empty_arrow_callback(&memoized_expr)
+        _ => return None,
     };
 
     Some((

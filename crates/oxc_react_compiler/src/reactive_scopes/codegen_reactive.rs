@@ -151,9 +151,22 @@ pub struct CachePrologue {
     pub fast_refresh: Option<FastRefreshPrologue>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeneratedBodyShape {
+    Unknown,
+    ReturnIdentifier(String),
+    SingleSlotMemoizedReturn {
+        value_name: String,
+        temp_name: String,
+        memoized_expr: String,
+    },
+}
+
 pub struct CodegenResult {
     /// Generated function body (statements inside the function).
     pub body: String,
+    /// Structured shape of the emitted body for downstream AST-based rewrites.
+    pub body_shape: GeneratedBodyShape,
     /// Number of cache slots used.
     pub cache_size: u32,
     /// Whether the function needs the cache import.
@@ -780,8 +793,11 @@ fn codegen_reactive_function_with_primitives(
         );
     }
 
+    let body_shape = analyze_generated_body_shape(&output);
+
     CodegenResult {
         body: output,
+        body_shape,
         cache_size,
         needs_cache_import,
         param_names,
@@ -793,6 +809,150 @@ fn codegen_reactive_function_with_primitives(
         cache_prologue,
         error: cx.codegen_error,
     }
+}
+
+fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
+    fn binding_identifier_name(pattern: &ast::BindingPattern<'_>) -> Option<String> {
+        match pattern {
+            ast::BindingPattern::BindingIdentifier(identifier) => {
+                Some(identifier.name.to_string())
+            }
+            _ => None,
+        }
+    }
+
+    for source_type in [
+        SourceType::mjs().with_jsx(true),
+        SourceType::ts().with_jsx(true),
+        SourceType::tsx(),
+    ] {
+        let allocator = Allocator::default();
+        let wrapper = format!("function __codex() {{\n{body}\n}}");
+        let parsed = Parser::new(&allocator, &wrapper, source_type).parse();
+        if parsed.panicked || !parsed.errors.is_empty() {
+            continue;
+        }
+        let Some(ast::Statement::FunctionDeclaration(function)) = parsed.program.body.first() else {
+            continue;
+        };
+        let Some(function_body) = function.body.as_ref() else {
+            continue;
+        };
+        let statements = &function_body.statements;
+
+        if let [ast::Statement::ReturnStatement(return_stmt)] = statements.as_slice()
+            && let Some(argument) = return_stmt.argument.as_ref()
+            && let ast::Expression::Identifier(identifier) = argument.without_parentheses()
+        {
+            return GeneratedBodyShape::ReturnIdentifier(identifier.name.to_string());
+        }
+
+        if statements.len() != 5 {
+            continue;
+        }
+        if codegen_statement_with_oxc(&statements[0]) != "const $ = _c(1);" {
+            continue;
+        }
+        let Some(ast::Statement::VariableDeclaration(memo_decl)) = statements.get(1) else {
+            continue;
+        };
+        if memo_decl.kind != ast::VariableDeclarationKind::Let || memo_decl.declarations.len() != 1 {
+            continue;
+        }
+        let memo_decl = &memo_decl.declarations[0];
+        if memo_decl.init.is_some() {
+            continue;
+        }
+        let Some(memo_var) = binding_identifier_name(&memo_decl.id) else {
+            continue;
+        };
+
+        let Some(ast::Statement::IfStatement(if_statement)) = statements.get(2) else {
+            continue;
+        };
+        if codegen_expression_with_oxc(&if_statement.test)
+            != "$[0] === Symbol.for(\"react.memo_cache_sentinel\")"
+        {
+            continue;
+        }
+        let Some(alternate) = if_statement.alternate.as_ref() else {
+            continue;
+        };
+        let ast::Statement::BlockStatement(consequent_block) = &if_statement.consequent else {
+            continue;
+        };
+        let ast::Statement::BlockStatement(alternate_block) = alternate else {
+            continue;
+        };
+        if consequent_block.body.len() != 2 || alternate_block.body.len() != 1 {
+            continue;
+        }
+
+        let assign_prefix = format!("{memo_var} = ");
+        let consequent_assign = codegen_statement_with_oxc(&consequent_block.body[0]);
+        let Some(memoized_expr) = consequent_assign
+            .strip_prefix(&assign_prefix)
+            .and_then(|source| source.strip_suffix(';'))
+            .map(str::trim)
+            .filter(|expr| !expr.is_empty())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        if codegen_statement_with_oxc(&consequent_block.body[1]) != format!("$[0] = {};", memo_var) {
+            continue;
+        }
+        if codegen_statement_with_oxc(&alternate_block.body[0]) != format!("{memo_var} = $[0];") {
+            continue;
+        }
+
+        let value_decl_source = codegen_statement_with_oxc(&statements[3]);
+        let Some(ast::Statement::VariableDeclaration(value_decl)) = statements.get(3) else {
+            continue;
+        };
+        if value_decl.declarations.len() != 1 {
+            continue;
+        }
+        let Some(value_name) = binding_identifier_name(&value_decl.declarations[0].id) else {
+            continue;
+        };
+        let Some((value_prefix, temp_name)) = [("let ", ast::VariableDeclarationKind::Let), ("const ", ast::VariableDeclarationKind::Const)]
+            .into_iter()
+            .find_map(|(prefix, kind)| {
+                (value_decl.kind == kind).then_some(prefix).and_then(|prefix| {
+                    let prefix = format!("{prefix}{value_name} = ");
+                    value_decl_source
+                        .starts_with(&prefix)
+                        .then_some(prefix)
+                })
+            })
+            .and_then(|prefix| {
+                let remainder = value_decl_source.strip_prefix(&prefix)?;
+                let marker = " === undefined ? ";
+                let (temp_name, rest) = remainder.split_once(marker)?;
+                let suffix = format!(" : {};", temp_name.trim());
+                rest.strip_suffix(&suffix)
+                    .map(str::trim)
+                    .filter(|memo_name| *memo_name == memo_var)
+                    .map(|_| (prefix, temp_name.trim().to_string()))
+            })
+        else {
+            continue;
+        };
+        let _ = value_prefix;
+
+        if codegen_statement_with_oxc(&statements[4]) != format!("return {};", value_name) {
+            continue;
+        }
+
+        return GeneratedBodyShape::SingleSlotMemoizedReturn {
+            value_name,
+            temp_name,
+            memoized_expr,
+        };
+    }
+
+    GeneratedBodyShape::Unknown
 }
 
 fn prune_unused_const_literal_decls(body: &str) -> String {
