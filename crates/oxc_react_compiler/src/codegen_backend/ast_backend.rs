@@ -2862,6 +2862,10 @@ fn build_compiled_function_body<'a>(
         try_build_compiled_function_body_from_hir(builder, cf, state)
     {
         function_body
+    } else if let Some(function_body) =
+        try_build_compiled_function_body_from_shape(builder, allocator, source_type, cf)
+    {
+        function_body
     } else if let Some(body_source) = cf.generated_body.as_ref() {
         parse_compiled_function_body(allocator, source_type, cf, body_source).ok()?
     } else if let Some(default_cache) = cf.synthesized_default_param_cache.as_ref() {
@@ -2927,6 +2931,116 @@ fn build_default_param_cache_seed_body<'a>(
             Some(builder.expression_identifier(SPAN, builder.ident(&default_cache.value_name))),
         )),
     )
+}
+
+fn try_build_compiled_function_body_from_shape<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    cf: &CompiledFunction,
+) -> Option<ast::FunctionBody<'a>> {
+    match &cf.generated_body_shape {
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown => None,
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(name) => {
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_return(
+                    SPAN,
+                    Some(builder.expression_identifier(SPAN, builder.ident(name))),
+                )),
+            ))
+        }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
+            value_name,
+            value_kind,
+            temp_name,
+            memoized_expr,
+        } => {
+            let cache_binding_name = &cf.cache_prologue.as_ref()?.binding_name;
+            let memo_name = "__memo";
+            let memo_expr = parse_expression_source(allocator, source_type, memoized_expr).ok()?;
+            let conditional = builder.expression_conditional(
+                SPAN,
+                builder.expression_binary(
+                    SPAN,
+                    builder.expression_identifier(SPAN, builder.ident(temp_name)),
+                    BinaryOperator::StrictEquality,
+                    builder.expression_identifier(SPAN, builder.ident("undefined")),
+                ),
+                builder.expression_identifier(SPAN, builder.ident(memo_name)),
+                builder.expression_identifier(SPAN, builder.ident(temp_name)),
+            );
+            let consequent = builder.vec_from_iter([
+                build_identifier_assignment_statement(builder, memo_name, memo_expr),
+                build_cache_slot_assignment_statement(
+                    builder,
+                    cache_binding_name,
+                    0,
+                    builder.expression_identifier(SPAN, builder.ident(memo_name)),
+                ),
+            ]);
+            let alternate = builder.vec1(build_identifier_assignment_statement(
+                builder,
+                memo_name,
+                cache_member_slot_expression(builder, cache_binding_name, 0),
+            ));
+            let test = builder.expression_binary(
+                SPAN,
+                cache_member_slot_expression(builder, cache_binding_name, 0),
+                BinaryOperator::StrictEquality,
+                build_memo_cache_sentinel_expression(builder),
+            );
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec_from_iter([
+                    ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+                        SPAN,
+                        ast::VariableDeclarationKind::Let,
+                        builder.vec1(builder.variable_declarator(
+                            SPAN,
+                            ast::VariableDeclarationKind::Let,
+                            builder.binding_pattern_binding_identifier(
+                                SPAN,
+                                builder.ident(memo_name),
+                            ),
+                            NONE,
+                            None,
+                            false,
+                        )),
+                        false,
+                    )),
+                    builder.statement_if(
+                        SPAN,
+                        test,
+                        builder.statement_block(SPAN, consequent),
+                        Some(builder.statement_block(SPAN, alternate)),
+                    ),
+                    ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+                        SPAN,
+                        *value_kind,
+                        builder.vec1(builder.variable_declarator(
+                            SPAN,
+                            *value_kind,
+                            builder.binding_pattern_binding_identifier(
+                                SPAN,
+                                builder.ident(value_name),
+                            ),
+                            NONE,
+                            Some(conditional),
+                            false,
+                        )),
+                        false,
+                    )),
+                    builder.statement_return(
+                        SPAN,
+                        Some(builder.expression_identifier(SPAN, builder.ident(value_name))),
+                    ),
+                ]),
+            ))
+        }
+    }
 }
 
 pub(crate) fn normalize_compiled_body_for_hir_match(body_source: &str) -> String {
@@ -5913,6 +6027,8 @@ function Component(props) {
             start,
             end,
             generated_body: Some(generated_body.to_string()),
+            generated_body_shape:
+                crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown,
             body_payload: CompiledBodyPayload::GeneratedString,
             needs_cache_import: false,
             compiled_params: Some(

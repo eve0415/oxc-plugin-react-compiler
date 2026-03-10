@@ -5812,6 +5812,7 @@ fn try_compile_function<'a>(
         } else {
             None
         },
+        generated_body_shape: codegen_result.body_shape.clone(),
         body_payload,
         needs_cache_import,
         compiled_params,
@@ -6026,6 +6027,7 @@ fn try_compile_function_with_name<'a>(
         } else {
             None
         },
+        generated_body_shape: codegen_result.body_shape.clone(),
         body_payload,
         needs_cache_import,
         compiled_params,
@@ -6248,6 +6250,7 @@ fn try_compile_arrow<'a>(
         } else {
             None
         },
+        generated_body_shape: codegen_result.body_shape.clone(),
         body_payload,
         needs_cache_import,
         compiled_params,
@@ -6503,6 +6506,7 @@ fn synthesize_default_param_cache_body(
             value_name,
             temp_name,
             memoized_expr,
+            ..
         } if value_name == &name && temp_name == &temp => {
             if is_outlined_temp_expr(memoized_expr) {
                 if debug_default_param_cache {

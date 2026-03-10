@@ -99,6 +99,7 @@ pub(crate) struct CompiledFunction {
     pub(crate) start: u32,
     pub(crate) end: u32,
     pub(crate) generated_body: Option<String>,
+    pub(crate) generated_body_shape: crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
     pub(crate) body_payload: CompiledBodyPayload,
     pub(crate) needs_cache_import: bool,
     pub(crate) compiled_params: Option<Vec<CompiledParam>>,

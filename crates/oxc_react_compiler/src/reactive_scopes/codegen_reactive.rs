@@ -157,6 +157,7 @@ pub enum GeneratedBodyShape {
     ReturnIdentifier(String),
     SingleSlotMemoizedReturn {
         value_name: String,
+        value_kind: ast::VariableDeclarationKind,
         temp_name: String,
         memoized_expr: String,
     },
@@ -1099,6 +1100,7 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
 
         return GeneratedBodyShape::SingleSlotMemoizedReturn {
             value_name,
+            value_kind: value_decl.kind,
             temp_name,
             memoized_expr,
         };
