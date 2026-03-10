@@ -1181,8 +1181,8 @@ fn prune_unused_const_literal_decls(body: &str) -> String {
         let Some((name, rhs)) = parse_const_literal_decl(trimmed) else {
             continue;
         };
-        if is_inlineable_primitive_literal_expression(rhs) {
-            candidates.insert(idx, name.to_string());
+        if is_inlineable_primitive_literal_expression(&rhs) {
+            candidates.insert(idx, name);
         }
     }
     if candidates.is_empty() {
@@ -1210,21 +1210,32 @@ fn prune_unused_const_literal_decls(body: &str) -> String {
     out
 }
 
-fn parse_const_literal_decl(line: &str) -> Option<(&str, &str)> {
-    let rest = line.strip_prefix("const ")?;
-    let eq = rest.find('=')?;
-    if eq == 0 || eq + 1 >= rest.len() || !rest.ends_with(';') {
+fn parse_const_literal_decl(line: &str) -> Option<(String, String)> {
+    let allocator = Allocator::default();
+    let statement = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        line,
+    )
+    .ok()?;
+    let ast::Statement::VariableDeclaration(declaration) = statement else {
+        return None;
+    };
+    let declaration = declaration.unbox();
+    if declaration.kind != ast::VariableDeclarationKind::Const
+        || declaration.declarations.len() != 1
+    {
         return None;
     }
-    let name = rest[..eq].trim();
-    if !is_simple_identifier_name(name) {
+    let declarator = declaration.declarations.into_iter().next()?;
+    let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id else {
         return None;
-    }
-    let rhs = rest[eq + 1..rest.len() - 1].trim();
-    if rhs.is_empty() {
-        return None;
-    }
-    Some((name, rhs))
+    };
+    let init = declarator.init.as_ref()?;
+    Some((
+        identifier.name.to_string(),
+        codegen_expression_with_flow_cast_restore(init),
+    ))
 }
 
 fn contains_identifier_token(haystack: &str, needle: &str) -> bool {
@@ -1278,17 +1289,6 @@ fn contains_base_identifier_token(haystack: &str, needle: &str) -> bool {
         start = end;
     }
     false
-}
-
-fn is_simple_identifier_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !is_simple_identifier_char(first) || first.is_ascii_digit() {
-        return false;
-    }
-    chars.all(is_simple_identifier_char)
 }
 
 fn is_simple_identifier_char(ch: char) -> bool {
