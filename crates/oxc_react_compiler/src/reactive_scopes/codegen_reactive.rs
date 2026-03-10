@@ -5872,15 +5872,32 @@ fn parse_named_temp_binding_line(line: &str) -> Option<(String, String, String)>
 fn parse_assignment_statement_line(line: &str) -> Option<(String, String, String)> {
     let indent_len = line.len().saturating_sub(line.trim_start().len());
     let indent = line[..indent_len].to_string();
-    let trimmed = line.trim();
-    let body = trimmed.strip_suffix(';')?;
-    let (lhs, rhs) = body.split_once('=')?;
-    let lhs = lhs.trim();
-    let rhs = rhs.trim();
-    if lhs.is_empty() || rhs.is_empty() {
+    let allocator = Allocator::default();
+    let statement = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        line.trim(),
+    )
+    .ok()?;
+    let ast::Statement::ExpressionStatement(expression_statement) = statement else {
+        return None;
+    };
+    let ast::Expression::AssignmentExpression(assignment) =
+        expression_statement.expression.without_parentheses()
+    else {
+        return None;
+    };
+    if assignment.operator != AssignmentOperator::Assign {
         return None;
     }
-    Some((indent, lhs.to_string(), rhs.to_string()))
+    let ast::AssignmentTarget::AssignmentTargetIdentifier(identifier) = &assignment.left else {
+        return None;
+    };
+    Some((
+        indent,
+        identifier.name.to_string(),
+        codegen_expression_with_flow_cast_restore(&assignment.right),
+    ))
 }
 
 fn parse_ternary_statement_line(line: &str) -> Option<(String, String, String, String)> {
