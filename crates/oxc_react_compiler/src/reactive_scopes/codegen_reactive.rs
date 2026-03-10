@@ -4088,37 +4088,90 @@ fn codegen_block_no_reset_with_options(
                 memoizable_if_reassignment_scope_bridge(&term_stmt.terminal, &block[i + 1..])
             && let Some(if_stmt) = codegen_terminal(cx, &term_stmt.terminal)
         {
+            let allocator = Allocator::default();
+            let builder = AstBuilder::new(&allocator);
             let cache_var = cx.synthesize_name("$");
             let dep_expr = codegen_place_to_expression(cx, test_place);
             let dep_slot = cx.alloc_cache_slot();
             let value_slot = cx.alloc_cache_slot();
             let target_name = identifier_name_with_cx(cx, &target_ident);
-            let mut consequent = if_stmt;
-            consequent.push_str(
-                &render_cache_slot_store_statement_ast(&cache_var, dep_slot, &dep_expr)
-                    .expect("scope bridge dependency store should stay on AST path"),
-            );
-            consequent.push_str(
-                &render_cache_slot_store_statement_ast(&cache_var, value_slot, &target_name)
-                    .expect("scope bridge value store should stay on AST path"),
-            );
-            let alternate = render_cache_slot_load_assignment_statement_ast(
-                &target_name,
-                &cache_var,
-                value_slot,
+            let mut consequent = parse_statement_list_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
+                &if_stmt,
             )
-            .expect("scope bridge cache load should stay on AST path");
-            let guard_test = render_cache_slot_comparison_expression_ast(
+            .expect("scope bridge terminal should stay on AST path");
+            consequent.push(build_computed_member_assignment_statement_ast(
+                builder,
                 &cache_var,
-                dep_slot,
-                BinaryOperator::StrictNotEq,
-                &dep_expr,
-            )
-            .expect("scope bridge guard should stay on AST path");
-            output.push_str(
-                &render_reactive_if_statement_ast(&guard_test, &consequent, Some(&alternate))
+                builder.expression_numeric_literal(
+                    SPAN,
+                    dep_slot as f64,
+                    None,
+                    NumberBase::Decimal,
+                ),
+                parse_expression_for_ast_codegen(
+                    &allocator,
+                    SourceType::mjs().with_jsx(true),
+                    &dep_expr,
+                )
+                .expect("scope bridge dependency store should stay on AST path"),
+            ));
+            consequent.push(build_computed_member_assignment_statement_ast(
+                builder,
+                &cache_var,
+                builder.expression_numeric_literal(
+                    SPAN,
+                    value_slot as f64,
+                    None,
+                    NumberBase::Decimal,
+                ),
+                builder.expression_identifier(SPAN, builder.ident(&target_name)),
+            ));
+            let alternate =
+                builder.vec1(build_identifier_assignment_statement_ast_with_expression(
+                    builder,
+                    &target_name,
+                    build_computed_member_expression_ast(
+                        builder,
+                        &cache_var,
+                        builder.expression_numeric_literal(
+                            SPAN,
+                            value_slot as f64,
+                            None,
+                            NumberBase::Decimal,
+                        ),
+                    ),
+                ));
+            let statement = builder.statement_if(
+                SPAN,
+                builder.expression_binary(
+                    SPAN,
+                    build_computed_member_expression_ast(
+                        builder,
+                        &cache_var,
+                        builder.expression_numeric_literal(
+                            SPAN,
+                            dep_slot as f64,
+                            None,
+                            NumberBase::Decimal,
+                        ),
+                    ),
+                    AstBinaryOperator::StrictInequality,
+                    parse_expression_for_ast_codegen(
+                        &allocator,
+                        SourceType::mjs().with_jsx(true),
+                        &dep_expr,
+                    )
                     .expect("scope bridge guard should stay on AST path"),
+                ),
+                builder.statement_block(SPAN, consequent),
+                Some(builder.statement_block(SPAN, alternate)),
             );
+            output.push_str(&format!(
+                "{}\n",
+                codegen_statement_with_flow_cast_restore(&statement)
+            ));
             last_source_end_line = None;
             i += 1;
             continue;
