@@ -3029,6 +3029,20 @@ fn build_generated_assignment_statements<'a>(
     Some(statements)
 }
 
+fn build_generated_expression_statements<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    expressions: &[String],
+) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
+    let mut statements = builder.vec();
+    for expression in expressions {
+        let expression = parse_expression_source(allocator, source_type, expression).ok()?;
+        statements.push(builder.statement_expression(SPAN, expression));
+    }
+    Some(statements)
+}
+
 fn try_build_function_body_from_shape<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
@@ -3455,6 +3469,27 @@ fn try_build_function_body_from_shape<'a>(
             )?;
             let mut prefixed =
                 build_generated_binding_statements(builder, allocator, source_type, bindings)?;
+            prefixed.extend(body.statements);
+            body.statements = prefixed;
+            Some(body)
+        }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedExpressionStatements {
+            expressions,
+            inner,
+        } => {
+            let mut body = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                inner.as_ref(),
+                cache_prologue,
+            )?;
+            let mut prefixed = build_generated_expression_statements(
+                builder,
+                allocator,
+                source_type,
+                expressions,
+            )?;
             prefixed.extend(body.statements);
             body.statements = prefixed;
             Some(body)
@@ -7772,6 +7807,43 @@ function Component(props) {
 
         assert!(rewritten.contains("const { id } = props;"));
         assert!(rewritten.contains("return id;"));
+    }
+
+    #[test]
+    fn builds_prefixed_expression_body_from_shape_without_generated_source() {
+        let source = "function Foo(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "useRenamed(); return props.items;",
+            &["props"],
+            false,
+        );
+        compiled_function.generated_body = None;
+        compiled_function.generated_body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedExpressionStatements {
+                expressions: vec!["useRenamed()".to_string()],
+                inner: Box::new(
+                    crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnExpression(
+                        "props.items".to_string(),
+                    ),
+                ),
+            };
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("useRenamed();"));
+        assert!(rewritten.contains("return props.items;"));
     }
 
     #[test]

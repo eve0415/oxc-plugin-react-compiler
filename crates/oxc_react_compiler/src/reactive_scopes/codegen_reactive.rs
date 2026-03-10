@@ -203,6 +203,10 @@ pub enum GeneratedBodyShape {
         bindings: Vec<GeneratedBinding>,
         inner: Box<GeneratedBodyShape>,
     },
+    PrefixedExpressionStatements {
+        expressions: Vec<String>,
+        inner: Box<GeneratedBodyShape>,
+    },
     PrefixedAssignments {
         assignments: Vec<GeneratedAssignment>,
         inner: Box<GeneratedBodyShape>,
@@ -868,6 +872,7 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
             | GeneratedBodyShape::SingleSlotMemoizedReturn { value_name, .. } => Some(value_name),
             GeneratedBodyShape::AliasedReturn { alias_name, .. } => Some(alias_name),
             GeneratedBodyShape::PrefixedBindings { inner, .. }
+            | GeneratedBodyShape::PrefixedExpressionStatements { inner, .. }
             | GeneratedBodyShape::PrefixedAssignments { inner, .. }
             | GeneratedBodyShape::Sequential { inner, .. } => shape_returned_identifier(inner),
         }
@@ -1137,6 +1142,29 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
         (assignments, prefix_len)
     }
 
+    fn collect_leading_expression_statements(
+        statements: &[ast::Statement<'_>],
+    ) -> (Vec<String>, usize) {
+        let mut expressions = Vec::new();
+        let mut prefix_len = 0usize;
+        for statement in statements {
+            let ast::Statement::ExpressionStatement(expression_statement) = statement else {
+                break;
+            };
+            if matches!(
+                expression_statement.expression.without_parentheses(),
+                ast::Expression::AssignmentExpression(_)
+            ) {
+                break;
+            }
+            expressions.push(codegen_expression_with_flow_cast_restore(
+                &expression_statement.expression,
+            ));
+            prefix_len += 1;
+        }
+        (expressions, prefix_len)
+    }
+
     fn collect_candidate_return_identifiers(statements: &[ast::Statement<'_>]) -> Vec<String> {
         let mut candidates = Vec::new();
         for statement in statements.iter().rev() {
@@ -1302,6 +1330,19 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
             if !matches!(inner_shape, GeneratedBodyShape::Unknown) {
                 return GeneratedBodyShape::PrefixedBindings {
                     bindings: prefixed_bindings,
+                    inner: Box::new(inner_shape),
+                };
+            }
+        }
+
+        let (prefixed_expressions, prefix_len) = collect_leading_expression_statements(statements);
+        if prefix_len > 0 && prefix_len < statements.len() && statements.len() <= 6 {
+            let suffix_source =
+                codegen_statements_with_flow_cast_restore(&statements[prefix_len..]);
+            let inner_shape = analyze_generated_body_shape_impl(&suffix_source, true);
+            if !matches!(inner_shape, GeneratedBodyShape::Unknown) {
+                return GeneratedBodyShape::PrefixedExpressionStatements {
+                    expressions: prefixed_expressions,
                     inner: Box::new(inner_shape),
                 };
             }
@@ -22605,6 +22646,24 @@ fn build_generated_assignment_statements_ast<'a>(
     Some(statements)
 }
 
+fn build_generated_expression_statements_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    expressions: &[String],
+) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
+    let mut statements = builder.vec();
+    for expression in expressions {
+        let expression = parse_expression_for_ast_codegen(
+            allocator,
+            SourceType::mjs().with_jsx(true),
+            expression,
+        )
+        .ok()?;
+        statements.push(builder.statement_expression(SPAN, expression));
+    }
+    Some(statements)
+}
+
 struct FunctionBodyRenderSpec<'a> {
     params: &'a [Argument],
     param_names: &'a [String],
@@ -23159,6 +23218,29 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             )?;
             let mut prefixed =
                 build_generated_binding_statements_ast(builder, allocator, bindings)?;
+            prefixed.extend(body.statements);
+            body.statements = prefixed;
+            Some(body)
+        }
+        GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
+            let inner_spec = FunctionBodyRenderSpec {
+                params: spec.params,
+                param_names: spec.param_names,
+                body_source: spec.body_source,
+                body_shape: inner.as_ref(),
+                directives: spec.directives,
+                cache_prologue: spec.cache_prologue,
+                needs_function_hook_guard_wrapper: spec.needs_function_hook_guard_wrapper,
+                is_async: spec.is_async,
+                is_generator: spec.is_generator,
+            };
+            let mut body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder,
+                allocator,
+                &inner_spec,
+            )?;
+            let mut prefixed =
+                build_generated_expression_statements_ast(builder, allocator, expressions)?;
             prefixed.extend(body.statements);
             body.statements = prefixed;
             Some(body)
@@ -26545,6 +26627,24 @@ mod tests {
         assert!(matches!(
             inner.as_ref(),
             super::GeneratedBodyShape::ReturnIdentifier(name) if name == "bar"
+        ));
+    }
+
+    #[test]
+    fn analyzes_prefixed_expression_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "useRenamed();\nlet value;\nif ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {\n  value = props.items.map(_temp);\n  $[0] = value;\n} else {\n  value = $[0];\n}\nreturn value;\n",
+        );
+
+        let super::GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } = shape
+        else {
+            panic!("expected prefixed expression statements");
+        };
+        assert_eq!(expressions, vec!["useRenamed()"]);
+        assert!(matches!(
+            inner.as_ref(),
+            super::GeneratedBodyShape::ZeroDependencyMemoizedReturn { value_name, value_slot, .. }
+                if value_name == "value" && *value_slot == 0
         ));
     }
 }

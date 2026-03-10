@@ -1311,6 +1311,15 @@ fn codegen_outlined_function(
                 }
                 rename_generated_body_shape(inner.as_mut(), from, to);
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedExpressionStatements {
+                expressions,
+                inner,
+            } => {
+                for expression in expressions {
+                    *expression = replace_identifier_tokens(expression, from, to);
+                }
+                rename_generated_body_shape(inner.as_mut(), from, to);
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedAssignments {
                 assignments,
                 inner,
