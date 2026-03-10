@@ -3975,7 +3975,8 @@ fn prepend_compiled_body_prefix_statements<'a>(
     original_body: Option<&ast::FunctionBody<'_>>,
     cache_import_name: Option<&str>,
 ) -> Option<()> {
-    let prefix_statements = collect_compiled_body_prefix_statements(allocator, source_type, cf)?;
+    let prefix_statements =
+        collect_compiled_body_prefix_statements(allocator, source_type, body, cf)?;
     let preserved_original_statements =
         collect_preserved_original_body_statements(allocator, original_body);
     if prefix_statements.is_empty() && preserved_original_statements.is_empty() {
@@ -4649,6 +4650,7 @@ fn conditional_expression_is_undefined_fallback(
 fn collect_compiled_body_prefix_statements<'a>(
     allocator: &'a Allocator,
     source_type: SourceType,
+    body: &ast::FunctionBody<'_>,
     cf: &CompiledFunction,
 ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
     let builder = AstBuilder::new(allocator);
@@ -4656,23 +4658,12 @@ fn collect_compiled_body_prefix_statements<'a>(
     if cf.param_prefix_statements.is_empty() {
         return Some(statements);
     }
-    let parsed_body = parse_rendered_function_body(
-        allocator,
-        source_type,
-        cf.is_async,
-        cf.is_generator,
-        &cf.generated_body,
-    )
-    .ok();
-    if parsed_body
-        .as_ref()
-        .is_some_and(|body| function_body_contains_undefined_fallback(&body.statements))
-    {
+    if function_body_contains_undefined_fallback(&body.statements) {
         return Some(statements);
     }
-    let body_identifier_references = parsed_body
-        .as_ref()
-        .map(|body| collect_identifier_references_in_statements(&body.statements));
+    let body_identifier_references = Some(collect_identifier_references_in_statements(
+        &body.statements,
+    ));
     for (index, statement) in cf.param_prefix_statements.iter().enumerate() {
         let later_statements = &cf.param_prefix_statements[index + 1..];
         let Some(pruned) = prune_compiled_prefix_statement(
