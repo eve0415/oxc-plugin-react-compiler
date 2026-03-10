@@ -6934,78 +6934,175 @@ fn maybe_codegen_fused_named_test_dual_reassign_scope_ternary_return(
     let cond_slot = cx.alloc_cache_slot();
     let consequent_dep_slot = cx.alloc_cache_slot();
     let output_slot = cx.alloc_cache_slot();
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
 
     let target_name = first.reassign_name.clone();
     if !cx.has_declared(&first.reassign_ident) {
-        output.push_str(&render_reactive_variable_statement_ast(
+        let statement = ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+            SPAN,
             ast::VariableDeclarationKind::Let,
-            &target_name,
-            None,
-        )?);
+            builder.vec1(builder.variable_declarator(
+                SPAN,
+                ast::VariableDeclarationKind::Let,
+                builder.binding_pattern_binding_identifier(SPAN, builder.ident(&target_name)),
+                NONE,
+                None,
+                false,
+            )),
+            false,
+        ));
+        output.push_str(&format!(
+            "{}\n",
+            codegen_statement_with_flow_cast_restore(&statement)
+        ));
         cx.mark_decl_runtime_emitted(first.reassign_ident.declaration_id);
     }
     cx.declare(&first.reassign_ident);
 
-    let guard_expr = render_logical_chain_expression_ast(
-        &[
-            render_cache_slot_comparison_expression_ast(
+    let guard_expr = builder.expression_logical(
+        SPAN,
+        builder.expression_logical(
+            SPAN,
+            builder.expression_binary(
+                SPAN,
+                build_computed_member_expression_ast(
+                    builder,
+                    &cache_var,
+                    builder.expression_numeric_literal(
+                        SPAN,
+                        alternate_dep_slot as f64,
+                        None,
+                        NumberBase::Decimal,
+                    ),
+                ),
+                AstBinaryOperator::StrictInequality,
+                parse_expression_for_ast_codegen(
+                    &allocator,
+                    SourceType::mjs().with_jsx(true),
+                    &alternate_branch.dep_expr,
+                )
+                .ok()?,
+            ),
+            AstLogicalOperator::Or,
+            builder.expression_binary(
+                SPAN,
+                build_computed_member_expression_ast(
+                    builder,
+                    &cache_var,
+                    builder.expression_numeric_literal(
+                        SPAN,
+                        cond_slot as f64,
+                        None,
+                        NumberBase::Decimal,
+                    ),
+                ),
+                AstBinaryOperator::StrictInequality,
+                parse_expression_for_ast_codegen(
+                    &allocator,
+                    SourceType::mjs().with_jsx(true),
+                    &cond_expr,
+                )
+                .ok()?,
+            ),
+        ),
+        AstLogicalOperator::Or,
+        builder.expression_binary(
+            SPAN,
+            build_computed_member_expression_ast(
+                builder,
                 &cache_var,
-                alternate_dep_slot,
-                BinaryOperator::StrictNotEq,
-                &alternate_branch.dep_expr,
-            )
-            .expect("alternate dependency comparison should stay on AST path"),
-            render_cache_slot_comparison_expression_ast(
-                &cache_var,
-                cond_slot,
-                BinaryOperator::StrictNotEq,
-                &cond_expr,
-            )
-            .expect("condition comparison should stay on AST path"),
-            render_cache_slot_comparison_expression_ast(
-                &cache_var,
-                consequent_dep_slot,
-                BinaryOperator::StrictNotEq,
+                builder.expression_numeric_literal(
+                    SPAN,
+                    consequent_dep_slot as f64,
+                    None,
+                    NumberBase::Decimal,
+                ),
+            ),
+            AstBinaryOperator::StrictInequality,
+            parse_expression_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
                 &consequent_branch.dep_expr,
             )
-            .expect("consequent dependency comparison should stay on AST path"),
-        ],
-        LogicalOperator::Or,
+            .ok()?,
+        ),
+    );
+    let fused_expr = parse_expression_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        &render_conditional_expression_ast(
+            &cond_expr,
+            &consequent_branch.branch_expr,
+            &alternate_branch.branch_expr,
+        )?,
     )
-    .expect("dual reassign guard should stay on AST path");
-    let fused_expr = render_conditional_expression_ast(
-        &cond_expr,
-        &consequent_branch.branch_expr,
-        &alternate_branch.branch_expr,
-    )
-    .expect("dual reassign ternary should stay on AST path");
-    let consequent = format!(
-        "{}{}{}{}",
-        render_reactive_expression_statement_ast(&fused_expr)?,
-        render_cache_slot_store_statement_ast(
-            &cache_var,
-            alternate_dep_slot,
+    .ok()?;
+    let mut consequent = builder.vec1(builder.statement_expression(SPAN, fused_expr));
+    consequent.push(build_computed_member_assignment_statement_ast(
+        builder,
+        &cache_var,
+        builder.expression_numeric_literal(
+            SPAN,
+            alternate_dep_slot as f64,
+            None,
+            NumberBase::Decimal,
+        ),
+        parse_expression_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
             &alternate_branch.dep_expr,
-        )?,
-        render_cache_slot_store_statement_ast(&cache_var, cond_slot, &cond_expr)?,
-        render_cache_slot_store_statement_ast(
-            &cache_var,
-            consequent_dep_slot,
+        )
+        .ok()?,
+    ));
+    consequent.push(build_computed_member_assignment_statement_ast(
+        builder,
+        &cache_var,
+        builder.expression_numeric_literal(SPAN, cond_slot as f64, None, NumberBase::Decimal),
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), &cond_expr)
+            .ok()?,
+    ));
+    consequent.push(build_computed_member_assignment_statement_ast(
+        builder,
+        &cache_var,
+        builder.expression_numeric_literal(
+            SPAN,
+            consequent_dep_slot as f64,
+            None,
+            NumberBase::Decimal,
+        ),
+        parse_expression_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
             &consequent_branch.dep_expr,
-        )?,
+        )
+        .ok()?,
+    ));
+    consequent.push(build_computed_member_assignment_statement_ast(
+        builder,
+        &cache_var,
+        builder.expression_numeric_literal(SPAN, output_slot as f64, None, NumberBase::Decimal),
+        builder.expression_identifier(SPAN, builder.ident(&target_name)),
+    ));
+    let alternate = builder.vec1(build_identifier_assignment_statement_ast_with_expression(
+        builder,
+        &target_name,
+        build_computed_member_expression_ast(
+            builder,
+            &cache_var,
+            builder.expression_numeric_literal(SPAN, output_slot as f64, None, NumberBase::Decimal),
+        ),
+    ));
+    let statement = builder.statement_if(
+        SPAN,
+        guard_expr,
+        builder.statement_block(SPAN, consequent),
+        Some(builder.statement_block(SPAN, alternate)),
     );
-    let consequent = format!(
-        "{}{}",
-        consequent,
-        render_cache_slot_store_statement_ast(&cache_var, output_slot, &target_name)?,
-    );
-    let alternate =
-        render_cache_slot_load_assignment_statement_ast(&target_name, &cache_var, output_slot)?;
-    output.push_str(&render_reactive_if_statement_ast(
-        &guard_expr,
-        &consequent,
-        Some(&alternate),
-    )?);
+    output.push_str(&format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ));
     for decl_id in bridged_return_decls {
         cx.temp
             .insert(decl_id, Some(ExprValue::primary(target_name.clone())));
