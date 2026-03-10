@@ -16566,6 +16566,18 @@ fn rendered_expr_has_property_path(expr: &str) -> bool {
     detector.found
 }
 
+fn rendered_expr_is_direct_root_identifier(expr: &str) -> bool {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let allocator = Allocator::default();
+    let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) else {
+        return false;
+    };
+    matches!(expression.without_parentheses(), ast::Expression::Identifier(_))
+}
+
 fn rendered_expr_is_jsx_like(expr: &str) -> bool {
     let trimmed = expr.trim();
     if trimmed.is_empty() {
@@ -18499,11 +18511,9 @@ fn infer_callback_dependency_paths(
         eprintln!("[INFER_CALLBACK_DEPS] raw={:?}", dbg_paths);
     }
 
-    let is_direct_root_path =
-        |path: &str| !path.contains('.') && !path.contains('?') && !path.contains('[');
     let mut explicit_root_paths: Vec<(String, DeclarationId)> = Vec::new();
     for (path, root_decl) in &used_paths {
-        if !is_direct_root_path(path) {
+        if !rendered_expr_is_direct_root_identifier(path) {
             continue;
         }
         if stable_ref_decls.contains(root_decl) {
@@ -18538,8 +18548,7 @@ fn infer_callback_dependency_paths(
             continue;
         }
         if let Some(stripped) = strip_terminal_current_path(&path) {
-            let stripped_is_direct_root =
-                !stripped.contains('.') && !stripped.contains('?') && !stripped.contains('[');
+            let stripped_is_direct_root = rendered_expr_is_direct_root_identifier(&stripped);
             if stripped_is_direct_root {
                 if !stripped.is_empty() {
                     normalized.push((stripped, root_decl));
@@ -18555,12 +18564,12 @@ fn infer_callback_dependency_paths(
     // Omit direct stable setters unless they are control-flow merged.
     normalized.retain(|(path, root_decl)| {
         if stable_setter_decls.contains(root_decl) && !multi_source_decls.contains(root_decl) {
-            let is_direct_root = !path.contains('.') && !path.contains('?') && !path.contains('[');
+            let is_direct_root = rendered_expr_is_direct_root_identifier(path);
             return !is_direct_root;
         }
         if stable_effect_event_decls.contains(root_decl) && !multi_source_decls.contains(root_decl)
         {
-            let is_direct_root = !path.contains('.') && !path.contains('?') && !path.contains('[');
+            let is_direct_root = rendered_expr_is_direct_root_identifier(path);
             return !is_direct_root;
         }
         true
@@ -22666,6 +22675,7 @@ mod tests {
         rendered_expr_is_autodeps_placeholder,
         rendered_expr_contains_optional_chain,
         rendered_expr_has_property_path,
+        rendered_expr_is_direct_root_identifier,
         rendered_expr_contains_logical_or,
         rendered_expr_contains_assignment_to_target,
         rendered_expr_is_array_literal, rendered_expr_is_array_seed_like,
@@ -22964,6 +22974,14 @@ mod tests {
         assert!(rendered_expr_has_property_path("value?.prop"));
         assert!(rendered_expr_has_property_path("value[index]"));
         assert!(!rendered_expr_has_property_path("value"));
+    }
+
+    #[test]
+    fn detects_direct_root_identifiers_via_ast() {
+        assert!(rendered_expr_is_direct_root_identifier("value"));
+        assert!(!rendered_expr_is_direct_root_identifier("value.prop"));
+        assert!(!rendered_expr_is_direct_root_identifier("value?.prop"));
+        assert!(!rendered_expr_is_direct_root_identifier("value[index]"));
     }
 
     #[test]
