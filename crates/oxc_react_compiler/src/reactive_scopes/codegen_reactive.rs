@@ -187,6 +187,12 @@ pub enum GeneratedBodyShape {
         value_slot: u32,
         memoized_expr: String,
     },
+    AliasedReturn {
+        alias_name: String,
+        alias_kind: ast::VariableDeclarationKind,
+        source_name: String,
+        inner: Box<GeneratedBodyShape>,
+    },
     SingleSlotMemoizedReturn {
         value_name: String,
         value_kind: ast::VariableDeclarationKind,
@@ -812,6 +818,21 @@ fn codegen_reactive_function_with_primitives(
 }
 
 fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
+    fn shape_returned_identifier(shape: &GeneratedBodyShape) -> Option<&str> {
+        match shape {
+            GeneratedBodyShape::Unknown => None,
+            GeneratedBodyShape::ReturnIdentifier(name) => Some(name),
+            GeneratedBodyShape::ReturnExpression(_) => None,
+            GeneratedBodyShape::BoundExpressionReturn { value_name, .. }
+            | GeneratedBodyShape::AssignedExpressionReturn { value_name, .. }
+            | GeneratedBodyShape::ZeroDependencyMemoizedReturn { value_name, .. }
+            | GeneratedBodyShape::SingleDependencyMemoizedReturn { value_name, .. }
+            | GeneratedBodyShape::MultiDependencyMemoizedReturn { value_name, .. }
+            | GeneratedBodyShape::SingleSlotMemoizedReturn { value_name, .. } => Some(value_name),
+            GeneratedBodyShape::AliasedReturn { alias_name, .. } => Some(alias_name),
+        }
+    }
+
     fn binding_identifier_name(pattern: &ast::BindingPattern<'_>) -> Option<String> {
         match pattern {
             ast::BindingPattern::BindingIdentifier(identifier) => Some(identifier.name.to_string()),
@@ -1036,6 +1057,36 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             continue;
         };
         let statements = &function_body.statements;
+
+        if statements.len() >= 2
+            && let Some(ast::Statement::VariableDeclaration(alias_decl)) =
+                statements.get(statements.len() - 2)
+            && alias_decl.declarations.len() == 1
+        {
+            let alias_decl = &alias_decl.declarations[0];
+            if let Some(alias_name) = binding_identifier_name(&alias_decl.id)
+                && let Some(init) = alias_decl.init.as_ref()
+                && let Some(source_name) = expression_identifier_name(init).map(str::to_string)
+                && let ast::Statement::ReturnStatement(return_stmt) =
+                    &statements[statements.len() - 1]
+                && return_stmt
+                    .argument
+                    .as_ref()
+                    .is_some_and(|argument| expression_is_identifier(argument, &alias_name))
+            {
+                let prefix_source =
+                    codegen_statements_with_flow_cast_restore(&statements[..statements.len() - 2]);
+                let inner_shape = analyze_generated_body_shape(&prefix_source);
+                if shape_returned_identifier(&inner_shape).is_some_and(|name| name == source_name) {
+                    return GeneratedBodyShape::AliasedReturn {
+                        alias_name,
+                        alias_kind: alias_decl.kind,
+                        source_name,
+                        inner: Box::new(inner_shape),
+                    };
+                }
+            }
+        }
 
         if let [ast::Statement::ReturnStatement(return_stmt)] = statements.as_slice()
             && let Some(argument) = return_stmt.argument.as_ref()
@@ -22577,6 +22628,60 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                     ),
                 ]),
             ))
+        }
+        GeneratedBodyShape::AliasedReturn {
+            alias_name,
+            alias_kind,
+            source_name,
+            inner,
+        } => {
+            let inner_spec = FunctionBodyRenderSpec {
+                params: spec.params,
+                param_names: spec.param_names,
+                body_source: spec.body_source,
+                body_shape: inner.as_ref(),
+                directives: spec.directives,
+                cache_prologue: spec.cache_prologue,
+                needs_function_hook_guard_wrapper: spec.needs_function_hook_guard_wrapper,
+                is_async: spec.is_async,
+                is_generator: spec.is_generator,
+            };
+            let mut body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder,
+                allocator,
+                &inner_spec,
+            )?;
+            let last = body.statements.pop()?;
+            let ast::Statement::ReturnStatement(return_stmt) = last else {
+                return None;
+            };
+            let argument = return_stmt.argument.as_ref()?;
+            let ast::Expression::Identifier(identifier) = argument.without_parentheses() else {
+                return None;
+            };
+            if identifier.name.as_str() != source_name {
+                return None;
+            }
+            body.statements.push(ast::Statement::VariableDeclaration(
+                builder.alloc_variable_declaration(
+                    SPAN,
+                    *alias_kind,
+                    builder.vec1(builder.variable_declarator(
+                        SPAN,
+                        *alias_kind,
+                        builder.binding_pattern_binding_identifier(SPAN, builder.ident(alias_name)),
+                        NONE,
+                        Some(builder.expression_identifier(SPAN, builder.ident(source_name))),
+                        false,
+                    )),
+                    false,
+                ),
+            ));
+            body.statements.push(builder.statement_return(
+                SPAN,
+                Some(builder.expression_identifier(SPAN, builder.ident(alias_name))),
+            ));
+            Some(body)
         }
         GeneratedBodyShape::SingleSlotMemoizedReturn {
             value_name,

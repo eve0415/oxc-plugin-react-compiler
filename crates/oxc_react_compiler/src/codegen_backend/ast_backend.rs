@@ -3274,6 +3274,54 @@ fn try_build_function_body_from_shape<'a>(
                 ]),
             ))
         }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::AliasedReturn {
+            alias_name,
+            alias_kind,
+            source_name,
+            inner,
+        } => {
+            let mut body = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                inner.as_ref(),
+                cache_prologue,
+            )?;
+            let last = body.statements.pop()?;
+            let ast::Statement::ReturnStatement(return_stmt) = last else {
+                return None;
+            };
+            let argument = return_stmt.argument.as_ref()?;
+            let ast::Expression::Identifier(identifier) = argument.without_parentheses() else {
+                return None;
+            };
+            if identifier.name.as_str() != source_name {
+                return None;
+            }
+            body.statements.push(ast::Statement::VariableDeclaration(
+                builder.alloc_variable_declaration(
+                    SPAN,
+                    *alias_kind,
+                    builder.vec1(builder.variable_declarator(
+                        SPAN,
+                        *alias_kind,
+                        builder.binding_pattern_binding_identifier(
+                            SPAN,
+                            builder.ident(alias_name),
+                        ),
+                        NONE,
+                        Some(builder.expression_identifier(SPAN, builder.ident(source_name))),
+                        false,
+                    )),
+                    false,
+                ),
+            ));
+            body.statements.push(builder.statement_return(
+                SPAN,
+                Some(builder.expression_identifier(SPAN, builder.ident(alias_name))),
+            ));
+            Some(body)
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
             value_name,
             value_kind,
@@ -7188,6 +7236,57 @@ function Component(props) {
         assert!(rewritten.contains("let value;"));
         assert!(rewritten.contains("value = [props.left, props.right];"));
         assert!(rewritten.contains("return value;"));
+    }
+
+    #[test]
+    fn builds_aliased_return_body_from_shape_without_generated_source() {
+        let source = "function Foo(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "let t0; if ($[0] !== props.items) { t0 = props.items.map(_temp); $[0] = props.items; $[1] = t0; } else { t0 = $[1]; } const mapped = t0; return mapped;",
+            &["props"],
+            false,
+        );
+        compiled_function.generated_body = None;
+        compiled_function.generated_body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::AliasedReturn {
+                alias_name: "mapped".to_string(),
+                alias_kind: ast::VariableDeclarationKind::Const,
+                source_name: "t0".to_string(),
+                inner: Box::new(
+                    crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleDependencyMemoizedReturn {
+                        value_name: "t0".to_string(),
+                        value_kind: ast::VariableDeclarationKind::Let,
+                        dep_slot: 0,
+                        dep_expr: "props.items".to_string(),
+                        value_slot: 1,
+                        memoized_expr: "props.items.map(_temp)".to_string(),
+                    },
+                ),
+            };
+        compiled_function.needs_cache_import = true;
+        compiled_function.cache_prologue =
+            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+                binding_name: "$".to_string(),
+                size: 2,
+                fast_refresh: None,
+            });
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("const mapped = t0;"));
+        assert!(rewritten.contains("return mapped;"));
     }
 
     #[test]

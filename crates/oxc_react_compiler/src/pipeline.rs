@@ -1257,6 +1257,20 @@ fn codegen_outlined_function(
                 }
                 *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::AliasedReturn {
+                alias_name,
+                source_name,
+                inner,
+                ..
+            } => {
+                if alias_name == from {
+                    *alias_name = to.to_string();
+                }
+                if source_name == from {
+                    *source_name = to.to_string();
+                }
+                rename_generated_body_shape(inner.as_mut(), from, to);
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
                 value_name,
                 temp_name,
