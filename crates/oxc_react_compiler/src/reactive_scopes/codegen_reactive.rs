@@ -15220,7 +15220,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             ..
         } => {
             let expr = render_jsx_expression_ast(cx, tag, props, children)
-                .unwrap_or_else(|| codegen_jsx(cx, tag, props, children));
+                .expect("generated jsx element should parse");
             ExprValue::primary(expr)
         }
         InstructionValue::JsxFragment { children, .. } => {
@@ -18920,137 +18920,6 @@ fn should_break_optional_call_args(rendered_args: &[String]) -> bool {
 // ---- JSX codegen ----
 const SINGLE_CHILD_FBT_TAGS: &[&str] = &["fbt:param", "fbs:param"];
 
-fn codegen_jsx(
-    cx: &mut Context,
-    tag: &JsxTag,
-    props: &[JsxAttribute],
-    children: &Option<Vec<Place>>,
-) -> String {
-    let tag_name = match tag {
-        JsxTag::BuiltinTag(name) => name.clone(),
-        JsxTag::Component(place) => codegen_place_to_expression(cx, place),
-        JsxTag::Fragment => {
-            return render_jsx_fragment_ast(cx, children.as_deref().unwrap_or(&[]))
-                .expect("generated jsx fragment should parse")
-        }
-    };
-
-    let attrs: Vec<String> = props
-        .iter()
-        .map(|attr| codegen_jsx_attribute(cx, attr))
-        .collect();
-    let attrs_str = if attrs.is_empty() {
-        String::new()
-    } else {
-        format!(" {}", attrs.join(" "))
-    };
-    let single_child_fbt_tag = SINGLE_CHILD_FBT_TAGS.contains(&tag_name.as_str());
-
-    if let Some(children) = children {
-        if children.is_empty() {
-            format!("<{}{} />", tag_name, attrs_str)
-        } else {
-            let child_strs: Vec<String> = if single_child_fbt_tag {
-                children
-                    .iter()
-                    .map(|c| codegen_jsx_fbt_child(cx, c))
-                    .collect()
-            } else {
-                children.iter().map(|c| codegen_jsx_child(cx, c)).collect()
-            };
-            format!(
-                "<{}{}>{}</{}>",
-                tag_name,
-                attrs_str,
-                child_strs.join(""),
-                tag_name
-            )
-        }
-    } else {
-        format!("<{}{} />", tag_name, attrs_str)
-    }
-}
-
-fn codegen_jsx_attribute(cx: &mut Context, attr: &JsxAttribute) -> String {
-    match attr {
-        JsxAttribute::Attribute { name, place } => {
-            let mut val = codegen_place_to_expression(cx, place);
-            val = val.trim().to_string();
-            if val.starts_with('"') && val.ends_with('"') {
-                let inner = &val[1..val.len() - 1];
-                let is_fbt_operand = cx.fbt_operands.contains(&place.identifier.id);
-                if jsx_attr_needs_expression_container(inner) && !is_fbt_operand {
-                    let unicode_escaped = unicode_escape_non_ascii(inner);
-                    format!("{}={{\"{}\"}}", name, unicode_escaped)
-                } else {
-                    if is_fbt_operand {
-                        let raw_inner = &val[1..val.len() - 1];
-                        if raw_inner.contains("\\\"") {
-                            // Keep JSX attr form for fbt:param names, but rewrite escaped
-                            // quotes to HTML entities so Babel/fbt can parse and transform.
-                            let html_escaped = raw_inner.replace("\\\"", "&quot;");
-                            let unicode_escaped = unicode_escape_non_ascii(&html_escaped);
-                            format!("{}=\"{}\"", name, unicode_escaped)
-                        } else {
-                            let fbt_val = val
-                                .replace("\\n", "\n")
-                                .replace("\\r", "\r")
-                                .replace("\\t", "\t");
-                            format!("{}={}", name, fbt_val)
-                        }
-                    } else {
-                        format!("{}={}", name, val)
-                    }
-                }
-            } else {
-                format!("{}={{{}}}", name, val)
-            }
-        }
-        JsxAttribute::SpreadAttribute { argument } => {
-            format!("{{...{}}}", codegen_place_to_expression(cx, argument))
-        }
-    }
-}
-
-fn codegen_jsx_child(cx: &mut Context, place: &Place) -> String {
-    let ev = codegen_place_expr_value(cx, place);
-    if ev.expr.starts_with('<') {
-        ev.expr
-    } else if ev.expr.starts_with('"') && ev.expr.ends_with('"') {
-        let inner = &ev.expr[1..ev.expr.len() - 1];
-        if ev.kind == ExprKind::JsxText {
-            // JSXText: raw text unless contains <>&{}
-            if jsx_text_needs_expression_container(inner) {
-                let unicode_escaped = unicode_escape_non_ascii(inner);
-                format!("{{\"{}\"}}", unicode_escaped)
-            } else {
-                inner.to_string()
-            }
-        } else {
-            // Non-JSXText string -> expression container
-            let unicode_escaped = unicode_escape_non_ascii(inner);
-            format!("{{\"{}\"}}", unicode_escaped)
-        }
-    } else {
-        format!("{{{}}}", ev.expr.trim())
-    }
-}
-
-fn codegen_jsx_fbt_child(cx: &mut Context, place: &Place) -> String {
-    let ev = codegen_place_expr_value(cx, place);
-    if ev.kind == ExprKind::JsxText && ev.expr.starts_with('"') && ev.expr.ends_with('"') {
-        return ev.expr[1..ev.expr.len() - 1].to_string();
-    }
-    if ev.expr.starts_with('<') {
-        // Upstream treats JSX fragments in fbt:param as expression containers.
-        if ev.expr.starts_with("<>") {
-            return format!("{{{}}}", ev.expr);
-        }
-        return ev.expr;
-    }
-    format!("{{{}}}", ev.expr.trim())
-}
-
 fn render_jsx_expression_ast(
     cx: &mut Context,
     tag: &JsxTag,
@@ -21663,25 +21532,6 @@ fn jsx_text_needs_expression_container(escaped_inner: &str) -> bool {
     escaped_inner
         .chars()
         .any(|c| matches!(c, '<' | '>' | '&' | '{' | '}'))
-}
-
-fn unicode_escape_non_ascii(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    for c in s.chars() {
-        if c.is_ascii() {
-            result.push(c);
-        } else {
-            let code = c as u32;
-            if code > 0xFFFF {
-                let high = ((code - 0x10000) >> 10) + 0xD800;
-                let low = ((code - 0x10000) & 0x3FF) + 0xDC00;
-                result.push_str(&format!("\\u{:04X}\\u{:04X}", high, low));
-            } else {
-                result.push_str(&format!("\\u{:04X}", code));
-            }
-        }
-    }
-    result
 }
 
 #[cfg(test)]
