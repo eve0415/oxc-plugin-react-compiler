@@ -15979,20 +15979,56 @@ fn render_ts_type_cast_expression_ast(
     type_annotation: &str,
     kind: TypeAnnotationKind,
 ) -> Option<String> {
-    let expression = match kind {
-        TypeAnnotationKind::As => format!("{value_expr} as {type_annotation}"),
-        TypeAnnotationKind::Satisfies => format!("{value_expr} satisfies {type_annotation}"),
-        TypeAnnotationKind::Cast => {
-            format!("{FLOW_CAST_MARKER_HELPER}<{type_annotation}>({value_expr})")
-        }
-    };
+    if kind == TypeAnnotationKind::Cast {
+        let expression = format!("{FLOW_CAST_MARKER_HELPER}<{type_annotation}>({value_expr})");
+        let allocator = Allocator::default();
+        let expression = parse_expression_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            &expression,
+        )
+        .ok()?;
+        return Some(strip_top_level_parenthesized_expression(
+            restore_flow_cast_marker_calls(&codegen_expression_with_flow_cast_restore(&expression)),
+        ));
+    }
+
     let allocator = Allocator::default();
-    let expression =
-        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), &expression)
-            .ok()?;
+    let builder = AstBuilder::new(&allocator);
+    let value = parse_rendered_expression_ast(&allocator, value_expr)?;
+    let type_annotation = parse_ts_type_source(&allocator, type_annotation)?;
+    let expression = match kind {
+        TypeAnnotationKind::As => builder.expression_ts_as(SPAN, value, type_annotation),
+        TypeAnnotationKind::Satisfies => builder.expression_ts_satisfies(SPAN, value, type_annotation),
+        TypeAnnotationKind::Cast => unreachable!(),
+    };
     Some(strip_top_level_parenthesized_expression(
-        restore_flow_cast_marker_calls(&codegen_expression_with_flow_cast_restore(&expression)),
+        codegen_expression_with_flow_cast_restore(&expression),
     ))
+}
+
+fn parse_ts_type_source<'a>(allocator: &'a Allocator, type_source: &str) -> Option<ast::TSType<'a>> {
+    let wrapper = format!("const __codex_type: {type_source} = null;");
+    let parsed = Parser::new(
+        allocator,
+        allocator.alloc_str(&wrapper),
+        SourceType::ts().with_jsx(true),
+    )
+    .parse();
+    if parsed.panicked || !parsed.errors.is_empty() {
+        return None;
+    }
+    let ast::Statement::VariableDeclaration(declaration) = parsed.program.body.into_iter().next()?
+    else {
+        return None;
+    };
+    declaration
+        .unbox()
+        .declarations
+        .into_iter()
+        .next()?
+        .type_annotation
+        .map(|annotation| annotation.unbox().type_annotation)
 }
 
 fn render_unary_expression_ast(operator: UnaryOperator, value: &str) -> Option<String> {
