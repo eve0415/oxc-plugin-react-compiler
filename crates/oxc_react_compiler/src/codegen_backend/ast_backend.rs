@@ -2949,6 +2949,35 @@ fn try_build_compiled_function_body_from_shape<'a>(
     )
 }
 
+fn build_generated_binding_statements<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    bindings: &[crate::reactive_scopes::codegen_reactive::GeneratedBinding],
+) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
+    let mut statements = builder.vec();
+    for binding in bindings {
+        let expression =
+            parse_expression_source(allocator, source_type, &binding.expression).ok()?;
+        statements.push(ast::Statement::VariableDeclaration(
+            builder.alloc_variable_declaration(
+                SPAN,
+                binding.kind,
+                builder.vec1(builder.variable_declarator(
+                    SPAN,
+                    binding.kind,
+                    builder.binding_pattern_binding_identifier(SPAN, builder.ident(&binding.name)),
+                    NONE,
+                    Some(expression),
+                    false,
+                )),
+                false,
+            ),
+        ));
+    }
+    Some(statements)
+}
+
 fn try_build_function_body_from_shape<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
@@ -3052,10 +3081,28 @@ fn try_build_function_body_from_shape<'a>(
             value_name,
             value_kind,
             value_slot,
+            memoized_bindings,
             memoized_expr,
         } => {
             let cache_binding_name = &cache_prologue?.binding_name;
             let memoized_expr = parse_expression_source(allocator, source_type, memoized_expr).ok()?;
+            let mut consequent = build_generated_binding_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_bindings,
+            )?;
+            consequent.push(build_identifier_assignment_statement(
+                builder,
+                value_name,
+                memoized_expr,
+            ));
+            consequent.push(build_cache_slot_assignment_statement(
+                builder,
+                cache_binding_name,
+                *value_slot,
+                builder.expression_identifier(SPAN, builder.ident(value_name)),
+            ));
             Some(builder.function_body(
                 SPAN,
                 builder.vec(),
@@ -3086,19 +3133,7 @@ fn try_build_function_body_from_shape<'a>(
                         ),
                         builder.statement_block(
                             SPAN,
-                            builder.vec_from_iter([
-                                build_identifier_assignment_statement(
-                                    builder,
-                                    value_name,
-                                    memoized_expr,
-                                ),
-                                build_cache_slot_assignment_statement(
-                                    builder,
-                                    cache_binding_name,
-                                    *value_slot,
-                                    builder.expression_identifier(SPAN, builder.ident(value_name)),
-                                ),
-                            ]),
+                            consequent,
                         ),
                         Some(builder.statement_block(
                             SPAN,
@@ -3122,11 +3157,35 @@ fn try_build_function_body_from_shape<'a>(
             dep_slot,
             dep_expr,
             value_slot,
+            memoized_bindings,
             memoized_expr,
         } => {
             let cache_binding_name = &cache_prologue?.binding_name;
             let dep_expr = parse_expression_source(allocator, source_type, dep_expr).ok()?;
             let memoized_expr = parse_expression_source(allocator, source_type, memoized_expr).ok()?;
+            let mut consequent = build_generated_binding_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_bindings,
+            )?;
+            consequent.push(build_identifier_assignment_statement(
+                builder,
+                value_name,
+                memoized_expr,
+            ));
+            consequent.push(build_cache_slot_assignment_statement(
+                builder,
+                cache_binding_name,
+                *dep_slot,
+                dep_expr.clone_in(allocator),
+            ));
+            consequent.push(build_cache_slot_assignment_statement(
+                builder,
+                cache_binding_name,
+                *value_slot,
+                builder.expression_identifier(SPAN, builder.ident(value_name)),
+            ));
             Some(builder.function_body(
                 SPAN,
                 builder.vec(),
@@ -3157,25 +3216,7 @@ fn try_build_function_body_from_shape<'a>(
                         ),
                         builder.statement_block(
                             SPAN,
-                            builder.vec_from_iter([
-                                build_identifier_assignment_statement(
-                                    builder,
-                                    value_name,
-                                    memoized_expr,
-                                ),
-                                build_cache_slot_assignment_statement(
-                                    builder,
-                                    cache_binding_name,
-                                    *dep_slot,
-                                    dep_expr,
-                                ),
-                                build_cache_slot_assignment_statement(
-                                    builder,
-                                    cache_binding_name,
-                                    *value_slot,
-                                    builder.expression_identifier(SPAN, builder.ident(value_name)),
-                                ),
-                            ]),
+                            consequent,
                         ),
                         Some(builder.statement_block(
                             SPAN,
@@ -3198,6 +3239,7 @@ fn try_build_function_body_from_shape<'a>(
             value_kind,
             deps,
             value_slot,
+            memoized_bindings,
             memoized_expr,
         } => {
             let cache_binding_name = &cache_prologue?.binding_name;
@@ -3222,7 +3264,13 @@ fn try_build_function_body_from_shape<'a>(
             for guard in dep_guards {
                 test = builder.expression_logical(SPAN, test, LogicalOperator::Or, guard?);
             }
-            let mut consequent = builder.vec1(build_identifier_assignment_statement(
+            let mut consequent = build_generated_binding_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_bindings,
+            )?;
+            consequent.push(build_identifier_assignment_statement(
                 builder,
                 value_name,
                 memoized_expr,
@@ -3364,6 +3412,7 @@ fn try_build_function_body_from_shape<'a>(
             value_name,
             value_kind,
             temp_name,
+            memoized_bindings,
             memoized_expr,
         } => {
             let cache_binding_name = &cache_prologue?.binding_name;
@@ -3380,15 +3429,23 @@ fn try_build_function_body_from_shape<'a>(
                 builder.expression_identifier(SPAN, builder.ident(memo_name)),
                 builder.expression_identifier(SPAN, builder.ident(temp_name)),
             );
-            let consequent = builder.vec_from_iter([
-                build_identifier_assignment_statement(builder, memo_name, memo_expr),
-                build_cache_slot_assignment_statement(
-                    builder,
-                    cache_binding_name,
-                    0,
-                    builder.expression_identifier(SPAN, builder.ident(memo_name)),
-                ),
-            ]);
+            let mut consequent = build_generated_binding_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_bindings,
+            )?;
+            consequent.push(build_identifier_assignment_statement(
+                builder,
+                memo_name,
+                memo_expr,
+            ));
+            consequent.push(build_cache_slot_assignment_statement(
+                builder,
+                cache_binding_name,
+                0,
+                builder.expression_identifier(SPAN, builder.ident(memo_name)),
+            ));
             let alternate = builder.vec1(build_identifier_assignment_statement(
                 builder,
                 memo_name,
@@ -7308,6 +7365,7 @@ function Component(props) {
                         dep_slot: 0,
                         dep_expr: "props.items".to_string(),
                         value_slot: 1,
+                        memoized_bindings: vec![],
                         memoized_expr: "props.items.map(_temp)".to_string(),
                     },
                 ),
@@ -7363,6 +7421,7 @@ function Component(props) {
                         dep_slot: 0,
                         dep_expr: "props.items".to_string(),
                         value_slot: 1,
+                        memoized_bindings: vec![],
                         memoized_expr: "props.items.map(f)".to_string(),
                     },
                 ),
@@ -7407,6 +7466,7 @@ function Component(props) {
                 value_name: "value".to_string(),
                 value_kind: ast::VariableDeclarationKind::Let,
                 value_slot: 0,
+                memoized_bindings: vec![],
                 memoized_expr: "[props.left, props.right]".to_string(),
             };
         compiled_function.needs_cache_import = true;
@@ -7453,6 +7513,7 @@ function Component(props) {
                 dep_slot: 0,
                 dep_expr: "props.items".to_string(),
                 value_slot: 1,
+                memoized_bindings: vec![],
                 memoized_expr: "props.items.map(_temp)".to_string(),
             };
         compiled_function.needs_cache_import = true;
@@ -7503,6 +7564,7 @@ function Component(props) {
                     (1, "props.right".to_string()),
                 ],
                 value_slot: 2,
+                memoized_bindings: vec![],
                 memoized_expr: "[props.left, props.right]".to_string(),
             };
         compiled_function.needs_cache_import = true;
@@ -7547,6 +7609,7 @@ function Component(props) {
                 value_name: "value".to_string(),
                 value_kind: ast::VariableDeclarationKind::Let,
                 temp_name: "t0".to_string(),
+                memoized_bindings: vec![],
                 memoized_expr: "props.value".to_string(),
             };
         compiled_function.needs_cache_import = true;

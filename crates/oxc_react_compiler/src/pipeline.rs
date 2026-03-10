@@ -1223,17 +1223,25 @@ fn codegen_outlined_function(
             }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ZeroDependencyMemoizedReturn {
                 value_name,
+                memoized_bindings,
                 memoized_expr,
                 ..
             } => {
                 if value_name == from {
                     *value_name = to.to_string();
                 }
+                for binding in memoized_bindings {
+                    if binding.name == from {
+                        binding.name = to.to_string();
+                    }
+                    binding.expression = replace_identifier_tokens(&binding.expression, from, to);
+                }
                 *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
             }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleDependencyMemoizedReturn {
                 value_name,
                 dep_expr,
+                memoized_bindings,
                 memoized_expr,
                 ..
             } => {
@@ -1241,11 +1249,18 @@ fn codegen_outlined_function(
                     *value_name = to.to_string();
                 }
                 *dep_expr = replace_identifier_tokens(dep_expr, from, to);
+                for binding in memoized_bindings {
+                    if binding.name == from {
+                        binding.name = to.to_string();
+                    }
+                    binding.expression = replace_identifier_tokens(&binding.expression, from, to);
+                }
                 *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
             }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MultiDependencyMemoizedReturn {
                 value_name,
                 deps,
+                memoized_bindings,
                 memoized_expr,
                 ..
             } => {
@@ -1254,6 +1269,12 @@ fn codegen_outlined_function(
                 }
                 for (_, dep_expr) in deps {
                     *dep_expr = replace_identifier_tokens(dep_expr, from, to);
+                }
+                for binding in memoized_bindings {
+                    if binding.name == from {
+                        binding.name = to.to_string();
+                    }
+                    binding.expression = replace_identifier_tokens(&binding.expression, from, to);
                 }
                 *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
             }
@@ -1286,6 +1307,7 @@ fn codegen_outlined_function(
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
                 value_name,
                 temp_name,
+                memoized_bindings,
                 memoized_expr,
                 ..
             } => {
@@ -1294,6 +1316,12 @@ fn codegen_outlined_function(
                 }
                 if temp_name == from {
                     *temp_name = to.to_string();
+                }
+                for binding in memoized_bindings {
+                    if binding.name == from {
+                        binding.name = to.to_string();
+                    }
+                    binding.expression = replace_identifier_tokens(&binding.expression, from, to);
                 }
                 *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
             }

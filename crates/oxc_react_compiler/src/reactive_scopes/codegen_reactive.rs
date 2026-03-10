@@ -170,6 +170,7 @@ pub enum GeneratedBodyShape {
         value_name: String,
         value_kind: ast::VariableDeclarationKind,
         value_slot: u32,
+        memoized_bindings: Vec<GeneratedBinding>,
         memoized_expr: String,
     },
     SingleDependencyMemoizedReturn {
@@ -178,6 +179,7 @@ pub enum GeneratedBodyShape {
         dep_slot: u32,
         dep_expr: String,
         value_slot: u32,
+        memoized_bindings: Vec<GeneratedBinding>,
         memoized_expr: String,
     },
     MultiDependencyMemoizedReturn {
@@ -185,6 +187,7 @@ pub enum GeneratedBodyShape {
         value_kind: ast::VariableDeclarationKind,
         deps: Vec<(u32, String)>,
         value_slot: u32,
+        memoized_bindings: Vec<GeneratedBinding>,
         memoized_expr: String,
     },
     AliasedReturn {
@@ -201,6 +204,7 @@ pub enum GeneratedBodyShape {
         value_name: String,
         value_kind: ast::VariableDeclarationKind,
         temp_name: String,
+        memoized_bindings: Vec<GeneratedBinding>,
         memoized_expr: String,
     },
 }
@@ -1057,6 +1061,35 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
         (expression_numeric_slot(size) == Some(1)).then_some(cache_name)
     }
 
+    fn collect_leading_initialized_bindings(
+        statements: &[ast::Statement<'_>],
+    ) -> (Vec<GeneratedBinding>, usize) {
+        let mut bindings = Vec::new();
+        let mut prefix_len = 0usize;
+        for statement in statements {
+            let ast::Statement::VariableDeclaration(declaration) = statement else {
+                break;
+            };
+            if declaration.declarations.len() != 1 {
+                break;
+            }
+            let declarator = &declaration.declarations[0];
+            let Some(name) = binding_identifier_name(&declarator.id) else {
+                break;
+            };
+            let Some(init) = declarator.init.as_ref() else {
+                break;
+            };
+            bindings.push(GeneratedBinding {
+                kind: declaration.kind,
+                name,
+                expression: codegen_expression_with_flow_cast_restore(init),
+            });
+            prefix_len += 1;
+        }
+        (bindings, prefix_len)
+    }
+
     for source_type in [
         SourceType::mjs().with_jsx(true),
         SourceType::ts().with_jsx(true),
@@ -1088,7 +1121,17 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             {
                 let prefix_source =
                     codegen_statements_with_flow_cast_restore(&statements[..statements.len() - 2]);
-                let inner_shape = analyze_generated_body_shape(&prefix_source);
+                let inner_shape = {
+                    let direct_shape = analyze_generated_body_shape(&prefix_source);
+                    if shape_returned_identifier(&direct_shape)
+                        .is_some_and(|name| name == source_name)
+                    {
+                        direct_shape
+                    } else {
+                        let synthetic_return = format!("{prefix_source}\nreturn {source_name};");
+                        analyze_generated_body_shape(&synthetic_return)
+                    }
+                };
                 if shape_returned_identifier(&inner_shape).is_some_and(|name| name == source_name) {
                     return GeneratedBodyShape::AliasedReturn {
                         alias_name,
@@ -1195,17 +1238,21 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             if test.operator == AstBinaryOperator::StrictEquality
                 && let Some((cache_var, value_slot)) = expression_cache_access(&test.left)
                 && expression_is_symbol_for(&test.right, MEMO_CACHE_SENTINEL)
-                && consequent_block.body.len() == 2
             {
+                let (memoized_bindings, binding_prefix_len) =
+                    collect_leading_initialized_bindings(&consequent_block.body);
+                if consequent_block.body.len() != binding_prefix_len + 2 {
+                    continue;
+                }
                 let Some(memoized_expr) = statement_assigns_identifier_to_expression(
-                    &consequent_block.body[0],
+                    &consequent_block.body[binding_prefix_len],
                     &value_name,
                 )
                 .map(codegen_expression_with_flow_cast_restore) else {
                     continue;
                 };
                 if !statement_assigns_cache_slot_from_identifier(
-                    &consequent_block.body[1],
+                    &consequent_block.body[binding_prefix_len + 1],
                     cache_var,
                     value_slot,
                     &value_name,
@@ -1222,15 +1269,20 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
                     value_name,
                     value_kind: value_decl.kind,
                     value_slot,
+                    memoized_bindings,
                     memoized_expr,
                 };
             }
             if let Some(dependency_guards) = collect_dependency_guards(&if_statement.test)
                 && dependency_guards.len() >= 2
-                && consequent_block.body.len() == dependency_guards.len() + 2
             {
+                let (memoized_bindings, binding_prefix_len) =
+                    collect_leading_initialized_bindings(&consequent_block.body);
+                if consequent_block.body.len() != binding_prefix_len + dependency_guards.len() + 2 {
+                    continue;
+                }
                 let Some(memoized_expr) = statement_assigns_identifier_to_expression(
-                    &consequent_block.body[0],
+                    &consequent_block.body[binding_prefix_len],
                     &value_name,
                 )
                 .map(codegen_expression_with_flow_cast_restore) else {
@@ -1244,9 +1296,9 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
                 for (index, (expected_cache_var, dep_slot, dep_expr)) in
                     dependency_guards.iter().enumerate()
                 {
-                    let Some((dep_target, dep_value)) =
-                        assignment_statement_parts(&consequent_block.body[index + 1])
-                    else {
+                    let Some((dep_target, dep_value)) = assignment_statement_parts(
+                        &consequent_block.body[binding_prefix_len + index + 1],
+                    ) else {
                         guards_match = false;
                         break;
                     };
@@ -1262,9 +1314,9 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
                 if !guards_match {
                     continue;
                 }
-                let Some((value_target, value_value)) =
-                    assignment_statement_parts(&consequent_block.body[dependency_guards.len() + 1])
-                else {
+                let Some((value_target, value_value)) = assignment_statement_parts(
+                    &consequent_block.body[binding_prefix_len + dependency_guards.len() + 1],
+                ) else {
                     continue;
                 };
                 let Some((assigned_cache_var, value_slot)) =
@@ -1289,28 +1341,32 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
                     value_kind: value_decl.kind,
                     deps: dep_pairs,
                     value_slot,
+                    memoized_bindings,
                     memoized_expr,
                 };
             }
 
-            if consequent_block.body.len() != 3 {
+            if test.operator != AstBinaryOperator::StrictInequality {
                 continue;
             }
-            if test.operator != AstBinaryOperator::StrictInequality {
+            let (memoized_bindings, binding_prefix_len) =
+                collect_leading_initialized_bindings(&consequent_block.body);
+            if consequent_block.body.len() != binding_prefix_len + 3 {
                 continue;
             }
             let Some((cache_var, dep_slot)) = expression_cache_access(&test.left) else {
                 continue;
             };
             let dep_expr = codegen_expression_with_flow_cast_restore(&test.right);
-            let Some(memoized_expr) =
-                statement_assigns_identifier_to_expression(&consequent_block.body[0], &value_name)
-                    .map(codegen_expression_with_flow_cast_restore)
-            else {
+            let Some(memoized_expr) = statement_assigns_identifier_to_expression(
+                &consequent_block.body[binding_prefix_len],
+                &value_name,
+            )
+            .map(codegen_expression_with_flow_cast_restore) else {
                 continue;
             };
             let Some((dep_target, dep_value)) =
-                assignment_statement_parts(&consequent_block.body[1])
+                assignment_statement_parts(&consequent_block.body[binding_prefix_len + 1])
             else {
                 continue;
             };
@@ -1320,7 +1376,7 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
                 continue;
             }
             let Some((value_target, value_value)) =
-                assignment_statement_parts(&consequent_block.body[2])
+                assignment_statement_parts(&consequent_block.body[binding_prefix_len + 2])
             else {
                 continue;
             };
@@ -1349,33 +1405,12 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
                 dep_slot,
                 dep_expr,
                 value_slot,
+                memoized_bindings,
                 memoized_expr,
             };
         }
 
-        let mut prefixed_bindings = Vec::new();
-        let mut prefix_len = 0usize;
-        for statement in statements {
-            let ast::Statement::VariableDeclaration(declaration) = statement else {
-                break;
-            };
-            if declaration.declarations.len() != 1 {
-                break;
-            }
-            let declarator = &declaration.declarations[0];
-            let Some(name) = binding_identifier_name(&declarator.id) else {
-                break;
-            };
-            let Some(init) = declarator.init.as_ref() else {
-                break;
-            };
-            prefixed_bindings.push(GeneratedBinding {
-                kind: declaration.kind,
-                name,
-                expression: codegen_expression_with_flow_cast_restore(init),
-            });
-            prefix_len += 1;
-        }
+        let (prefixed_bindings, prefix_len) = collect_leading_initialized_bindings(statements);
         if prefix_len > 0 && prefix_len < statements.len() {
             let suffix_source =
                 codegen_statements_with_flow_cast_restore(&statements[prefix_len..]);
@@ -1431,18 +1466,22 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
         let ast::Statement::BlockStatement(alternate_block) = alternate else {
             continue;
         };
-        if consequent_block.body.len() != 2 || alternate_block.body.len() != 1 {
+        let (memoized_bindings, binding_prefix_len) =
+            collect_leading_initialized_bindings(&consequent_block.body);
+        if consequent_block.body.len() != binding_prefix_len + 2 || alternate_block.body.len() != 1
+        {
             continue;
         }
 
-        let Some(memoized_expr) =
-            statement_assigns_identifier_to_expression(&consequent_block.body[0], &memo_var)
-                .map(codegen_expression_with_flow_cast_restore)
-        else {
+        let Some(memoized_expr) = statement_assigns_identifier_to_expression(
+            &consequent_block.body[binding_prefix_len],
+            &memo_var,
+        )
+        .map(codegen_expression_with_flow_cast_restore) else {
             continue;
         };
         if !statement_assigns_cache_slot_from_identifier(
-            &consequent_block.body[1],
+            &consequent_block.body[binding_prefix_len + 1],
             &cache_var,
             0,
             &memo_var,
@@ -1504,6 +1543,7 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             value_name,
             value_kind: value_decl.kind,
             temp_name,
+            memoized_bindings,
             memoized_expr,
         };
     }
@@ -22213,6 +22253,38 @@ fn codegen_statements_with_flow_cast_restore<'a>(statements: &[ast::Statement<'a
     restore_flow_cast_marker_calls(&codegen_statements_with_oxc(statements))
 }
 
+fn build_generated_binding_statements_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    bindings: &[GeneratedBinding],
+) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
+    let mut statements = builder.vec();
+    for binding in bindings {
+        let expression = parse_expression_for_ast_codegen(
+            allocator,
+            SourceType::mjs().with_jsx(true),
+            &binding.expression,
+        )
+        .ok()?;
+        statements.push(ast::Statement::VariableDeclaration(
+            builder.alloc_variable_declaration(
+                SPAN,
+                binding.kind,
+                builder.vec1(builder.variable_declarator(
+                    SPAN,
+                    binding.kind,
+                    builder.binding_pattern_binding_identifier(SPAN, builder.ident(&binding.name)),
+                    NONE,
+                    Some(expression),
+                    false,
+                )),
+                false,
+            ),
+        ));
+    }
+    Some(statements)
+}
+
 struct FunctionBodyRenderSpec<'a> {
     params: &'a [Argument],
     param_names: &'a [String],
@@ -22343,6 +22415,7 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             value_name,
             value_kind,
             value_slot,
+            memoized_bindings,
             memoized_expr,
         } => {
             let cache_binding_name = &spec.cache_prologue?.binding_name;
@@ -22352,6 +22425,24 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 memoized_expr,
             )
             .ok()?;
+            let mut consequent =
+                build_generated_binding_statements_ast(builder, allocator, memoized_bindings)?;
+            consequent.push(build_identifier_assignment_statement_ast_with_expression(
+                builder,
+                value_name,
+                memoized_expr,
+            ));
+            consequent.push(build_computed_member_assignment_statement_ast(
+                builder,
+                cache_binding_name,
+                builder.expression_numeric_literal(
+                    SPAN,
+                    *value_slot as f64,
+                    None,
+                    NumberBase::Decimal,
+                ),
+                builder.expression_identifier(SPAN, builder.ident(value_name)),
+            ));
             Some(builder.function_body(
                 SPAN,
                 builder.vec(),
@@ -22389,27 +22480,7 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                             AstBinaryOperator::StrictEquality,
                             build_symbol_for_call_expression_ast(builder, MEMO_CACHE_SENTINEL),
                         ),
-                        builder.statement_block(
-                            SPAN,
-                            builder.vec_from_iter([
-                                build_identifier_assignment_statement_ast_with_expression(
-                                    builder,
-                                    value_name,
-                                    memoized_expr,
-                                ),
-                                build_computed_member_assignment_statement_ast(
-                                    builder,
-                                    cache_binding_name,
-                                    builder.expression_numeric_literal(
-                                        SPAN,
-                                        *value_slot as f64,
-                                        None,
-                                        NumberBase::Decimal,
-                                    ),
-                                    builder.expression_identifier(SPAN, builder.ident(value_name)),
-                                ),
-                            ]),
-                        ),
+                        builder.statement_block(SPAN, consequent),
                         Some(builder.statement_block(
                             SPAN,
                             builder.vec1(
@@ -22443,6 +22514,7 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             dep_slot,
             dep_expr,
             value_slot,
+            memoized_bindings,
             memoized_expr,
         } => {
             let cache_binding_name = &spec.cache_prologue?.binding_name;
@@ -22458,6 +22530,35 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 memoized_expr,
             )
             .ok()?;
+            let mut consequent =
+                build_generated_binding_statements_ast(builder, allocator, memoized_bindings)?;
+            consequent.push(build_identifier_assignment_statement_ast_with_expression(
+                builder,
+                value_name,
+                memoized_expr,
+            ));
+            consequent.push(build_computed_member_assignment_statement_ast(
+                builder,
+                cache_binding_name,
+                builder.expression_numeric_literal(
+                    SPAN,
+                    *dep_slot as f64,
+                    None,
+                    NumberBase::Decimal,
+                ),
+                dep_expr.clone_in(allocator),
+            ));
+            consequent.push(build_computed_member_assignment_statement_ast(
+                builder,
+                cache_binding_name,
+                builder.expression_numeric_literal(
+                    SPAN,
+                    *value_slot as f64,
+                    None,
+                    NumberBase::Decimal,
+                ),
+                builder.expression_identifier(SPAN, builder.ident(value_name)),
+            ));
             Some(builder.function_body(
                 SPAN,
                 builder.vec(),
@@ -22495,38 +22596,7 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                             AstBinaryOperator::StrictInequality,
                             dep_expr.clone_in(allocator),
                         ),
-                        builder.statement_block(
-                            SPAN,
-                            builder.vec_from_iter([
-                                build_identifier_assignment_statement_ast_with_expression(
-                                    builder,
-                                    value_name,
-                                    memoized_expr,
-                                ),
-                                build_computed_member_assignment_statement_ast(
-                                    builder,
-                                    cache_binding_name,
-                                    builder.expression_numeric_literal(
-                                        SPAN,
-                                        *dep_slot as f64,
-                                        None,
-                                        NumberBase::Decimal,
-                                    ),
-                                    dep_expr,
-                                ),
-                                build_computed_member_assignment_statement_ast(
-                                    builder,
-                                    cache_binding_name,
-                                    builder.expression_numeric_literal(
-                                        SPAN,
-                                        *value_slot as f64,
-                                        None,
-                                        NumberBase::Decimal,
-                                    ),
-                                    builder.expression_identifier(SPAN, builder.ident(value_name)),
-                                ),
-                            ]),
-                        ),
+                        builder.statement_block(SPAN, consequent),
                         Some(builder.statement_block(
                             SPAN,
                             builder.vec1(
@@ -22559,6 +22629,7 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             value_kind,
             deps,
             value_slot,
+            memoized_bindings,
             memoized_expr,
         } => {
             let cache_binding_name = &spec.cache_prologue?.binding_name;
@@ -22608,11 +22679,12 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 test = builder.expression_logical(SPAN, test, AstLogicalOperator::Or, guard?);
             }
             let mut consequent =
-                builder.vec1(build_identifier_assignment_statement_ast_with_expression(
-                    builder,
-                    value_name,
-                    memoized_expr,
-                ));
+                build_generated_binding_statements_ast(builder, allocator, memoized_bindings)?;
+            consequent.push(build_identifier_assignment_statement_ast_with_expression(
+                builder,
+                value_name,
+                memoized_expr,
+            ));
             consequent.extend(dep_assignments);
             consequent.push(build_computed_member_assignment_statement_ast(
                 builder,
@@ -22782,6 +22854,7 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             value_name,
             value_kind,
             temp_name,
+            memoized_bindings,
             memoized_expr,
         } => {
             let cache_binding_name = &spec.cache_prologue?.binding_name;
@@ -22803,17 +22876,17 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 builder.expression_identifier(SPAN, builder.ident(memo_name)),
                 builder.expression_identifier(SPAN, builder.ident(temp_name)),
             );
-            let consequent = builder.vec_from_iter([
-                build_identifier_assignment_statement_ast_with_expression(
-                    builder, memo_name, memo_expr,
-                ),
-                build_computed_member_assignment_statement_ast(
-                    builder,
-                    cache_binding_name,
-                    builder.expression_numeric_literal(SPAN, 0.0, None, NumberBase::Decimal),
-                    builder.expression_identifier(SPAN, builder.ident(memo_name)),
-                ),
-            ]);
+            let mut consequent =
+                build_generated_binding_statements_ast(builder, allocator, memoized_bindings)?;
+            consequent.push(build_identifier_assignment_statement_ast_with_expression(
+                builder, memo_name, memo_expr,
+            ));
+            consequent.push(build_computed_member_assignment_statement_ast(
+                builder,
+                cache_binding_name,
+                builder.expression_numeric_literal(SPAN, 0.0, None, NumberBase::Decimal),
+                builder.expression_identifier(SPAN, builder.ident(memo_name)),
+            ));
             let alternate =
                 builder.vec1(build_identifier_assignment_statement_ast_with_expression(
                     builder,
