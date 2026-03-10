@@ -2858,9 +2858,12 @@ fn build_compiled_function_body<'a>(
         try_build_compiled_function_body_from_hir(builder, cf, state)
     {
         function_body
-    } else {
-        let body_source = cf.generated_body.clone()?;
+    } else if let Some(body_source) = cf.generated_body.as_ref() {
         parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?
+    } else if let Some(default_cache) = cf.synthesized_default_param_cache.as_ref() {
+        build_default_param_cache_seed_body(builder, default_cache)
+    } else {
+        return None;
     };
 
     normalize_use_fire_binding_temps_ast(builder, &mut function_body, cf);
@@ -2900,6 +2903,23 @@ fn try_build_compiled_function_body_from_hir<'a>(
     let hir_function = cf.hir_function.as_ref()?;
     let statements = super::hir_to_ast::try_lower_function_body_ast(builder, hir_function)?;
     Some(builder.function_body(SPAN, builder.vec(), statements))
+}
+
+fn build_default_param_cache_seed_body<'a>(
+    builder: AstBuilder<'a>,
+    default_cache: &SynthesizedDefaultParamCache,
+) -> ast::FunctionBody<'a> {
+    builder.function_body(
+        SPAN,
+        builder.vec(),
+        builder.vec1(builder.statement_return(
+            SPAN,
+            Some(builder.expression_identifier(
+                SPAN,
+                builder.ident(&default_cache.value_name),
+            )),
+        )),
+    )
 }
 
 pub(crate) fn normalize_compiled_body_for_hir_match(body_source: &str) -> String {
@@ -6531,6 +6551,7 @@ function Component(props) {
             temp_name: "t0".to_string(),
             value_expr: "props.value".to_string(),
         });
+        compiled_function.generated_body = None;
 
         let rewritten =
             rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
