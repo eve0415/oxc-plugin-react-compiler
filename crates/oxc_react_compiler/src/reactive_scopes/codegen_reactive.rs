@@ -984,7 +984,10 @@ fn render_hook_guarded_block_ast(body: &str, before: u8, after: u8) -> Option<St
             builder.vec1(build_hook_guard_call_statement_ast(builder, after)),
         )),
     );
-    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ))
 }
 
 fn render_hook_guarded_call_expression_ast(call_expr: &str) -> Option<String> {
@@ -1038,7 +1041,7 @@ fn render_hook_guarded_call_expression_ast(call_expr: &str) -> Option<String> {
     );
     let expression = builder.expression_call(SPAN, function, NONE, builder.vec(), false);
     Some(strip_top_level_parenthesized_expression(
-        codegen_expression_with_oxc(&expression),
+        codegen_expression_with_flow_cast_restore(&expression),
     ))
 }
 
@@ -15247,13 +15250,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                 type_annotation,
                 *type_annotation_kind,
             )
-            .unwrap_or_else(|| match type_annotation_kind {
-                TypeAnnotationKind::Cast => format!("({}: {})", value_expr, type_annotation),
-                TypeAnnotationKind::As => format!("{} as {}", value_expr, type_annotation),
-                TypeAnnotationKind::Satisfies => {
-                    format!("{} satisfies {}", value_expr, type_annotation)
-                }
-            });
+            .expect("generated type cast should parse");
             ExprValue::primary(expr)
         }
         InstructionValue::RegExpLiteral { pattern, flags, .. } => {
@@ -15648,7 +15645,7 @@ fn apply_optional_to_rendered_expr(expr: &str, optional: bool) -> Option<String>
         _ => return None,
     };
     Some(strip_top_level_parenthesized_expression(
-        codegen_expression_with_oxc(&expression),
+        codegen_expression_with_flow_cast_restore(&expression),
     ))
 }
 
@@ -15723,7 +15720,7 @@ fn render_binary_expression_ast(
     let right = parse_rendered_expression_ast(&allocator, right)?;
     let expression =
         builder.expression_binary(SPAN, left, lower_binary_operator_ast(operator), right);
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_primitive_expression_ast(value: &PrimitiveValue) -> Option<String> {
@@ -15738,7 +15735,7 @@ fn render_primitive_expression_ast(value: &PrimitiveValue) -> Option<String> {
         }
         PrimitiveValue::Number(_) | PrimitiveValue::String(_) => return None,
     };
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_ts_type_cast_expression_ast(
@@ -15749,14 +15746,16 @@ fn render_ts_type_cast_expression_ast(
     let expression = match kind {
         TypeAnnotationKind::As => format!("{value_expr} as {type_annotation}"),
         TypeAnnotationKind::Satisfies => format!("{value_expr} satisfies {type_annotation}"),
-        TypeAnnotationKind::Cast => return None,
+        TypeAnnotationKind::Cast => {
+            format!("{FLOW_CAST_MARKER_HELPER}<{type_annotation}>({value_expr})")
+        }
     };
     let allocator = Allocator::default();
     let expression =
         parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), &expression)
             .ok()?;
     Some(strip_top_level_parenthesized_expression(
-        codegen_expression_with_oxc(&expression),
+        restore_flow_cast_marker_calls(&codegen_expression_with_flow_cast_restore(&expression)),
     ))
 }
 
@@ -15765,7 +15764,7 @@ fn render_unary_expression_ast(operator: UnaryOperator, value: &str) -> Option<S
     let builder = AstBuilder::new(&allocator);
     let value = parse_rendered_expression_ast(&allocator, value)?;
     let expression = builder.expression_unary(SPAN, lower_unary_operator_ast(operator), value);
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_logical_expression_ast(
@@ -15779,7 +15778,7 @@ fn render_logical_expression_ast(
     let right = parse_rendered_expression_ast(&allocator, right)?;
     let expression =
         builder.expression_logical(SPAN, left, lower_logical_operator_ast(operator), right);
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_conditional_expression_ast(
@@ -15793,7 +15792,7 @@ fn render_conditional_expression_ast(
     let consequent = parse_rendered_expression_ast(&allocator, consequent)?;
     let alternate = parse_rendered_expression_ast(&allocator, alternate)?;
     let expression = builder.expression_conditional(SPAN, test, consequent, alternate);
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn expression_to_simple_assignment_target_ast<'a>(
@@ -15955,7 +15954,7 @@ fn render_property_store_expression_ast(
         build_property_access_expression_ast(builder, object, property, false),
     )?;
     let expression = builder.expression_assignment(SPAN, AssignmentOperator::Assign, target, value);
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_property_access_expression_ast(
@@ -15968,7 +15967,7 @@ fn render_property_access_expression_ast(
     let object = parse_rendered_expression_ast(&allocator, object)?;
     let expression = build_property_access_expression_ast(builder, object, property, optional);
     Some(strip_top_level_parenthesized_expression(
-        codegen_expression_with_oxc(&expression),
+        codegen_expression_with_flow_cast_restore(&expression),
     ))
 }
 
@@ -15978,7 +15977,7 @@ fn render_property_delete_expression_ast(object: &str, property: &PropertyLitera
     let object = parse_rendered_expression_ast(&allocator, object)?;
     let member = build_property_access_expression_ast(builder, object, property, false);
     let expression = builder.expression_unary(SPAN, AstUnaryOperator::Delete, member);
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_computed_access_expression_ast(
@@ -16001,7 +16000,7 @@ fn render_computed_access_expression_ast(
     } else {
         ast::Expression::from(builder.member_expression_computed(SPAN, object, property, optional))
     };
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_computed_store_expression_ast(object: &str, property: &str, value: &str) -> Option<String> {
@@ -16014,7 +16013,7 @@ fn render_computed_store_expression_ast(object: &str, property: &str, value: &st
         builder.member_expression_computed(SPAN, object, property, false),
     ));
     let expression = builder.expression_assignment(SPAN, AssignmentOperator::Assign, target, value);
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_computed_delete_expression_ast(object: &str, property: &str) -> Option<String> {
@@ -16027,7 +16026,7 @@ fn render_computed_delete_expression_ast(object: &str, property: &str) -> Option
         AstUnaryOperator::Delete,
         ast::Expression::from(builder.member_expression_computed(SPAN, object, property, false)),
     );
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_global_store_expression_ast(name: &str, value: &str) -> Option<String> {
@@ -16038,7 +16037,7 @@ fn render_global_store_expression_ast(name: &str, value: &str) -> Option<String>
         builder.simple_assignment_target_assignment_target_identifier(SPAN, builder.ident(name)),
     );
     let expression = builder.expression_assignment(SPAN, AssignmentOperator::Assign, target, value);
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_update_expression_ast(
@@ -16056,7 +16055,7 @@ fn render_update_expression_ast(
         prefix,
         target,
     );
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_new_expression_ast(
@@ -16080,7 +16079,7 @@ fn render_new_expression_ast(
         }
     }
     let expression = builder.expression_new(SPAN, callee, NONE, lowered_args);
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_arguments_ast<'a>(
@@ -16122,7 +16121,7 @@ fn render_call_expression_ast(
     let args = render_arguments_ast(builder, &allocator, args, rendered_args)?;
     let expression = builder.expression_call(SPAN, callee, NONE, args, optional);
     Some(strip_top_level_parenthesized_expression(
-        codegen_expression_with_oxc(&expression),
+        codegen_expression_with_flow_cast_restore(&expression),
     ))
 }
 
@@ -16159,7 +16158,7 @@ fn render_method_call_expression_with_options_ast(
     };
     let expression = builder.expression_call(SPAN, callee, NONE, args, call_optional);
     Some(strip_top_level_parenthesized_expression(
-        codegen_expression_with_oxc(&expression),
+        codegen_expression_with_flow_cast_restore(&expression),
     ))
 }
 
@@ -16181,7 +16180,7 @@ fn render_array_expression_ast(cx: &mut Context, elements: &[ArrayElement]) -> O
         lowered.push(element);
     }
     let expression = builder.expression_array(SPAN, lowered);
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_template_literal_ast(
@@ -16213,7 +16212,7 @@ fn render_template_literal_ast(
         })),
         expressions,
     );
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_meta_property_expression_ast(meta: &str, property: &str) -> Option<String> {
@@ -16224,7 +16223,7 @@ fn render_meta_property_expression_ast(meta: &str, property: &str) -> Option<Str
         builder.identifier_name(SPAN, builder.ident(meta)),
         builder.identifier_name(SPAN, builder.ident(property)),
     );
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_tagged_template_expression_ast(
@@ -16250,7 +16249,7 @@ fn render_tagged_template_expression_ast(
         builder.vec(),
     );
     let expression = builder.expression_tagged_template(SPAN, tag, NONE, quasi);
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_await_expression_ast(value: &str) -> Option<String> {
@@ -16258,13 +16257,13 @@ fn render_await_expression_ast(value: &str) -> Option<String> {
     let builder = AstBuilder::new(&allocator);
     let value = parse_rendered_expression_ast(&allocator, value)?;
     let expression = builder.expression_await(SPAN, value);
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_expression_source_with_ast(expression: &str) -> Option<String> {
     let allocator = Allocator::default();
     let expression = parse_rendered_expression_ast(&allocator, expression)?;
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_regexp_literal_expression_ast(pattern: &str, flags: &str) -> Option<String> {
@@ -16275,7 +16274,7 @@ fn strip_top_level_parenthesized_expression(expression: String) -> String {
     let allocator = Allocator::default();
     match parse_rendered_expression_ast(&allocator, &expression) {
         Some(ast::Expression::ParenthesizedExpression(parenthesized)) => {
-            codegen_expression_with_oxc(&parenthesized.unbox().expression)
+            codegen_expression_with_flow_cast_restore(&parenthesized.unbox().expression)
         }
         _ => expression,
     }
@@ -16725,7 +16724,7 @@ fn render_dependency_expression_ast(
             other => other,
         };
     }
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn infer_fallback_scope_dep_exprs(cx: &mut Context, block: &ReactiveBlock) -> Vec<String> {
@@ -18480,7 +18479,10 @@ fn render_reactive_destructure_statement_ast(
             builder.expression_assignment(SPAN, AssignmentOperator::Assign, target, rhs_expression),
         )
     };
-    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ))
 }
 
 /// Upstream lowers destructuring declarations to mutable context vars through a
@@ -18552,7 +18554,7 @@ fn maybe_codegen_captured_context_destructure_bridge(
                     temp_name,
                 ));
             }
-            Some(codegen_statements_with_oxc(&statements))
+            Some(codegen_statements_with_flow_cast_restore(&statements))
         }
         Pattern::Object(obj) => {
             if obj.properties.is_empty() {
@@ -18621,7 +18623,7 @@ fn maybe_codegen_captured_context_destructure_bridge(
                 ),
             )];
             statements.extend(assignments);
-            Some(codegen_statements_with_oxc(&statements))
+            Some(codegen_statements_with_flow_cast_restore(&statements))
         }
     }
 }
@@ -18819,7 +18821,7 @@ fn resolve_method_property(cx: &mut Context, place: &Place, receiver_expr: &str)
 fn normalize_rendered_expression_ast(expr: &str) -> Option<String> {
     let allocator = Allocator::default();
     let expression = parse_rendered_expression_ast(&allocator, expr)?;
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn resolve_method_property_via_ast(
@@ -18836,21 +18838,21 @@ fn resolve_method_property_via_ast(
     ) -> Option<(String, bool)> {
         match expression {
             ast::Expression::StaticMemberExpression(member) => {
-                if codegen_expression_with_oxc(&member.object) == normalized_receiver {
+                if codegen_expression_with_flow_cast_restore(&member.object) == normalized_receiver {
                     Some((member.property.name.to_string(), false))
                 } else {
                     None
                 }
             }
             ast::Expression::ComputedMemberExpression(member) => {
-                if codegen_expression_with_oxc(&member.object) == normalized_receiver {
-                    Some((codegen_expression_with_oxc(&member.expression), true))
+                if codegen_expression_with_flow_cast_restore(&member.object) == normalized_receiver {
+                    Some((codegen_expression_with_flow_cast_restore(&member.expression), true))
                 } else {
                     None
                 }
             }
             ast::Expression::PrivateFieldExpression(member) => {
-                if codegen_expression_with_oxc(&member.object) == normalized_receiver {
+                if codegen_expression_with_flow_cast_restore(&member.object) == normalized_receiver {
                     Some((format!("#{}", member.field.name), false))
                 } else {
                     None
@@ -18858,21 +18860,21 @@ fn resolve_method_property_via_ast(
             }
             ast::Expression::ChainExpression(chain) => match chain.unbox().expression {
                 ast::ChainElement::StaticMemberExpression(member) => {
-                    if codegen_expression_with_oxc(&member.object) == normalized_receiver {
+                    if codegen_expression_with_flow_cast_restore(&member.object) == normalized_receiver {
                         Some((member.property.name.to_string(), false))
                     } else {
                         None
                     }
                 }
                 ast::ChainElement::ComputedMemberExpression(member) => {
-                    if codegen_expression_with_oxc(&member.object) == normalized_receiver {
-                        Some((codegen_expression_with_oxc(&member.expression), true))
+                    if codegen_expression_with_flow_cast_restore(&member.object) == normalized_receiver {
+                        Some((codegen_expression_with_flow_cast_restore(&member.expression), true))
                     } else {
                         None
                     }
                 }
                 ast::ChainElement::PrivateFieldExpression(member) => {
-                    if codegen_expression_with_oxc(&member.object) == normalized_receiver {
+                    if codegen_expression_with_flow_cast_restore(&member.object) == normalized_receiver {
                         Some((format!("#{}", member.field.name), false))
                     } else {
                         None
@@ -19010,7 +19012,7 @@ fn render_jsx_expression_ast(
         jsx_children,
         closing_element,
     );
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_jsx_fragment_ast(cx: &mut Context, children: &[Place]) -> Option<String> {
@@ -19026,7 +19028,7 @@ fn render_jsx_fragment_ast(cx: &mut Context, children: &[Place]) -> Option<Strin
         lowered,
         builder.jsx_closing_fragment(SPAN),
     );
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_jsx_child_ast<'a>(
@@ -19370,16 +19372,17 @@ fn parse_function_body_for_ast_codegen<'a>(
 ) -> Result<ast::FunctionBody<'a>, String> {
     let async_prefix = if is_async { "async " } else { "" };
     let generator_prefix = if is_generator { "*" } else { "" };
+    let flow_cast_normalized = normalize_flow_cast_marker_calls(body_source);
     let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(body_source);
-    let mut attempts = vec![
-        (source_type, body_source.to_string()),
-        (
-            source_type.with_typescript(true),
-            flow_cast_rewritten.clone(),
-        ),
-    ];
-    if flow_cast_rewritten != body_source {
-        attempts.push((source_type, flow_cast_rewritten));
+    let mut attempts = vec![(source_type, body_source.to_string())];
+    for candidate in [
+        (source_type.with_typescript(true), flow_cast_normalized),
+        (source_type.with_typescript(true), flow_cast_rewritten.clone()),
+        (source_type, flow_cast_rewritten),
+    ] {
+        if candidate.1 != body_source {
+            attempts.push(candidate);
+        }
     }
 
     for (attempt_source_type, attempt_body) in attempts {
@@ -19410,29 +19413,43 @@ fn parse_expression_for_ast_codegen<'a>(
     source_type: SourceType,
     expr_source: &str,
 ) -> Result<ast::Expression<'a>, String> {
-    let expression_sources = {
-        let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(expr_source);
-        let mut sources = vec![expr_source.to_string()];
-        if flow_cast_rewritten != expr_source {
-            sources.push(flow_cast_rewritten);
-        }
-        sources
-    };
+    let flow_cast_normalized = normalize_flow_cast_marker_calls(expr_source);
+    let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(expr_source);
+    let mut expression_sources = vec![expr_source.to_string()];
+    if flow_cast_normalized != expr_source {
+        expression_sources.push(flow_cast_normalized);
+    }
+    if flow_cast_rewritten != expr_source {
+        expression_sources.push(flow_cast_rewritten);
+    }
 
     let mut attempts = Vec::new();
     for expression_source in &expression_sources {
-        attempts.push((source_type, expression_source.clone(), false));
-        attempts.push((source_type, expression_source.clone(), true));
-        attempts.push((
-            source_type.with_typescript(true),
-            expression_source.clone(),
-            false,
-        ));
-        attempts.push((
-            source_type.with_typescript(true),
-            expression_source.clone(),
-            true,
-        ));
+        if expression_source.contains(FLOW_CAST_MARKER_HELPER) {
+            attempts.push((
+                source_type.with_typescript(true),
+                expression_source.clone(),
+                false,
+            ));
+            attempts.push((
+                source_type.with_typescript(true),
+                expression_source.clone(),
+                true,
+            ));
+        } else {
+            attempts.push((source_type, expression_source.clone(), false));
+            attempts.push((source_type, expression_source.clone(), true));
+            attempts.push((
+                source_type.with_typescript(true),
+                expression_source.clone(),
+                false,
+            ));
+            attempts.push((
+                source_type.with_typescript(true),
+                expression_source.clone(),
+                true,
+            ));
+        }
     }
 
     for (attempt_source_type, attempt_expr, parenthesize) in attempts {
@@ -19599,6 +19616,312 @@ fn make_object_property_key_ast<'a>(
     }
 }
 
+const FLOW_CAST_MARKER_HELPER: &str = "__REACT_COMPILER_FLOW_CAST__";
+
+fn normalize_flow_cast_marker_calls(source: &str) -> String {
+    let rewritten = crate::pipeline::rewrite_flow_cast_expressions(source);
+    if rewritten == source {
+        return source.to_string();
+    }
+    rewrite_flow_cast_marker_calls(&rewritten)
+}
+
+fn rewrite_flow_cast_marker_calls(source: &str) -> String {
+    let mut changed = false;
+    let mut out = String::with_capacity(source.len());
+    let mut paren_stack: Vec<usize> = Vec::new();
+    let bytes = source.as_bytes();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        if source[i..].starts_with("//") {
+            while i < bytes.len() {
+                let ch = source[i..].chars().next().unwrap();
+                out.push(ch);
+                i += ch.len_utf8();
+                if ch == '\n' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if source[i..].starts_with("/*") {
+            out.push('/');
+            out.push('*');
+            i += 2;
+            while i < bytes.len() {
+                if source[i..].starts_with("*/") {
+                    out.push('*');
+                    out.push('/');
+                    i += 2;
+                    break;
+                }
+                let ch = source[i..].chars().next().unwrap();
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+            continue;
+        }
+
+        let ch = source[i..].chars().next().unwrap();
+        if ch == '\'' || ch == '"' || ch == '`' {
+            let quote = ch;
+            out.push(ch);
+            i += ch.len_utf8();
+            let mut escaped = false;
+            while i < bytes.len() {
+                let c = source[i..].chars().next().unwrap();
+                out.push(c);
+                i += c.len_utf8();
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                if c == '\\' {
+                    escaped = true;
+                    continue;
+                }
+                if c == quote {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        if ch == '(' {
+            paren_stack.push(out.len());
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+
+        if ch == ')' {
+            out.push(ch);
+            i += ch.len_utf8();
+
+            if let Some(open_idx) = paren_stack.pop() {
+                let close_idx = out.len() - 1;
+                if open_idx < close_idx {
+                    let inner = &out[open_idx + 1..close_idx];
+                    if let Some((expr, ty)) = split_flow_cast_marker_inner(inner) {
+                        let replacement =
+                            format!("{FLOW_CAST_MARKER_HELPER}<{}>({})", ty.trim(), expr.trim());
+                        out.replace_range(open_idx..=close_idx, &replacement);
+                        changed = true;
+                    }
+                }
+            }
+            continue;
+        }
+
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+
+    if changed { out } else { source.to_string() }
+}
+
+fn split_flow_cast_marker_inner(inner: &str) -> Option<(String, String)> {
+    const MARKER: &str = " as /*__FLOW_CAST__*/ ";
+    let chars: Vec<(usize, char)> = inner.char_indices().collect();
+    let mut depth_paren = 0usize;
+    let mut depth_brace = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut depth_angle = 0usize;
+
+    for (byte_idx, ch) in chars {
+        match ch {
+            '(' => depth_paren += 1,
+            ')' => depth_paren = depth_paren.saturating_sub(1),
+            '{' => depth_brace += 1,
+            '}' => depth_brace = depth_brace.saturating_sub(1),
+            '[' => depth_bracket += 1,
+            ']' => depth_bracket = depth_bracket.saturating_sub(1),
+            '<' => depth_angle += 1,
+            '>' => depth_angle = depth_angle.saturating_sub(1),
+            _ => {}
+        }
+        let at_top =
+            depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 && depth_angle == 0;
+        if at_top && inner[byte_idx..].starts_with(MARKER) {
+            let left = inner[..byte_idx].trim();
+            let right = inner[byte_idx + MARKER.len()..].trim();
+            if left.is_empty() || right.is_empty() {
+                return None;
+            }
+            return Some((left.to_string(), right.to_string()));
+        }
+    }
+
+    None
+}
+
+fn restore_flow_cast_marker_calls(source: &str) -> String {
+    if !source.contains(FLOW_CAST_MARKER_HELPER) {
+        return source.to_string();
+    }
+
+    let mut out = String::with_capacity(source.len());
+    let bytes = source.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if starts_flow_cast_marker(source, i)
+            && let Some((replacement, next_idx)) = parse_flow_cast_marker_call(source, i)
+        {
+            out.push_str(&replacement);
+            i = next_idx;
+            continue;
+        }
+
+        let ch = source[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn starts_flow_cast_marker(source: &str, idx: usize) -> bool {
+    if !source[idx..].starts_with(FLOW_CAST_MARKER_HELPER) {
+        return false;
+    }
+    let prev = source[..idx].chars().next_back();
+    !prev.is_some_and(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphanumeric())
+}
+
+fn parse_flow_cast_marker_call(source: &str, idx: usize) -> Option<(String, usize)> {
+    let mut i = idx + FLOW_CAST_MARKER_HELPER.len();
+    i = skip_ascii_whitespace(source, i);
+    if source[i..].chars().next()? != '<' {
+        return None;
+    }
+    let (type_annotation, after_type) = parse_balanced_angle_contents(source, i)?;
+    let i = skip_ascii_whitespace(source, after_type);
+    if source[i..].chars().next()? != '(' {
+        return None;
+    }
+    let (arg, after_arg) = parse_balanced_paren_contents(source, i)?;
+    let restored_arg = restore_flow_cast_marker_calls(arg.trim());
+    Some((
+        format!("({}: {})", restored_arg.trim(), type_annotation.trim()),
+        after_arg,
+    ))
+}
+
+fn skip_ascii_whitespace(source: &str, mut idx: usize) -> usize {
+    while idx < source.len() {
+        let ch = source[idx..].chars().next().unwrap();
+        if !ch.is_ascii_whitespace() {
+            break;
+        }
+        idx += ch.len_utf8();
+    }
+    idx
+}
+
+fn parse_balanced_angle_contents(source: &str, open_idx: usize) -> Option<(String, usize)> {
+    let bytes = source.as_bytes();
+    let mut i = open_idx + 1;
+    let mut depth_angle = 1usize;
+    let mut depth_paren = 0usize;
+    let mut depth_brace = 0usize;
+    let mut depth_bracket = 0usize;
+    while i < bytes.len() {
+        let ch = source[i..].chars().next().unwrap();
+        match ch {
+            '\'' | '"' | '`' => {
+                i = skip_quoted(source, i)?;
+                continue;
+            }
+            '(' => depth_paren += 1,
+            ')' => depth_paren = depth_paren.saturating_sub(1),
+            '{' => depth_brace += 1,
+            '}' => depth_brace = depth_brace.saturating_sub(1),
+            '[' => depth_bracket += 1,
+            ']' => depth_bracket = depth_bracket.saturating_sub(1),
+            '<' if depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 => {
+                depth_angle += 1;
+            }
+            '>' if depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 => {
+                depth_angle = depth_angle.saturating_sub(1);
+                if depth_angle == 0 {
+                    return Some((source[open_idx + 1..i].to_string(), i + 1));
+                }
+            }
+            _ => {}
+        }
+        i += ch.len_utf8();
+    }
+    None
+}
+
+fn parse_balanced_paren_contents(source: &str, open_idx: usize) -> Option<(String, usize)> {
+    let bytes = source.as_bytes();
+    let mut i = open_idx + 1;
+    let mut depth_paren = 1usize;
+    let mut depth_brace = 0usize;
+    let mut depth_bracket = 0usize;
+    while i < bytes.len() {
+        let ch = source[i..].chars().next().unwrap();
+        match ch {
+            '\'' | '"' | '`' => {
+                i = skip_quoted(source, i)?;
+                continue;
+            }
+            '(' => depth_paren += 1,
+            ')' => {
+                depth_paren = depth_paren.saturating_sub(1);
+                if depth_paren == 0 {
+                    return Some((source[open_idx + 1..i].to_string(), i + 1));
+                }
+            }
+            '{' => depth_brace += 1,
+            '}' => depth_brace = depth_brace.saturating_sub(1),
+            '[' => depth_bracket += 1,
+            ']' => depth_bracket = depth_bracket.saturating_sub(1),
+            _ => {}
+        }
+        i += ch.len_utf8();
+    }
+    None
+}
+
+fn skip_quoted(source: &str, start_idx: usize) -> Option<usize> {
+    let quote = source[start_idx..].chars().next()?;
+    let bytes = source.as_bytes();
+    let mut i = start_idx + quote.len_utf8();
+    let mut escaped = false;
+    while i < bytes.len() {
+        let ch = source[i..].chars().next().unwrap();
+        i += ch.len_utf8();
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == quote {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn codegen_expression_with_flow_cast_restore<'a>(expression: &ast::Expression<'a>) -> String {
+    restore_flow_cast_marker_calls(&codegen_expression_with_oxc(expression))
+}
+
+fn codegen_statement_with_flow_cast_restore<'a>(statement: &ast::Statement<'a>) -> String {
+    restore_flow_cast_marker_calls(&codegen_statement_with_oxc(statement))
+}
+
+fn codegen_statements_with_flow_cast_restore<'a>(
+    statements: &[ast::Statement<'a>],
+) -> String {
+    restore_flow_cast_marker_calls(&codegen_statements_with_oxc(statements))
+}
+
 fn extract_single_object_property_source(rendered_object_expression: &str) -> Option<String> {
     let stripped = rendered_object_expression.trim();
     let stripped = stripped
@@ -19618,7 +19941,7 @@ fn codegen_object_property_with_oxc(property: ast::ObjectPropertyKind<'_>) -> Op
     let expression = ast::Expression::from(
         builder.expression_object(SPAN, builder.vec1(property.clone_in(&allocator))),
     );
-    let rendered = codegen_expression_with_oxc(&expression);
+    let rendered = codegen_expression_with_flow_cast_restore(&expression);
     extract_single_object_property_source(&rendered)
 }
 
@@ -19884,7 +20207,7 @@ fn render_object_expression_ast(
         lowered.push(property);
     }
     let expression = builder.expression_object(SPAN, lowered);
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn codegen_expression_with_oxc(expression: &ast::Expression<'_>) -> String {
@@ -20000,63 +20323,6 @@ fn codegen_directives_and_statements_with_oxc(
         .to_string()
 }
 
-fn split_flow_cast_expression_source(expr: &str) -> Option<(&str, &str)> {
-    let trimmed = expr.trim();
-    let inner = trimmed.strip_prefix('(')?.strip_suffix(')')?;
-    let chars: Vec<(usize, char)> = inner.char_indices().collect();
-    let mut depth_paren = 0usize;
-    let mut depth_brace = 0usize;
-    let mut depth_bracket = 0usize;
-    let mut ternary_depth = 0usize;
-    let mut colon_at: Option<usize> = None;
-
-    for (idx, (byte_idx, ch)) in chars.iter().enumerate() {
-        match ch {
-            '(' => depth_paren += 1,
-            ')' => depth_paren = depth_paren.saturating_sub(1),
-            '{' => depth_brace += 1,
-            '}' => depth_brace = depth_brace.saturating_sub(1),
-            '[' => depth_bracket += 1,
-            ']' => depth_bracket = depth_bracket.saturating_sub(1),
-            _ => {}
-        }
-
-        let at_top = depth_paren == 0 && depth_brace == 0 && depth_bracket == 0;
-        if !at_top {
-            continue;
-        }
-
-        let prev = if idx > 0 { chars[idx - 1].1 } else { '\0' };
-        let next = if idx + 1 < chars.len() {
-            chars[idx + 1].1
-        } else {
-            '\0'
-        };
-
-        match ch {
-            '?' if prev != '?' && next != '?' => {
-                ternary_depth += 1;
-            }
-            ':' => {
-                if ternary_depth > 0 {
-                    ternary_depth -= 1;
-                } else {
-                    colon_at = Some(*byte_idx);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let colon = colon_at?;
-    let left = inner[..colon].trim();
-    let right = inner[colon + 1..].trim();
-    if left.is_empty() || right.is_empty() {
-        return None;
-    }
-    Some((left, right))
-}
-
 fn is_quoted_string_literal_source(expr: &str) -> bool {
     let trimmed = expr.trim();
     let Some(first) = trimmed.chars().next() else {
@@ -20065,25 +20331,11 @@ fn is_quoted_string_literal_source(expr: &str) -> bool {
     matches!(first, '"' | '\'') && trimmed.ends_with(first) && trimmed.len() >= 2
 }
 
-fn contains_flow_cast_expression_source(expr: &str) -> bool {
-    crate::pipeline::rewrite_flow_cast_expressions(expr) != expr
-}
-
 fn render_reactive_variable_statement_ast(
     kind: ast::VariableDeclarationKind,
     name: &str,
     init: Option<&str>,
 ) -> Option<String> {
-    if let Some(expr) = init.filter(|expr| {
-        split_flow_cast_expression_source(expr).is_some()
-            || contains_flow_cast_expression_source(expr)
-    }) {
-        let keyword = match kind {
-            ast::VariableDeclarationKind::Const => "const",
-            _ => "let",
-        };
-        return Some(format!("{keyword} {name} = {expr};\n"));
-    }
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let init_expression = match init.filter(|expr| *expr != "undefined") {
@@ -20106,7 +20358,10 @@ fn render_reactive_variable_statement_ast(
         )),
         false,
     ));
-    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ))
 }
 
 fn render_variable_declaration_header_ast(
@@ -20141,7 +20396,7 @@ fn render_variable_declaration_header_ast(
         SPAN, kind, rendered, false,
     ));
     Some(
-        codegen_statement_with_oxc(&statement)
+        codegen_statement_with_flow_cast_restore(&statement)
             .trim_end_matches(';')
             .to_string(),
     )
@@ -20164,11 +20419,6 @@ fn build_identifier_assignment_statement_ast<'a>(
 }
 
 fn render_reactive_assignment_statement_ast(target_name: &str, rhs: &str) -> Option<String> {
-    if split_flow_cast_expression_source(rhs).is_some()
-        || contains_flow_cast_expression_source(rhs)
-    {
-        return Some(format!("{target_name} = {rhs};\n"));
-    }
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let rhs_expression =
@@ -20178,15 +20428,13 @@ fn render_reactive_assignment_statement_ast(target_name: &str, rhs: &str) -> Opt
         target_name,
         rhs_expression,
     );
-    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ))
 }
 
 fn render_reactive_expression_statement_ast(expression: &str) -> Option<String> {
-    if split_flow_cast_expression_source(expression).is_some()
-        || contains_flow_cast_expression_source(expression)
-    {
-        return Some(format!("{expression};\n"));
-    }
     if is_quoted_string_literal_source(expression) {
         return Some(format!("{expression};\n"));
     }
@@ -20196,7 +20444,10 @@ fn render_reactive_expression_statement_ast(expression: &str) -> Option<String> 
         parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), expression)
             .ok()?;
     let statement = builder.statement_expression(SPAN, parsed_expression);
-    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ))
 }
 
 fn render_reactive_break_statement_ast(label: Option<&str>) -> Option<String> {
@@ -20206,7 +20457,10 @@ fn render_reactive_break_statement_ast(label: Option<&str>) -> Option<String> {
         SPAN,
         label.map(|label| builder.label_identifier(SPAN, builder.atom(label))),
     );
-    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ))
 }
 
 fn render_reactive_continue_statement_ast(label: Option<&str>) -> Option<String> {
@@ -20216,7 +20470,10 @@ fn render_reactive_continue_statement_ast(label: Option<&str>) -> Option<String>
         SPAN,
         label.map(|label| builder.label_identifier(SPAN, builder.atom(label))),
     );
-    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ))
 }
 
 fn render_reactive_return_statement_ast(argument: Option<&str>) -> Option<String> {
@@ -20234,7 +20491,10 @@ fn render_reactive_return_statement_ast(argument: Option<&str>) -> Option<String
         None => None,
     };
     let statement = builder.statement_return(SPAN, parsed_argument);
-    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ))
 }
 
 fn render_reactive_throw_statement_ast(argument: &str) -> Option<String> {
@@ -20244,7 +20504,10 @@ fn render_reactive_throw_statement_ast(argument: &str) -> Option<String> {
         parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), argument)
             .ok()?;
     let statement = builder.statement_throw(SPAN, parsed_argument);
-    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ))
 }
 
 fn render_reactive_if_statement_ast(
@@ -20252,12 +20515,6 @@ fn render_reactive_if_statement_ast(
     consequent_body: &str,
     alternate_body: Option<&str>,
 ) -> Option<String> {
-    if contains_flow_cast_expression_source(test)
-        || contains_flow_cast_expression_source(consequent_body)
-        || alternate_body.is_some_and(contains_flow_cast_expression_source)
-    {
-        return None;
-    }
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let parsed_test =
@@ -20287,7 +20544,10 @@ fn render_reactive_if_statement_ast(
         None => None,
     };
     let statement = builder.statement_if(SPAN, parsed_test, consequent, alternate);
-    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ))
 }
 
 fn render_reactive_labeled_statement_ast(
@@ -20317,7 +20577,10 @@ fn render_reactive_labeled_statement_ast(
     };
     let statement =
         builder.statement_labeled(SPAN, builder.label_identifier(SPAN, builder.atom(label)), body);
-    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ))
 }
 
 fn render_reactive_while_statement_ast(test: &str, body: &str) -> Option<String> {
@@ -20332,7 +20595,10 @@ fn render_reactive_while_statement_ast(test: &str, body: &str) -> Option<String>
             .ok()?,
     );
     let statement = builder.statement_while(SPAN, parsed_test, parsed_body);
-    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ))
 }
 
 fn render_reactive_do_while_statement_ast(body: &str, test: &str) -> Option<String> {
@@ -20347,7 +20613,10 @@ fn render_reactive_do_while_statement_ast(body: &str, test: &str) -> Option<Stri
         parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), test)
             .ok()?;
     let statement = builder.statement_do_while(SPAN, parsed_body, parsed_test);
-    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ))
 }
 
 fn render_reactive_try_statement_ast(
@@ -20383,7 +20652,10 @@ fn render_reactive_try_statement_ast(
         Some(handler),
         Option::<oxc_allocator::Box<'_, ast::BlockStatement<'_>>>::None,
     );
-    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ))
 }
 
 fn render_reactive_switch_statement_ast(
@@ -20426,7 +20698,10 @@ fn render_reactive_switch_statement_ast(
         rendered_cases.push(builder.switch_case(SPAN, parsed_case_test, consequent));
     }
     let statement = builder.statement_switch(SPAN, parsed_test, rendered_cases);
-    Some(format!("{}\n", codegen_statement_with_oxc(&statement)))
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ))
 }
 
 fn render_reactive_for_statement_ast(
@@ -20867,7 +21142,10 @@ fn render_cached_inline_hook_callback_block_ast(
             .ok()?,
     ));
 
-    Some(format!("{}\n", codegen_statements_with_oxc(&statements)))
+    Some(format!(
+        "{}\n",
+        codegen_statements_with_flow_cast_restore(&statements)
+    ))
 }
 
 fn parse_for_statement_init_ast<'a>(
@@ -21028,7 +21306,7 @@ fn render_function_expression_ast(
     } else {
         expression
     };
-    Some(codegen_expression_with_oxc(&expression))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn function_expr_as_declaration(name: &str, rhs: &str) -> Option<String> {
@@ -21558,9 +21836,12 @@ mod tests {
         render_hook_guarded_block_ast, render_hook_guarded_call_expression_ast,
         render_method_call_expression_with_options_ast, render_tagged_template_expression_ast,
         render_template_literal_ast, render_sequence_expression_ast,
-        render_ts_type_cast_expression_ast,
+        render_ts_type_cast_expression_ast, render_reactive_assignment_statement_ast,
+        render_reactive_expression_statement_ast, render_reactive_return_statement_ast,
+        render_reactive_variable_statement_ast,
         render_cached_inline_hook_callback_block_ast, HOOK_GUARD_POP, HOOK_GUARD_PUSH,
     };
+    use oxc_ast::ast;
     use crate::hir::types::{
         Argument, ArrayElement, ArrayPattern, DeclarationId, DependencyPathEntry, Effect,
         Identifier, IdentifierId, IdentifierName, JsxAttribute, JsxTag, MutableRange, ObjectProperty,
@@ -21917,6 +22198,40 @@ mod tests {
                 .expect("expected satisfies expression");
         assert!(rendered.starts_with("value satisfies {"));
         assert!(rendered.contains("foo: string"));
+    }
+
+    #[test]
+    fn renders_flow_type_casts_via_ast() {
+        assert_eq!(
+            render_ts_type_cast_expression_ast("value", "Foo", TypeAnnotationKind::Cast)
+                .as_deref(),
+            Some("(value: Foo)")
+        );
+    }
+
+    #[test]
+    fn renders_flow_cast_statements_via_ast() {
+        assert_eq!(
+            render_reactive_variable_statement_ast(
+                ast::VariableDeclarationKind::Let,
+                "x",
+                Some("(value: Foo)")
+            )
+            .as_deref(),
+            Some("let x = (value: Foo);\n")
+        );
+        assert_eq!(
+            render_reactive_assignment_statement_ast("x", "(value: Foo)").as_deref(),
+            Some("x = (value: Foo);\n")
+        );
+        assert_eq!(
+            render_reactive_expression_statement_ast("(value: Foo)").as_deref(),
+            Some("(value: Foo);\n")
+        );
+        assert_eq!(
+            render_reactive_return_statement_ast(Some("(value: Foo)")).as_deref(),
+            Some("return (value: Foo);\n")
+        );
     }
 
     #[test]
