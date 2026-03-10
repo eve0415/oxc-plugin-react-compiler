@@ -5970,49 +5970,61 @@ fn maybe_codegen_fused_named_test_dual_reassign_scope_ternary_return(
     }
     cx.declare(&first.reassign_ident);
 
-    let guard_expr = format!(
-        "{}[{}] !== {} || {}[{}] !== {} || {}[{}] !== {}",
-        cache_var,
-        alternate_dep_slot,
-        alternate_branch.dep_expr,
-        cache_var,
-        cond_slot,
-        cond_expr,
-        cache_var,
-        consequent_dep_slot,
-        consequent_branch.dep_expr,
-    );
+    let guard_expr = render_logical_chain_expression_ast(
+        &[
+            render_cache_slot_comparison_expression_ast(
+                &cache_var,
+                alternate_dep_slot,
+                BinaryOperator::StrictNotEq,
+                &alternate_branch.dep_expr,
+            )
+            .expect("alternate dependency comparison should stay on AST path"),
+            render_cache_slot_comparison_expression_ast(
+                &cache_var,
+                cond_slot,
+                BinaryOperator::StrictNotEq,
+                &cond_expr,
+            )
+            .expect("condition comparison should stay on AST path"),
+            render_cache_slot_comparison_expression_ast(
+                &cache_var,
+                consequent_dep_slot,
+                BinaryOperator::StrictNotEq,
+                &consequent_branch.dep_expr,
+            )
+            .expect("consequent dependency comparison should stay on AST path"),
+        ],
+        LogicalOperator::Or,
+    )
+    .expect("dual reassign guard should stay on AST path");
+    let fused_expr = render_conditional_expression_ast(
+        &cond_expr,
+        &consequent_branch.branch_expr,
+        &alternate_branch.branch_expr,
+    )
+    .expect("dual reassign ternary should stay on AST path");
     let consequent = format!(
         "{}{}{}{}",
-        render_reactive_expression_statement_ast(&format!(
-            "{} ? {} : {}",
-            cond_expr, consequent_branch.branch_expr, alternate_branch.branch_expr
-        ))?,
-        render_reactive_expression_statement_ast(&format!(
-            "{}[{}] = {}",
-            cache_var, alternate_dep_slot, alternate_branch.dep_expr
-        ))?,
-        render_reactive_expression_statement_ast(&format!(
-            "{}[{}] = {}",
-            cache_var, cond_slot, cond_expr
-        ))?,
-        render_reactive_expression_statement_ast(&format!(
-            "{}[{}] = {}",
-            cache_var, consequent_dep_slot, consequent_branch.dep_expr
-        ))?,
+        render_reactive_expression_statement_ast(&fused_expr)?,
+        render_cache_slot_store_statement_ast(
+            &cache_var,
+            alternate_dep_slot,
+            &alternate_branch.dep_expr,
+        )?,
+        render_cache_slot_store_statement_ast(&cache_var, cond_slot, &cond_expr)?,
+        render_cache_slot_store_statement_ast(
+            &cache_var,
+            consequent_dep_slot,
+            &consequent_branch.dep_expr,
+        )?,
     );
     let consequent = format!(
         "{}{}",
         consequent,
-        render_reactive_expression_statement_ast(&format!(
-            "{}[{}] = {}",
-            cache_var, output_slot, target_name
-        ))?,
+        render_cache_slot_store_statement_ast(&cache_var, output_slot, &target_name)?,
     );
-    let alternate = render_reactive_assignment_statement_ast(
-        &target_name,
-        &format!("{}[{}]", cache_var, output_slot),
-    )?;
+    let alternate =
+        render_cache_slot_load_assignment_statement_ast(&target_name, &cache_var, output_slot)?;
     output.push_str(&render_reactive_if_statement_ast(
         &guard_expr,
         &consequent,
@@ -6283,14 +6295,12 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
     consequent.push_str(&render_reactive_expression_statement_ast(&format!(
         "{cond_expr} ? {consequent_expr} : null"
     ))?);
-    consequent.push_str(&render_reactive_expression_statement_ast(&format!(
-        "{}[{}] = {}",
-        cache_var, dep_slot, cond_expr
-    ))?);
-    consequent.push_str(&render_reactive_expression_statement_ast(&format!(
-        "{}[{}] = {}",
-        cache_var, decl_slot, dep_expr
-    ))?);
+    consequent.push_str(&render_reactive_expression_statement_ast(
+        &render_computed_store_expression_ast(&cache_var, &dep_slot, &cond_expr)?,
+    )?);
+    consequent.push_str(&render_reactive_expression_statement_ast(
+        &render_computed_store_expression_ast(&cache_var, &decl_slot, &dep_expr)?,
+    )?);
     for line in cache_tail_lines {
         consequent.push_str(&render_reactive_expression_statement_ast(&line)?);
     }
@@ -6298,11 +6308,26 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
     for line in else_passthrough {
         alternate.push_str(&render_reactive_expression_statement_ast(&line)?);
     }
+    let guard_expr = render_logical_chain_expression_ast(
+        &[
+            render_binary_expression_ast(
+                &render_computed_access_expression_ast(&cache_var, &dep_slot, false)?,
+                BinaryOperator::StrictNotEq,
+                &cond_expr,
+            )
+            .expect("condition dependency comparison should stay on AST path"),
+            render_binary_expression_ast(
+                &render_computed_access_expression_ast(&cache_var, &decl_slot, false)?,
+                BinaryOperator::StrictNotEq,
+                &dep_expr,
+            )
+            .expect("declaration dependency comparison should stay on AST path"),
+        ],
+        LogicalOperator::Or,
+    )
+    .expect("scope decl ternary guard should stay on AST path");
     output.push_str(&render_reactive_if_statement_ast(
-        &format!(
-            "{}[{}] !== {} || {}[{}] !== {}",
-            cache_var, dep_slot, cond_expr, cache_var, decl_slot, dep_expr
-        ),
+        &guard_expr,
         &consequent,
         Some(&alternate),
     )?);
@@ -9247,12 +9272,34 @@ fn maybe_codegen_fused_ternary_source_scope(
     }
 
     let guard_test = if let Some(cond_slot) = cond_slot {
-        format!(
-            "{}[{}] !== {} || {}[{}] !== {}",
-            cache_var, cond_slot, cond_expr, cache_var, dep_slot, dep_expr
+        render_logical_chain_expression_ast(
+            &[
+                render_cache_slot_comparison_expression_ast(
+                    &cache_var,
+                    cond_slot,
+                    BinaryOperator::StrictNotEq,
+                    &cond_expr,
+                )
+                .expect("fused ternary condition comparison should stay on AST path"),
+                render_cache_slot_comparison_expression_ast(
+                    &cache_var,
+                    dep_slot,
+                    BinaryOperator::StrictNotEq,
+                    &dep_expr,
+                )
+                .expect("fused ternary dependency comparison should stay on AST path"),
+            ],
+            LogicalOperator::Or,
         )
+        .expect("fused ternary guard should stay on AST path")
     } else {
-        format!("{}[{}] !== {}", cache_var, dep_slot, dep_expr)
+        render_cache_slot_comparison_expression_ast(
+            &cache_var,
+            dep_slot,
+            BinaryOperator::StrictNotEq,
+            &dep_expr,
+        )
+        .expect("fused ternary dependency comparison should stay on AST path")
     };
     let rhs_expr = render_conditional_expression_ast(&cond_expr, &consequent_expr, &alternate_expr)
         .expect("fused ternary expression should stay on AST path");
@@ -9261,31 +9308,19 @@ fn maybe_codegen_fused_ternary_source_scope(
             .expect("fused ternary assignment should stay on AST path");
     if let Some(cond_slot) = cond_slot {
         consequent.push_str(
-            &render_reactive_expression_statement_ast(&format!(
-                "{}[{}] = {}",
-                cache_var, cond_slot, cond_expr
-            ))
+            &render_cache_slot_store_statement_ast(&cache_var, cond_slot, &cond_expr)
             .expect("fused ternary condition store should stay on AST path"),
         );
     }
     consequent.push_str(
-        &render_reactive_expression_statement_ast(&format!(
-            "{}[{}] = {}",
-            cache_var, dep_slot, dep_expr
-        ))
+        &render_cache_slot_store_statement_ast(&cache_var, dep_slot, &dep_expr)
         .expect("fused ternary dependency store should stay on AST path"),
     );
     consequent.push_str(
-        &render_reactive_expression_statement_ast(&format!(
-            "{}[{}] = {}",
-            cache_var, output_slot, decl_name
-        ))
+        &render_cache_slot_store_statement_ast(&cache_var, output_slot, &decl_name)
         .expect("fused ternary output store should stay on AST path"),
     );
-    let alternate = render_reactive_assignment_statement_ast(
-        &decl_name,
-        &format!("{}[{}]", cache_var, output_slot),
-    )
+    let alternate = render_cache_slot_load_assignment_statement_ast(&decl_name, &cache_var, output_slot)
     .expect("fused ternary cache load should stay on AST path");
     output.push_str(
         &render_reactive_if_statement_ast(&guard_test, &consequent, Some(&alternate))
