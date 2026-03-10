@@ -15979,20 +15979,6 @@ fn render_ts_type_cast_expression_ast(
     type_annotation: &str,
     kind: TypeAnnotationKind,
 ) -> Option<String> {
-    if kind == TypeAnnotationKind::Cast {
-        let expression = format!("{FLOW_CAST_MARKER_HELPER}<{type_annotation}>({value_expr})");
-        let allocator = Allocator::default();
-        let expression = parse_expression_for_ast_codegen(
-            &allocator,
-            SourceType::mjs().with_jsx(true),
-            &expression,
-        )
-        .ok()?;
-        return Some(strip_top_level_parenthesized_expression(
-            restore_flow_cast_marker_calls(&codegen_expression_with_flow_cast_restore(&expression)),
-        ));
-    }
-
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let value = parse_rendered_expression_ast(&allocator, value_expr)?;
@@ -16000,11 +15986,26 @@ fn render_ts_type_cast_expression_ast(
     let expression = match kind {
         TypeAnnotationKind::As => builder.expression_ts_as(SPAN, value, type_annotation),
         TypeAnnotationKind::Satisfies => builder.expression_ts_satisfies(SPAN, value, type_annotation),
-        TypeAnnotationKind::Cast => unreachable!(),
+        TypeAnnotationKind::Cast => {
+            let type_arguments =
+                builder.alloc_ts_type_parameter_instantiation(SPAN, builder.vec1(type_annotation));
+            builder.expression_call(
+                SPAN,
+                builder.expression_identifier(SPAN, builder.ident(FLOW_CAST_MARKER_HELPER)),
+                Some(type_arguments),
+                builder.vec1(ast::Argument::from(value)),
+                false,
+            )
+        }
     };
-    Some(strip_top_level_parenthesized_expression(
-        codegen_expression_with_flow_cast_restore(&expression),
-    ))
+    let rendered = codegen_expression_with_flow_cast_restore(&expression);
+    if kind == TypeAnnotationKind::Cast {
+        Some(strip_top_level_parenthesized_expression(
+            restore_flow_cast_marker_calls(&rendered),
+        ))
+    } else {
+        Some(strip_top_level_parenthesized_expression(rendered))
+    }
 }
 
 fn parse_ts_type_source<'a>(allocator: &'a Allocator, type_source: &str) -> Option<ast::TSType<'a>> {
