@@ -16858,21 +16858,30 @@ fn is_inlineable_primitive_literal_expression(expr: &str) -> bool {
     if trimmed.is_empty() {
         return false;
     }
-    if matches!(trimmed, "true" | "false" | "null" | "undefined") {
-        return true;
+    let allocator = Allocator::default();
+    let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) else {
+        return false;
+    };
+    match expression.without_parentheses() {
+        ast::Expression::BooleanLiteral(_)
+        | ast::Expression::NullLiteral(_)
+        | ast::Expression::StringLiteral(_)
+        | ast::Expression::NumericLiteral(_)
+        | ast::Expression::BigIntLiteral(_) => true,
+        ast::Expression::Identifier(identifier) => identifier.name == "undefined",
+        ast::Expression::UnaryExpression(unary)
+            if matches!(
+                unary.operator,
+                AstUnaryOperator::UnaryNegation | AstUnaryOperator::UnaryPlus
+            ) =>
+        {
+            matches!(
+                unary.argument.without_parentheses(),
+                ast::Expression::NumericLiteral(_) | ast::Expression::BigIntLiteral(_)
+            )
+        }
+        _ => false,
     }
-    if (trimmed.starts_with('"') && trimmed.ends_with('"'))
-        || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
-    {
-        return true;
-    }
-    if let Some(number) = trimmed.strip_suffix('n') {
-        return !number.is_empty()
-            && number
-                .chars()
-                .all(|c| c.is_ascii_digit() || c == '_' || c == '-' || c == '+');
-    }
-    trimmed.parse::<f64>().is_ok()
 }
 
 fn codegen_place_with_min_prec(
