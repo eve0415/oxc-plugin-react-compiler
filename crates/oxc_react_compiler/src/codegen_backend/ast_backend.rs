@@ -2862,7 +2862,7 @@ fn build_compiled_function_body<'a>(
     {
         function_body
     } else if let Some(body_source) = cf.generated_body.as_ref() {
-        parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?
+        parse_compiled_function_body(allocator, source_type, cf, body_source).ok()?
     } else if let Some(default_cache) = cf.synthesized_default_param_cache.as_ref() {
         build_default_param_cache_seed_body(builder, default_cache)
     } else {

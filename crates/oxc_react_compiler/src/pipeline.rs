@@ -1218,16 +1218,10 @@ fn codegen_outlined_function(
             Ok(pipeline_output) if pipeline_output.codegen_result.error.is_none() => {
                 pipeline_output.codegen_result
             }
-            _ => match direct_codegen() {
-                Some(fallback) => fallback,
-                None => return None,
-            },
+            _ => direct_codegen()?,
         }
     } else {
-        match direct_codegen() {
-            Some(fallback) => fallback,
-            None => return None,
-        }
+        direct_codegen()?
     };
 
     if codegen.error.is_some() {

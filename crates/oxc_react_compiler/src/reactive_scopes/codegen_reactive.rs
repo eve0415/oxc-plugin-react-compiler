@@ -7200,12 +7200,8 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
         return None;
     }
 
-    let Some(else_idx) = lines.iter().position(|line| line.trim() == "} else {") else {
-        return None;
-    };
-    let Some(end_idx) = lines.iter().rposition(|line| line.trim() == "}") else {
-        return None;
-    };
+    let else_idx = lines.iter().position(|line| line.trim() == "} else {")?;
+    let end_idx = lines.iter().rposition(|line| line.trim() == "}")?;
     if else_idx <= 1 || end_idx <= else_idx {
         return None;
     }
@@ -7240,18 +7236,12 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
             decl_rhs = Some(rhs);
             continue;
         }
-        let Some(expr) = extract_simple_expression_statement_global(trimmed) else {
-            return None;
-        };
+        let expr = extract_simple_expression_statement_global(trimmed)?;
         pre_exprs.push(expr);
     }
 
-    let Some(decl_rhs) = decl_rhs else {
-        return None;
-    };
-    let Some(decl_slot) = decl_slot else {
-        return None;
-    };
+    let decl_rhs = decl_rhs?;
+    let decl_slot = decl_slot?;
 
     let mut else_passthrough: Vec<String> = Vec::new();
     for line in else_lines {
@@ -7573,13 +7563,13 @@ fn maybe_codegen_fused_named_test_reassign_then_ternary_branch(
         .any(|target| contains_identifier_token(&alternate_expr, target));
     let fused_stmt = if consequent_uses_target != alternate_uses_target {
         let consequent_branch = if consequent_uses_target {
-            render_sequence_expression_ast(&[assign_expr.clone()], &consequent_expr)
+            render_sequence_expression_ast(std::slice::from_ref(&assign_expr), &consequent_expr)
                 .expect("fused ternary consequent should stay on AST path")
         } else {
             consequent_expr.clone()
         };
         let alternate_branch = if alternate_uses_target {
-            render_sequence_expression_ast(&[assign_expr.clone()], &alternate_expr)
+            render_sequence_expression_ast(std::slice::from_ref(&assign_expr), &alternate_expr)
                 .expect("fused ternary alternate should stay on AST path")
         } else {
             alternate_expr.clone()
@@ -7595,7 +7585,7 @@ fn maybe_codegen_fused_named_test_reassign_then_ternary_branch(
         let alternate_has_assign = alternate_expr.contains(assign_trimmed);
         if consequent_has_assign && !alternate_has_assign {
             let alternate_branch =
-                render_sequence_expression_ast(&[assign_expr.clone()], &alternate_expr)
+                render_sequence_expression_ast(std::slice::from_ref(&assign_expr), &alternate_expr)
                     .expect("fused ternary alternate should stay on AST path");
             let fused_expr =
                 render_conditional_expression_ast(&test_expr, &consequent_expr, &alternate_branch)
@@ -7603,9 +7593,11 @@ fn maybe_codegen_fused_named_test_reassign_then_ternary_branch(
             render_reactive_expression_statement_ast(&fused_expr)
                 .expect("fused ternary statement should stay on AST path")
         } else if alternate_has_assign && !consequent_has_assign {
-            let consequent_branch =
-                render_sequence_expression_ast(&[assign_expr.clone()], &consequent_expr)
-                    .expect("fused ternary consequent should stay on AST path");
+            let consequent_branch = render_sequence_expression_ast(
+                std::slice::from_ref(&assign_expr),
+                &consequent_expr,
+            )
+            .expect("fused ternary consequent should stay on AST path");
             let fused_expr =
                 render_conditional_expression_ast(&test_expr, &consequent_branch, &alternate_expr)
                     .expect("fused ternary branch should stay on AST path");
@@ -21146,32 +21138,44 @@ fn codegen_statements_with_flow_cast_restore<'a>(statements: &[ast::Statement<'a
     restore_flow_cast_marker_calls(&codegen_statements_with_oxc(statements))
 }
 
+struct FunctionBodyRenderSpec<'a> {
+    params: &'a [Argument],
+    param_names: &'a [String],
+    body_source: &'a str,
+    directives: &'a [String],
+    is_async: bool,
+    is_generator: bool,
+}
+
+struct FunctionExpressionRenderSpec<'a> {
+    body: FunctionBodyRenderSpec<'a>,
+    name: Option<&'a str>,
+    fn_type: &'a FunctionExpressionType,
+    anonymous_name_hint: Option<&'a str>,
+}
+
 fn build_object_method_property_ast<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
     key: &ObjectPropertyKey,
     computed_key_source: Option<&str>,
-    params: &[Argument],
-    param_names: &[String],
-    body_source: &str,
-    is_async: bool,
-    is_generator: bool,
+    spec: &FunctionBodyRenderSpec<'_>,
 ) -> Option<ast::ObjectPropertyKind<'a>> {
     let parsed_body = parse_function_body_for_ast_codegen(
         allocator,
         SourceType::mjs().with_jsx(true),
-        is_async,
-        is_generator,
-        body_source,
+        spec.is_async,
+        spec.is_generator,
+        spec.body_source,
     )
     .ok()?;
-    let formal_params = make_reactive_formal_params(builder, params, param_names)?;
+    let formal_params = make_reactive_formal_params(builder, spec.params, spec.param_names)?;
     let function = builder.expression_function(
         SPAN,
         ast::FunctionType::FunctionExpression,
         None,
-        is_generator,
-        is_async,
+        spec.is_generator,
+        spec.is_async,
         false,
         NONE,
         NONE,
@@ -21315,11 +21319,14 @@ fn render_object_expression_ast(
                             &allocator,
                             &property.key,
                             computed_key_source.as_deref(),
-                            &lf.func.params,
-                            &inner_result.param_names,
-                            inner_result.rendered_body.trim(),
-                            lf.func.async_,
-                            lf.func.generator,
+                            &FunctionBodyRenderSpec {
+                                params: &lf.func.params,
+                                param_names: &inner_result.param_names,
+                                body_source: inner_result.rendered_body.trim(),
+                                directives: &lf.func.directives,
+                                is_async: lf.func.async_,
+                                is_generator: lf.func.generator,
+                            },
                         )?
                     } else {
                         let value_source = codegen_place_to_expression(cx, &property.place);
@@ -22419,39 +22426,30 @@ fn build_identifier_assignment_statement_ast_with_expression<'a>(
     )
 }
 
-fn render_function_expression_ast(
-    params: &[Argument],
-    param_names: &[String],
-    body_source: &str,
-    directives: &[String],
-    is_async: bool,
-    is_generator: bool,
-    name: Option<&str>,
-    fn_type: &FunctionExpressionType,
-    anonymous_name_hint: Option<&str>,
-) -> Option<String> {
+fn render_function_expression_ast(spec: &FunctionExpressionRenderSpec<'_>) -> Option<String> {
     let allocator = Allocator::default();
     let source_type = SourceType::mjs().with_jsx(true);
     let parsed_body = parse_function_body_for_ast_codegen(
         &allocator,
         source_type,
-        is_async,
-        is_generator,
-        body_source,
+        spec.body.is_async,
+        spec.body.is_generator,
+        spec.body.body_source,
     )
     .ok()?;
     let builder = AstBuilder::new(&allocator);
-    let formal_params = make_reactive_formal_params(builder, params, param_names)?;
-    let expression = match fn_type {
+    let formal_params =
+        make_reactive_formal_params(builder, spec.body.params, spec.body.param_names)?;
+    let expression = match spec.fn_type {
         FunctionExpressionType::ArrowFunctionExpression => {
-            if directives.is_empty()
+            if spec.body.directives.is_empty()
                 && let Some(return_expr) =
                     single_return_expression_from_body(&allocator, &parsed_body)
             {
                 builder.expression_arrow_function(
                     SPAN,
                     true,
-                    is_async,
+                    spec.body.is_async,
                     NONE,
                     formal_params,
                     NONE,
@@ -22465,7 +22463,7 @@ fn render_function_expression_ast(
                 builder.expression_arrow_function(
                     SPAN,
                     false,
-                    is_async,
+                    spec.body.is_async,
                     NONE,
                     formal_params,
                     NONE,
@@ -22477,9 +22475,10 @@ fn render_function_expression_ast(
         | FunctionExpressionType::FunctionDeclaration => builder.expression_function(
             SPAN,
             ast::FunctionType::FunctionExpression,
-            name.map(|name| builder.binding_identifier(SPAN, builder.atom(name))),
-            is_generator,
-            is_async,
+            spec.name
+                .map(|name| builder.binding_identifier(SPAN, builder.atom(name))),
+            spec.body.is_generator,
+            spec.body.is_async,
             false,
             NONE,
             NONE,
@@ -22488,7 +22487,7 @@ fn render_function_expression_ast(
             Some(builder.alloc(parsed_body)),
         ),
     };
-    let expression = if let Some(name_hint) = anonymous_name_hint {
+    let expression = if let Some(name_hint) = spec.anonymous_name_hint {
         wrap_named_anonymous_function_expression(builder, expression, name_hint)
     } else {
         expression
@@ -22560,17 +22559,19 @@ fn render_lowered_function_expression_source(
     );
     adopt_codegen_error(cx, inner_result.error.take());
 
-    render_function_expression_ast(
-        &lowered_func.func.params,
-        &inner_result.param_names,
-        inner_result.rendered_body.trim(),
-        &lowered_func.func.directives,
-        lowered_func.func.async_,
-        lowered_func.func.generator,
+    render_function_expression_ast(&FunctionExpressionRenderSpec {
+        body: FunctionBodyRenderSpec {
+            params: &lowered_func.func.params,
+            param_names: &inner_result.param_names,
+            body_source: inner_result.rendered_body.trim(),
+            directives: &lowered_func.func.directives,
+            is_async: lowered_func.func.async_,
+            is_generator: lowered_func.func.generator,
+        },
         name,
         fn_type,
         anonymous_name_hint,
-    )
+    })
 }
 
 fn codegen_function_expression(
@@ -22934,8 +22935,9 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use super::{
-        CodegenReactiveOptions, Context, FunctionExpressionType, HOOK_GUARD_POP, HOOK_GUARD_PUSH,
-        SPAN, apply_optional_to_rendered_expr, build_function_property_from_value_ast,
+        CodegenReactiveOptions, Context, FunctionBodyRenderSpec, FunctionExpressionRenderSpec,
+        FunctionExpressionType, HOOK_GUARD_POP, HOOK_GUARD_PUSH, SPAN,
+        apply_optional_to_rendered_expr, build_function_property_from_value_ast,
         build_object_method_property_ast, codegen_expression_with_flow_cast_restore,
         contains_base_identifier_token, contains_identifier_token, function_expr_as_declaration,
         is_literal_init_assignment_line, is_readonly_console_callee, is_simple_assignment_line,
@@ -23083,17 +23085,19 @@ mod tests {
 
     #[test]
     fn renders_named_function_expression_via_ast() {
-        let rendered = render_function_expression_ast(
-            &[Argument::Place(named_place(0, 0, "value"))],
-            &["value".to_string()],
-            "return value;",
-            &[],
-            false,
-            false,
-            Some("useFoo"),
-            &FunctionExpressionType::FunctionExpression,
-            None,
-        )
+        let rendered = render_function_expression_ast(&FunctionExpressionRenderSpec {
+            body: FunctionBodyRenderSpec {
+                params: &[Argument::Place(named_place(0, 0, "value"))],
+                param_names: &["value".to_string()],
+                body_source: "return value;",
+                directives: &[],
+                is_async: false,
+                is_generator: false,
+            },
+            name: Some("useFoo"),
+            fn_type: &FunctionExpressionType::FunctionExpression,
+            anonymous_name_hint: None,
+        })
         .expect("expected function expression");
 
         assert!(rendered.contains("function useFoo(value)"));
@@ -23102,17 +23106,19 @@ mod tests {
 
     #[test]
     fn renders_concise_arrow_function_via_ast() {
-        let rendered = render_function_expression_ast(
-            &[Argument::Place(named_place(0, 0, "value"))],
-            &["value".to_string()],
-            "return value;",
-            &[],
-            false,
-            false,
-            None,
-            &FunctionExpressionType::ArrowFunctionExpression,
-            None,
-        )
+        let rendered = render_function_expression_ast(&FunctionExpressionRenderSpec {
+            body: FunctionBodyRenderSpec {
+                params: &[Argument::Place(named_place(0, 0, "value"))],
+                param_names: &["value".to_string()],
+                body_source: "return value;",
+                directives: &[],
+                is_async: false,
+                is_generator: false,
+            },
+            name: None,
+            fn_type: &FunctionExpressionType::ArrowFunctionExpression,
+            anonymous_name_hint: None,
+        })
         .expect("expected arrow expression");
 
         assert!(rendered.contains("=>"));
@@ -23433,15 +23439,17 @@ mod tests {
             &allocator,
             &ObjectPropertyKey::Identifier("run".to_string()),
             None,
-            &[Argument::Place(named_place(0, 0, "value"))],
-            &["value".to_string()],
-            "return value;",
-            false,
-            false,
+            &FunctionBodyRenderSpec {
+                params: &[Argument::Place(named_place(0, 0, "value"))],
+                param_names: &["value".to_string()],
+                body_source: "return value;",
+                directives: &[],
+                is_async: false,
+                is_generator: false,
+            },
         )
         .expect("expected object method");
-        let expression =
-            ast::Expression::from(builder.expression_object(SPAN, builder.vec1(property)));
+        let expression = builder.expression_object(SPAN, builder.vec1(property));
         let rendered = codegen_expression_with_flow_cast_restore(&expression);
 
         assert!(rendered.contains("run(value)"));
@@ -23460,8 +23468,7 @@ mod tests {
             "async function(value) {\n  return value;\n}",
         )
         .expect("expected method property");
-        let expression =
-            ast::Expression::from(builder.expression_object(SPAN, builder.vec1(property)));
+        let expression = builder.expression_object(SPAN, builder.vec1(property));
         let rendered = codegen_expression_with_flow_cast_restore(&expression);
 
         assert!(rendered.contains("async callback(value)"));
