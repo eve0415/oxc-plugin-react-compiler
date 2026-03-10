@@ -224,7 +224,7 @@ pub enum GeneratedBodyShape {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratedBinding {
     pub kind: ast::VariableDeclarationKind,
-    pub name: String,
+    pub pattern: String,
     pub expression: String,
 }
 
@@ -1098,15 +1098,12 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
                 break;
             }
             let declarator = &declaration.declarations[0];
-            let Some(name) = binding_identifier_name(&declarator.id) else {
-                break;
-            };
             let Some(init) = declarator.init.as_ref() else {
                 break;
             };
             bindings.push(GeneratedBinding {
                 kind: declaration.kind,
-                name,
+                pattern: codegen_binding_pattern_with_flow_cast_restore(&declarator.id),
                 expression: strip_top_level_parenthesized_expression(
                     codegen_expression_with_flow_cast_restore(init),
                 ),
@@ -22030,6 +22027,51 @@ fn parse_expression_for_ast_codegen<'a>(
     Err("failed to parse nested expression".to_string())
 }
 
+fn parse_binding_pattern_for_ast_codegen<'a>(
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    pattern_source: &str,
+) -> Result<ast::BindingPattern<'a>, String> {
+    let flow_cast_normalized = normalize_flow_cast_marker_calls(pattern_source);
+    let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(pattern_source);
+    let mut attempts = vec![
+        (source_type, pattern_source.to_string()),
+        (
+            source_type.with_typescript(true),
+            pattern_source.to_string(),
+        ),
+    ];
+    if flow_cast_normalized != pattern_source {
+        attempts.push((
+            source_type.with_typescript(true),
+            flow_cast_normalized.clone(),
+        ));
+    }
+    if flow_cast_rewritten != pattern_source && flow_cast_rewritten != flow_cast_normalized {
+        attempts.push((source_type.with_typescript(true), flow_cast_rewritten));
+    }
+
+    for (attempt_source_type, attempt_pattern) in attempts {
+        let wrapper = format!("const {attempt_pattern} = __codex_binding;");
+        let wrapper = allocator.alloc_str(&wrapper);
+        let parsed = Parser::new(allocator, wrapper, attempt_source_type).parse();
+        if parsed.panicked || !parsed.errors.is_empty() {
+            continue;
+        }
+        let Some(ast::Statement::VariableDeclaration(declaration)) =
+            parsed.program.body.into_iter().next()
+        else {
+            continue;
+        };
+        let Some(declarator) = declaration.unbox().declarations.into_iter().next() else {
+            continue;
+        };
+        return Ok(declarator.id);
+    }
+
+    Err("failed to parse nested binding pattern".to_string())
+}
+
 fn parse_statement_list_for_ast_codegen<'a>(
     allocator: &'a Allocator,
     source_type: SourceType,
@@ -22510,6 +22552,12 @@ fn build_generated_binding_statements_ast<'a>(
             &binding.expression,
         )
         .ok()?;
+        let pattern = parse_binding_pattern_for_ast_codegen(
+            allocator,
+            SourceType::mjs().with_jsx(true),
+            &binding.pattern,
+        )
+        .ok()?;
         statements.push(ast::Statement::VariableDeclaration(
             builder.alloc_variable_declaration(
                 SPAN,
@@ -22517,7 +22565,7 @@ fn build_generated_binding_statements_ast<'a>(
                 builder.vec1(builder.variable_declarator(
                     SPAN,
                     binding.kind,
-                    builder.binding_pattern_binding_identifier(SPAN, builder.ident(&binding.name)),
+                    pattern,
                     NONE,
                     Some(expression),
                     false,
@@ -23109,33 +23157,8 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 allocator,
                 &inner_spec,
             )?;
-            let mut prefixed = builder.vec();
-            for binding in bindings {
-                let expression = parse_expression_for_ast_codegen(
-                    allocator,
-                    SourceType::mjs().with_jsx(true),
-                    &binding.expression,
-                )
-                .ok()?;
-                prefixed.push(ast::Statement::VariableDeclaration(
-                    builder.alloc_variable_declaration(
-                        SPAN,
-                        binding.kind,
-                        builder.vec1(builder.variable_declarator(
-                            SPAN,
-                            binding.kind,
-                            builder.binding_pattern_binding_identifier(
-                                SPAN,
-                                builder.ident(&binding.name),
-                            ),
-                            NONE,
-                            Some(expression),
-                            false,
-                        )),
-                        false,
-                    ),
-                ));
-            }
+            let mut prefixed =
+                build_generated_binding_statements_ast(builder, allocator, bindings)?;
             prefixed.extend(body.statements);
             body.statements = prefixed;
             Some(body)
@@ -26493,7 +26516,7 @@ mod tests {
             panic!("expected prefixed inner body shape");
         };
         assert_eq!(bindings.len(), 1);
-        assert_eq!(bindings[0].name, "mapped");
+        assert_eq!(bindings[0].pattern, "mapped");
         assert!(matches!(
             inner.as_ref(),
             super::GeneratedBodyShape::SingleDependencyMemoizedReturn {

@@ -1232,9 +1232,7 @@ fn codegen_outlined_function(
                     *value_name = to.to_string();
                 }
                 for binding in memoized_bindings {
-                    if binding.name == from {
-                        binding.name = to.to_string();
-                    }
+                    binding.pattern = replace_identifier_tokens(&binding.pattern, from, to);
                     binding.expression = replace_identifier_tokens(&binding.expression, from, to);
                 }
                 for assignment in memoized_assignments {
@@ -1256,9 +1254,7 @@ fn codegen_outlined_function(
                 }
                 *dep_expr = replace_identifier_tokens(dep_expr, from, to);
                 for binding in memoized_bindings {
-                    if binding.name == from {
-                        binding.name = to.to_string();
-                    }
+                    binding.pattern = replace_identifier_tokens(&binding.pattern, from, to);
                     binding.expression = replace_identifier_tokens(&binding.expression, from, to);
                 }
                 for assignment in memoized_assignments {
@@ -1282,9 +1278,7 @@ fn codegen_outlined_function(
                     *dep_expr = replace_identifier_tokens(dep_expr, from, to);
                 }
                 for binding in memoized_bindings {
-                    if binding.name == from {
-                        binding.name = to.to_string();
-                    }
+                    binding.pattern = replace_identifier_tokens(&binding.pattern, from, to);
                     binding.expression = replace_identifier_tokens(&binding.expression, from, to);
                 }
                 for assignment in memoized_assignments {
@@ -1312,9 +1306,7 @@ fn codegen_outlined_function(
                 inner,
             } => {
                 for binding in bindings {
-                    if binding.name == from {
-                        binding.name = to.to_string();
-                    }
+                    binding.pattern = replace_identifier_tokens(&binding.pattern, from, to);
                     binding.expression = replace_identifier_tokens(&binding.expression, from, to);
                 }
                 rename_generated_body_shape(inner.as_mut(), from, to);
@@ -1351,9 +1343,7 @@ fn codegen_outlined_function(
                     *temp_name = to.to_string();
                 }
                 for binding in memoized_bindings {
-                    if binding.name == from {
-                        binding.name = to.to_string();
-                    }
+                    binding.pattern = replace_identifier_tokens(&binding.pattern, from, to);
                     binding.expression = replace_identifier_tokens(&binding.expression, from, to);
                 }
                 for assignment in memoized_assignments {

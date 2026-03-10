@@ -2959,6 +2959,8 @@ fn build_generated_binding_statements<'a>(
     for binding in bindings {
         let expression =
             parse_expression_source(allocator, source_type, &binding.expression).ok()?;
+        let pattern =
+            parse_binding_pattern_source(allocator, source_type, &binding.pattern).ok()?;
         statements.push(ast::Statement::VariableDeclaration(
             builder.alloc_variable_declaration(
                 SPAN,
@@ -2966,7 +2968,7 @@ fn build_generated_binding_statements<'a>(
                 builder.vec1(builder.variable_declarator(
                     SPAN,
                     binding.kind,
-                    builder.binding_pattern_binding_identifier(SPAN, builder.ident(&binding.name)),
+                    pattern,
                     NONE,
                     Some(expression),
                     false,
@@ -3451,29 +3453,8 @@ fn try_build_function_body_from_shape<'a>(
                 inner.as_ref(),
                 cache_prologue,
             )?;
-            let mut prefixed = builder.vec();
-            for binding in bindings {
-                let expression =
-                    parse_expression_source(allocator, source_type, &binding.expression).ok()?;
-                prefixed.push(ast::Statement::VariableDeclaration(
-                    builder.alloc_variable_declaration(
-                        SPAN,
-                        binding.kind,
-                        builder.vec1(builder.variable_declarator(
-                            SPAN,
-                            binding.kind,
-                            builder.binding_pattern_binding_identifier(
-                                SPAN,
-                                builder.ident(&binding.name),
-                            ),
-                            NONE,
-                            Some(expression),
-                            false,
-                        )),
-                        false,
-                    ),
-                ));
-            }
+            let mut prefixed =
+                build_generated_binding_statements(builder, allocator, source_type, bindings)?;
             prefixed.extend(body.statements);
             body.statements = prefixed;
             Some(body)
@@ -4051,6 +4032,44 @@ fn parse_expression_source<'a>(
         return Ok(expression);
     }
     Err("failed to parse expression snippet".to_string())
+}
+
+fn parse_binding_pattern_source<'a>(
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    pattern_source: &str,
+) -> Result<ast::BindingPattern<'a>, String> {
+    let ts_source_type = source_type.with_typescript(true);
+    let mut attempts = vec![
+        (source_type, pattern_source.to_string()),
+        (ts_source_type, pattern_source.to_string()),
+    ];
+    let flow_cast_normalized = normalize_generated_body_flow_cast_marker_calls(pattern_source);
+    if flow_cast_normalized != pattern_source {
+        attempts.push((ts_source_type, flow_cast_normalized.clone()));
+    }
+    let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(pattern_source);
+    if flow_cast_rewritten != pattern_source && flow_cast_rewritten != flow_cast_normalized {
+        attempts.push((ts_source_type, flow_cast_rewritten));
+    }
+    for (attempt_source_type, attempt_pattern) in attempts {
+        let wrapped = format!("const {attempt_pattern} = __codex_binding;");
+        let Ok(mut statements) = parse_statements(
+            allocator,
+            attempt_source_type,
+            allocator.alloc_str(&wrapped),
+        ) else {
+            continue;
+        };
+        let Some(ast::Statement::VariableDeclaration(declaration)) = statements.pop() else {
+            continue;
+        };
+        let Some(declarator) = declaration.unbox().declarations.into_iter().next() else {
+            continue;
+        };
+        return Ok(declarator.id);
+    }
+    Err("failed to parse binding pattern snippet".to_string())
 }
 
 fn normalize_generated_body_iife_parenthesization(body_source: &str) -> String {
@@ -7556,7 +7575,7 @@ function Component(props) {
                 bindings: vec![
                     crate::reactive_scopes::codegen_reactive::GeneratedBinding {
                         kind: ast::VariableDeclarationKind::Const,
-                        name: "f".to_string(),
+                        pattern: "f".to_string(),
                         expression: "_temp".to_string(),
                     },
                 ],
@@ -7625,7 +7644,7 @@ function Component(props) {
                         bindings: vec![
                             crate::reactive_scopes::codegen_reactive::GeneratedBinding {
                                 kind: ast::VariableDeclarationKind::Const,
-                                name: "mapped".to_string(),
+                                pattern: "mapped".to_string(),
                                 expression: "t0".to_string(),
                             },
                         ],
@@ -7686,7 +7705,7 @@ function Component(props) {
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedBindings {
                 bindings: vec![crate::reactive_scopes::codegen_reactive::GeneratedBinding {
                     kind: ast::VariableDeclarationKind::Const,
-                    name: "mapped".to_string(),
+                    pattern: "mapped".to_string(),
                     expression: "props.items".to_string(),
                 }],
                 inner: Box::new(
@@ -7712,6 +7731,47 @@ function Component(props) {
         assert!(rewritten.contains("const mapped = props.items;"));
         assert!(rewritten.contains("foo = mapped;"));
         assert!(rewritten.contains("return mapped;"));
+    }
+
+    #[test]
+    fn builds_destructured_prefixed_binding_body_from_shape_without_generated_source() {
+        let source = "function Foo(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "const { id } = props; return id;",
+            &["props"],
+            false,
+        );
+        compiled_function.generated_body = None;
+        compiled_function.generated_body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedBindings {
+                bindings: vec![crate::reactive_scopes::codegen_reactive::GeneratedBinding {
+                    kind: ast::VariableDeclarationKind::Const,
+                    pattern: "{ id }".to_string(),
+                    expression: "props".to_string(),
+                }],
+                inner: Box::new(
+                    crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(
+                        "id".to_string(),
+                    ),
+                ),
+            };
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("const { id } = props;"));
+        assert!(rewritten.contains("return id;"));
     }
 
     #[test]
@@ -7772,12 +7832,12 @@ function Component(props) {
                 memoized_bindings: vec![
                     crate::reactive_scopes::codegen_reactive::GeneratedBinding {
                         kind: ast::VariableDeclarationKind::Const,
-                        name: "x".to_string(),
+                        pattern: "x".to_string(),
                         expression: "[{}]".to_string(),
                     },
                     crate::reactive_scopes::codegen_reactive::GeneratedBinding {
                         kind: ast::VariableDeclarationKind::Const,
-                        name: "y".to_string(),
+                        pattern: "y".to_string(),
                         expression: "x.map(_temp)".to_string(),
                     },
                 ],
