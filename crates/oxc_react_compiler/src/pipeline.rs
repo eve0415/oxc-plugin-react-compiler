@@ -1211,6 +1211,18 @@ fn codegen_outlined_function(
                 }
                 *expression = replace_identifier_tokens(expression, from, to);
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleDependencyMemoizedReturn {
+                value_name,
+                dep_expr,
+                memoized_expr,
+                ..
+            } => {
+                if value_name == from {
+                    *value_name = to.to_string();
+                }
+                *dep_expr = replace_identifier_tokens(dep_expr, from, to);
+                *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
                 value_name,
                 temp_name,
