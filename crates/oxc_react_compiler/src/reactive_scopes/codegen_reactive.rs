@@ -5791,6 +5791,18 @@ fn statement_is_variable_declaration_global(stmt: &str) -> bool {
     )
 }
 
+fn assignment_expression_rhs_global(expr: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let expression = parse_rendered_expression_ast(&allocator, expr)?;
+    let ast::Expression::AssignmentExpression(assignment) = expression.without_parentheses() else {
+        return None;
+    };
+    if assignment.operator != AssignmentOperator::Assign {
+        return None;
+    }
+    Some(codegen_expression_with_flow_cast_restore(&assignment.right))
+}
+
 fn extract_simple_expression_statement_global(stmt: &str) -> Option<String> {
     let chunks = split_top_level_statement_chunks_global(stmt)?;
     let [chunk] = chunks.as_slice() else {
@@ -7568,7 +7580,7 @@ fn maybe_codegen_fused_reassign_stmt_into_following_logical(
     let mut probe_cx = cx.clone();
     let assign_stmt = codegen_instruction_nullable(&mut probe_cx, first_instr)?;
     let assign_expr = extract_simple_expression_statement_global(&assign_stmt)?;
-    let assign_rhs = assign_expr.split_once(" = ")?.1.trim().to_string();
+    let assign_rhs = assignment_expression_rhs_global(&assign_expr)?;
     let mut bridge_exprs: Vec<String> = Vec::new();
 
     for idx in (start + 1)..block.len() {
