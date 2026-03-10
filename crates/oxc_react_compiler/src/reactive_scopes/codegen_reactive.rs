@@ -821,21 +821,182 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
         }
     }
 
+    fn expression_identifier_name<'a>(expression: &'a ast::Expression<'a>) -> Option<&'a str> {
+        match expression.without_parentheses() {
+            ast::Expression::Identifier(identifier) => Some(identifier.name.as_str()),
+            _ => None,
+        }
+    }
+
+    fn expression_is_identifier(expression: &ast::Expression<'_>, name: &str) -> bool {
+        expression_identifier_name(expression).is_some_and(|identifier| identifier == name)
+    }
+
+    fn expression_numeric_slot(expression: &ast::Expression<'_>) -> Option<u32> {
+        let ast::Expression::NumericLiteral(number) = expression.without_parentheses() else {
+            return None;
+        };
+        let value = number.value;
+        if value.fract() != 0.0 || value < 0.0 || value > u32::MAX as f64 {
+            return None;
+        }
+        Some(value as u32)
+    }
+
+    fn expression_cache_access<'a>(expression: &'a ast::Expression<'a>) -> Option<(&'a str, u32)> {
+        let ast::Expression::ComputedMemberExpression(member) = expression.without_parentheses() else {
+            return None;
+        };
+        if member.optional {
+            return None;
+        }
+        let ast::Expression::Identifier(object) = member.object.without_parentheses() else {
+            return None;
+        };
+        Some((object.name.as_str(), expression_numeric_slot(&member.expression)?))
+    }
+
+    fn expression_is_symbol_for(expression: &ast::Expression<'_>, sentinel: &str) -> bool {
+        let ast::Expression::CallExpression(call) = expression.without_parentheses() else {
+            return false;
+        };
+        if call.optional || call.arguments.len() != 1 {
+            return false;
+        }
+        let ast::Expression::StaticMemberExpression(member) = call.callee.without_parentheses() else {
+            return false;
+        };
+        if member.optional || member.property.name != "for" {
+            return false;
+        }
+        if !expression_is_identifier(&member.object, "Symbol") {
+            return false;
+        }
+        let argument = call.arguments[0].to_expression();
+        let ast::Expression::StringLiteral(literal) = argument.without_parentheses() else {
+            return false;
+        };
+        literal.value.as_str() == sentinel
+    }
+
+    fn assignment_target_identifier_name<'a>(target: &'a ast::AssignmentTarget<'a>) -> Option<&'a str> {
+        match target {
+            ast::AssignmentTarget::AssignmentTargetIdentifier(identifier) => {
+                Some(identifier.name.as_str())
+            }
+            _ => None,
+        }
+    }
+
+    fn assignment_target_cache_access<'a>(
+        target: &'a ast::AssignmentTarget<'a>,
+    ) -> Option<(&'a str, u32)> {
+        match target {
+            ast::AssignmentTarget::ComputedMemberExpression(member) if !member.optional => {
+                let ast::Expression::Identifier(object) = member.object.without_parentheses() else {
+                    return None;
+                };
+                Some((object.name.as_str(), expression_numeric_slot(&member.expression)?))
+            }
+            _ => None,
+        }
+    }
+
+    fn assignment_statement_parts<'a>(
+        statement: &'a ast::Statement<'a>,
+    ) -> Option<(&'a ast::AssignmentTarget<'a>, &'a ast::Expression<'a>)> {
+        let ast::Statement::ExpressionStatement(expression_statement) = statement else {
+            return None;
+        };
+        let ast::Expression::AssignmentExpression(assignment) =
+            expression_statement.expression.without_parentheses()
+        else {
+            return None;
+        };
+        if assignment.operator != AssignmentOperator::Assign {
+            return None;
+        }
+        Some((&assignment.left, &assignment.right))
+    }
+
+    fn statement_assigns_identifier_to_expression<'a>(
+        statement: &'a ast::Statement<'a>,
+        identifier: &str,
+    ) -> Option<&'a ast::Expression<'a>> {
+        let (target, value) = assignment_statement_parts(statement)?;
+        (assignment_target_identifier_name(target)? == identifier).then_some(value)
+    }
+
+    fn statement_assigns_cache_slot_from_identifier(
+        statement: &ast::Statement<'_>,
+        cache_var: &str,
+        slot: u32,
+        identifier: &str,
+    ) -> bool {
+        let Some((target, value)) = assignment_statement_parts(statement) else {
+            return false;
+        };
+        assignment_target_cache_access(target).is_some_and(|(name, index)| {
+            name == cache_var && index == slot && expression_is_identifier(value, identifier)
+        })
+    }
+
+    fn statement_assigns_identifier_from_cache_slot(
+        statement: &ast::Statement<'_>,
+        identifier: &str,
+        cache_var: &str,
+        slot: u32,
+    ) -> bool {
+        let Some((target, value)) = assignment_statement_parts(statement) else {
+            return false;
+        };
+        assignment_target_identifier_name(target) == Some(identifier)
+            && expression_cache_access(value)
+                .is_some_and(|(name, index)| name == cache_var && index == slot)
+    }
+
+    fn statement_returns_identifier(statement: &ast::Statement<'_>, identifier: &str) -> bool {
+        let ast::Statement::ReturnStatement(return_statement) = statement else {
+            return false;
+        };
+        return_statement
+            .argument
+            .as_ref()
+            .is_some_and(|argument| expression_is_identifier(argument, identifier))
+    }
+
+    fn cache_prologue_binding_name(statement: &ast::Statement<'_>) -> Option<String> {
+        let ast::Statement::VariableDeclaration(declaration) = statement else {
+            return None;
+        };
+        if declaration.kind != ast::VariableDeclarationKind::Const || declaration.declarations.len() != 1 {
+            return None;
+        }
+        let declarator = &declaration.declarations[0];
+        let cache_name = binding_identifier_name(&declarator.id)?;
+        let init = declarator.init.as_ref()?;
+        let ast::Expression::CallExpression(call) = init.without_parentheses() else {
+            return None;
+        };
+        if call.optional || call.arguments.len() != 1 {
+            return None;
+        }
+        if !expression_is_identifier(&call.callee, "_c") {
+            return None;
+        }
+        let size = call.arguments[0].to_expression();
+        (expression_numeric_slot(size) == Some(1)).then_some(cache_name)
+    }
+
     for source_type in [
         SourceType::mjs().with_jsx(true),
         SourceType::ts().with_jsx(true),
         SourceType::tsx(),
     ] {
         let allocator = Allocator::default();
-        let wrapper = format!("function __codex() {{\n{body}\n}}");
-        let parsed = Parser::new(&allocator, &wrapper, source_type).parse();
-        if parsed.panicked || !parsed.errors.is_empty() {
-            continue;
-        }
-        let Some(ast::Statement::FunctionDeclaration(function)) = parsed.program.body.first() else {
-            continue;
-        };
-        let Some(function_body) = function.body.as_ref() else {
+        let Ok(function_body) =
+            parse_function_body_for_ast_codegen(&allocator, source_type, false, false, body)
+        else {
             continue;
         };
         let statements = &function_body.statements;
@@ -850,9 +1011,9 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
         if statements.len() != 5 {
             continue;
         }
-        if codegen_statement_with_oxc(&statements[0]) != "const $ = _c(1);" {
+        let Some(cache_var) = cache_prologue_binding_name(&statements[0]) else {
             continue;
-        }
+        };
         let Some(ast::Statement::VariableDeclaration(memo_decl)) = statements.get(1) else {
             continue;
         };
@@ -870,8 +1031,12 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
         let Some(ast::Statement::IfStatement(if_statement)) = statements.get(2) else {
             continue;
         };
-        if codegen_expression_with_oxc(&if_statement.test)
-            != "$[0] === Symbol.for(\"react.memo_cache_sentinel\")"
+        let ast::Expression::BinaryExpression(test) = if_statement.test.without_parentheses() else {
+            continue;
+        };
+        if test.operator != AstBinaryOperator::StrictEquality
+            || expression_cache_access(&test.left) != Some((cache_var.as_str(), 0))
+            || !expression_is_symbol_for(&test.right, MEMO_CACHE_SENTINEL)
         {
             continue;
         }
@@ -888,60 +1053,68 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             continue;
         }
 
-        let assign_prefix = format!("{memo_var} = ");
-        let consequent_assign = codegen_statement_with_oxc(&consequent_block.body[0]);
-        let Some(memoized_expr) = consequent_assign
-            .strip_prefix(&assign_prefix)
-            .and_then(|source| source.strip_suffix(';'))
-            .map(str::trim)
-            .filter(|expr| !expr.is_empty())
-            .map(str::to_string)
+        let Some(memoized_expr) =
+            statement_assigns_identifier_to_expression(&consequent_block.body[0], &memo_var)
+                .map(codegen_expression_with_flow_cast_restore)
         else {
             continue;
         };
-        if codegen_statement_with_oxc(&consequent_block.body[1]) != format!("$[0] = {};", memo_var) {
+        if !statement_assigns_cache_slot_from_identifier(
+            &consequent_block.body[1],
+            &cache_var,
+            0,
+            &memo_var,
+        ) {
             continue;
         }
-        if codegen_statement_with_oxc(&alternate_block.body[0]) != format!("{memo_var} = $[0];") {
+        if !statement_assigns_identifier_from_cache_slot(
+            &alternate_block.body[0],
+            &memo_var,
+            &cache_var,
+            0,
+        ) {
             continue;
         }
 
-        let value_decl_source = codegen_statement_with_oxc(&statements[3]);
         let Some(ast::Statement::VariableDeclaration(value_decl)) = statements.get(3) else {
             continue;
         };
         if value_decl.declarations.len() != 1 {
             continue;
         }
-        let Some(value_name) = binding_identifier_name(&value_decl.declarations[0].id) else {
+        let value_decl = &value_decl.declarations[0];
+        let Some(value_name) = binding_identifier_name(&value_decl.id) else {
             continue;
         };
-        let Some((value_prefix, temp_name)) = [("let ", ast::VariableDeclarationKind::Let), ("const ", ast::VariableDeclarationKind::Const)]
-            .into_iter()
-            .find_map(|(prefix, kind)| {
-                (value_decl.kind == kind).then_some(prefix).and_then(|prefix| {
-                    let prefix = format!("{prefix}{value_name} = ");
-                    value_decl_source
-                        .starts_with(&prefix)
-                        .then_some(prefix)
-                })
-            })
-            .and_then(|prefix| {
-                let remainder = value_decl_source.strip_prefix(&prefix)?;
-                let marker = " === undefined ? ";
-                let (temp_name, rest) = remainder.split_once(marker)?;
-                let suffix = format!(" : {};", temp_name.trim());
-                rest.strip_suffix(&suffix)
-                    .map(str::trim)
-                    .filter(|memo_name| *memo_name == memo_var)
-                    .map(|_| (prefix, temp_name.trim().to_string()))
-            })
-        else {
+        if !matches!(
+            value_decl.kind,
+            ast::VariableDeclarationKind::Let | ast::VariableDeclarationKind::Const
+        ) {
+            continue;
+        }
+        let Some(init) = value_decl.init.as_ref() else {
             continue;
         };
-        let _ = value_prefix;
+        let ast::Expression::ConditionalExpression(conditional) = init.without_parentheses() else {
+            continue;
+        };
+        let ast::Expression::BinaryExpression(test) = conditional.test.without_parentheses() else {
+            continue;
+        };
+        if test.operator != AstBinaryOperator::StrictEquality
+            || !expression_is_identifier(&test.right, "undefined")
+            || !expression_is_identifier(&conditional.consequent, &memo_var)
+        {
+            continue;
+        }
+        let Some(temp_name) = expression_identifier_name(&test.left).map(str::to_string) else {
+            continue;
+        };
+        if !expression_is_identifier(&conditional.alternate, &temp_name) {
+            continue;
+        }
 
-        if codegen_statement_with_oxc(&statements[4]) != format!("return {};", value_name) {
+        if !statement_returns_identifier(&statements[4], &value_name) {
             continue;
         }
 
