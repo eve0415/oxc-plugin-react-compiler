@@ -13572,7 +13572,7 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
                         property,
                         *optional,
                     )
-                    .unwrap_or_else(|| format_property_access(&object_name, property, *optional));
+                    .expect("resolved property access should stay on AST path");
                     cx.resolved_names.insert(lvalue.identifier.id, resolved);
                 } else if let PropertyLiteral::String(prop) = property {
                     cx.resolved_names.insert(lvalue.identifier.id, prop.clone());
@@ -21724,67 +21724,6 @@ fn codegen_primitive(value: &PrimitiveValue) -> String {
             }
         }
         PrimitiveValue::String(s) => format!("\"{}\"", escape_string(s)),
-    }
-}
-
-// ---- Operator helpers ----
-
-/// Format a property access expression, using dot notation for string properties
-/// and bracket notation for numeric properties. Supports optional chaining.
-fn format_property_access(obj: &str, prop: &PropertyLiteral, optional: bool) -> String {
-    let stripped = strip_redundant_member_object_parens(obj);
-    let obj = if (stripped.contains(" as ") || stripped.contains(" satisfies "))
-        && !stripped.starts_with('(')
-    {
-        format!("({})", stripped)
-    } else {
-        stripped
-    };
-    match prop {
-        PropertyLiteral::String(s) => {
-            if is_non_negative_integer_string(s) {
-                if optional {
-                    format!("{}?.[{}]", obj, s)
-                } else {
-                    format!("{}[{}]", obj, s)
-                }
-            } else if is_valid_js_identifier(s) {
-                if optional {
-                    format!("{}?.{}", obj, s)
-                } else {
-                    format!("{}.{}", obj, s)
-                }
-            } else if optional {
-                format!("{}?.[\"{}\"]", obj, escape_string(s))
-            } else {
-                format!("{}[\"{}\"]", obj, escape_string(s))
-            }
-        }
-        PropertyLiteral::Number(n) => {
-            if optional {
-                format!("{}?.[{}]", obj, n)
-            } else {
-                format!("{}[{}]", obj, n)
-            }
-        }
-    }
-}
-
-fn strip_redundant_member_object_parens(obj: &str) -> String {
-    let allocator = Allocator::default();
-    let Some(ast::Expression::ParenthesizedExpression(parenthesized)) =
-        parse_rendered_expression_ast(&allocator, obj)
-    else {
-        return obj.to_string();
-    };
-    let inner = parenthesized.unbox().expression;
-    match inner {
-        ast::Expression::CallExpression(_)
-        | ast::Expression::ChainExpression(_)
-        | ast::Expression::StaticMemberExpression(_)
-        | ast::Expression::ComputedMemberExpression(_)
-        | ast::Expression::PrivateFieldExpression(_) => codegen_expression_with_oxc(&inner),
-        _ => obj.to_string(),
     }
 }
 
