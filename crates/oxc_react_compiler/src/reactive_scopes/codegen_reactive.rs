@@ -156,6 +156,11 @@ pub enum GeneratedBodyShape {
     Unknown,
     ReturnIdentifier(String),
     ReturnExpression(String),
+    BoundExpressionReturn {
+        value_name: String,
+        value_kind: ast::VariableDeclarationKind,
+        expression: String,
+    },
     SingleSlotMemoizedReturn {
         value_name: String,
         value_kind: ast::VariableDeclarationKind,
@@ -992,6 +997,30 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
                     codegen_expression_with_flow_cast_restore(argument),
                 ),
             };
+        }
+
+        if statements.len() == 2 {
+            let Some(ast::Statement::VariableDeclaration(declaration)) = statements.first() else {
+                continue;
+            };
+            if declaration.declarations.len() != 1 {
+                continue;
+            }
+            let declarator = &declaration.declarations[0];
+            let Some(value_name) = binding_identifier_name(&declarator.id) else {
+                continue;
+            };
+            let Some(init) = declarator.init.as_ref() else {
+                continue;
+            };
+            if statement_returns_identifier(&statements[1], &value_name) {
+                return GeneratedBodyShape::BoundExpressionReturn {
+                    value_name,
+                    value_kind: declaration.kind,
+                    expression: codegen_expression_with_flow_cast_restore(init),
+                };
+            }
+            continue;
         }
 
         if statements.len() != 5 {
@@ -21864,6 +21893,44 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 SPAN,
                 builder.vec(),
                 builder.vec1(builder.statement_return(SPAN, Some(expression))),
+            ))
+        }
+        GeneratedBodyShape::BoundExpressionReturn {
+            value_name,
+            value_kind,
+            expression,
+        } => {
+            let expression = parse_expression_for_ast_codegen(
+                allocator,
+                SourceType::mjs().with_jsx(true),
+                expression,
+            )
+            .ok()?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec_from_iter([
+                    ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+                        SPAN,
+                        *value_kind,
+                        builder.vec1(builder.variable_declarator(
+                            SPAN,
+                            *value_kind,
+                            builder.binding_pattern_binding_identifier(
+                                SPAN,
+                                builder.ident(value_name),
+                            ),
+                            NONE,
+                            Some(expression),
+                            false,
+                        )),
+                        false,
+                    )),
+                    builder.statement_return(
+                        SPAN,
+                        Some(builder.expression_identifier(SPAN, builder.ident(value_name))),
+                    ),
+                ]),
             ))
         }
         GeneratedBodyShape::SingleSlotMemoizedReturn {
