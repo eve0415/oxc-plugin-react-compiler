@@ -6561,84 +6561,137 @@ fn codegen_expression_source(expression: &ast::Expression<'_>) -> String {
     trimmed.strip_suffix(';').unwrap_or(trimmed).to_string()
 }
 
+fn codegen_statement_source(statement: &ast::Statement<'_>) -> String {
+    let allocator = oxc_allocator::Allocator::default();
+    let builder = oxc_ast::AstBuilder::new(&allocator);
+    let program = builder.program(
+        oxc_span::SPAN,
+        oxc_span::SourceType::mjs().with_jsx(true),
+        "",
+        builder.vec(),
+        None,
+        builder.vec(),
+        builder.vec1(statement.clone_in(&allocator)),
+    );
+    oxc_codegen::Codegen::new()
+        .with_options(oxc_codegen::CodegenOptions {
+            indent_char: oxc_codegen::IndentChar::Space,
+            indent_width: 2,
+            ..oxc_codegen::CodegenOptions::default()
+        })
+        .build(&program)
+        .code
+        .trim()
+        .to_string()
+}
+
 fn parse_single_slot_memoized_default_body(
     generated_body: &str,
     name: &str,
     temp: &str,
 ) -> Option<String> {
-    let lines: Vec<&str> = generated_body
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect();
-    if lines.len() != 10 {
-        return None;
+    for source_type in [
+        oxc_span::SourceType::mjs().with_jsx(true),
+        oxc_span::SourceType::ts().with_jsx(true),
+        oxc_span::SourceType::tsx(),
+    ] {
+        let allocator = oxc_allocator::Allocator::default();
+        let wrapper = format!("function __codex() {{\n{generated_body}\n}}");
+        let parsed = oxc_parser::Parser::new(&allocator, &wrapper, source_type).parse();
+        if parsed.panicked || !parsed.errors.is_empty() {
+            continue;
+        }
+        let Some(ast::Statement::FunctionDeclaration(function)) = parsed.program.body.first() else {
+            continue;
+        };
+        let Some(body) = function.body.as_ref() else {
+            continue;
+        };
+        let statements = &body.statements;
+        if statements.len() != 5 {
+            continue;
+        }
+        if codegen_statement_source(&statements[0]) != "const $ = _c(1);" {
+            continue;
+        }
+
+        let memo_decl_source = codegen_statement_source(&statements[1]);
+        let Some(memo_var) = memo_decl_source
+            .strip_prefix("let ")
+            .and_then(|source| source.strip_suffix(';'))
+            .map(str::trim)
+            .filter(|name| is_valid_binding_identifier(name))
+            .map(str::to_string)
+        else {
+            continue;
+        };
+
+        let ast::Statement::IfStatement(if_statement) = &statements[2] else {
+            continue;
+        };
+        if codegen_expression_source(&if_statement.test)
+            != "$[0] === Symbol.for(\"react.memo_cache_sentinel\")"
+        {
+            continue;
+        }
+        let Some(alternate) = if_statement.alternate.as_ref() else {
+            continue;
+        };
+        let ast::Statement::BlockStatement(consequent_block) = &if_statement.consequent else {
+            continue;
+        };
+        let ast::Statement::BlockStatement(alternate_block) = alternate else {
+            continue;
+        };
+        if consequent_block.body.len() != 2 || alternate_block.body.len() != 1 {
+            continue;
+        }
+
+        let assign_prefix = format!("{memo_var} = ");
+        let consequent_assign = codegen_statement_source(&consequent_block.body[0]);
+        let Some(memoized_expr) = consequent_assign
+            .strip_prefix(&assign_prefix)
+            .and_then(|source| source.strip_suffix(';'))
+            .map(str::trim)
+            .filter(|expr| !expr.is_empty())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        if codegen_statement_source(&consequent_block.body[1]) != format!("$[0] = {};", memo_var) {
+            continue;
+        }
+        if codegen_statement_source(&alternate_block.body[0]) != format!("{memo_var} = $[0];") {
+            continue;
+        }
+
+        let value_decl_source = codegen_statement_source(&statements[3]);
+        let let_prefix = format!("let {name} = {temp} === undefined ? ");
+        let const_prefix = format!("const {name} = {temp} === undefined ? ");
+        let value_prefix = if value_decl_source.starts_with(&let_prefix) {
+            let_prefix
+        } else if value_decl_source.starts_with(&const_prefix) {
+            const_prefix
+        } else {
+            continue;
+        };
+        let suffix = format!(" : {};", temp);
+        let Some(ternary_true_expr) = value_decl_source
+            .strip_prefix(&value_prefix)
+            .and_then(|source| source.strip_suffix(&suffix))
+            .map(str::trim)
+        else {
+            continue;
+        };
+        if ternary_true_expr != memo_var {
+            continue;
+        }
+        if codegen_statement_source(&statements[4]) != format!("return {};", name) {
+            continue;
+        }
+        return Some(memoized_expr);
     }
-    if lines[0] != "const $ = _c(1);" {
-        return None;
-    }
-    if !lines[1].starts_with("let ") || !lines[1].ends_with(';') {
-        return None;
-    }
-    let memo_var = lines[1]
-        .strip_prefix("let ")?
-        .strip_suffix(';')?
-        .trim()
-        .to_string();
-    if memo_var.is_empty() {
-        return None;
-    }
-    if lines[2] != "if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {" {
-        return None;
-    }
-    let assign_prefix = format!("{memo_var} = ");
-    if !lines[3].starts_with(&assign_prefix) || !lines[3].ends_with(';') {
-        return None;
-    }
-    let memoized_expr = lines[3]
-        .strip_prefix(&assign_prefix)?
-        .strip_suffix(';')?
-        .trim()
-        .to_string();
-    if memoized_expr.is_empty() {
-        return None;
-    }
-    if lines[4] != format!("$[0] = {};", memo_var) {
-        return None;
-    }
-    if lines[5] != "} else {" {
-        return None;
-    }
-    if lines[6] != format!("{memo_var} = $[0];") {
-        return None;
-    }
-    if lines[7] != "}" {
-        return None;
-    }
-    let let_prefix = format!("let {name} = {temp} === undefined ? ");
-    let const_prefix = format!("const {name} = {temp} === undefined ? ");
-    let value_prefix = if lines[8].starts_with(&let_prefix) {
-        let_prefix
-    } else if lines[8].starts_with(&const_prefix) {
-        const_prefix
-    } else {
-        return None;
-    };
-    let suffix = format!(" : {};", temp);
-    if !lines[8].ends_with(&suffix) {
-        return None;
-    }
-    let ternary_true_expr = lines[8]
-        .strip_prefix(&value_prefix)?
-        .strip_suffix(&suffix)?
-        .trim();
-    if ternary_true_expr != memo_var {
-        return None;
-    }
-    if lines[9] != format!("return {};", name) {
-        return None;
-    }
-    Some(memoized_expr)
+    None
 }
 
 type DefaultParamCacheSynthesis = (
