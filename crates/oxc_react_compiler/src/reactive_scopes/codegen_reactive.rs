@@ -12797,10 +12797,21 @@ fn codegen_reactive_scope(
                 .expect("cached old-value declaration should stay on AST path"),
             );
             cached_body.push_str(
-                &render_reactive_expression_statement_ast(&format!(
-                    "$structuralCheck({}, {}, \"{}\", \"{}\", \"cached\", \"{}\")",
-                    old_name, name, name, cx.function_name, scope_loc
-                ))
+                &render_reactive_expression_statement_ast(
+                    &render_call_expression_from_rendered_args_ast(
+                        "$structuralCheck",
+                        &[
+                            old_name.clone(),
+                            name.clone(),
+                            format!("\"{}\"", escape_string(name)),
+                            format!("\"{}\"", escape_string(&cx.function_name)),
+                            "\"cached\"".to_string(),
+                            format!("\"{}\"", escape_string(&scope_loc)),
+                        ],
+                        false,
+                    )
+                    .expect("cached structural check should stay on AST path"),
+                )
                 .expect("cached structural check should stay on AST path"),
             );
         }
@@ -12819,10 +12830,22 @@ fn codegen_reactive_scope(
         let mut recomputed_body = computation.clone();
         for (name, index) in &cache_loads {
             recomputed_body.push_str(
-                &render_reactive_expression_statement_ast(&format!(
-                    "$structuralCheck({}[{}], {}, \"{}\", \"{}\", \"recomputed\", \"{}\")",
-                    cache_var, index, name, name, cx.function_name, scope_loc
-                ))
+                &render_reactive_expression_statement_ast(
+                    &render_call_expression_from_rendered_args_ast(
+                        "$structuralCheck",
+                        &[
+                            render_cache_slot_access_expression_ast(&cache_var, *index)
+                                .expect("recomputed structural check cache access should stay on AST path"),
+                            name.clone(),
+                            format!("\"{}\"", escape_string(name)),
+                            format!("\"{}\"", escape_string(&cx.function_name)),
+                            "\"recomputed\"".to_string(),
+                            format!("\"{}\"", escape_string(&scope_loc)),
+                        ],
+                        false,
+                    )
+                    .expect("recomputed structural check should stay on AST path"),
+                )
                 .expect("recomputed structural check should stay on AST path"),
             );
             recomputed_body.push_str(
@@ -16062,6 +16085,26 @@ fn render_call_expression_ast(
     let builder = AstBuilder::new(&allocator);
     let callee = parse_rendered_expression_ast(&allocator, callee)?;
     let args = render_arguments_ast(builder, &allocator, args, rendered_args)?;
+    let expression = builder.expression_call(SPAN, callee, NONE, args, optional);
+    Some(strip_top_level_parenthesized_expression(
+        codegen_expression_with_flow_cast_restore(&expression),
+    ))
+}
+
+fn render_call_expression_from_rendered_args_ast(
+    callee: &str,
+    rendered_args: &[String],
+    optional: bool,
+) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let callee = parse_rendered_expression_ast(&allocator, callee)?;
+    let mut args = builder.vec();
+    for rendered in rendered_args {
+        args.push(ast::Argument::from(parse_rendered_expression_ast(
+            &allocator, rendered,
+        )?));
+    }
     let expression = builder.expression_call(SPAN, callee, NONE, args, optional);
     Some(strip_top_level_parenthesized_expression(
         codegen_expression_with_flow_cast_restore(&expression),
