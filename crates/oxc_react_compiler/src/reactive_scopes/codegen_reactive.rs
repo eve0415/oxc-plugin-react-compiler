@@ -275,6 +275,8 @@ struct Context {
     enable_change_detection_for_debugging: bool,
     /// Wrap anonymous function expressions with generated name hints.
     enable_name_anonymous_functions: bool,
+    /// Whether hook-guard statements or expressions were emitted.
+    emitted_hook_guards: bool,
     /// Whether `$structuralCheck` was emitted by this function.
     needs_structural_check_import: bool,
     /// Function display name used by debug change-detection diagnostics.
@@ -627,6 +629,7 @@ fn codegen_reactive_function_with_primitives(
         emit_hook_guards,
         enable_change_detection_for_debugging: options.enable_change_detection_for_debugging,
         enable_name_anonymous_functions: options.enable_name_anonymous_functions,
+        emitted_hook_guards: false,
         needs_structural_check_import: false,
         function_name,
         function_is_async: func.async_,
@@ -820,7 +823,7 @@ fn codegen_reactive_function_with_primitives(
         param_names,
         needs_freeze_import: false,
         has_fire_rewrite: false,
-        needs_hook_guards: body.contains(HOOK_GUARD_IDENT) || needs_function_hook_guard_wrapper,
+        needs_hook_guards: cx.emitted_hook_guards || needs_function_hook_guard_wrapper,
         needs_function_hook_guard_wrapper,
         needs_structural_check_import: cx.needs_structural_check_import,
         cache_prologue,
@@ -1395,7 +1398,8 @@ fn render_hook_guarded_call_expression_ast(call_expr: &str) -> Option<String> {
     ))
 }
 
-fn guard_hook_call_expression(call_expr: String) -> String {
+fn guard_hook_call_expression(cx: &mut Context, call_expr: String) -> String {
+    cx.emitted_hook_guards = true;
     render_hook_guarded_call_expression_ast(&call_expr)
         .expect("generated hook-guarded call should parse")
 }
@@ -8137,7 +8141,7 @@ fn maybe_codegen_fused_method_call_eval_order(
     )
     .expect("fused method call should stay on AST path");
     let call_expr = if cx.emit_hook_guards && hook_name.is_some_and(Environment::is_hook_name) {
-        guard_hook_call_expression(call_expr)
+        guard_hook_call_expression(cx, call_expr)
     } else {
         call_expr
     };
@@ -8470,7 +8474,7 @@ fn maybe_codegen_fused_method_call_destructure_assignment(
                 .expect("fused destructure call should stay on AST path");
                 let call_expr =
                     if cx.emit_hook_guards && hook_name.is_some_and(Environment::is_hook_name) {
-                        guard_hook_call_expression(call_expr)
+                        guard_hook_call_expression(cx, call_expr)
                     } else {
                         call_expr
                     };
@@ -14615,7 +14619,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                     render_call_expression_ast(&callee_final, args, &rendered_args, *optional)
                         .expect("autodeps call should stay on AST path");
                 let call_expr = if cx.emit_hook_guards && is_hook_call {
-                    guard_hook_call_expression(call_expr)
+                    guard_hook_call_expression(cx, call_expr)
                 } else {
                     call_expr
                 };
@@ -14649,7 +14653,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 let call_expr = render_call_expression_ast(&callee_final, args, &call_args, *optional)
                     .expect("cached autodeps call should stay on AST path");
                 let call_expr = if cx.emit_hook_guards && is_hook_call {
-                    guard_hook_call_expression(call_expr)
+                    guard_hook_call_expression(cx, call_expr)
                 } else {
                     call_expr
                 };
@@ -14665,7 +14669,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 let call_expr = render_call_expression_ast(&callee_final, args, &call_args, *optional)
                     .expect("cached autodeps call should stay on AST path");
                 let call_expr = if cx.emit_hook_guards && is_hook_call {
-                    guard_hook_call_expression(call_expr)
+                    guard_hook_call_expression(cx, call_expr)
                 } else {
                     call_expr
                 };
@@ -14706,7 +14710,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 )
                 .expect("autodeps method call should stay on AST path");
                 let call_expr = if cx.emit_hook_guards {
-                    guard_hook_call_expression(call_expr)
+                    guard_hook_call_expression(cx, call_expr)
                 } else {
                     call_expr
                 };
@@ -14748,7 +14752,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 )
                 .expect("cached autodeps method call should stay on AST path");
                 let call_expr = if cx.emit_hook_guards {
-                    guard_hook_call_expression(call_expr)
+                    guard_hook_call_expression(cx, call_expr)
                 } else {
                     call_expr
                 };
@@ -14772,7 +14776,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 )
                 .expect("cached autodeps method call should stay on AST path");
                 let call_expr = if cx.emit_hook_guards {
-                    guard_hook_call_expression(call_expr)
+                    guard_hook_call_expression(cx, call_expr)
                 } else {
                     call_expr
                 };
@@ -15237,7 +15241,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             let call_expr = render_call_expression_ast(&callee_final, args, &rendered_args, *optional)
                 .expect("generated call expression should parse");
             if cx.emit_hook_guards && is_hook_call {
-                ExprValue::primary(guard_hook_call_expression(call_expr))
+                ExprValue::primary(guard_hook_call_expression(cx, call_expr))
             } else {
                 ExprValue::primary(call_expr)
             }
@@ -15297,7 +15301,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             )
             .expect("method call should stay on AST path");
             if cx.emit_hook_guards && is_hook_call {
-                ExprValue::primary(guard_hook_call_expression(call_expr))
+                ExprValue::primary(guard_hook_call_expression(cx, call_expr))
             } else {
                 ExprValue::primary(call_expr)
             }
@@ -22019,6 +22023,7 @@ mod tests {
             emit_hook_guards: options.enable_emit_hook_guards,
             enable_change_detection_for_debugging: options.enable_change_detection_for_debugging,
             enable_name_anonymous_functions: options.enable_name_anonymous_functions,
+            emitted_hook_guards: false,
             needs_structural_check_import: false,
             function_name: "<test>".to_string(),
             function_is_async: false,
