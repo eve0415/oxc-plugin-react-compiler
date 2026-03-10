@@ -21632,32 +21632,27 @@ fn codegen_for_init(cx: &mut Context, init_block: &ReactiveBlock) -> String {
 
 fn codegen_for_update(cx: &mut Context, update_block: &ReactiveBlock) -> String {
     fn collapse_statement_lines_to_sequence_expr(raw: &str) -> String {
-        let mut exprs: Vec<String> = Vec::new();
-        for line in raw.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let expr = trimmed.trim_end_matches(';').trim();
-            if expr.is_empty()
-                || expr.starts_with("let ")
-                || expr.starts_with("const ")
-                || expr.starts_with("var ")
-                || expr.starts_with("if ")
-                || expr.starts_with("for ")
-                || expr.starts_with("while ")
-                || expr.starts_with("switch ")
-                || expr.starts_with("return ")
-                || expr.starts_with("throw ")
-                || expr.starts_with("try ")
-            {
-                return raw.trim().trim_end_matches(';').to_string();
-            }
-            exprs.push(expr.to_string());
+        let fallback = raw.trim().trim_end_matches(';').to_string();
+        let allocator = Allocator::default();
+        let Ok(statements) = parse_statement_list_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            raw,
+        ) else {
+            return fallback;
+        };
+        let mut exprs: Vec<String> = Vec::with_capacity(statements.len());
+        for statement in statements {
+            let ast::Statement::ExpressionStatement(expression_statement) = statement else {
+                return fallback;
+            };
+            exprs.push(codegen_expression_with_flow_cast_restore(
+                &expression_statement.expression,
+            ));
         }
 
         match exprs.len() {
-            0 => raw.trim().trim_end_matches(';').to_string(),
+            0 => fallback,
             1 => exprs.pop().unwrap_or_default(),
             _ => exprs.join(", "),
         }
