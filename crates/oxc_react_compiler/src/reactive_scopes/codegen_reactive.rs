@@ -5670,7 +5670,9 @@ fn maybe_emit_reused_optional_dependency_reads(
 
     for dep in optional_deps {
         let dep_expr = codegen_dependency(cx, &dep);
-        if dep_expr.contains("?.") && cx.emitted_optional_dep_reads.insert(dep_expr.clone()) {
+        if rendered_expr_contains_optional_chain(&dep_expr)
+            && cx.emitted_optional_dep_reads.insert(dep_expr.clone())
+        {
             output.push_str(
                 &render_reactive_expression_statement_ast(&dep_expr)
                     .expect("optional dependency read should stay on AST path"),
@@ -13152,9 +13154,16 @@ fn codegen_reactive_scope(
     } else {
         scope_dep_exprs.clone()
     };
-    if block.len() == 1 && selected_dep_exprs.iter().all(|dep| !dep.contains("?.")) {
+    if block.len() == 1
+        && selected_dep_exprs
+            .iter()
+            .all(|dep| !rendered_expr_contains_optional_chain(dep))
+    {
         let fallback_dep_exprs = infer_fallback_scope_dep_exprs(cx, block);
-        if fallback_dep_exprs.iter().any(|dep| dep.contains("?.")) {
+        if fallback_dep_exprs
+            .iter()
+            .any(|dep| rendered_expr_contains_optional_chain(dep))
+        {
             selected_dep_exprs =
                 replace_dep_exprs_with_optional_fallbacks(selected_dep_exprs, &fallback_dep_exprs);
         }
@@ -13210,7 +13219,9 @@ fn codegen_reactive_scope(
         && scope.reassignments.is_empty()
         && block.len() == 1
         && !single_decl_is_function_like
-        && let Some(dep_index) = selected_dep_exprs.iter().position(|dep| dep.contains("?."))
+        && let Some(dep_index) = selected_dep_exprs
+            .iter()
+            .position(|dep| rendered_expr_contains_optional_chain(dep))
     {
         let dep_expr = selected_dep_exprs[dep_index].clone();
         let decl = sorted_decls[0].1;
@@ -16139,7 +16150,7 @@ fn apply_optional_to_rendered_expr(expr: &str, optional: bool) -> Option<String>
         return Some(expr.to_string());
     }
     let trimmed = expr.trim();
-    if trimmed.contains("?.") {
+    if rendered_expr_contains_optional_chain(trimmed) {
         return Some(trimmed.to_string());
     }
     let allocator = Allocator::default();
@@ -16313,6 +16324,37 @@ fn rendered_expr_contains_logical_or(expr: &str) -> bool {
         return false;
     };
     let mut detector = LogicalOrDetector { found: false };
+    detector.visit_expression(&expression);
+    detector.found
+}
+
+struct OptionalChainDetector {
+    found: bool,
+}
+
+impl<'a> Visit<'a> for OptionalChainDetector {
+    fn visit_expression(&mut self, expression: &ast::Expression<'a>) {
+        if self.found {
+            return;
+        }
+        if matches!(expression.without_parentheses(), ast::Expression::ChainExpression(_)) {
+            self.found = true;
+            return;
+        }
+        walk::walk_expression(self, expression);
+    }
+}
+
+fn rendered_expr_contains_optional_chain(expr: &str) -> bool {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let allocator = Allocator::default();
+    let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) else {
+        return false;
+    };
+    let mut detector = OptionalChainDetector { found: false };
     detector.visit_expression(&expression);
     detector.found
 }
@@ -17613,7 +17655,7 @@ fn replace_dep_exprs_with_optional_fallbacks(
 
     let optional_fallbacks: HashMap<String, String> = fallback_dep_exprs
         .iter()
-        .filter(|expr| expr.contains("?."))
+        .filter(|expr| rendered_expr_contains_optional_chain(expr))
         .map(|expr| (strip_optional_markers(expr), expr.clone()))
         .collect();
     let mut next = Vec::with_capacity(selected_dep_exprs.len());
@@ -22407,6 +22449,7 @@ mod tests {
         rendered_statement_is_cache_store,
         rendered_statement_references_label,
         rendered_expr_is_autodeps_placeholder,
+        rendered_expr_contains_optional_chain,
         rendered_expr_contains_logical_or,
         rendered_expr_is_array_literal, rendered_expr_is_array_seed_like,
         rendered_expr_is_function_like, rendered_expr_is_jsx_like,
@@ -22684,6 +22727,14 @@ mod tests {
         assert!(rendered_expr_contains_logical_or("(cond ? left : right) || other"));
         assert!(!rendered_expr_contains_logical_or("value ?? fallback"));
         assert!(!rendered_expr_contains_logical_or("value && fallback"));
+    }
+
+    #[test]
+    fn detects_rendered_optional_chains_via_ast() {
+        assert!(rendered_expr_contains_optional_chain("value?.prop"));
+        assert!(rendered_expr_contains_optional_chain("(value?.prop).next"));
+        assert!(!rendered_expr_contains_optional_chain("value.prop"));
+        assert!(!rendered_expr_contains_optional_chain("value ?? fallback"));
     }
 
     #[test]
