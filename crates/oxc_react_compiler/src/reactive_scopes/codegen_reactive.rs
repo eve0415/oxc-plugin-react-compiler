@@ -14198,14 +14198,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
             if cx.disable_memoization_features {
                 let call_expr =
                     render_call_expression_ast(&callee_final, args, &rendered_args, *optional)
-                        .unwrap_or_else(|| {
-                            let rendered_args_joined = join_call_arguments(&rendered_args);
-                            if *optional {
-                                format!("{}?.({})", callee_final, rendered_args_joined)
-                            } else {
-                                format!("{}({})", callee_final, rendered_args_joined)
-                            }
-                        });
+                        .expect("autodeps call should stay on AST path");
                 let call_expr = if cx.emit_hook_guards && is_hook_call {
                     guard_hook_call_expression(call_expr)
                 } else {
@@ -14238,15 +14231,8 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 let cb_slot = cx.alloc_cache_slot();
                 let deps_slot = cx.alloc_cache_slot();
                 call_args[dep_idx] = deps_name.clone();
-                let call_expr =
-                    render_call_expression_ast(&callee_final, args, &call_args, *optional)
-                        .unwrap_or_else(|| {
-                            if *optional {
-                                format!("{}?.({})", callee_final, call_args.join(", "))
-                            } else {
-                                format!("{}({})", callee_final, call_args.join(", "))
-                            }
-                        });
+                let call_expr = render_call_expression_ast(&callee_final, args, &call_args, *optional)
+                    .expect("cached autodeps call should stay on AST path");
                 let call_expr = if cx.emit_hook_guards && is_hook_call {
                     guard_hook_call_expression(call_expr)
                 } else {
@@ -14261,15 +14247,8 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 )?
             } else {
                 let slot = cx.alloc_cache_slot();
-                let call_expr =
-                    render_call_expression_ast(&callee_final, args, &call_args, *optional)
-                        .unwrap_or_else(|| {
-                            if *optional {
-                                format!("{}?.({})", callee_final, call_args.join(", "))
-                            } else {
-                                format!("{}({})", callee_final, call_args.join(", "))
-                            }
-                        });
+                let call_expr = render_call_expression_ast(&callee_final, args, &call_args, *optional)
+                    .expect("cached autodeps call should stay on AST path");
                 let call_expr = if cx.emit_hook_guards && is_hook_call {
                     guard_hook_call_expression(call_expr)
                 } else {
@@ -14301,7 +14280,6 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 .position(|arg| arg == "AUTODEPS" || arg.ends_with(".AUTODEPS"))?;
             maybe_replace_autodeps_with_inferred_deps(cx, &prop, args, &mut rendered_args, true);
             if cx.disable_memoization_features {
-                let rendered_args_joined = join_call_arguments(&rendered_args);
                 let call_expr = render_method_call_expression_with_options_ast(
                     &recv,
                     &prop,
@@ -14311,14 +14289,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                     *receiver_optional,
                     *call_optional,
                 )
-                .unwrap_or_else(|| {
-                    let dot = if *receiver_optional { "?." } else { "." };
-                    if *call_optional {
-                        format!("{}{}{}?.({})", recv, dot, prop, rendered_args_joined)
-                    } else {
-                        format!("{}{}{}({})", recv, dot, prop, rendered_args_joined)
-                    }
-                });
+                .expect("autodeps method call should stay on AST path");
                 let call_expr = if cx.emit_hook_guards {
                     guard_hook_call_expression(call_expr)
                 } else {
@@ -14360,14 +14331,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                     *receiver_optional,
                     *call_optional,
                 )
-                .unwrap_or_else(|| {
-                    let dot = if *receiver_optional { "?." } else { "." };
-                    if *call_optional {
-                        format!("{}{}{}?.({})", recv, dot, prop, call_args.join(", "))
-                    } else {
-                        format!("{}{}{}({})", recv, dot, prop, call_args.join(", "))
-                    }
-                });
+                .expect("cached autodeps method call should stay on AST path");
                 let call_expr = if cx.emit_hook_guards {
                     guard_hook_call_expression(call_expr)
                 } else {
@@ -14391,14 +14355,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                     *receiver_optional,
                     *call_optional,
                 )
-                .unwrap_or_else(|| {
-                    let dot = if *receiver_optional { "?." } else { "." };
-                    if *call_optional {
-                        format!("{}{}{}?.({})", recv, dot, prop, call_args.join(", "))
-                    } else {
-                        format!("{}{}{}({})", recv, dot, prop, call_args.join(", "))
-                    }
-                });
+                .expect("cached autodeps method call should stay on AST path");
                 let call_expr = if cx.emit_hook_guards {
                     guard_hook_call_expression(call_expr)
                 } else {
@@ -18652,27 +18609,6 @@ fn codegen_argument(cx: &mut Context, arg: &Argument) -> String {
     match arg {
         Argument::Place(p) => codegen_place_with_min_prec(cx, p, ExprPrecedence::Conditional),
         Argument::Spread(p) => format!("...{}", codegen_place_to_expression(cx, p)),
-    }
-}
-
-fn join_call_arguments(rendered_args: &[String]) -> String {
-    if rendered_args.len() >= 3
-        && rendered_args
-            .first()
-            .is_some_and(|first| first.contains("=>"))
-    {
-        let mut lines: Vec<String> = Vec::with_capacity(rendered_args.len());
-        lines.push(format!("{},", rendered_args[0]));
-        for (index, arg) in rendered_args.iter().enumerate().skip(1) {
-            if index + 1 < rendered_args.len() {
-                lines.push(format!("{},", arg));
-            } else {
-                lines.push(arg.clone());
-            }
-        }
-        lines.join("\n")
-    } else {
-        rendered_args.join(", ")
     }
 }
 
