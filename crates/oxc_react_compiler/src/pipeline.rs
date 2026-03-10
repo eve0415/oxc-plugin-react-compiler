@@ -1223,6 +1223,20 @@ fn codegen_outlined_function(
                 *dep_expr = replace_identifier_tokens(dep_expr, from, to);
                 *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MultiDependencyMemoizedReturn {
+                value_name,
+                deps,
+                memoized_expr,
+                ..
+            } => {
+                if value_name == from {
+                    *value_name = to.to_string();
+                }
+                for (_, dep_expr) in deps {
+                    *dep_expr = replace_identifier_tokens(dep_expr, from, to);
+                }
+                *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
                 value_name,
                 temp_name,

@@ -3087,6 +3087,87 @@ fn try_build_function_body_from_shape<'a>(
                 ]),
             ))
         }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MultiDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            deps,
+            value_slot,
+            memoized_expr,
+        } => {
+            let cache_binding_name = &cache_prologue?.binding_name;
+            let memoized_expr = parse_expression_source(allocator, source_type, memoized_expr).ok()?;
+            let mut dep_assignments = builder.vec();
+            let mut dep_guards = deps.iter().map(|(slot, dep_expr)| {
+                let dep_expression = parse_expression_source(allocator, source_type, dep_expr).ok()?;
+                dep_assignments.push(build_cache_slot_assignment_statement(
+                    builder,
+                    cache_binding_name,
+                    *slot,
+                    dep_expression.clone_in(allocator),
+                ));
+                Some(builder.expression_binary(
+                    SPAN,
+                    cache_member_slot_expression(builder, cache_binding_name, *slot),
+                    BinaryOperator::StrictInequality,
+                    dep_expression,
+                ))
+            });
+            let mut test = dep_guards.next()??;
+            for guard in dep_guards {
+                test = builder.expression_logical(SPAN, test, LogicalOperator::Or, guard?);
+            }
+            let mut consequent = builder.vec1(build_identifier_assignment_statement(
+                builder,
+                value_name,
+                memoized_expr,
+            ));
+            consequent.extend(dep_assignments);
+            consequent.push(build_cache_slot_assignment_statement(
+                builder,
+                cache_binding_name,
+                *value_slot,
+                builder.expression_identifier(SPAN, builder.ident(value_name)),
+            ));
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec_from_iter([
+                    ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+                        SPAN,
+                        *value_kind,
+                        builder.vec1(builder.variable_declarator(
+                            SPAN,
+                            *value_kind,
+                            builder.binding_pattern_binding_identifier(
+                                SPAN,
+                                builder.ident(value_name),
+                            ),
+                            NONE,
+                            None,
+                            false,
+                        )),
+                        false,
+                    )),
+                    builder.statement_if(
+                        SPAN,
+                        test,
+                        builder.statement_block(SPAN, consequent),
+                        Some(builder.statement_block(
+                            SPAN,
+                            builder.vec1(build_identifier_assignment_statement(
+                                builder,
+                                value_name,
+                                cache_member_slot_expression(builder, cache_binding_name, *value_slot),
+                            )),
+                        )),
+                    ),
+                    builder.statement_return(
+                        SPAN,
+                        Some(builder.expression_identifier(SPAN, builder.ident(value_name))),
+                    ),
+                ]),
+            ))
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
             value_name,
             value_kind,
@@ -7014,6 +7095,54 @@ function Component(props) {
         assert!(rewritten.contains("items = props.items.map(_temp);"));
         assert!(rewritten.contains("$[1] = items;"));
         assert!(rewritten.contains("return items;"));
+    }
+
+    #[test]
+    fn builds_multi_dependency_memoized_body_from_shape_without_generated_source() {
+        let source = "function Foo(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "let value; if ($[0] !== props.left || $[1] !== props.right) { value = [props.left, props.right]; $[0] = props.left; $[1] = props.right; $[2] = value; } else { value = $[2]; } return value;",
+            &["props"],
+            false,
+        );
+        compiled_function.generated_body = None;
+        compiled_function.generated_body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MultiDependencyMemoizedReturn {
+                value_name: "value".to_string(),
+                value_kind: ast::VariableDeclarationKind::Let,
+                deps: vec![
+                    (0, "props.left".to_string()),
+                    (1, "props.right".to_string()),
+                ],
+                value_slot: 2,
+                memoized_expr: "[props.left, props.right]".to_string(),
+            };
+        compiled_function.needs_cache_import = true;
+        compiled_function.cache_prologue =
+            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+                binding_name: "$".to_string(),
+                size: 3,
+                fast_refresh: None,
+            });
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("const $ = _c(3);"));
+        assert!(rewritten.contains("if ($[0] !== props.left || $[1] !== props.right) {"));
+        assert!(rewritten.contains("$[2] = value;"));
+        assert!(rewritten.contains("return value;"));
     }
 
     #[test]

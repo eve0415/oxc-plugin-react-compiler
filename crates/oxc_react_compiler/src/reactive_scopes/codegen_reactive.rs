@@ -169,6 +169,13 @@ pub enum GeneratedBodyShape {
         value_slot: u32,
         memoized_expr: String,
     },
+    MultiDependencyMemoizedReturn {
+        value_name: String,
+        value_kind: ast::VariableDeclarationKind,
+        deps: Vec<(u32, String)>,
+        value_slot: u32,
+        memoized_expr: String,
+    },
     SingleSlotMemoizedReturn {
         value_name: String,
         value_kind: ast::VariableDeclarationKind,
@@ -864,6 +871,31 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
         literal.value.as_str() == sentinel
     }
 
+    fn collect_dependency_guards<'a>(
+        expression: &'a ast::Expression<'a>,
+    ) -> Option<Vec<(&'a str, u32, String)>> {
+        match expression.without_parentheses() {
+            ast::Expression::LogicalExpression(logical)
+                if logical.operator == AstLogicalOperator::Or =>
+            {
+                let mut guards = collect_dependency_guards(&logical.left)?;
+                guards.extend(collect_dependency_guards(&logical.right)?);
+                Some(guards)
+            }
+            ast::Expression::BinaryExpression(binary)
+                if binary.operator == AstBinaryOperator::StrictInequality =>
+            {
+                let (cache_var, dep_slot) = expression_cache_access(&binary.left)?;
+                Some(vec![(
+                    cache_var,
+                    dep_slot,
+                    codegen_expression_with_flow_cast_restore(&binary.right),
+                )])
+            }
+            _ => None,
+        }
+    }
+
     fn assignment_target_identifier_name<'a>(
         target: &'a ast::AssignmentTarget<'a>,
     ) -> Option<&'a str> {
@@ -1057,7 +1089,78 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             let ast::Statement::BlockStatement(alternate_block) = alternate else {
                 continue;
             };
-            if consequent_block.body.len() != 3 || alternate_block.body.len() != 1 {
+            if alternate_block.body.len() != 1 {
+                continue;
+            }
+            if let Some(dependency_guards) = collect_dependency_guards(&if_statement.test)
+                && dependency_guards.len() >= 2
+                && consequent_block.body.len() == dependency_guards.len() + 2
+            {
+                let Some(memoized_expr) = statement_assigns_identifier_to_expression(
+                    &consequent_block.body[0],
+                    &value_name,
+                )
+                .map(codegen_expression_with_flow_cast_restore) else {
+                    continue;
+                };
+                let Some((cache_var, _, _)) = dependency_guards.first() else {
+                    continue;
+                };
+                let mut dep_pairs: Vec<(u32, String)> = Vec::with_capacity(dependency_guards.len());
+                let mut guards_match = true;
+                for (index, (expected_cache_var, dep_slot, dep_expr)) in
+                    dependency_guards.iter().enumerate()
+                {
+                    let Some((dep_target, dep_value)) =
+                        assignment_statement_parts(&consequent_block.body[index + 1])
+                    else {
+                        guards_match = false;
+                        break;
+                    };
+                    if assignment_target_cache_access(dep_target)
+                        != Some((expected_cache_var, *dep_slot))
+                        || codegen_expression_with_flow_cast_restore(dep_value) != *dep_expr
+                    {
+                        guards_match = false;
+                        break;
+                    }
+                    dep_pairs.push((*dep_slot, dep_expr.clone()));
+                }
+                if !guards_match {
+                    continue;
+                }
+                let Some((value_target, value_value)) =
+                    assignment_statement_parts(&consequent_block.body[dependency_guards.len() + 1])
+                else {
+                    continue;
+                };
+                let Some((assigned_cache_var, value_slot)) =
+                    assignment_target_cache_access(value_target)
+                else {
+                    continue;
+                };
+                if assigned_cache_var != *cache_var
+                    || !expression_is_identifier(value_value, &value_name)
+                    || !statement_assigns_identifier_from_cache_slot(
+                        &alternate_block.body[0],
+                        &value_name,
+                        cache_var,
+                        value_slot,
+                    )
+                    || !statement_returns_identifier(&statements[2], &value_name)
+                {
+                    continue;
+                }
+                return GeneratedBodyShape::MultiDependencyMemoizedReturn {
+                    value_name,
+                    value_kind: value_decl.kind,
+                    deps: dep_pairs,
+                    value_slot,
+                    memoized_expr,
+                };
+            }
+
+            if consequent_block.body.len() != 3 {
                 continue;
             }
             let ast::Expression::BinaryExpression(test) = if_statement.test.without_parentheses()
@@ -22121,6 +22224,128 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                                 ),
                             ]),
                         ),
+                        Some(builder.statement_block(
+                            SPAN,
+                            builder.vec1(
+                                build_identifier_assignment_statement_ast_with_expression(
+                                    builder,
+                                    value_name,
+                                    build_computed_member_expression_ast(
+                                        builder,
+                                        cache_binding_name,
+                                        builder.expression_numeric_literal(
+                                            SPAN,
+                                            *value_slot as f64,
+                                            None,
+                                            NumberBase::Decimal,
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        )),
+                    ),
+                    builder.statement_return(
+                        SPAN,
+                        Some(builder.expression_identifier(SPAN, builder.ident(value_name))),
+                    ),
+                ]),
+            ))
+        }
+        GeneratedBodyShape::MultiDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            deps,
+            value_slot,
+            memoized_expr,
+        } => {
+            let cache_binding_name = &spec.cache_prologue?.binding_name;
+            let memoized_expr = parse_expression_for_ast_codegen(
+                allocator,
+                SourceType::mjs().with_jsx(true),
+                memoized_expr,
+            )
+            .ok()?;
+            let mut dep_assignments = builder.vec();
+            let mut dep_guards = deps.iter().map(|(slot, dep_expr)| {
+                let dep_expression = parse_expression_for_ast_codegen(
+                    allocator,
+                    SourceType::mjs().with_jsx(true),
+                    dep_expr,
+                )
+                .ok()?;
+                dep_assignments.push(build_computed_member_assignment_statement_ast(
+                    builder,
+                    cache_binding_name,
+                    builder.expression_numeric_literal(
+                        SPAN,
+                        *slot as f64,
+                        None,
+                        NumberBase::Decimal,
+                    ),
+                    dep_expression.clone_in(allocator),
+                ));
+                Some(builder.expression_binary(
+                    SPAN,
+                    build_computed_member_expression_ast(
+                        builder,
+                        cache_binding_name,
+                        builder.expression_numeric_literal(
+                            SPAN,
+                            *slot as f64,
+                            None,
+                            NumberBase::Decimal,
+                        ),
+                    ),
+                    AstBinaryOperator::StrictInequality,
+                    dep_expression,
+                ))
+            });
+            let mut test = dep_guards.next()??;
+            for guard in dep_guards {
+                test = builder.expression_logical(SPAN, test, AstLogicalOperator::Or, guard?);
+            }
+            let mut consequent =
+                builder.vec1(build_identifier_assignment_statement_ast_with_expression(
+                    builder,
+                    value_name,
+                    memoized_expr,
+                ));
+            consequent.extend(dep_assignments);
+            consequent.push(build_computed_member_assignment_statement_ast(
+                builder,
+                cache_binding_name,
+                builder.expression_numeric_literal(
+                    SPAN,
+                    *value_slot as f64,
+                    None,
+                    NumberBase::Decimal,
+                ),
+                builder.expression_identifier(SPAN, builder.ident(value_name)),
+            ));
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec_from_iter([
+                    ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+                        SPAN,
+                        *value_kind,
+                        builder.vec1(builder.variable_declarator(
+                            SPAN,
+                            *value_kind,
+                            builder.binding_pattern_binding_identifier(
+                                SPAN,
+                                builder.ident(value_name),
+                            ),
+                            NONE,
+                            None,
+                            false,
+                        )),
+                        false,
+                    )),
+                    builder.statement_if(
+                        SPAN,
+                        test,
+                        builder.statement_block(SPAN, consequent),
                         Some(builder.statement_block(
                             SPAN,
                             builder.vec1(
