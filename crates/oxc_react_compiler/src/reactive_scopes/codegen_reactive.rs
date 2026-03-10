@@ -14,6 +14,7 @@ use oxc_ast::{AstBuilder, NONE, ast};
 use oxc_codegen::{Codegen, CodegenOptions, Context as CodegenPrintContext, Gen, IndentChar};
 use oxc_parser::Parser;
 use oxc_span::{SPAN, SourceType};
+use oxc_ast_visit::{Visit, walk};
 use oxc_syntax::number::NumberBase;
 use oxc_syntax::operator::{
     AssignmentOperator, BinaryOperator as AstBinaryOperator,
@@ -3749,7 +3750,9 @@ fn codegen_block_no_reset_with_options(
         }
         let target = identifier_name_with_cx(cx, &lvalue.place.identifier);
         let rhs_expr = codegen_place_to_expression(cx, value);
-        if !contains_base_identifier_token(&rhs_expr, &target) || !rhs_expr.contains("||") {
+        if !contains_base_identifier_token(&rhs_expr, &target)
+            || !rendered_expr_contains_logical_or(&rhs_expr)
+        {
             return None;
         }
         let ReactiveStatement::Instruction(next_instr) = block.get(idx + 1)? else {
@@ -6859,7 +6862,7 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
     let cache_var = codegen_expression_with_flow_cast_restore(&member.object);
     let dep_slot = codegen_expression_with_flow_cast_restore(&member.expression);
     let dep_expr = codegen_expression_with_flow_cast_restore(&binary.right);
-    if cache_var.is_empty() || dep_slot.is_empty() || dep_expr.contains("||") {
+    if cache_var.is_empty() || dep_slot.is_empty() || rendered_expr_contains_logical_or(&dep_expr) {
         return None;
     }
 
@@ -16281,6 +16284,39 @@ fn find_rendered_autodeps_index(rendered_args: &[String]) -> Option<usize> {
         .position(|arg| rendered_expr_is_autodeps_placeholder(arg))
 }
 
+struct LogicalOrDetector {
+    found: bool,
+}
+
+impl<'a> Visit<'a> for LogicalOrDetector {
+    fn visit_expression(&mut self, expression: &ast::Expression<'a>) {
+        if self.found {
+            return;
+        }
+        if let ast::Expression::LogicalExpression(logical) = expression.without_parentheses()
+            && logical.operator == AstLogicalOperator::Or
+        {
+            self.found = true;
+            return;
+        }
+        walk::walk_expression(self, expression);
+    }
+}
+
+fn rendered_expr_contains_logical_or(expr: &str) -> bool {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let allocator = Allocator::default();
+    let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) else {
+        return false;
+    };
+    let mut detector = LogicalOrDetector { found: false };
+    detector.visit_expression(&expression);
+    detector.found
+}
+
 fn rendered_expr_is_jsx_like(expr: &str) -> bool {
     let trimmed = expr.trim();
     if trimmed.is_empty() {
@@ -22371,6 +22407,7 @@ mod tests {
         rendered_statement_is_cache_store,
         rendered_statement_references_label,
         rendered_expr_is_autodeps_placeholder,
+        rendered_expr_contains_logical_or,
         rendered_expr_is_array_literal, rendered_expr_is_array_seed_like,
         rendered_expr_is_function_like, rendered_expr_is_jsx_like,
         parse_rendered_expression_ast,
@@ -22639,6 +22676,14 @@ mod tests {
         assert!(is_literal_init_assignment_line("items = {};"));
         assert!(!is_literal_init_assignment_line("$[0] = [];"));
         assert!(!is_literal_init_assignment_line("break bb1;"));
+    }
+
+    #[test]
+    fn detects_rendered_logical_or_via_ast() {
+        assert!(rendered_expr_contains_logical_or("value || fallback"));
+        assert!(rendered_expr_contains_logical_or("(cond ? left : right) || other"));
+        assert!(!rendered_expr_contains_logical_or("value ?? fallback"));
+        assert!(!rendered_expr_contains_logical_or("value && fallback"));
     }
 
     #[test]
