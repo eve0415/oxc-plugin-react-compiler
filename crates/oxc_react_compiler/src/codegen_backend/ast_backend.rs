@@ -59,20 +59,6 @@ pub(crate) fn emit_module(
     args: ModuleEmitArgs<'_>,
     compiled: Vec<CompiledFunction>,
 ) -> CompileResult {
-    let compiled = compiled
-        .into_iter()
-        .map(|mut compiled_function| {
-            if compiled_function.body_payload == CompiledBodyPayload::LowerFromFinalHir
-                && !can_emit_compiled_statement_ast(&compiled_function)
-                && let Some(hir_function) = compiled_function.hir_function.as_ref()
-                && let Some(lowered_body) = super::hir_to_ast::try_lower_function_body(hir_function)
-            {
-                compiled_function.generated_body = Some(lowered_body);
-            }
-            compiled_function
-        })
-        .collect::<Vec<_>>();
-
     if compiled.is_empty() {
         return CompileResult {
             transformed: false,
