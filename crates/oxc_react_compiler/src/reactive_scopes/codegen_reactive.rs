@@ -750,15 +750,7 @@ fn codegen_reactive_function_with_primitives(
 
     let body = codegen_block(&mut cx, &func.body);
 
-    // Remove trailing bare `return;`
-    let trimmed = body.trim_end();
-    let mut body = if let Some(prefix) = trimmed.strip_suffix("return;") {
-        let mut s = prefix.to_string();
-        s.push('\n');
-        s
-    } else {
-        body
-    };
+    let mut body = strip_trailing_bare_return(&body, func.async_, func.generator);
     let needs_function_hook_guard_wrapper = cx.emit_hook_guards && emit_function_hook_guard;
     if needs_function_hook_guard_wrapper && options.emit_function_hook_guard_wrapper_in_body {
         body = render_hook_guarded_block_ast(&body, HOOK_GUARD_PUSH, HOOK_GUARD_POP)
@@ -1147,6 +1139,33 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
     }
 
     GeneratedBodyShape::Unknown
+}
+
+fn strip_trailing_bare_return(body: &str, is_async: bool, is_generator: bool) -> String {
+    let allocator = Allocator::default();
+    if let Ok((wrapper_prefix_len, parsed_body)) = parse_function_body_for_ast_codegen_with_offset(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        is_async,
+        is_generator,
+        body,
+    ) && let Some(ast::Statement::ReturnStatement(return_statement)) = parsed_body.statements.last()
+        && return_statement.argument.is_none()
+    {
+        let start = return_statement.span.start as usize - wrapper_prefix_len;
+        let mut stripped = body[..start].trim_end().to_string();
+        stripped.push('\n');
+        return stripped;
+    }
+
+    let trimmed = body.trim_end();
+    if let Some(prefix) = trimmed.strip_suffix("return;") {
+        let mut stripped = prefix.to_string();
+        stripped.push('\n');
+        stripped
+    } else {
+        body.to_string()
+    }
 }
 
 fn prune_unused_const_literal_decls(body: &str) -> String {
@@ -20308,6 +20327,23 @@ fn parse_function_body_for_ast_codegen<'a>(
     is_generator: bool,
     body_source: &str,
 ) -> Result<ast::FunctionBody<'a>, String> {
+    parse_function_body_for_ast_codegen_with_offset(
+        allocator,
+        source_type,
+        is_async,
+        is_generator,
+        body_source,
+    )
+    .map(|(_, body)| body)
+}
+
+fn parse_function_body_for_ast_codegen_with_offset<'a>(
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    is_async: bool,
+    is_generator: bool,
+    body_source: &str,
+) -> Result<(usize, ast::FunctionBody<'a>), String> {
     fn push_attempt(
         attempts: &mut Vec<(SourceType, String)>,
         source_type: SourceType,
@@ -20332,10 +20368,11 @@ fn parse_function_body_for_ast_codegen<'a>(
     push_attempt(&mut attempts, source_type, &flow_cast_rewritten);
 
     for (attempt_source_type, attempt_body) in attempts {
-        let wrapper = format!(
-            "{}function {}__codex_codegen_body() {{\n{}\n}}",
-            async_prefix, generator_prefix, attempt_body
+        let wrapper_prefix = format!(
+            "{}function {}__codex_codegen_body() {{\n",
+            async_prefix, generator_prefix
         );
+        let wrapper = format!("{wrapper_prefix}{}\n}}", attempt_body);
         let wrapper = allocator.alloc_str(&wrapper);
         let parsed = Parser::new(allocator, wrapper, attempt_source_type).parse();
         if parsed.panicked || !parsed.errors.is_empty() {
@@ -20347,7 +20384,7 @@ fn parse_function_body_for_ast_codegen<'a>(
             continue;
         };
         if let Some(body) = function.unbox().body {
-            return Ok(body.unbox());
+            return Ok((wrapper_prefix.len(), body.unbox()));
         }
     }
 
@@ -22716,6 +22753,7 @@ mod tests {
         rendered_expr_contains_push_call_on_target,
         strip_optional_chain_receiver_parens,
         normalize_root_optional_dependency,
+        strip_trailing_bare_return,
         strip_terminal_current_path,
         widen_member_dep_expr_to_root,
         parse_rendered_expression_ast,
@@ -23074,6 +23112,22 @@ mod tests {
             Some("foo.bar")
         );
         assert_eq!(strip_terminal_current_path("foo.bar"), None);
+    }
+
+    #[test]
+    fn strips_trailing_bare_return_via_ast() {
+        assert_eq!(
+            strip_trailing_bare_return("const value = 1;\nreturn;\n", false, false),
+            "const value = 1;\n"
+        );
+        assert_eq!(
+            strip_trailing_bare_return("asyncWork();\nawait load();\nreturn;\n", true, false),
+            "asyncWork();\nawait load();\n"
+        );
+        assert_eq!(
+            strip_trailing_bare_return("return value;\n", false, false),
+            "return value;\n"
+        );
     }
 
     #[test]
