@@ -2914,10 +2914,7 @@ fn build_default_param_cache_seed_body<'a>(
         builder.vec(),
         builder.vec1(builder.statement_return(
             SPAN,
-            Some(builder.expression_identifier(
-                SPAN,
-                builder.ident(&default_cache.value_name),
-            )),
+            Some(builder.expression_identifier(SPAN, builder.ident(&default_cache.value_name))),
         )),
     )
 }
@@ -4678,8 +4675,7 @@ fn collect_compiled_body_prefix_statements<'a>(
             statement,
             body_identifier_references.as_ref(),
             later_statements,
-        )
-        else {
+        ) else {
             continue;
         };
         statements.push(build_compiled_prefix_statement(
@@ -4748,18 +4744,15 @@ fn compiled_binding_pattern_is_used(
     let mut bound_identifiers = Vec::new();
     collect_compiled_binding_pattern_identifiers(pattern, &mut bound_identifiers);
     bound_identifiers.into_iter().any(|ident| {
-        body_identifier_references
-            .is_none_or(|references| references.contains(&ident))
-            || later_statements
-                .iter()
-                .any(|statement| {
-                    compiled_prefix_statement_references_identifier(
-                        allocator,
-                        source_type,
-                        statement,
-                        &ident,
-                    )
-                })
+        body_identifier_references.is_none_or(|references| references.contains(&ident))
+            || later_statements.iter().any(|statement| {
+                compiled_prefix_statement_references_identifier(
+                    allocator,
+                    source_type,
+                    statement,
+                    &ident,
+                )
+            })
     })
 }
 

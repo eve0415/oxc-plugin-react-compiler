@@ -5803,8 +5803,7 @@ fn try_compile_function<'a>(
         && outlined_functions_are_hir_lowerable(&outlined)
         && generated_body.as_ref().is_some_and(|generated_body| {
             compiled_function_body_matches_hir(generated_body, &pipeline_output.final_hir_snapshot)
-        })
-    {
+        }) {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
         CompiledBodyPayload::GeneratedString
@@ -6018,8 +6017,7 @@ fn try_compile_function_with_name<'a>(
         && outlined_functions_are_hir_lowerable(&outlined)
         && generated_body.as_ref().is_some_and(|generated_body| {
             compiled_function_body_matches_hir(generated_body, &pipeline_output.final_hir_snapshot)
-        })
-    {
+        }) {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
         CompiledBodyPayload::GeneratedString
@@ -6241,8 +6239,7 @@ fn try_compile_arrow<'a>(
         && outlined_functions_are_hir_lowerable(&outlined)
         && generated_body.as_ref().is_some_and(|generated_body| {
             compiled_function_body_matches_hir(generated_body, &pipeline_output.final_hir_snapshot)
-        })
-    {
+        }) {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
         CompiledBodyPayload::GeneratedString
@@ -6291,9 +6288,7 @@ struct ParamsResult {
     hir_outlined_functions: Vec<(String, HIRFunction)>,
 }
 
-fn outlined_functions_are_hir_lowerable(
-    outlined_functions: &[CompiledOutlinedFunction],
-) -> bool {
+fn outlined_functions_are_hir_lowerable(outlined_functions: &[CompiledOutlinedFunction]) -> bool {
     // `outlined_functions` only retains rendered bodies that still differ from
     // the HIR-lowered form. If any rendered outlined body remains, the parent
     // function cannot be emitted purely from final HIR.
@@ -6435,10 +6430,7 @@ fn codegen_expression_source(expression: &ast::Expression<'_>) -> String {
     trimmed.strip_suffix(';').unwrap_or(trimmed).to_string()
 }
 
-type DefaultParamCacheSynthesis = (
-    SynthesizedDefaultParamCache,
-    Vec<(String, HIRFunction)>,
-);
+type DefaultParamCacheSynthesis = (SynthesizedDefaultParamCache, Vec<(String, HIRFunction)>);
 
 struct PreparedGeneratedBody {
     generated_body: Option<String>,

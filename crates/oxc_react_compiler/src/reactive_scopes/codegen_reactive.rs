@@ -11,15 +11,14 @@ use std::collections::{HashMap, HashSet};
 
 use oxc_allocator::{Allocator, CloneIn};
 use oxc_ast::{AstBuilder, NONE, ast};
+use oxc_ast_visit::{Visit, walk};
 use oxc_codegen::{Codegen, CodegenOptions, Context as CodegenPrintContext, Gen, IndentChar};
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SPAN, SourceType};
-use oxc_ast_visit::{Visit, walk};
 use oxc_syntax::number::NumberBase;
 use oxc_syntax::operator::{
-    AssignmentOperator, BinaryOperator as AstBinaryOperator,
-    LogicalOperator as AstLogicalOperator, UnaryOperator as AstUnaryOperator,
-    UpdateOperator as AstUpdateOperator,
+    AssignmentOperator, BinaryOperator as AstBinaryOperator, LogicalOperator as AstLogicalOperator,
+    UnaryOperator as AstUnaryOperator, UpdateOperator as AstUpdateOperator,
 };
 
 use crate::environment::Environment;
@@ -827,9 +826,7 @@ fn codegen_reactive_function_with_primitives(
 fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
     fn binding_identifier_name(pattern: &ast::BindingPattern<'_>) -> Option<String> {
         match pattern {
-            ast::BindingPattern::BindingIdentifier(identifier) => {
-                Some(identifier.name.to_string())
-            }
+            ast::BindingPattern::BindingIdentifier(identifier) => Some(identifier.name.to_string()),
             _ => None,
         }
     }
@@ -857,7 +854,8 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
     }
 
     fn expression_cache_access<'a>(expression: &'a ast::Expression<'a>) -> Option<(&'a str, u32)> {
-        let ast::Expression::ComputedMemberExpression(member) = expression.without_parentheses() else {
+        let ast::Expression::ComputedMemberExpression(member) = expression.without_parentheses()
+        else {
             return None;
         };
         if member.optional {
@@ -866,7 +864,10 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
         let ast::Expression::Identifier(object) = member.object.without_parentheses() else {
             return None;
         };
-        Some((object.name.as_str(), expression_numeric_slot(&member.expression)?))
+        Some((
+            object.name.as_str(),
+            expression_numeric_slot(&member.expression)?,
+        ))
     }
 
     fn expression_is_symbol_for(expression: &ast::Expression<'_>, sentinel: &str) -> bool {
@@ -876,7 +877,8 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
         if call.optional || call.arguments.len() != 1 {
             return false;
         }
-        let ast::Expression::StaticMemberExpression(member) = call.callee.without_parentheses() else {
+        let ast::Expression::StaticMemberExpression(member) = call.callee.without_parentheses()
+        else {
             return false;
         };
         if member.optional || member.property.name != "for" {
@@ -892,7 +894,9 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
         literal.value.as_str() == sentinel
     }
 
-    fn assignment_target_identifier_name<'a>(target: &'a ast::AssignmentTarget<'a>) -> Option<&'a str> {
+    fn assignment_target_identifier_name<'a>(
+        target: &'a ast::AssignmentTarget<'a>,
+    ) -> Option<&'a str> {
         match target {
             ast::AssignmentTarget::AssignmentTargetIdentifier(identifier) => {
                 Some(identifier.name.as_str())
@@ -906,10 +910,14 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
     ) -> Option<(&'a str, u32)> {
         match target {
             ast::AssignmentTarget::ComputedMemberExpression(member) if !member.optional => {
-                let ast::Expression::Identifier(object) = member.object.without_parentheses() else {
+                let ast::Expression::Identifier(object) = member.object.without_parentheses()
+                else {
                     return None;
                 };
-                Some((object.name.as_str(), expression_numeric_slot(&member.expression)?))
+                Some((
+                    object.name.as_str(),
+                    expression_numeric_slot(&member.expression)?,
+                ))
             }
             _ => None,
         }
@@ -982,7 +990,9 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
         let ast::Statement::VariableDeclaration(declaration) = statement else {
             return None;
         };
-        if declaration.kind != ast::VariableDeclarationKind::Const || declaration.declarations.len() != 1 {
+        if declaration.kind != ast::VariableDeclarationKind::Const
+            || declaration.declarations.len() != 1
+        {
             return None;
         }
         let declarator = &declaration.declarations[0];
@@ -1030,7 +1040,8 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
         let Some(ast::Statement::VariableDeclaration(memo_decl)) = statements.get(1) else {
             continue;
         };
-        if memo_decl.kind != ast::VariableDeclarationKind::Let || memo_decl.declarations.len() != 1 {
+        if memo_decl.kind != ast::VariableDeclarationKind::Let || memo_decl.declarations.len() != 1
+        {
             continue;
         }
         let memo_decl = &memo_decl.declarations[0];
@@ -1044,7 +1055,8 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
         let Some(ast::Statement::IfStatement(if_statement)) = statements.get(2) else {
             continue;
         };
-        let ast::Expression::BinaryExpression(test) = if_statement.test.without_parentheses() else {
+        let ast::Expression::BinaryExpression(test) = if_statement.test.without_parentheses()
+        else {
             continue;
         };
         if test.operator != AstBinaryOperator::StrictEquality
@@ -1149,7 +1161,8 @@ fn strip_trailing_bare_return(body: &str, is_async: bool, is_generator: bool) ->
         is_async,
         is_generator,
         body,
-    ) && let Some(ast::Statement::ReturnStatement(return_statement)) = parsed_body.statements.last()
+    ) && let Some(ast::Statement::ReturnStatement(return_statement)) =
+        parsed_body.statements.last()
         && return_statement.argument.is_none()
     {
         let start = return_statement.span.start as usize - wrapper_prefix_len;
@@ -1183,14 +1196,12 @@ fn prune_unused_const_literal_decls(body: &str, is_async: bool, is_generator: bo
             .enumerate()
             .filter_map(|(idx, statement)| {
                 let name = const_literal_decl_identifier(statement)?;
-                let used_elsewhere = parsed_body
-                    .statements
-                    .iter()
-                    .enumerate()
-                    .any(|(other_idx, other_statement)| {
+                let used_elsewhere = parsed_body.statements.iter().enumerate().any(
+                    |(other_idx, other_statement)| {
                         other_idx != idx
                             && statement_references_identifier(other_statement, name.as_str())
-                    });
+                    },
+                );
                 (!used_elsewhere).then_some(idx)
             })
             .collect();
@@ -1286,7 +1297,9 @@ fn const_literal_decl_identifier(statement: &ast::Statement<'_>) -> Option<Strin
     let ast::Statement::VariableDeclaration(declaration) = statement else {
         return None;
     };
-    if declaration.kind != ast::VariableDeclarationKind::Const || declaration.declarations.len() != 1 {
+    if declaration.kind != ast::VariableDeclarationKind::Const
+        || declaration.declarations.len() != 1
+    {
         return None;
     }
     let declarator = &declaration.declarations[0];
@@ -1299,12 +1312,9 @@ fn const_literal_decl_identifier(statement: &ast::Statement<'_>) -> Option<Strin
 
 fn parse_const_literal_decl(line: &str) -> Option<(String, String)> {
     let allocator = Allocator::default();
-    let statement = parse_single_statement_for_ast_codegen(
-        &allocator,
-        SourceType::mjs().with_jsx(true),
-        line,
-    )
-    .ok()?;
+    let statement =
+        parse_single_statement_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), line)
+            .ok()?;
     let ast::Statement::VariableDeclaration(declaration) = statement else {
         return None;
     };
@@ -1496,18 +1506,23 @@ fn render_hook_guarded_block_ast(body: &str, before: u8, after: u8) -> Option<St
 fn render_hook_guarded_call_expression_ast(call_expr: &str) -> Option<String> {
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
-    let mut try_body = builder.vec1(build_hook_guard_call_statement_ast(builder, HOOK_GUARD_ALLOW));
-    try_body.push(builder.statement_return(
-        SPAN,
-        Some(
-            parse_expression_for_ast_codegen(
-                &allocator,
-                SourceType::mjs().with_jsx(true),
-                call_expr,
-            )
-            .ok()?,
-        ),
+    let mut try_body = builder.vec1(build_hook_guard_call_statement_ast(
+        builder,
+        HOOK_GUARD_ALLOW,
     ));
+    try_body.push(
+        builder.statement_return(
+            SPAN,
+            Some(
+                parse_expression_for_ast_codegen(
+                    &allocator,
+                    SourceType::mjs().with_jsx(true),
+                    call_expr,
+                )
+                .ok()?,
+            ),
+        ),
+    );
     let try_statement = builder.statement_try(
         SPAN,
         builder.alloc_block_statement(SPAN, try_body),
@@ -2928,7 +2943,10 @@ fn codegen_block_no_reset_with_options(
         if declaration.declarations.len() != 1 {
             return false;
         }
-        let Some(init) = declaration.declarations.first().and_then(|declarator| declarator.init.as_ref())
+        let Some(init) = declaration
+            .declarations
+            .first()
+            .and_then(|declarator| declarator.init.as_ref())
         else {
             return false;
         };
@@ -3516,8 +3534,7 @@ fn codegen_block_no_reset_with_options(
                 let left_expr = codegen_logical_operand(cx, left, logical_prec);
                 let right_expr = codegen_logical_operand(cx, right, logical_prec);
                 let left_from_prefix = pending.exprs.last().and_then(|expr| {
-                    assignment_expression_rhs(expr)
-                        .map(|rhs| normalize_fusion_match_text(&rhs))
+                    assignment_expression_rhs(expr).map(|rhs| normalize_fusion_match_text(&rhs))
                 });
                 let normalized_left_expr = normalize_fusion_match_text(&left_expr);
                 let combined_left = if left_from_prefix
@@ -4124,15 +4141,18 @@ fn codegen_block_no_reset_with_options(
             let mut consequent = if_stmt;
             consequent.push_str(
                 &render_cache_slot_store_statement_ast(&cache_var, dep_slot, &dep_expr)
-                .expect("scope bridge dependency store should stay on AST path"),
+                    .expect("scope bridge dependency store should stay on AST path"),
             );
             consequent.push_str(
                 &render_cache_slot_store_statement_ast(&cache_var, value_slot, &target_name)
-                .expect("scope bridge value store should stay on AST path"),
+                    .expect("scope bridge value store should stay on AST path"),
             );
-            let alternate =
-                render_cache_slot_load_assignment_statement_ast(&target_name, &cache_var, value_slot)
-                    .expect("scope bridge cache load should stay on AST path");
+            let alternate = render_cache_slot_load_assignment_statement_ast(
+                &target_name,
+                &cache_var,
+                value_slot,
+            )
+            .expect("scope bridge cache load should stay on AST path");
             let guard_test = render_cache_slot_comparison_expression_ast(
                 &cache_var,
                 dep_slot,
@@ -4851,11 +4871,9 @@ fn count_non_empty_lines(code: &str) -> usize {
 
 fn is_simple_assignment_line(code: &str) -> bool {
     let allocator = Allocator::default();
-    let Ok(statement) = parse_single_statement_for_ast_codegen(
-        &allocator,
-        SourceType::mjs().with_jsx(true),
-        code,
-    ) else {
+    let Ok(statement) =
+        parse_single_statement_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), code)
+    else {
         return false;
     };
     matches!(
@@ -5050,8 +5068,7 @@ fn maybe_codegen_labeled_if_adjacent_block(
     rewritten_body.push_str(following_stmt.trim_end());
     rewritten_body.push('\n');
 
-    let rewritten =
-        render_reactive_labeled_statement_ast(&label_name, &rewritten_body, true)?;
+    let rewritten = render_reactive_labeled_statement_ast(&label_name, &rewritten_body, true)?;
     let next_is_cache_store =
         next_emitted_statement_is_cache_store(cx, block, idx + 1 + consumed_following);
     if matches!(next_is_cache_store, Some(false)) {
@@ -5184,10 +5201,16 @@ fn rendered_expr_root_identifier_name(expr: &str) -> Option<String> {
         match expression.without_parentheses() {
             ast::Expression::Identifier(identifier) => Some(identifier.name.to_string()),
             ast::Expression::StaticMemberExpression(member) => root_identifier_name(&member.object),
-            ast::Expression::ComputedMemberExpression(member) => root_identifier_name(&member.object),
+            ast::Expression::ComputedMemberExpression(member) => {
+                root_identifier_name(&member.object)
+            }
             ast::Expression::ChainExpression(chain) => match &chain.expression {
-                ast::ChainElement::StaticMemberExpression(member) => root_identifier_name(&member.object),
-                ast::ChainElement::ComputedMemberExpression(member) => root_identifier_name(&member.object),
+                ast::ChainElement::StaticMemberExpression(member) => {
+                    root_identifier_name(&member.object)
+                }
+                ast::ChainElement::ComputedMemberExpression(member) => {
+                    root_identifier_name(&member.object)
+                }
                 ast::ChainElement::CallExpression(call) => root_identifier_name(&call.callee),
                 _ => None,
             },
@@ -5225,9 +5248,11 @@ fn rendered_expr_contains_assignment_to_target(expr: &str, target: &str, rhs_exp
             if self.found {
                 return;
             }
-            if let ast::Expression::AssignmentExpression(assignment) = expression.without_parentheses()
+            if let ast::Expression::AssignmentExpression(assignment) =
+                expression.without_parentheses()
                 && assignment.operator == AssignmentOperator::Assign
-                && let ast::AssignmentTarget::AssignmentTargetIdentifier(identifier) = &assignment.left
+                && let ast::AssignmentTarget::AssignmentTargetIdentifier(identifier) =
+                    &assignment.left
                 && identifier.name == self.target
                 && codegen_expression_with_flow_cast_restore(&assignment.right) == self.rhs_expr
             {
@@ -6057,8 +6082,7 @@ fn maybe_codegen_fused_nullish_self_reassign(
     let lhs = codegen_instruction_value_ev(cx, &first_instr.value)
         .wrap_if_needed(ExprPrecedence::NullishCoalescing);
     let rhs = codegen_place_with_min_prec(cx, right_place, ExprPrecedence::NullishCoalescing);
-    let fused_expr =
-        render_logical_expression_ast(&lhs, LogicalOperator::NullishCoalescing, &rhs)?;
+    let fused_expr = render_logical_expression_ast(&lhs, LogicalOperator::NullishCoalescing, &rhs)?;
 
     if first_lvalue.identifier.name.is_none() {
         let ev = ExprValue::new(fused_expr, ExprPrecedence::NullishCoalescing);
@@ -6266,12 +6290,9 @@ fn extract_simple_expression_statement_global(stmt: &str) -> Option<String> {
         return None;
     };
     let allocator = Allocator::default();
-    let statement = parse_single_statement_for_ast_codegen(
-        &allocator,
-        SourceType::mjs().with_jsx(true),
-        chunk,
-    )
-    .ok()?;
+    let statement =
+        parse_single_statement_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), chunk)
+            .ok()?;
     let ast::Statement::ExpressionStatement(expression_statement) = statement else {
         return None;
     };
@@ -6286,12 +6307,9 @@ fn extract_initializer_rhs_global(stmt: &str) -> Option<String> {
         return None;
     };
     let allocator = Allocator::default();
-    let statement = parse_single_statement_for_ast_codegen(
-        &allocator,
-        SourceType::mjs().with_jsx(true),
-        chunk,
-    )
-    .ok()?;
+    let statement =
+        parse_single_statement_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), chunk)
+            .ok()?;
     let ast::Statement::VariableDeclaration(declaration) = statement else {
         return None;
     };
@@ -6395,7 +6413,8 @@ fn parse_named_const_assignment_line(line: &str) -> Option<(String, String, Stri
     let ast::Statement::VariableDeclaration(declaration) = statement else {
         return None;
     };
-    if declaration.kind != ast::VariableDeclarationKind::Const || declaration.declarations.len() != 1
+    if declaration.kind != ast::VariableDeclarationKind::Const
+        || declaration.declarations.len() != 1
     {
         return None;
     }
@@ -6667,13 +6686,12 @@ fn rewrite_named_temp_ternary_in_scope_computation(computation: &str) -> String 
             continue;
         }
 
-        let rewritten_expr =
-            render_conditional_expression_ast(
-                &rewritten_test,
-                &rewritten_consequent,
-                &rewritten_alternate,
-            )
-            .expect("named temp ternary should stay on AST path");
+        let rewritten_expr = render_conditional_expression_ast(
+            &rewritten_test,
+            &rewritten_consequent,
+            &rewritten_alternate,
+        )
+        .expect("named temp ternary should stay on AST path");
         out.push(
             render_indented_expression_statement_ast(&indent, &rewritten_expr)
                 .expect("named temp ternary statement should stay on AST path")
@@ -7171,7 +7189,8 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
     if binary.operator != AstBinaryOperator::StrictInequality {
         return None;
     }
-    let ast::Expression::ComputedMemberExpression(member) = binary.left.without_parentheses() else {
+    let ast::Expression::ComputedMemberExpression(member) = binary.left.without_parentheses()
+    else {
         return None;
     };
     let cache_var = codegen_expression_with_flow_cast_restore(&member.object);
@@ -7575,8 +7594,9 @@ fn maybe_codegen_fused_named_test_reassign_then_ternary_branch(
         let consequent_has_assign = consequent_expr.contains(assign_trimmed);
         let alternate_has_assign = alternate_expr.contains(assign_trimmed);
         if consequent_has_assign && !alternate_has_assign {
-            let alternate_branch = render_sequence_expression_ast(&[assign_expr.clone()], &alternate_expr)
-                .expect("fused ternary alternate should stay on AST path");
+            let alternate_branch =
+                render_sequence_expression_ast(&[assign_expr.clone()], &alternate_expr)
+                    .expect("fused ternary alternate should stay on AST path");
             let fused_expr =
                 render_conditional_expression_ast(&test_expr, &consequent_expr, &alternate_branch)
                     .expect("fused ternary branch should stay on AST path");
@@ -7604,9 +7624,7 @@ fn maybe_codegen_fused_named_test_reassign_then_ternary_branch(
             temp_name, assign_target_names, test_expr, assign_expr, assign_idx, ternary_idx
         ),
     );
-    output.push_str(
-        &fused_stmt,
-    );
+    output.push_str(&fused_stmt);
     Some(ternary_idx - start + 1)
 }
 
@@ -7819,8 +7837,9 @@ fn maybe_codegen_fused_reassign_then_ternary_branch(
         return None;
     }
 
-    let fused_stmt = render_conditional_expression_ast(&test_expr, &fused_consequent, &fused_alternate)
-        .expect("fused ternary branch should stay on AST path");
+    let fused_stmt =
+        render_conditional_expression_ast(&test_expr, &fused_consequent, &fused_alternate)
+            .expect("fused ternary branch should stay on AST path");
     debug_codegen_expr(
         "fused-reassign-ternary-branch",
         format!(
@@ -8128,9 +8147,11 @@ fn maybe_codegen_fused_reassign_stmt_into_following_logical(
                         render_logical_expression_ast(&assign_expr, *operator, "null")
                             .expect("fused logical reassign should stay on AST path")
                     } else {
-                        let sequenced_null =
-                            render_sequence_expression_ast(std::slice::from_ref(&assign_expr), "null")
-                                .expect("fused logical null sequence should stay on AST path");
+                        let sequenced_null = render_sequence_expression_ast(
+                            std::slice::from_ref(&assign_expr),
+                            "null",
+                        )
+                        .expect("fused logical null sequence should stay on AST path");
                         render_logical_expression_ast(&left_expr, *operator, &sequenced_null)
                             .expect("fused logical reassign should stay on AST path")
                     }
@@ -8140,8 +8161,11 @@ fn maybe_codegen_fused_reassign_stmt_into_following_logical(
                     {
                         assign_expr.clone()
                     } else {
-                        render_sequence_expression_ast(std::slice::from_ref(&assign_expr), &left_expr)
-                            .expect("fused logical left sequence should stay on AST path")
+                        render_sequence_expression_ast(
+                            std::slice::from_ref(&assign_expr),
+                            &left_expr,
+                        )
+                        .expect("fused logical left sequence should stay on AST path")
                     };
                     render_logical_expression_ast(&combined_left, *operator, &right_expr)
                         .expect("fused logical reassign should stay on AST path")
@@ -10269,25 +10293,25 @@ fn maybe_codegen_fused_ternary_source_scope(
     };
     let rhs_expr = render_conditional_expression_ast(&cond_expr, &consequent_expr, &alternate_expr)
         .expect("fused ternary expression should stay on AST path");
-    let mut consequent =
-        render_reactive_assignment_statement_ast(&decl_name, &rhs_expr)
-            .expect("fused ternary assignment should stay on AST path");
+    let mut consequent = render_reactive_assignment_statement_ast(&decl_name, &rhs_expr)
+        .expect("fused ternary assignment should stay on AST path");
     if let Some(cond_slot) = cond_slot {
         consequent.push_str(
             &render_cache_slot_store_statement_ast(&cache_var, cond_slot, &cond_expr)
-            .expect("fused ternary condition store should stay on AST path"),
+                .expect("fused ternary condition store should stay on AST path"),
         );
     }
     consequent.push_str(
         &render_cache_slot_store_statement_ast(&cache_var, dep_slot, &dep_expr)
-        .expect("fused ternary dependency store should stay on AST path"),
+            .expect("fused ternary dependency store should stay on AST path"),
     );
     consequent.push_str(
         &render_cache_slot_store_statement_ast(&cache_var, output_slot, &decl_name)
-        .expect("fused ternary output store should stay on AST path"),
+            .expect("fused ternary output store should stay on AST path"),
     );
-    let alternate = render_cache_slot_load_assignment_statement_ast(&decl_name, &cache_var, output_slot)
-    .expect("fused ternary cache load should stay on AST path");
+    let alternate =
+        render_cache_slot_load_assignment_statement_ast(&decl_name, &cache_var, output_slot)
+            .expect("fused ternary cache load should stay on AST path");
     output.push_str(
         &render_reactive_if_statement_ast(&guard_test, &consequent, Some(&alternate))
             .expect("fused ternary guard should stay on AST path"),
@@ -10560,8 +10584,10 @@ fn maybe_codegen_fused_zero_dep_literal_store_scope(
             let right_expr_raw = codegen_place_to_expression(cx, right);
             if *operator == LogicalOperator::And && right_expr_raw == "null" {
                 render_sequence_expression_ast(
-                    &[render_global_store_expression_ast(&target_name, &source_expr)
-                        .expect("fused logical store expression should stay on AST path")],
+                    &[
+                        render_global_store_expression_ast(&target_name, &source_expr)
+                            .expect("fused logical store expression should stay on AST path"),
+                    ],
                     "null",
                 )
                 .expect("fused logical null sequence should stay on AST path")
@@ -10849,7 +10875,7 @@ fn emit_zero_dep_target_guard(
     let mut consequent = computation_stmt.to_string();
     consequent.push_str(
         &render_cache_slot_store_statement_ast(&cache_var, output_slot, &target_name)
-        .expect("memo cache store should stay on AST path"),
+            .expect("memo cache store should stay on AST path"),
     );
     let alternate =
         render_cache_slot_load_assignment_statement_ast(&target_name, &cache_var, output_slot)
@@ -11110,11 +11136,11 @@ fn maybe_codegen_fused_zero_dep_ternary_default_scope(
         .expect("conditional output assignment should stay on AST path");
     consequent.push_str(
         &render_cache_slot_store_statement_ast(&cache_var, dep_slot, &dep_expr_guard)
-        .expect("conditional dependency store should stay on AST path"),
+            .expect("conditional dependency store should stay on AST path"),
     );
     consequent.push_str(
         &render_cache_slot_store_statement_ast(&cache_var, output_slot, &output_name)
-        .expect("conditional output store should stay on AST path"),
+            .expect("conditional output store should stay on AST path"),
     );
     let alternate =
         render_cache_slot_load_assignment_statement_ast(&output_name, &cache_var, output_slot)
@@ -12619,12 +12645,14 @@ fn instruction_has_callback_and_array_args(cx: &mut Context, instr: &ReactiveIns
         _ => return false,
     };
     let rendered_args: Vec<String> = args.iter().map(|arg| codegen_argument(cx, arg)).collect();
-    let has_callback_arg =
-        rendered_args.iter().any(|arg| rendered_expr_is_function_like(arg))
-            || args.iter().any(is_function_argument);
-    let has_array_arg =
-        rendered_args.iter().any(|arg| rendered_expr_is_array_literal(arg))
-            || args.iter().any(is_array_argument);
+    let has_callback_arg = rendered_args
+        .iter()
+        .any(|arg| rendered_expr_is_function_like(arg))
+        || args.iter().any(is_function_argument);
+    let has_array_arg = rendered_args
+        .iter()
+        .any(|arg| rendered_expr_is_array_literal(arg))
+        || args.iter().any(is_array_argument);
     has_callback_arg && has_array_arg
 }
 
@@ -13704,8 +13732,9 @@ fn codegen_reactive_scope(
             .expect("memo change condition should stay on AST path")
     };
     if cx.disable_memoization_for_debugging {
-        test_condition = render_logical_expression_ast(&test_condition, LogicalOperator::Or, "true")
-            .expect("debug memo change condition should stay on AST path");
+        test_condition =
+            render_logical_expression_ast(&test_condition, LogicalOperator::Or, "true")
+                .expect("debug memo change condition should stay on AST path");
     }
 
     // Generate computation block
@@ -13823,8 +13852,9 @@ fn codegen_reactive_scope(
                     &render_call_expression_from_rendered_args_ast(
                         "$structuralCheck",
                         &[
-                            render_cache_slot_access_expression_ast(&cache_var, *index)
-                                .expect("recomputed structural check cache access should stay on AST path"),
+                            render_cache_slot_access_expression_ast(&cache_var, *index).expect(
+                                "recomputed structural check cache access should stay on AST path",
+                            ),
                             name.clone(),
                             format!("\"{}\"", escape_string(name)),
                             format!("\"{}\"", escape_string(&cx.function_name)),
@@ -13850,7 +13880,7 @@ fn codegen_reactive_scope(
                 cx.function_is_async,
                 cx.function_is_generator,
             )
-                .expect("recomputed structural check guard should stay on AST path"),
+            .expect("recomputed structural check guard should stay on AST path"),
         );
         output.push_str("}\n");
     } else {
@@ -14549,12 +14579,9 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
                 ..
             } => {
                 if let Some(object_name) = resolve_place_name(cx, object) {
-                    let resolved = render_property_access_expression_ast(
-                        &object_name,
-                        property,
-                        *optional,
-                    )
-                    .expect("resolved property access should stay on AST path");
+                    let resolved =
+                        render_property_access_expression_ast(&object_name, property, *optional)
+                            .expect("resolved property access should stay on AST path");
                     cx.resolved_names.insert(lvalue.identifier.id, resolved);
                 } else if let PropertyLiteral::String(prop) = property {
                     cx.resolved_names.insert(lvalue.identifier.id, prop.clone());
@@ -15200,10 +15227,7 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
                     &FunctionExpressionType::FunctionExpression,
                     None,
                 );
-                cx.set_temp_expr(
-                    &lvalue.identifier,
-                    rendered.map(ExprValue::primary),
-                );
+                cx.set_temp_expr(&lvalue.identifier, rendered.map(ExprValue::primary));
             }
             None
         }
@@ -15313,8 +15337,9 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 let cb_slot = cx.alloc_cache_slot();
                 let deps_slot = cx.alloc_cache_slot();
                 call_args[dep_idx] = deps_name.clone();
-                let call_expr = render_call_expression_ast(&callee_final, args, &call_args, *optional)
-                    .expect("cached autodeps call should stay on AST path");
+                let call_expr =
+                    render_call_expression_ast(&callee_final, args, &call_args, *optional)
+                        .expect("cached autodeps call should stay on AST path");
                 let call_expr = if cx.emit_hook_guards && is_hook_call {
                     guard_hook_call_expression(cx, call_expr)
                 } else {
@@ -15329,8 +15354,9 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
                 )?
             } else {
                 let slot = cx.alloc_cache_slot();
-                let call_expr = render_call_expression_ast(&callee_final, args, &call_args, *optional)
-                    .expect("cached autodeps call should stay on AST path");
+                let call_expr =
+                    render_call_expression_ast(&callee_final, args, &call_args, *optional)
+                        .expect("cached autodeps call should stay on AST path");
                 let call_expr = if cx.emit_hook_guards && is_hook_call {
                     guard_hook_call_expression(cx, call_expr)
                 } else {
@@ -15894,8 +15920,9 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                     callee_final, optional, rendered_args
                 ),
             );
-            let call_expr = render_call_expression_ast(&callee_final, args, &rendered_args, *optional)
-                .expect("generated call expression should parse");
+            let call_expr =
+                render_call_expression_ast(&callee_final, args, &rendered_args, *optional)
+                    .expect("generated call expression should parse");
             if cx.emit_hook_guards && is_hook_call {
                 ExprValue::primary(guard_hook_call_expression(cx, call_expr))
             } else {
@@ -16475,10 +16502,7 @@ fn apply_optional_to_rendered_expr(expr: &str, optional: bool) -> Option<String>
         ast::Expression::CallExpression(call) => {
             let mut call = call.unbox();
             call.optional = true;
-            builder.expression_chain(
-                SPAN,
-                ast::ChainElement::CallExpression(builder.alloc(call)),
-            )
+            builder.expression_chain(SPAN, ast::ChainElement::CallExpression(builder.alloc(call)))
         }
         ast::Expression::ComputedMemberExpression(member) => {
             let mut member = member.unbox();
@@ -16542,7 +16566,10 @@ fn rendered_expr_is_array_literal(expr: &str) -> bool {
     let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) else {
         return false;
     };
-    matches!(expression.without_parentheses(), ast::Expression::ArrayExpression(_))
+    matches!(
+        expression.without_parentheses(),
+        ast::Expression::ArrayExpression(_)
+    )
 }
 
 fn rendered_expr_is_array_seed_like(expr: &str) -> bool {
@@ -16589,9 +16616,7 @@ fn rendered_expr_is_autodeps_placeholder(expr: &str) -> bool {
             ast::Expression::StringLiteral(literal) if literal.value == "AUTODEPS"
         ),
         ast::Expression::ChainExpression(chain) => match &chain.expression {
-            ast::ChainElement::StaticMemberExpression(member) => {
-                member.property.name == "AUTODEPS"
-            }
+            ast::ChainElement::StaticMemberExpression(member) => member.property.name == "AUTODEPS",
             ast::ChainElement::ComputedMemberExpression(member) => matches!(
                 member.expression.without_parentheses(),
                 ast::Expression::StringLiteral(literal) if literal.value == "AUTODEPS"
@@ -16650,7 +16675,10 @@ impl<'a> Visit<'a> for OptionalChainDetector {
         if self.found {
             return;
         }
-        if matches!(expression.without_parentheses(), ast::Expression::ChainExpression(_)) {
+        if matches!(
+            expression.without_parentheses(),
+            ast::Expression::ChainExpression(_)
+        ) {
             self.found = true;
             return;
         }
@@ -16724,7 +16752,10 @@ fn rendered_expr_is_direct_root_identifier(expr: &str) -> bool {
     let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) else {
         return false;
     };
-    matches!(expression.without_parentheses(), ast::Expression::Identifier(_))
+    matches!(
+        expression.without_parentheses(),
+        ast::Expression::Identifier(_)
+    )
 }
 
 fn rendered_expr_is_jsx_like(expr: &str) -> bool {
@@ -16821,7 +16852,9 @@ fn render_primitive_expression_ast(value: &PrimitiveValue) -> Option<String> {
         PrimitiveValue::Null => builder.expression_null_literal(SPAN),
         PrimitiveValue::Undefined => builder.expression_identifier(SPAN, "undefined"),
         PrimitiveValue::Boolean(value) => builder.expression_boolean_literal(SPAN, *value),
-        PrimitiveValue::Number(value) if !(*value == 0.0 && value.is_sign_negative()) && value.is_finite() => {
+        PrimitiveValue::Number(value)
+            if !(*value == 0.0 && value.is_sign_negative()) && value.is_finite() =>
+        {
             builder.expression_numeric_literal(SPAN, *value, None, NumberBase::Decimal)
         }
         PrimitiveValue::Number(_) | PrimitiveValue::String(_) => return None,
@@ -16840,7 +16873,9 @@ fn render_ts_type_cast_expression_ast(
     let type_annotation = parse_ts_type_source(&allocator, type_annotation)?;
     let expression = match kind {
         TypeAnnotationKind::As => builder.expression_ts_as(SPAN, value, type_annotation),
-        TypeAnnotationKind::Satisfies => builder.expression_ts_satisfies(SPAN, value, type_annotation),
+        TypeAnnotationKind::Satisfies => {
+            builder.expression_ts_satisfies(SPAN, value, type_annotation)
+        }
         TypeAnnotationKind::Cast => {
             let type_arguments =
                 builder.alloc_ts_type_parameter_instantiation(SPAN, builder.vec1(type_annotation));
@@ -16863,7 +16898,10 @@ fn render_ts_type_cast_expression_ast(
     }
 }
 
-fn parse_ts_type_source<'a>(allocator: &'a Allocator, type_source: &str) -> Option<ast::TSType<'a>> {
+fn parse_ts_type_source<'a>(
+    allocator: &'a Allocator,
+    type_source: &str,
+) -> Option<ast::TSType<'a>> {
     let wrapper = format!("const __codex_type: {type_source} = null;");
     let parsed = Parser::new(
         allocator,
@@ -16874,7 +16912,8 @@ fn parse_ts_type_source<'a>(allocator: &'a Allocator, type_source: &str) -> Opti
     if parsed.panicked || !parsed.errors.is_empty() {
         return None;
     }
-    let ast::Statement::VariableDeclaration(declaration) = parsed.program.body.into_iter().next()?
+    let ast::Statement::VariableDeclaration(declaration) =
+        parsed.program.body.into_iter().next()?
     else {
         return None;
     };
@@ -16986,7 +17025,8 @@ fn build_property_access_expression_ast<'a>(
 ) -> ast::Expression<'a> {
     if let ast::Expression::ChainExpression(chain) = object {
         let expression = chain_element_to_expression_ast(chain.unbox().expression);
-        let chain = build_property_access_chain_element_ast(builder, expression, property, optional);
+        let chain =
+            build_property_access_chain_element_ast(builder, expression, property, optional);
         return builder.expression_chain(SPAN, chain);
     }
     match property {
@@ -17017,12 +17057,14 @@ fn build_property_access_expression_ast<'a>(
             builder.expression_string_literal(SPAN, builder.atom(name), None),
             optional,
         )),
-        PropertyLiteral::Number(value) => ast::Expression::from(builder.member_expression_computed(
-            SPAN,
-            object,
-            builder.expression_numeric_literal(SPAN, *value, None, NumberBase::Decimal),
-            optional,
-        )),
+        PropertyLiteral::Number(value) => {
+            ast::Expression::from(builder.member_expression_computed(
+                SPAN,
+                object,
+                builder.expression_numeric_literal(SPAN, *value, None, NumberBase::Decimal),
+                optional,
+            ))
+        }
     }
 }
 
@@ -17124,7 +17166,10 @@ fn render_property_access_expression_ast(
     ))
 }
 
-fn render_property_delete_expression_ast(object: &str, property: &PropertyLiteral) -> Option<String> {
+fn render_property_delete_expression_ast(
+    object: &str,
+    property: &PropertyLiteral,
+) -> Option<String> {
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let object = parse_rendered_expression_ast(&allocator, object)?;
@@ -17146,9 +17191,9 @@ fn render_computed_access_expression_ast(
         let object = chain_element_to_expression_ast(chain.unbox().expression);
         builder.expression_chain(
             SPAN,
-            ast::ChainElement::ComputedMemberExpression(builder.alloc_computed_member_expression(
-                SPAN, object, property, optional,
-            )),
+            ast::ChainElement::ComputedMemberExpression(
+                builder.alloc_computed_member_expression(SPAN, object, property, optional),
+            ),
         )
     } else {
         ast::Expression::from(builder.member_expression_computed(SPAN, object, property, optional))
@@ -17158,7 +17203,11 @@ fn render_computed_access_expression_ast(
     ))
 }
 
-fn render_computed_store_expression_ast(object: &str, property: &str, value: &str) -> Option<String> {
+fn render_computed_store_expression_ast(
+    object: &str,
+    property: &str,
+    value: &str,
+) -> Option<String> {
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let object = parse_rendered_expression_ast(&allocator, object)?;
@@ -17258,12 +17307,8 @@ fn render_update_expression_ast(
     let builder = AstBuilder::new(&allocator);
     let target = parse_rendered_expression_ast(&allocator, target)?;
     let target = expression_to_simple_assignment_target_ast(builder, target)?;
-    let expression = builder.expression_update(
-        SPAN,
-        lower_update_operator_ast(operator),
-        prefix,
-        target,
-    );
+    let expression =
+        builder.expression_update(SPAN, lower_update_operator_ast(operator), prefix, target);
     Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
@@ -17274,7 +17319,8 @@ fn render_new_expression_ast(
 ) -> Option<String> {
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
-    let callee = parse_rendered_expression_ast(&allocator, &codegen_place_to_expression(cx, callee))?;
+    let callee =
+        parse_rendered_expression_ast(&allocator, &codegen_place_to_expression(cx, callee))?;
     let mut lowered_args = builder.vec();
     for arg in args {
         match arg {
@@ -17303,9 +17349,9 @@ fn render_arguments_ast<'a>(
     let mut lowered = builder.vec();
     for (arg, rendered) in args.iter().zip(rendered_args) {
         match arg {
-            Argument::Place(_) => lowered.push(ast::Argument::from(
-                parse_rendered_expression_ast(allocator, rendered)?,
-            )),
+            Argument::Place(_) => lowered.push(ast::Argument::from(parse_rendered_expression_ast(
+                allocator, rendered,
+            )?)),
             Argument::Spread(_) => {
                 let expr = rendered.strip_prefix("...").unwrap_or(rendered);
                 lowered.push(builder.argument_spread_element(
@@ -17916,51 +17962,55 @@ fn render_dependency_expression_ast(
     let mut has_optional = false;
     for path_entry in &dep.path {
         if is_valid_js_identifier_name(&path_entry.property) {
-            expression = builder.member_expression_static(
-                SPAN,
-                expression,
-                builder.identifier_name(SPAN, builder.atom(&path_entry.property)),
-                path_entry.optional,
-            ).into();
+            expression = builder
+                .member_expression_static(
+                    SPAN,
+                    expression,
+                    builder.identifier_name(SPAN, builder.atom(&path_entry.property)),
+                    path_entry.optional,
+                )
+                .into();
         } else if path_entry.property.chars().all(|c| c.is_ascii_digit()) {
-            expression = builder.member_expression_computed(
-                SPAN,
-                expression,
-                builder.expression_numeric_literal(
+            expression = builder
+                .member_expression_computed(
                     SPAN,
-                    path_entry.property.parse::<f64>().ok()?,
-                    None,
-                    oxc_syntax::number::NumberBase::Decimal,
-                ),
-                path_entry.optional,
-            ).into();
+                    expression,
+                    builder.expression_numeric_literal(
+                        SPAN,
+                        path_entry.property.parse::<f64>().ok()?,
+                        None,
+                        oxc_syntax::number::NumberBase::Decimal,
+                    ),
+                    path_entry.optional,
+                )
+                .into();
         } else {
-            expression = builder.member_expression_computed(
-                SPAN,
-                expression,
-                builder.expression_string_literal(
+            expression = builder
+                .member_expression_computed(
                     SPAN,
-                    builder.atom(&path_entry.property),
-                    None,
-                ),
-                path_entry.optional,
-            ).into();
+                    expression,
+                    builder.expression_string_literal(
+                        SPAN,
+                        builder.atom(&path_entry.property),
+                        None,
+                    ),
+                    path_entry.optional,
+                )
+                .into();
         }
         has_optional |= path_entry.optional;
     }
     if has_optional {
-        expression = match expression {
-            ast::Expression::ComputedMemberExpression(member) => {
-                builder.expression_chain(SPAN, ast::ChainElement::ComputedMemberExpression(member))
-            }
-            ast::Expression::StaticMemberExpression(member) => {
-                builder.expression_chain(SPAN, ast::ChainElement::StaticMemberExpression(member))
-            }
-            ast::Expression::PrivateFieldExpression(member) => {
-                builder.expression_chain(SPAN, ast::ChainElement::PrivateFieldExpression(member))
-            }
-            other => other,
-        };
+        expression =
+            match expression {
+                ast::Expression::ComputedMemberExpression(member) => builder
+                    .expression_chain(SPAN, ast::ChainElement::ComputedMemberExpression(member)),
+                ast::Expression::StaticMemberExpression(member) => builder
+                    .expression_chain(SPAN, ast::ChainElement::StaticMemberExpression(member)),
+                ast::Expression::PrivateFieldExpression(member) => builder
+                    .expression_chain(SPAN, ast::ChainElement::PrivateFieldExpression(member)),
+                other => other,
+            };
     }
     Some(codegen_expression_with_flow_cast_restore(&expression))
 }
@@ -18777,7 +18827,8 @@ fn callback_scope_dependency_to_path(dep: &ReactiveScopeDependency) -> String {
         return identifier_name_static(&dep.identifier);
     }
     let root = identifier_name_static(&dep.identifier);
-    render_dependency_expression_ast(&root, dep).expect("callback dependency path should stay on AST path")
+    render_dependency_expression_ast(&root, dep)
+        .expect("callback dependency path should stay on AST path")
 }
 
 fn collect_callback_deps_from_reactive_block(
@@ -19347,7 +19398,9 @@ fn strip_terminal_current_path(path: &str) -> Option<String> {
             Some(codegen_expression_with_flow_cast_restore(&member.object))
         }
         ast::Expression::ChainExpression(chain) => match &chain.expression {
-            ast::ChainElement::StaticMemberExpression(member) if member.property.name == "current" => {
+            ast::ChainElement::StaticMemberExpression(member)
+                if member.property.name == "current" =>
+            {
                 Some(codegen_expression_with_flow_cast_restore(&member.object))
             }
             _ => None,
@@ -19976,21 +20029,27 @@ fn resolve_method_property_via_ast(
     ) -> Option<(String, bool)> {
         match expression {
             ast::Expression::StaticMemberExpression(member) => {
-                if codegen_expression_with_flow_cast_restore(&member.object) == normalized_receiver {
+                if codegen_expression_with_flow_cast_restore(&member.object) == normalized_receiver
+                {
                     Some((member.property.name.to_string(), false))
                 } else {
                     None
                 }
             }
             ast::Expression::ComputedMemberExpression(member) => {
-                if codegen_expression_with_flow_cast_restore(&member.object) == normalized_receiver {
-                    Some((codegen_expression_with_flow_cast_restore(&member.expression), true))
+                if codegen_expression_with_flow_cast_restore(&member.object) == normalized_receiver
+                {
+                    Some((
+                        codegen_expression_with_flow_cast_restore(&member.expression),
+                        true,
+                    ))
                 } else {
                     None
                 }
             }
             ast::Expression::PrivateFieldExpression(member) => {
-                if codegen_expression_with_flow_cast_restore(&member.object) == normalized_receiver {
+                if codegen_expression_with_flow_cast_restore(&member.object) == normalized_receiver
+                {
                     Some((format!("#{}", member.field.name), false))
                 } else {
                     None
@@ -19998,21 +20057,30 @@ fn resolve_method_property_via_ast(
             }
             ast::Expression::ChainExpression(chain) => match chain.unbox().expression {
                 ast::ChainElement::StaticMemberExpression(member) => {
-                    if codegen_expression_with_flow_cast_restore(&member.object) == normalized_receiver {
+                    if codegen_expression_with_flow_cast_restore(&member.object)
+                        == normalized_receiver
+                    {
                         Some((member.property.name.to_string(), false))
                     } else {
                         None
                     }
                 }
                 ast::ChainElement::ComputedMemberExpression(member) => {
-                    if codegen_expression_with_flow_cast_restore(&member.object) == normalized_receiver {
-                        Some((codegen_expression_with_flow_cast_restore(&member.expression), true))
+                    if codegen_expression_with_flow_cast_restore(&member.object)
+                        == normalized_receiver
+                    {
+                        Some((
+                            codegen_expression_with_flow_cast_restore(&member.expression),
+                            true,
+                        ))
                     } else {
                         None
                     }
                 }
                 ast::ChainElement::PrivateFieldExpression(member) => {
-                    if codegen_expression_with_flow_cast_restore(&member.object) == normalized_receiver {
+                    if codegen_expression_with_flow_cast_restore(&member.object)
+                        == normalized_receiver
+                    {
                         Some((format!("#{}", member.field.name), false))
                     } else {
                         None
@@ -20021,7 +20089,10 @@ fn resolve_method_property_via_ast(
                 _ => None,
             },
             ast::Expression::ParenthesizedExpression(parenthesized) => {
-                member_property_from_expression(normalized_receiver, parenthesized.unbox().expression)
+                member_property_from_expression(
+                    normalized_receiver,
+                    parenthesized.unbox().expression,
+                )
             }
             _ => None,
         }
@@ -20038,13 +20109,17 @@ fn extract_single_computed_member_suffix(suffix: &str) -> Option<String> {
         ast::Expression::ComputedMemberExpression(member)
             if codegen_expression_with_flow_cast_restore(&member.object) == RECEIVER =>
         {
-            Some(codegen_expression_with_flow_cast_restore(&member.expression))
+            Some(codegen_expression_with_flow_cast_restore(
+                &member.expression,
+            ))
         }
         ast::Expression::ChainExpression(chain) => match &chain.expression {
             ast::ChainElement::ComputedMemberExpression(member)
                 if codegen_expression_with_flow_cast_restore(&member.object) == RECEIVER =>
             {
-                Some(codegen_expression_with_flow_cast_restore(&member.expression))
+                Some(codegen_expression_with_flow_cast_restore(
+                    &member.expression,
+                ))
             }
             _ => None,
         },
@@ -20140,10 +20215,8 @@ fn render_jsx_child_ast<'a>(
                     SPAN,
                     ast::JSXExpression::StringLiteral(literal),
                 ),
-                expression => builder.jsx_child_expression_container(
-                    SPAN,
-                    ast::JSXExpression::from(expression),
-                ),
+                expression => builder
+                    .jsx_child_expression_container(SPAN, ast::JSXExpression::from(expression)),
             });
         }
         return Some(builder.jsx_child_text(SPAN, builder.atom(inner), None));
@@ -20153,10 +20226,9 @@ fn render_jsx_child_ast<'a>(
     Some(match expression {
         ast::Expression::JSXElement(element) => ast::JSXChild::Element(element),
         ast::Expression::JSXFragment(fragment) => ast::JSXChild::Fragment(fragment),
-        ast::Expression::StringLiteral(literal) => builder.jsx_child_expression_container(
-            SPAN,
-            ast::JSXExpression::StringLiteral(literal),
-        ),
+        ast::Expression::StringLiteral(literal) => {
+            builder.jsx_child_expression_container(SPAN, ast::JSXExpression::StringLiteral(literal))
+        }
         expression => {
             builder.jsx_child_expression_container(SPAN, ast::JSXExpression::from(expression))
         }
@@ -20195,19 +20267,19 @@ fn render_expression_to_jsx_element_name_ast<'a>(
     expression: ast::Expression<'a>,
 ) -> Option<ast::JSXElementName<'a>> {
     match expression {
-        ast::Expression::Identifier(identifier) => Some(
-            builder.jsx_element_name_identifier_reference(SPAN, identifier.name),
-        ),
-        ast::Expression::StaticMemberExpression(member) => Some(
-            builder.jsx_element_name_member_expression(
+        ast::Expression::Identifier(identifier) => {
+            Some(builder.jsx_element_name_identifier_reference(SPAN, identifier.name))
+        }
+        ast::Expression::StaticMemberExpression(member) => {
+            Some(builder.jsx_element_name_member_expression(
                 SPAN,
                 render_expression_to_jsx_member_expression_object_ast(
                     builder,
                     member.object.clone_in(builder.allocator),
                 )?,
                 builder.jsx_identifier(SPAN, member.property.name),
-            ),
-        ),
+            ))
+        }
         ast::Expression::ThisExpression(_) => Some(builder.jsx_element_name_this_expression(SPAN)),
         _ => None,
     }
@@ -20218,19 +20290,19 @@ fn render_expression_to_jsx_member_expression_object_ast<'a>(
     expression: ast::Expression<'a>,
 ) -> Option<ast::JSXMemberExpressionObject<'a>> {
     match expression {
-        ast::Expression::Identifier(identifier) => Some(
-            builder.jsx_member_expression_object_identifier_reference(SPAN, identifier.name),
-        ),
-        ast::Expression::StaticMemberExpression(member) => Some(
-            builder.jsx_member_expression_object_member_expression(
+        ast::Expression::Identifier(identifier) => {
+            Some(builder.jsx_member_expression_object_identifier_reference(SPAN, identifier.name))
+        }
+        ast::Expression::StaticMemberExpression(member) => {
+            Some(builder.jsx_member_expression_object_member_expression(
                 SPAN,
                 render_expression_to_jsx_member_expression_object_ast(
                     builder,
                     member.object.clone_in(builder.allocator),
                 )?,
                 builder.jsx_identifier(SPAN, member.property.name),
-            ),
-        ),
+            ))
+        }
         ast::Expression::ThisExpression(_) => {
             Some(builder.jsx_member_expression_object_this_expression(SPAN))
         }
@@ -20496,9 +20568,21 @@ fn parse_function_body_for_ast_codegen_with_offset<'a>(
     let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(body_source);
     let mut attempts = Vec::new();
     push_attempt(&mut attempts, source_type, body_source);
-    push_attempt(&mut attempts, source_type.with_typescript(true), body_source);
-    push_attempt(&mut attempts, source_type.with_typescript(true), &flow_cast_normalized);
-    push_attempt(&mut attempts, source_type.with_typescript(true), &flow_cast_rewritten);
+    push_attempt(
+        &mut attempts,
+        source_type.with_typescript(true),
+        body_source,
+    );
+    push_attempt(
+        &mut attempts,
+        source_type.with_typescript(true),
+        &flow_cast_normalized,
+    );
+    push_attempt(
+        &mut attempts,
+        source_type.with_typescript(true),
+        &flow_cast_rewritten,
+    );
     push_attempt(&mut attempts, source_type, &flow_cast_rewritten);
 
     for (attempt_source_type, attempt_body) in attempts {
@@ -20874,8 +20958,7 @@ fn split_flow_cast_marker_inner(inner: &str) -> Option<(String, String)> {
             '>' => depth_angle = depth_angle.saturating_sub(1),
             _ => {}
         }
-        let at_top =
-            depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 && depth_angle == 0;
+        let at_top = depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 && depth_angle == 0;
         if at_top && inner[byte_idx..].starts_with(MARKER) {
             let left = inner[..byte_idx].trim();
             let right = inner[byte_idx + MARKER.len()..].trim();
@@ -21049,9 +21132,7 @@ fn codegen_statement_with_flow_cast_restore<'a>(statement: &ast::Statement<'a>) 
     restore_flow_cast_marker_calls(&codegen_statement_with_oxc(statement))
 }
 
-fn codegen_binding_pattern_with_flow_cast_restore<'a>(
-    pattern: &ast::BindingPattern<'a>,
-) -> String {
+fn codegen_binding_pattern_with_flow_cast_restore<'a>(pattern: &ast::BindingPattern<'a>) -> String {
     restore_flow_cast_marker_calls(&codegen_binding_pattern_with_oxc(pattern))
 }
 
@@ -21061,9 +21142,7 @@ fn codegen_array_expression_element_with_flow_cast_restore<'a>(
     restore_flow_cast_marker_calls(&codegen_array_expression_element_with_oxc(element))
 }
 
-fn codegen_statements_with_flow_cast_restore<'a>(
-    statements: &[ast::Statement<'a>],
-) -> String {
+fn codegen_statements_with_flow_cast_restore<'a>(statements: &[ast::Statement<'a>]) -> String {
     restore_flow_cast_marker_calls(&codegen_statements_with_oxc(statements))
 }
 
@@ -21120,12 +21199,9 @@ fn build_function_property_from_value_ast<'a>(
     computed_key_source: Option<&str>,
     value_source: &str,
 ) -> Option<ast::ObjectPropertyKind<'a>> {
-    let mut expression = parse_expression_for_ast_codegen(
-        allocator,
-        SourceType::mjs().with_jsx(true),
-        value_source,
-    )
-    .ok()?;
+    let mut expression =
+        parse_expression_for_ast_codegen(allocator, SourceType::mjs().with_jsx(true), value_source)
+            .ok()?;
     let function = loop {
         match expression {
             ast::Expression::FunctionExpression(function) => break function,
@@ -21256,8 +21332,7 @@ fn render_object_expression_ast(
                         ) {
                             method_property
                         } else {
-                            let value =
-                                parse_rendered_expression_ast(&allocator, &value_source)?;
+                            let value = parse_rendered_expression_ast(&allocator, &value_source)?;
                             let (key, computed) = make_object_property_key_ast(
                                 builder,
                                 &allocator,
@@ -21370,9 +21445,7 @@ fn codegen_binding_pattern_with_oxc(pattern: &ast::BindingPattern<'_>) -> String
     codegen.into_source_text()
 }
 
-fn codegen_array_expression_element_with_oxc(
-    element: &ast::ArrayExpressionElement<'_>,
-) -> String {
+fn codegen_array_expression_element_with_oxc(element: &ast::ArrayExpressionElement<'_>) -> String {
     let mut codegen = Codegen::new().with_options(CodegenOptions {
         indent_char: IndentChar::Space,
         indent_width: 2,
@@ -21480,9 +21553,9 @@ fn render_variable_declaration_header_ast(
             false,
         ));
     }
-    let statement = ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
-        SPAN, kind, rendered, false,
-    ));
+    let statement = ast::Statement::VariableDeclaration(
+        builder.alloc_variable_declaration(SPAN, kind, rendered, false),
+    );
     Some(
         codegen_statement_with_flow_cast_restore(&statement)
             .trim_end_matches(';')
@@ -21680,8 +21753,11 @@ fn render_reactive_labeled_statement_ast(
         )
         .ok()?
     };
-    let statement =
-        builder.statement_labeled(SPAN, builder.label_identifier(SPAN, builder.atom(label)), body);
+    let statement = builder.statement_labeled(
+        SPAN,
+        builder.label_identifier(SPAN, builder.atom(label)),
+        body,
+    );
     Some(format!(
         "{}\n",
         codegen_statement_with_flow_cast_restore(&statement)
@@ -21821,22 +21897,18 @@ fn render_reactive_for_statement_ast(
     let test = if test.trim().is_empty() {
         None
     } else {
-        Some(parse_expression_for_ast_codegen(
-            &allocator,
-            SourceType::mjs().with_jsx(true),
-            test,
+        Some(
+            parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), test)
+                .ok()?,
         )
-        .ok()?)
     };
     let update = if update.trim().is_empty() {
         None
     } else {
-        Some(parse_expression_for_ast_codegen(
-            &allocator,
-            SourceType::mjs().with_jsx(true),
-            update,
+        Some(
+            parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), update)
+                .ok()?,
         )
-        .ok()?)
     };
     let body = builder.statement_block(
         SPAN,
@@ -21858,12 +21930,9 @@ fn render_reactive_for_of_statement_ast(
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let left = parse_for_statement_left_ast(&allocator, kind, lvalue)?;
-    let right = parse_expression_for_ast_codegen(
-        &allocator,
-        SourceType::mjs().with_jsx(true),
-        collection,
-    )
-    .ok()?;
+    let right =
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), collection)
+            .ok()?;
     let body = builder.statement_block(
         SPAN,
         parse_statement_list_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), body)
@@ -21884,12 +21953,9 @@ fn render_reactive_for_in_statement_ast(
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let left = parse_for_statement_left_ast(&allocator, kind, lvalue)?;
-    let right = parse_expression_for_ast_codegen(
-        &allocator,
-        SourceType::mjs().with_jsx(true),
-        collection,
-    )
-    .ok()?;
+    let right =
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), collection)
+            .ok()?;
     let body = builder.statement_block(
         SPAN,
         parse_statement_list_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), body)
@@ -21915,22 +21981,20 @@ fn render_reactive_function_body_prologue_ast(
             builder.alloc_variable_declaration(
                 SPAN,
                 ast::VariableDeclarationKind::Const,
-                builder.vec1(
-                    builder.variable_declarator(
+                builder.vec1(builder.variable_declarator(
+                    SPAN,
+                    ast::VariableDeclarationKind::Const,
+                    builder.binding_pattern_binding_identifier(
                         SPAN,
-                        ast::VariableDeclarationKind::Const,
-                        builder.binding_pattern_binding_identifier(
-                            SPAN,
-                            builder.ident(&cache_prologue.binding_name),
-                        ),
-                        NONE,
-                        Some(build_runtime_cache_call_expression_ast(
-                            builder,
-                            cache_prologue.size,
-                        )),
-                        false,
+                        builder.ident(&cache_prologue.binding_name),
                     ),
-                ),
+                    NONE,
+                    Some(build_runtime_cache_call_expression_ast(
+                        builder,
+                        cache_prologue.size,
+                    )),
+                    false,
+                )),
                 false,
             ),
         ));
@@ -22001,9 +22065,11 @@ fn build_symbol_for_call_expression_ast<'a>(
             false,
         )),
         NONE,
-        builder.vec1(ast::Argument::from(
-            builder.expression_string_literal(SPAN, builder.atom(value), None),
-        )),
+        builder.vec1(ast::Argument::from(builder.expression_string_literal(
+            SPAN,
+            builder.atom(value),
+            None,
+        ))),
         false,
     )
 }
@@ -22016,9 +22082,12 @@ fn build_runtime_cache_call_expression_ast<'a>(
         SPAN,
         builder.expression_identifier(SPAN, builder.ident("_c")),
         NONE,
-        builder.vec1(ast::Argument::from(
-            builder.expression_numeric_literal(SPAN, size as f64, None, NumberBase::Decimal),
-        )),
+        builder.vec1(ast::Argument::from(builder.expression_numeric_literal(
+            SPAN,
+            size as f64,
+            None,
+            NumberBase::Decimal,
+        ))),
         false,
     )
 }
@@ -22042,7 +22111,8 @@ fn build_fast_refresh_cache_reset_statement_ast<'a>(
     );
 
     let index_name = &fast_refresh.index_binding_name;
-    let index_identifier = builder.binding_pattern_binding_identifier(SPAN, builder.ident(index_name));
+    let index_identifier =
+        builder.binding_pattern_binding_identifier(SPAN, builder.ident(index_name));
     let loop_init = builder.for_statement_init_variable_declaration(
         SPAN,
         ast::VariableDeclarationKind::Let,
@@ -22191,12 +22261,7 @@ fn render_cached_inline_hook_callback_block_ast(
     consequent.push(build_computed_member_assignment_statement_ast(
         builder,
         "$",
-        builder.expression_numeric_literal(
-            SPAN,
-            callback_slot as f64,
-            None,
-            NumberBase::Decimal,
-        ),
+        builder.expression_numeric_literal(SPAN, callback_slot as f64, None, NumberBase::Decimal),
         builder.expression_identifier(SPAN, builder.ident(callback_name)),
     ));
 
@@ -22252,11 +22317,17 @@ fn render_cached_inline_hook_callback_block_ast(
         builder.statement_block(SPAN, consequent),
         Some(builder.statement_block(SPAN, alternate)),
     ));
-    statements.push(builder.statement_expression(
-        SPAN,
-        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), call_expr)
+    statements.push(
+        builder.statement_expression(
+            SPAN,
+            parse_expression_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
+                call_expr,
+            )
             .ok()?,
-    ));
+        ),
+    );
 
     Some(format!(
         "{}\n",
@@ -22284,12 +22355,12 @@ fn parse_for_statement_init_ast<'a>(
     )
     .ok()?;
     match statement {
-        ast::Statement::VariableDeclaration(declaration) => {
-            Some(Some(ast::ForStatementInit::VariableDeclaration(declaration)))
-        }
-        ast::Statement::ExpressionStatement(expression) => {
-            Some(Some(ast::ForStatementInit::from(expression.unbox().expression)))
-        }
+        ast::Statement::VariableDeclaration(declaration) => Some(Some(
+            ast::ForStatementInit::VariableDeclaration(declaration),
+        )),
+        ast::Statement::ExpressionStatement(expression) => Some(Some(ast::ForStatementInit::from(
+            expression.unbox().expression,
+        ))),
         _ => None,
     }
 }
@@ -22573,11 +22644,9 @@ fn codegen_for_update(cx: &mut Context, update_block: &ReactiveBlock) -> String 
     fn collapse_statement_lines_to_sequence_expr(raw: &str) -> String {
         let fallback = raw.trim().trim_end_matches(';').to_string();
         let allocator = Allocator::default();
-        let Ok(statements) = parse_statement_list_for_ast_codegen(
-            &allocator,
-            SourceType::mjs().with_jsx(true),
-            raw,
-        ) else {
+        let Ok(statements) =
+            parse_statement_list_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), raw)
+        else {
             return fallback;
         };
         let mut exprs: Vec<String> = Vec::with_capacity(statements.len());
@@ -22705,8 +22774,7 @@ fn reconstruct_for_init_declaration(code: &str) -> Option<String> {
                     (None, current) => current,
                 });
                 for declarator in &declaration.declarations {
-                    let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id
-                    else {
+                    let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id else {
                         return None;
                     };
                     declarators.push(Declarator {
@@ -22866,63 +22934,48 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use super::{
-        CodegenReactiveOptions, Context, FunctionExpressionType, apply_optional_to_rendered_expr,
-        build_function_property_from_value_ast, build_object_method_property_ast,
-        codegen_expression_with_flow_cast_restore, function_expr_as_declaration,
-        maybe_fill_for_header_initializer_from_update, reconstruct_for_init_declaration,
-        is_readonly_console_callee,
-        rendered_statement_is_cache_store,
-        rendered_statement_is_push_call_on_target,
-        rendered_statement_references_label,
-        rendered_expr_is_autodeps_placeholder,
-        rendered_expr_contains_optional_chain,
-        rendered_expr_has_property_path,
-        rendered_expr_is_direct_root_identifier,
-        rendered_expr_contains_logical_or,
-        rendered_expr_contains_assignment_to_target,
-        rendered_expr_is_array_literal, rendered_expr_is_array_seed_like,
-        rendered_expr_is_empty_array_literal,
-        rendered_expr_is_function_like, rendered_expr_is_jsx_like,
-        rendered_expr_root_identifier_name,
-        rendered_expr_contains_push_call_on_target,
-        strip_optional_chain_receiver_parens,
-        normalize_root_optional_dependency,
-        contains_identifier_token,
-        contains_base_identifier_token,
-        prune_unused_const_literal_decls,
-        strip_trailing_bare_return,
-        strip_terminal_current_path,
-        widen_member_dep_expr_to_root,
-        parse_rendered_expression_ast,
-        render_function_expression_ast,
-        render_assignment_expression_ast,
-        render_computed_access_expression_ast, render_primitive_expression_ast,
-        render_property_access_expression_ast, render_pattern_with_oxc,
-        render_reactive_function_body_prologue_ast, render_jsx_expression_ast,
-        render_reactive_if_statement_ast_with_context, render_reactive_labeled_statement_ast,
-        render_object_expression_ast,
-        render_jsx_fragment_ast, render_reactive_for_in_statement_ast,
+        CodegenReactiveOptions, Context, FunctionExpressionType, HOOK_GUARD_POP, HOOK_GUARD_PUSH,
+        SPAN, apply_optional_to_rendered_expr, build_function_property_from_value_ast,
+        build_object_method_property_ast, codegen_expression_with_flow_cast_restore,
+        contains_base_identifier_token, contains_identifier_token, function_expr_as_declaration,
+        is_literal_init_assignment_line, is_readonly_console_callee, is_simple_assignment_line,
+        maybe_fill_for_header_initializer_from_update, normalize_root_optional_dependency,
+        parse_rendered_expression_ast, prune_unused_const_literal_decls,
+        reconstruct_for_init_declaration, render_assignment_expression_ast,
+        render_cached_inline_hook_callback_block_ast, render_computed_access_expression_ast,
+        render_function_expression_ast, render_hook_guarded_block_ast,
+        render_hook_guarded_call_expression_ast, render_jsx_expression_ast,
+        render_jsx_fragment_ast, render_method_call_expression_with_options_ast,
+        render_object_expression_ast, render_pattern_with_oxc, render_primitive_expression_ast,
+        render_property_access_expression_ast, render_reactive_assignment_statement_ast,
+        render_reactive_expression_statement_ast, render_reactive_for_in_statement_ast,
         render_reactive_for_of_statement_ast, render_reactive_for_statement_ast,
-        render_hook_guarded_block_ast, render_hook_guarded_call_expression_ast,
-        is_literal_init_assignment_line, is_simple_assignment_line,
-        render_method_call_expression_with_options_ast, render_tagged_template_expression_ast,
-        render_template_literal_ast, render_sequence_expression_ast,
-        render_ts_type_cast_expression_ast, render_reactive_assignment_statement_ast,
-        render_reactive_expression_statement_ast, render_reactive_return_statement_ast,
-        render_reactive_variable_statement_ast,
-        render_cached_inline_hook_callback_block_ast, HOOK_GUARD_POP, HOOK_GUARD_PUSH, SPAN,
+        render_reactive_function_body_prologue_ast, render_reactive_if_statement_ast_with_context,
+        render_reactive_labeled_statement_ast, render_reactive_return_statement_ast,
+        render_reactive_variable_statement_ast, render_sequence_expression_ast,
+        render_tagged_template_expression_ast, render_template_literal_ast,
+        render_ts_type_cast_expression_ast, rendered_expr_contains_assignment_to_target,
+        rendered_expr_contains_logical_or, rendered_expr_contains_optional_chain,
+        rendered_expr_contains_push_call_on_target, rendered_expr_has_property_path,
+        rendered_expr_is_array_literal, rendered_expr_is_array_seed_like,
+        rendered_expr_is_autodeps_placeholder, rendered_expr_is_direct_root_identifier,
+        rendered_expr_is_empty_array_literal, rendered_expr_is_function_like,
+        rendered_expr_is_jsx_like, rendered_expr_root_identifier_name,
+        rendered_statement_is_cache_store, rendered_statement_is_push_call_on_target,
+        rendered_statement_references_label, strip_optional_chain_receiver_parens,
+        strip_terminal_current_path, strip_trailing_bare_return, widen_member_dep_expr_to_root,
     };
-    use oxc_allocator::Allocator;
-    use oxc_ast::ast;
-    use oxc_ast::AstBuilder;
     use crate::hir::types::{
         Argument, ArrayElement, ArrayPattern, DeclarationId, DependencyPathEntry, Effect,
-        Identifier, IdentifierId, IdentifierName, JsxAttribute, JsxTag, MutableRange, ObjectProperty,
-        ObjectPropertyKey, ObjectPropertyOrSpread, ObjectPropertyType, ObjectPattern, Pattern,
-        Place, PrimitiveValue, PropertyLiteral, ReactiveScopeDependency, SourceLocation, Type,
-        TemplateQuasi, TypeAnnotationKind,
+        Identifier, IdentifierId, IdentifierName, JsxAttribute, JsxTag, MutableRange,
+        ObjectPattern, ObjectProperty, ObjectPropertyKey, ObjectPropertyOrSpread,
+        ObjectPropertyType, Pattern, Place, PrimitiveValue, PropertyLiteral,
+        ReactiveScopeDependency, SourceLocation, TemplateQuasi, Type, TypeAnnotationKind,
     };
     use crate::reactive_scopes::codegen_reactive::{CachePrologue, FastRefreshPrologue};
+    use oxc_allocator::Allocator;
+    use oxc_ast::AstBuilder;
+    use oxc_ast::ast;
 
     fn test_context() -> Context {
         let options = CodegenReactiveOptions::default();
@@ -23079,7 +23132,9 @@ mod tests {
     #[test]
     fn detects_rendered_function_shapes_via_ast() {
         assert!(rendered_expr_is_function_like("value => value"));
-        assert!(rendered_expr_is_function_like("(async function(value) { return value; })"));
+        assert!(rendered_expr_is_function_like(
+            "(async function(value) { return value; })"
+        ));
         assert!(!rendered_expr_is_function_like("callback(value)"));
     }
 
@@ -23101,25 +23156,29 @@ mod tests {
     #[test]
     fn detects_rendered_autodeps_placeholders_via_ast() {
         assert!(rendered_expr_is_autodeps_placeholder("AUTODEPS"));
-        assert!(rendered_expr_is_autodeps_placeholder("ReactCompilerRuntime.AUTODEPS"));
+        assert!(rendered_expr_is_autodeps_placeholder(
+            "ReactCompilerRuntime.AUTODEPS"
+        ));
         assert!(rendered_expr_is_autodeps_placeholder("runtime?.AUTODEPS"));
-        assert!(rendered_expr_is_autodeps_placeholder("runtime[\"AUTODEPS\"]"));
+        assert!(rendered_expr_is_autodeps_placeholder(
+            "runtime[\"AUTODEPS\"]"
+        ));
         assert!(!rendered_expr_is_autodeps_placeholder("deps"));
     }
 
     #[test]
     fn detects_readonly_console_callees_via_ast() {
         let allocator = Allocator::default();
-        let callee =
-            parse_rendered_expression_ast(&allocator, "console.log").expect("expected console callee");
+        let callee = parse_rendered_expression_ast(&allocator, "console.log")
+            .expect("expected console callee");
         assert!(is_readonly_console_callee(&callee));
 
         let global_callee = parse_rendered_expression_ast(&allocator, "global.console.warn")
             .expect("expected global console callee");
         assert!(is_readonly_console_callee(&global_callee));
 
-        let other =
-            parse_rendered_expression_ast(&allocator, "logger.info").expect("expected other callee");
+        let other = parse_rendered_expression_ast(&allocator, "logger.info")
+            .expect("expected other callee");
         assert!(!is_readonly_console_callee(&other));
     }
 
@@ -23164,7 +23223,9 @@ mod tests {
     #[test]
     fn detects_rendered_logical_or_via_ast() {
         assert!(rendered_expr_contains_logical_or("value || fallback"));
-        assert!(rendered_expr_contains_logical_or("(cond ? left : right) || other"));
+        assert!(rendered_expr_contains_logical_or(
+            "(cond ? left : right) || other"
+        ));
         assert!(!rendered_expr_contains_logical_or("value ?? fallback"));
         assert!(!rendered_expr_contains_logical_or("value && fallback"));
     }
@@ -23209,14 +23270,26 @@ mod tests {
             "items = [], items.push(node)",
             "items"
         ));
-        assert!(rendered_statement_is_push_call_on_target("items.push(prev);", "items"));
-        assert!(!rendered_statement_is_push_call_on_target("other.push(prev);", "items"));
+        assert!(rendered_statement_is_push_call_on_target(
+            "items.push(prev);",
+            "items"
+        ));
+        assert!(!rendered_statement_is_push_call_on_target(
+            "other.push(prev);",
+            "items"
+        ));
     }
 
     #[test]
     fn widens_static_member_deps_via_ast() {
-        assert_eq!(widen_member_dep_expr_to_root("foo.bar").as_deref(), Some("foo"));
-        assert_eq!(widen_member_dep_expr_to_root("foo.bar.baz").as_deref(), Some("foo"));
+        assert_eq!(
+            widen_member_dep_expr_to_root("foo.bar").as_deref(),
+            Some("foo")
+        );
+        assert_eq!(
+            widen_member_dep_expr_to_root("foo.bar.baz").as_deref(),
+            Some("foo")
+        );
         assert_eq!(widen_member_dep_expr_to_root("foo?.bar"), None);
         assert_eq!(widen_member_dep_expr_to_root("foo[bar]"), None);
     }
@@ -23236,14 +23309,26 @@ mod tests {
     #[test]
     fn normalizes_root_optional_dependencies_via_ast() {
         assert_eq!(normalize_root_optional_dependency("foo?.bar"), "foo.bar");
-        assert_eq!(normalize_root_optional_dependency("foo?.bar.baz"), "foo?.bar.baz");
-        assert_eq!(normalize_root_optional_dependency("foo[bar]?.baz"), "foo[bar]?.baz");
+        assert_eq!(
+            normalize_root_optional_dependency("foo?.bar.baz"),
+            "foo?.bar.baz"
+        );
+        assert_eq!(
+            normalize_root_optional_dependency("foo[bar]?.baz"),
+            "foo[bar]?.baz"
+        );
     }
 
     #[test]
     fn strips_terminal_current_paths_via_ast() {
-        assert_eq!(strip_terminal_current_path("foo.current").as_deref(), Some("foo"));
-        assert_eq!(strip_terminal_current_path("foo?.current").as_deref(), Some("foo"));
+        assert_eq!(
+            strip_terminal_current_path("foo.current").as_deref(),
+            Some("foo")
+        );
+        assert_eq!(
+            strip_terminal_current_path("foo?.current").as_deref(),
+            Some("foo")
+        );
         assert_eq!(
             strip_terminal_current_path("foo.bar.current").as_deref(),
             Some("foo.bar")
@@ -23290,7 +23375,10 @@ mod tests {
     #[test]
     fn detects_identifier_tokens_via_ast() {
         assert!(contains_identifier_token("value.prop", "value"));
-        assert!(contains_identifier_token("if (value) {\n  work(value);\n}", "value"));
+        assert!(contains_identifier_token(
+            "if (value) {\n  work(value);\n}",
+            "value"
+        ));
         assert!(!contains_identifier_token("valueProp", "value"));
         assert!(!contains_identifier_token("\"value\";", "value"));
     }
@@ -23422,27 +23510,32 @@ mod tests {
 
     #[test]
     fn renders_property_access_via_ast() {
-        let rendered =
-            render_property_access_expression_ast("value", &PropertyLiteral::String("inner".into()), false)
-                .expect("expected property access");
+        let rendered = render_property_access_expression_ast(
+            "value",
+            &PropertyLiteral::String("inner".into()),
+            false,
+        )
+        .expect("expected property access");
 
         assert_eq!(rendered, "value.inner");
     }
 
     #[test]
     fn renders_assignment_expression_via_ast() {
-        let rendered =
-            render_assignment_expression_ast("value.inner", "next")
-                .expect("expected assignment expression");
+        let rendered = render_assignment_expression_ast("value.inner", "next")
+            .expect("expected assignment expression");
 
         assert_eq!(rendered, "value.inner = next");
     }
 
     #[test]
     fn renders_optional_property_access_via_ast() {
-        let rendered =
-            render_property_access_expression_ast("value", &PropertyLiteral::String("inner".into()), true)
-                .expect("expected optional property access");
+        let rendered = render_property_access_expression_ast(
+            "value",
+            &PropertyLiteral::String("inner".into()),
+            true,
+        )
+        .expect("expected optional property access");
 
         assert_eq!(rendered, "value?.inner");
     }
@@ -23485,18 +23578,16 @@ mod tests {
 
     #[test]
     fn renders_computed_access_on_optional_chain_via_ast() {
-        let rendered =
-            render_computed_access_expression_ast("value?.inner", "index", false)
-                .expect("expected optional-chain computed access");
+        let rendered = render_computed_access_expression_ast("value?.inner", "index", false)
+            .expect("expected optional-chain computed access");
 
         assert_eq!(rendered, "value?.inner[index]");
     }
 
     #[test]
     fn renders_optional_computed_access_on_optional_chain_via_ast() {
-        let rendered =
-            render_computed_access_expression_ast("value?.inner", "index", true)
-                .expect("expected optional-chain computed access");
+        let rendered = render_computed_access_expression_ast("value?.inner", "index", true)
+            .expect("expected optional-chain computed access");
 
         assert_eq!(rendered, "value?.inner?.[index]");
     }
@@ -23603,9 +23694,12 @@ mod tests {
             render_ts_type_cast_expression_ast("value", "Foo", TypeAnnotationKind::As).as_deref(),
             Some("value as Foo")
         );
-        let rendered =
-            render_ts_type_cast_expression_ast("value", "{ foo: string }", TypeAnnotationKind::Satisfies)
-                .expect("expected satisfies expression");
+        let rendered = render_ts_type_cast_expression_ast(
+            "value",
+            "{ foo: string }",
+            TypeAnnotationKind::Satisfies,
+        )
+        .expect("expected satisfies expression");
         assert!(rendered.starts_with("value satisfies {"));
         assert!(rendered.contains("foo: string"));
     }
@@ -23613,8 +23707,7 @@ mod tests {
     #[test]
     fn renders_flow_type_casts_via_ast() {
         assert_eq!(
-            render_ts_type_cast_expression_ast("value", "Foo", TypeAnnotationKind::Cast)
-                .as_deref(),
+            render_ts_type_cast_expression_ast("value", "Foo", TypeAnnotationKind::Cast).as_deref(),
             Some("(value: Foo)")
         );
     }
@@ -23647,8 +23740,8 @@ mod tests {
     #[test]
     fn renders_jsx_fragment_via_ast() {
         let mut cx = test_context();
-        let rendered =
-            render_jsx_fragment_ast(&mut cx, &[named_place(0, 0, "value")]).expect("expected fragment");
+        let rendered = render_jsx_fragment_ast(&mut cx, &[named_place(0, 0, "value")])
+            .expect("expected fragment");
 
         assert_eq!(rendered, "<>{value}</>");
     }
@@ -23797,7 +23890,9 @@ mod tests {
         cx.fbt_operands.insert(place.identifier.id);
         cx.set_temp_expr(
             &place.identifier,
-            Some(super::ExprValue::primary("\"\\\"user\\\" name\"".to_string())),
+            Some(super::ExprValue::primary(
+                "\"\\\"user\\\" name\"".to_string(),
+            )),
         );
         let rendered = render_jsx_expression_ast(
             &mut cx,
@@ -23878,9 +23973,8 @@ mod tests {
 
     #[test]
     fn renders_for_statement_via_ast() {
-        let rendered =
-            render_reactive_for_statement_ast("let i = 0", "i < 1", "i += 1", "work();")
-                .expect("expected for statement");
+        let rendered = render_reactive_for_statement_ast("let i = 0", "i < 1", "i += 1", "work();")
+            .expect("expected for statement");
 
         assert_eq!(rendered, "for (let i = 0; i < 1; i += 1) {\n  work();\n}\n");
     }
@@ -23912,17 +24006,17 @@ mod tests {
 
     #[test]
     fn renders_for_in_statement_via_ast() {
-        let rendered =
-            render_reactive_for_in_statement_ast("const", "key", "items", "work(key);")
-                .expect("expected for-in statement");
+        let rendered = render_reactive_for_in_statement_ast("const", "key", "items", "work(key);")
+            .expect("expected for-in statement");
 
         assert_eq!(rendered, "for (const key in items) {\n  work(key);\n}\n");
     }
 
     #[test]
     fn renders_function_body_directives_via_ast() {
-        let rendered = render_reactive_function_body_prologue_ast(Some(&["worklet".to_string()]), None)
-            .expect("expected prologue");
+        let rendered =
+            render_reactive_function_body_prologue_ast(Some(&["worklet".to_string()]), None)
+                .expect("expected prologue");
 
         assert_eq!(rendered.trim(), "\"worklet\";");
     }
@@ -24008,7 +24102,9 @@ mod tests {
     #[test]
     fn detects_simple_assignment_lines_structurally() {
         assert!(is_simple_assignment_line("target = source;\n"));
-        assert!(!is_simple_assignment_line("if (cond) {\n  target = source;\n}\n"));
+        assert!(!is_simple_assignment_line(
+            "if (cond) {\n  target = source;\n}\n"
+        ));
         assert!(!is_simple_assignment_line("target(source);\n"));
     }
 
@@ -24116,10 +24212,10 @@ mod tests {
         let pattern = Pattern::Object(ObjectPattern {
             properties: vec![
                 ObjectPropertyOrSpread::Property(ObjectProperty {
-                        key: ObjectPropertyKey::Identifier("value".to_string()),
-                        place: named_place(0, 0, "value"),
-                        type_: ObjectPropertyType::Property,
-                    }),
+                    key: ObjectPropertyKey::Identifier("value".to_string()),
+                    place: named_place(0, 0, "value"),
+                    type_: ObjectPropertyType::Property,
+                }),
                 ObjectPropertyOrSpread::Spread(named_place(1, 1, "rest")),
             ],
         });

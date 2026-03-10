@@ -619,7 +619,8 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
             return None;
         }
 
-        let suppressed_declares = collect_same_block_suppressed_declare_instruction_ids(&block.instructions);
+        let suppressed_declares =
+            collect_same_block_suppressed_declare_instruction_ids(&block.instructions);
         let mut statements = self.builder.vec();
         for instruction in &block.instructions {
             if let Some(statement) =
@@ -971,7 +972,12 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 lowered_func,
                 expr_type,
                 ..
-            } => lower_function_expression_ast(self.builder, name.as_deref(), lowered_func, *expr_type),
+            } => lower_function_expression_ast(
+                self.builder,
+                name.as_deref(),
+                lowered_func,
+                *expr_type,
+            ),
             InstructionValue::TemplateLiteral {
                 quasis, subexprs, ..
             } => {
@@ -979,24 +985,28 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 for expr in subexprs {
                     expressions.push(self.lower_place(expr, visiting)?);
                 }
-                Some(self.builder.expression_template_literal(
-                    SPAN,
-                    self.builder.vec_from_iter(quasis.iter().enumerate().map(|(index, quasi)| {
-                        self.builder.template_element(
-                            SPAN,
-                            ast::TemplateElementValue {
-                                raw: self.builder.atom(&quasi.raw),
-                                cooked: quasi
-                                    .cooked
-                                    .as_deref()
-                                    .map(|cooked| self.builder.atom(cooked)),
+                Some(
+                    self.builder.expression_template_literal(
+                        SPAN,
+                        self.builder.vec_from_iter(quasis.iter().enumerate().map(
+                            |(index, quasi)| {
+                                self.builder.template_element(
+                                    SPAN,
+                                    ast::TemplateElementValue {
+                                        raw: self.builder.atom(&quasi.raw),
+                                        cooked: quasi
+                                            .cooked
+                                            .as_deref()
+                                            .map(|cooked| self.builder.atom(cooked)),
+                                    },
+                                    index + 1 == quasis.len(),
+                                    false,
+                                )
                             },
-                            index + 1 == quasis.len(),
-                            false,
-                        )
-                    })),
-                    expressions,
-                ))
+                        )),
+                        expressions,
+                    ),
+                )
             }
             InstructionValue::Primitive { value, .. } => Some(lower_primitive(self.builder, value)),
             InstructionValue::BinaryExpression {
@@ -1109,9 +1119,10 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 |place, visiting| self.lower_place(place, visiting),
                 visiting,
             ),
-            InstructionValue::JSXText { value, .. } => {
-                Some(self.builder.expression_string_literal(SPAN, self.builder.atom(value), None))
-            }
+            InstructionValue::JSXText { value, .. } => Some(
+                self.builder
+                    .expression_string_literal(SPAN, self.builder.atom(value), None),
+            ),
             InstructionValue::PropertyLoad {
                 object,
                 property,
@@ -1704,8 +1715,7 @@ where
 
     let opening_name = lower_jsx_element_name(builder, tag, lower_place, visiting)?;
     let attributes = lower_jsx_attributes(builder, props, lower_place, visiting)?;
-    let jsx_children =
-        lower_jsx_children(builder, children.unwrap_or(&[]), lower_place, visiting)?;
+    let jsx_children = lower_jsx_children(builder, children.unwrap_or(&[]), lower_place, visiting)?;
     let closing_element = if jsx_children.is_empty() {
         None
     } else {
@@ -1773,19 +1783,19 @@ fn expression_to_jsx_element_name<'a>(
     expression: ast::Expression<'a>,
 ) -> Option<ast::JSXElementName<'a>> {
     match expression {
-        ast::Expression::Identifier(identifier) => Some(
-            builder.jsx_element_name_identifier_reference(SPAN, identifier.name),
-        ),
-        ast::Expression::StaticMemberExpression(member) => Some(
-            builder.jsx_element_name_member_expression(
+        ast::Expression::Identifier(identifier) => {
+            Some(builder.jsx_element_name_identifier_reference(SPAN, identifier.name))
+        }
+        ast::Expression::StaticMemberExpression(member) => {
+            Some(builder.jsx_element_name_member_expression(
                 SPAN,
                 expression_to_jsx_member_expression_object(
                     builder,
                     member.object.clone_in(builder.allocator),
                 )?,
                 builder.jsx_identifier(SPAN, member.property.name),
-            ),
-        ),
+            ))
+        }
         ast::Expression::ThisExpression(_) => Some(builder.jsx_element_name_this_expression(SPAN)),
         _ => None,
     }
@@ -1796,19 +1806,19 @@ fn expression_to_jsx_member_expression_object<'a>(
     expression: ast::Expression<'a>,
 ) -> Option<ast::JSXMemberExpressionObject<'a>> {
     match expression {
-        ast::Expression::Identifier(identifier) => Some(
-            builder.jsx_member_expression_object_identifier_reference(SPAN, identifier.name),
-        ),
-        ast::Expression::StaticMemberExpression(member) => Some(
-            builder.jsx_member_expression_object_member_expression(
+        ast::Expression::Identifier(identifier) => {
+            Some(builder.jsx_member_expression_object_identifier_reference(SPAN, identifier.name))
+        }
+        ast::Expression::StaticMemberExpression(member) => {
+            Some(builder.jsx_member_expression_object_member_expression(
                 SPAN,
                 expression_to_jsx_member_expression_object(
                     builder,
                     member.object.clone_in(builder.allocator),
                 )?,
                 builder.jsx_identifier(SPAN, member.property.name),
-            ),
-        ),
+            ))
+        }
         ast::Expression::ThisExpression(_) => {
             Some(builder.jsx_member_expression_object_this_expression(SPAN))
         }
@@ -1837,10 +1847,12 @@ where
                 ));
             }
             types::JsxAttribute::SpreadAttribute { argument } => {
-                attributes.push(builder.jsx_attribute_item_spread_attribute(
-                    SPAN,
-                    lower_place(argument, visiting)?,
-                ));
+                attributes.push(
+                    builder.jsx_attribute_item_spread_attribute(
+                        SPAN,
+                        lower_place(argument, visiting)?,
+                    ),
+                );
             }
         }
     }
@@ -1862,7 +1874,9 @@ where
         ast::Expression::StringLiteral(literal) => {
             Some(Some(ast::JSXAttributeValue::StringLiteral(literal)))
         }
-        ast::Expression::JSXElement(element) => Some(Some(ast::JSXAttributeValue::Element(element))),
+        ast::Expression::JSXElement(element) => {
+            Some(Some(ast::JSXAttributeValue::Element(element)))
+        }
         ast::Expression::JSXFragment(fragment) => {
             Some(Some(ast::JSXAttributeValue::Fragment(fragment)))
         }
@@ -1899,16 +1913,15 @@ where
 {
     let expression = lower_place(place, visiting)?;
     match expression {
-        ast::Expression::StringLiteral(literal) => Some(builder.jsx_child_expression_container(
-            SPAN,
-            ast::JSXExpression::StringLiteral(literal),
-        )),
+        ast::Expression::StringLiteral(literal) => Some(
+            builder
+                .jsx_child_expression_container(SPAN, ast::JSXExpression::StringLiteral(literal)),
+        ),
         ast::Expression::JSXElement(element) => Some(ast::JSXChild::Element(element)),
         ast::Expression::JSXFragment(fragment) => Some(ast::JSXChild::Fragment(fragment)),
-        expression => Some(builder.jsx_child_expression_container(
-            SPAN,
-            ast::JSXExpression::from(expression),
-        )),
+        expression => {
+            Some(builder.jsx_child_expression_container(SPAN, ast::JSXExpression::from(expression)))
+        }
     }
 }
 
@@ -1952,8 +1965,8 @@ fn lower_function_expression_ast<'a>(
 
     let body = builder.alloc(builder.function_body(SPAN, directives, statements));
     match expr_type {
-        types::FunctionExpressionType::ArrowFunctionExpression => Some(
-            builder.expression_arrow_function(
+        types::FunctionExpressionType::ArrowFunctionExpression => {
+            Some(builder.expression_arrow_function(
                 SPAN,
                 false,
                 hir_function.async_,
@@ -1961,24 +1974,22 @@ fn lower_function_expression_ast<'a>(
                 builder.alloc(params),
                 NONE,
                 body,
-            ),
-        ),
+            ))
+        }
         types::FunctionExpressionType::FunctionExpression
-        | types::FunctionExpressionType::FunctionDeclaration => Some(
-            builder.expression_function(
-                SPAN,
-                ast::FunctionType::FunctionExpression,
-                name.map(|name| builder.binding_identifier(SPAN, builder.atom(name))),
-                hir_function.generator,
-                hir_function.async_,
-                false,
-                NONE,
-                NONE,
-                builder.alloc(params),
-                NONE,
-                Some(body),
-            ),
-        ),
+        | types::FunctionExpressionType::FunctionDeclaration => Some(builder.expression_function(
+            SPAN,
+            ast::FunctionType::FunctionExpression,
+            name.map(|name| builder.binding_identifier(SPAN, builder.atom(name))),
+            hir_function.generator,
+            hir_function.async_,
+            false,
+            NONE,
+            NONE,
+            builder.alloc(params),
+            NONE,
+            Some(body),
+        )),
     }
 }
 
@@ -2382,7 +2393,9 @@ fn synthetic_param_names(hir_function: &HIRFunction) -> HashMap<IdentifierId, St
         }
     }
     for (_, block) in &hir_function.body.blocks {
-        if let Terminal::Try { handler_binding, .. } = &block.terminal
+        if let Terminal::Try {
+            handler_binding, ..
+        } = &block.terminal
             && let Some(binding) = handler_binding
             && !binding
                 .identifier
@@ -4244,7 +4257,10 @@ mod tests {
             inner_value,
         );
 
-        assert_eq!(try_lower_function_body(&hir).as_deref(), Some("return () => x;\n"));
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("return () => x;\n")
+        );
     }
 
     #[test]
@@ -4574,7 +4590,10 @@ mod tests {
             undefined_value,
         );
 
-        assert_eq!(try_lower_function_body(&hir).as_deref(), Some("let intervalId;\n"));
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("let intervalId;\n")
+        );
     }
 
     fn hir_function(
