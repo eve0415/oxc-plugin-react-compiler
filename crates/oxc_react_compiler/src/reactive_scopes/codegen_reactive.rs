@@ -161,6 +161,12 @@ pub enum GeneratedBodyShape {
         value_kind: ast::VariableDeclarationKind,
         expression: String,
     },
+    ZeroDependencyMemoizedReturn {
+        value_name: String,
+        value_kind: ast::VariableDeclarationKind,
+        value_slot: u32,
+        memoized_expr: String,
+    },
     SingleDependencyMemoizedReturn {
         value_name: String,
         value_kind: ast::VariableDeclarationKind,
@@ -1092,6 +1098,43 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             if alternate_block.body.len() != 1 {
                 continue;
             }
+            let ast::Expression::BinaryExpression(test) = if_statement.test.without_parentheses()
+            else {
+                continue;
+            };
+            if test.operator == AstBinaryOperator::StrictEquality
+                && let Some((cache_var, value_slot)) = expression_cache_access(&test.left)
+                && expression_is_symbol_for(&test.right, MEMO_CACHE_SENTINEL)
+                && consequent_block.body.len() == 2
+            {
+                let Some(memoized_expr) = statement_assigns_identifier_to_expression(
+                    &consequent_block.body[0],
+                    &value_name,
+                )
+                .map(codegen_expression_with_flow_cast_restore) else {
+                    continue;
+                };
+                if !statement_assigns_cache_slot_from_identifier(
+                    &consequent_block.body[1],
+                    cache_var,
+                    value_slot,
+                    &value_name,
+                ) || !statement_assigns_identifier_from_cache_slot(
+                    &alternate_block.body[0],
+                    &value_name,
+                    cache_var,
+                    value_slot,
+                ) || !statement_returns_identifier(&statements[2], &value_name)
+                {
+                    continue;
+                }
+                return GeneratedBodyShape::ZeroDependencyMemoizedReturn {
+                    value_name,
+                    value_kind: value_decl.kind,
+                    value_slot,
+                    memoized_expr,
+                };
+            }
             if let Some(dependency_guards) = collect_dependency_guards(&if_statement.test)
                 && dependency_guards.len() >= 2
                 && consequent_block.body.len() == dependency_guards.len() + 2
@@ -1163,10 +1206,6 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             if consequent_block.body.len() != 3 {
                 continue;
             }
-            let ast::Expression::BinaryExpression(test) = if_statement.test.without_parentheses()
-            else {
-                continue;
-            };
             if test.operator != AstBinaryOperator::StrictInequality {
                 continue;
             }
@@ -22127,6 +22166,104 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                         )),
                         false,
                     )),
+                    builder.statement_return(
+                        SPAN,
+                        Some(builder.expression_identifier(SPAN, builder.ident(value_name))),
+                    ),
+                ]),
+            ))
+        }
+        GeneratedBodyShape::ZeroDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            value_slot,
+            memoized_expr,
+        } => {
+            let cache_binding_name = &spec.cache_prologue?.binding_name;
+            let memoized_expr = parse_expression_for_ast_codegen(
+                allocator,
+                SourceType::mjs().with_jsx(true),
+                memoized_expr,
+            )
+            .ok()?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec_from_iter([
+                    ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+                        SPAN,
+                        *value_kind,
+                        builder.vec1(builder.variable_declarator(
+                            SPAN,
+                            *value_kind,
+                            builder.binding_pattern_binding_identifier(
+                                SPAN,
+                                builder.ident(value_name),
+                            ),
+                            NONE,
+                            None,
+                            false,
+                        )),
+                        false,
+                    )),
+                    builder.statement_if(
+                        SPAN,
+                        builder.expression_binary(
+                            SPAN,
+                            build_computed_member_expression_ast(
+                                builder,
+                                cache_binding_name,
+                                builder.expression_numeric_literal(
+                                    SPAN,
+                                    *value_slot as f64,
+                                    None,
+                                    NumberBase::Decimal,
+                                ),
+                            ),
+                            AstBinaryOperator::StrictEquality,
+                            build_symbol_for_call_expression_ast(builder, MEMO_CACHE_SENTINEL),
+                        ),
+                        builder.statement_block(
+                            SPAN,
+                            builder.vec_from_iter([
+                                build_identifier_assignment_statement_ast_with_expression(
+                                    builder,
+                                    value_name,
+                                    memoized_expr,
+                                ),
+                                build_computed_member_assignment_statement_ast(
+                                    builder,
+                                    cache_binding_name,
+                                    builder.expression_numeric_literal(
+                                        SPAN,
+                                        *value_slot as f64,
+                                        None,
+                                        NumberBase::Decimal,
+                                    ),
+                                    builder.expression_identifier(SPAN, builder.ident(value_name)),
+                                ),
+                            ]),
+                        ),
+                        Some(builder.statement_block(
+                            SPAN,
+                            builder.vec1(
+                                build_identifier_assignment_statement_ast_with_expression(
+                                    builder,
+                                    value_name,
+                                    build_computed_member_expression_ast(
+                                        builder,
+                                        cache_binding_name,
+                                        builder.expression_numeric_literal(
+                                            SPAN,
+                                            *value_slot as f64,
+                                            None,
+                                            NumberBase::Decimal,
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        )),
+                    ),
                     builder.statement_return(
                         SPAN,
                         Some(builder.expression_identifier(SPAN, builder.ident(value_name))),
