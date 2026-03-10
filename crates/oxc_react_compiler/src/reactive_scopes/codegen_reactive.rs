@@ -14273,21 +14273,57 @@ fn codegen_reactive_scope(
         output.push_str("}\n");
     } else {
         // Emit the standard if/else memoization guard.
-        let mut consequent = computation.clone();
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        let parsed_test = parse_expression_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            &test_condition,
+        )
+        .expect("memo cache guard condition should stay on AST path");
+        let mut consequent = parse_statement_list_for_ast_codegen_with_context(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            cx.function_is_async,
+            cx.function_is_generator,
+            &computation,
+        )
+        .expect("memo cache guard consequent should stay on AST path");
         for stmt in &cache_store_stmts {
-            consequent.push_str(stmt);
+            consequent.extend(
+                parse_statement_list_for_ast_codegen_with_context(
+                    &allocator,
+                    SourceType::mjs().with_jsx(true),
+                    cx.function_is_async,
+                    cx.function_is_generator,
+                    stmt,
+                )
+                .expect("memo cache store should stay on AST path"),
+            );
         }
-        let alternate = cache_load_stmts.concat();
-        output.push_str(
-            &render_reactive_if_statement_ast_with_context(
-                &test_condition,
-                &consequent,
-                Some(&alternate),
-                cx.function_is_async,
-                cx.function_is_generator,
-            )
-            .expect("memo cache guard should stay on AST path"),
+        let mut alternate = builder.vec();
+        for stmt in &cache_load_stmts {
+            alternate.extend(
+                parse_statement_list_for_ast_codegen_with_context(
+                    &allocator,
+                    SourceType::mjs().with_jsx(true),
+                    cx.function_is_async,
+                    cx.function_is_generator,
+                    stmt,
+                )
+                .expect("memo cache load should stay on AST path"),
+            );
+        }
+        let statement = builder.statement_if(
+            SPAN,
+            parsed_test,
+            builder.statement_block(SPAN, consequent),
+            Some(builder.statement_block(SPAN, alternate)),
         );
+        output.push_str(&format!(
+            "{}\n",
+            codegen_statement_with_flow_cast_restore(&statement)
+        ));
     }
     for stmt in &deferred_post_scope_calls {
         output.push_str(stmt);
@@ -14315,21 +14351,35 @@ fn codegen_reactive_scope(
     // Early return value
     if let Some(early_return) = &scope.early_return_value {
         let name = identifier_name_with_cx(cx, &early_return.value);
-        let consequent = render_reactive_return_statement_ast(Some(&name))
-            .expect("early return should stay on AST path");
-        output.push_str(
-            &render_reactive_if_statement_ast(
-                &render_binary_expression_ast(
-                    &name,
-                    BinaryOperator::StrictNotEq,
-                    &render_symbol_for_call_expression_source(EARLY_RETURN_SENTINEL),
-                )
-                .expect("early return sentinel guard should stay on AST path"),
-                &consequent,
-                None,
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        let test = parse_expression_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            &render_binary_expression_ast(
+                &name,
+                BinaryOperator::StrictNotEq,
+                &render_symbol_for_call_expression_source(EARLY_RETURN_SENTINEL),
             )
-            .expect("early return guard should stay on AST path"),
+            .expect("early return sentinel guard should stay on AST path"),
+        )
+        .expect("early return guard should stay on AST path");
+        let statement = builder.statement_if(
+            SPAN,
+            test,
+            builder.statement_block(
+                SPAN,
+                builder.vec1(builder.statement_return(
+                    SPAN,
+                    Some(builder.expression_identifier(SPAN, builder.ident(&name))),
+                )),
+            ),
+            None,
         );
+        output.push_str(&format!(
+            "{}\n",
+            codegen_statement_with_flow_cast_restore(&statement)
+        ));
     }
 }
 
