@@ -5020,7 +5020,7 @@ fn next_emitted_statement_is_cache_store(
 ) -> Option<bool> {
     preview_next_emitted_statement(cx, block, start_idx)
         .as_deref()
-        .map(|stmt| stmt.trim_start().starts_with("$["))
+        .map(rendered_statement_is_cache_store)
 }
 
 fn preview_next_emitted_statement(
@@ -5050,6 +5050,37 @@ fn preview_next_emitted_statement(
         );
     }
     first_stmt
+}
+
+fn rendered_statement_is_cache_store(stmt: &str) -> bool {
+    let trimmed = stmt.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let allocator = Allocator::default();
+    let Ok(statement) = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        trimmed,
+    ) else {
+        return false;
+    };
+    let ast::Statement::ExpressionStatement(expression_statement) = statement else {
+        return false;
+    };
+    let ast::Expression::AssignmentExpression(assignment) =
+        expression_statement.expression.without_parentheses()
+    else {
+        return false;
+    };
+    matches!(
+        &assignment.left,
+        ast::AssignmentTarget::ComputedMemberExpression(member)
+            if matches!(
+                member.object.without_parentheses(),
+                ast::Expression::Identifier(identifier) if identifier.name == "$"
+            )
+    )
 }
 
 fn should_insert_blank_after_labeled_if(
@@ -22251,6 +22282,7 @@ mod tests {
         codegen_expression_with_flow_cast_restore, function_expr_as_declaration,
         maybe_fill_for_header_initializer_from_update, reconstruct_for_init_declaration,
         is_readonly_console_callee,
+        rendered_statement_is_cache_store,
         rendered_expr_is_autodeps_placeholder,
         rendered_expr_is_array_literal, rendered_expr_is_array_seed_like,
         rendered_expr_is_function_like, rendered_expr_is_jsx_like,
@@ -22489,6 +22521,13 @@ mod tests {
         assert!(rendered_expr_is_jsx_like("<Foo />"));
         assert!(rendered_expr_is_jsx_like("(<>test</>)"));
         assert!(!rendered_expr_is_jsx_like("value ?? fallback"));
+    }
+
+    #[test]
+    fn detects_rendered_cache_store_statements_via_ast() {
+        assert!(rendered_statement_is_cache_store("$[0] = value;"));
+        assert!(!rendered_statement_is_cache_store("value = $[0];"));
+        assert!(!rendered_statement_is_cache_store("const cache = $[0];"));
     }
 
     #[test]
