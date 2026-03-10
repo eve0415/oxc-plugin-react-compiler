@@ -4626,24 +4626,22 @@ fn count_non_empty_lines(code: &str) -> usize {
 }
 
 fn is_simple_assignment_line(code: &str) -> bool {
-    let trimmed = code.trim();
-    if trimmed.contains('\n') || !trimmed.ends_with(';') {
+    let allocator = Allocator::default();
+    let Ok(statement) = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        code,
+    ) else {
         return false;
-    }
-    let body = trimmed.trim_end_matches(';').trim();
-    if body.starts_with("let ")
-        || body.starts_with("const ")
-        || body.starts_with("if ")
-        || body.starts_with("switch ")
-        || body.starts_with("for ")
-        || body.starts_with("while ")
-        || body.starts_with("return ")
-        || body.starts_with("break ")
-        || body.starts_with("continue ")
-    {
-        return false;
-    }
-    body.contains(" = ")
+    };
+    matches!(
+        statement,
+        ast::Statement::ExpressionStatement(expression_statement)
+            if matches!(
+                expression_statement.expression.without_parentheses(),
+                ast::Expression::AssignmentExpression(_)
+            )
+    )
 }
 
 fn emit_labeled_statement(output: &mut String, label_id: BlockId, stmt: &str) {
@@ -21964,6 +21962,7 @@ mod tests {
         render_jsx_fragment_ast, render_reactive_for_in_statement_ast,
         render_reactive_for_of_statement_ast, render_reactive_for_statement_ast,
         render_hook_guarded_block_ast, render_hook_guarded_call_expression_ast,
+        is_simple_assignment_line,
         render_method_call_expression_with_options_ast, render_tagged_template_expression_ast,
         render_template_literal_ast, render_sequence_expression_ast,
         render_ts_type_cast_expression_ast, render_reactive_assignment_statement_ast,
@@ -22835,6 +22834,13 @@ mod tests {
             .expect("expected labeled block");
 
         assert_eq!(rendered, "bb1: {\n  x = 1;\n  y = 2;\n}\n");
+    }
+
+    #[test]
+    fn detects_simple_assignment_lines_structurally() {
+        assert!(is_simple_assignment_line("target = source;\n"));
+        assert!(!is_simple_assignment_line("if (cond) {\n  target = source;\n}\n"));
+        assert!(!is_simple_assignment_line("target(source);\n"));
     }
 
     #[test]
