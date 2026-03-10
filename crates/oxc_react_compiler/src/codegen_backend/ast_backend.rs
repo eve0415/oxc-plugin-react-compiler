@@ -2882,7 +2882,7 @@ fn build_compiled_function_body<'a>(
     {
         function_body
     } else {
-        let body_source = render_compiled_body_source(cf, state);
+        let body_source = cf.generated_body.clone();
         parse_compiled_function_body(allocator, source_type, cf, &body_source).ok()?
     };
 
@@ -2915,14 +2915,14 @@ fn build_compiled_function_body<'a>(
 fn try_build_compiled_function_body_from_hir<'a>(
     builder: AstBuilder<'a>,
     cf: &CompiledFunction,
-    state: &AstRenderState,
+    _state: &AstRenderState,
 ) -> Option<ast::FunctionBody<'a>> {
     if cf.body_payload != CompiledBodyPayload::LowerFromFinalHir || cf.needs_cache_import {
         return None;
     }
     let hir_function = cf.hir_function.as_ref()?;
     let lowered_body = super::hir_to_ast::try_lower_function_body(hir_function)?;
-    let rendered_body = render_compiled_body_source(cf, state);
+    let rendered_body = cf.generated_body.clone();
     if normalize_compiled_body_for_hir_match(&lowered_body)
         != normalize_compiled_body_for_hir_match(&rendered_body)
     {
@@ -3636,10 +3636,6 @@ fn skip_quoted(source: &str, start_idx: usize) -> Option<usize> {
         }
     }
     None
-}
-
-fn render_compiled_body_source(cf: &CompiledFunction, _state: &AstRenderState) -> String {
-    cf.generated_body.clone()
 }
 
 fn apply_preserved_directives<'a>(
