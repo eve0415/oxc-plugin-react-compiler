@@ -3546,25 +3546,23 @@ fn codegen_block_no_reset_with_options(
             let target_name = identifier_name_with_cx(cx, &target_ident);
             let mut consequent = if_stmt;
             consequent.push_str(
-                &render_reactive_expression_statement_ast(&format!(
-                    "{}[{}] = {}",
-                    cache_var, dep_slot, dep_expr
-                ))
+                &render_cache_slot_store_statement_ast(&cache_var, dep_slot, &dep_expr)
                 .expect("scope bridge dependency store should stay on AST path"),
             );
             consequent.push_str(
-                &render_reactive_expression_statement_ast(&format!(
-                    "{}[{}] = {}",
-                    cache_var, value_slot, target_name
-                ))
+                &render_cache_slot_store_statement_ast(&cache_var, value_slot, &target_name)
                 .expect("scope bridge value store should stay on AST path"),
             );
-            let alternate = render_reactive_assignment_statement_ast(
-                &target_name,
-                &format!("{}[{}]", cache_var, value_slot),
+            let alternate =
+                render_cache_slot_load_assignment_statement_ast(&target_name, &cache_var, value_slot)
+                    .expect("scope bridge cache load should stay on AST path");
+            let guard_test = render_cache_slot_comparison_expression_ast(
+                &cache_var,
+                dep_slot,
+                BinaryOperator::StrictNotEq,
+                &dep_expr,
             )
-            .expect("scope bridge cache load should stay on AST path");
-            let guard_test = format!("{}[{}] !== {}", cache_var, dep_slot, dep_expr);
+            .expect("scope bridge guard should stay on AST path");
             output.push_str(
                 &render_reactive_if_statement_ast(&guard_test, &consequent, Some(&alternate))
                     .expect("scope bridge guard should stay on AST path"),
@@ -10135,25 +10133,23 @@ fn maybe_codegen_fused_zero_dep_ternary_default_scope(
     let mut consequent = render_reactive_assignment_statement_ast(&output_name, &rhs_expr)
         .expect("conditional output assignment should stay on AST path");
     consequent.push_str(
-        &render_reactive_expression_statement_ast(&format!(
-            "{}[{}] = {}",
-            cache_var, dep_slot, dep_expr_guard
-        ))
+        &render_cache_slot_store_statement_ast(&cache_var, dep_slot, &dep_expr_guard)
         .expect("conditional dependency store should stay on AST path"),
     );
     consequent.push_str(
-        &render_reactive_expression_statement_ast(&format!(
-            "{}[{}] = {}",
-            cache_var, output_slot, output_name
-        ))
+        &render_cache_slot_store_statement_ast(&cache_var, output_slot, &output_name)
         .expect("conditional output store should stay on AST path"),
     );
-    let alternate = render_reactive_assignment_statement_ast(
-        &output_name,
-        &format!("{}[{}]", cache_var, output_slot),
+    let alternate =
+        render_cache_slot_load_assignment_statement_ast(&output_name, &cache_var, output_slot)
+            .expect("conditional output load should stay on AST path");
+    let guard_test = render_cache_slot_comparison_expression_ast(
+        &cache_var,
+        dep_slot,
+        BinaryOperator::StrictNotEq,
+        &dep_expr_guard,
     )
-    .expect("conditional output load should stay on AST path");
-    let guard_test = format!("{}[{}] !== {}", cache_var, dep_slot, dep_expr_guard);
+    .expect("conditional output guard should stay on AST path");
     output.push_str(
         &render_reactive_if_statement_ast(&guard_test, &consequent, Some(&alternate))
             .expect("conditional output guard should stay on AST path"),
@@ -10396,11 +10392,19 @@ fn maybe_codegen_fused_callback_reassign_scope(
     let mut cache_store_stmts: Vec<String> = Vec::new();
     for dep_expr in &dep_exprs {
         let dep_slot = cx.alloc_cache_slot();
-        change_exprs.push(format!("{}[{}] !== {}", cache_var, dep_slot, dep_expr));
-        cache_store_stmts.push(render_reactive_expression_statement_ast(&format!(
-            "{}[{}] = {}",
-            cache_var, dep_slot, dep_expr
-        ))?);
+        change_exprs.push(
+            render_cache_slot_comparison_expression_ast(
+                &cache_var,
+                dep_slot,
+                BinaryOperator::StrictNotEq,
+                dep_expr,
+            )
+            .expect("callback dependency comparison should stay on AST path"),
+        );
+        cache_store_stmts.push(
+            render_cache_slot_store_statement_ast(&cache_var, dep_slot, dep_expr)
+                .expect("callback dependency store should stay on AST path"),
+        );
     }
     let callback_slot = cx.alloc_cache_slot();
 
@@ -10408,7 +10412,10 @@ fn maybe_codegen_fused_callback_reassign_scope(
     let callback_expr = callback_ev.wrap_if_needed(ExprPrecedence::Assignment);
 
     let mut computation = String::new();
-    computation.push_str(&format!("{} = {};\n", target_name, callback_expr));
+    computation.push_str(
+        &render_reactive_assignment_statement_ast(&target_name, &callback_expr)
+            .expect("callback assignment should stay on AST path"),
+    );
 
     for stmt in &following_stmts[..dep_scope_idx] {
         let ReactiveStatement::Instruction(instr) = stmt else {
@@ -10436,22 +10443,27 @@ fn maybe_codegen_fused_callback_reassign_scope(
             }
         }
     }
-    cache_store_stmts.push(render_reactive_expression_statement_ast(&format!(
-        "{}[{}] = {}",
-        cache_var, callback_slot, target_name
-    ))?);
+    cache_store_stmts.push(
+        render_cache_slot_store_statement_ast(&cache_var, callback_slot, &target_name)
+            .expect("callback cache store should stay on AST path"),
+    );
 
     let mut consequent = computation;
     for stmt in &cache_store_stmts {
         consequent.push_str(stmt);
     }
     output.push_str(&render_reactive_if_statement_ast(
-        &change_exprs.join(" || "),
+        &render_logical_chain_expression_ast(&change_exprs, LogicalOperator::Or)
+            .expect("callback change guard should stay on AST path"),
         &consequent,
-        Some(&render_reactive_assignment_statement_ast(
-            &target_name,
-            &format!("{}[{}]", cache_var, callback_slot),
-        )?),
+        Some(
+            &render_cache_slot_load_assignment_statement_ast(
+                &target_name,
+                &cache_var,
+                callback_slot,
+            )
+            .expect("callback cache load should stay on AST path"),
+        ),
     )?);
 
     cx.restore_temps(temp_snapshot);
