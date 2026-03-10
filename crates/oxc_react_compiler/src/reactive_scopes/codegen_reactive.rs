@@ -4962,14 +4962,7 @@ fn pop_last_simple_statement_line(output: &mut String) -> Option<String> {
     let start = output[..end].rfind('\n').map_or(0, |idx| idx + 1);
     let line = &output[start..end];
     let trimmed = line.trim();
-    if trimmed.is_empty()
-        || trimmed.contains(':')
-        || !trimmed.ends_with(';')
-        || trimmed.starts_with("$[")
-        || trimmed.starts_with("break ")
-        || trimmed.starts_with("continue ")
-        || !is_literal_init_assignment_line(trimmed)
-    {
+    if trimmed.is_empty() || !trimmed.ends_with(';') || !is_literal_init_assignment_line(trimmed) {
         return None;
     }
     let trimmed_owned = trimmed.to_string();
@@ -4979,6 +4972,9 @@ fn pop_last_simple_statement_line(output: &mut String) -> Option<String> {
 
 fn is_literal_init_assignment_line(line: &str) -> bool {
     let trimmed = line.trim();
+    if rendered_statement_is_cache_store(trimmed) {
+        return false;
+    }
     let allocator = Allocator::default();
     let Ok(statement) = parse_single_statement_for_ast_codegen(
         &allocator,
@@ -5001,6 +4997,9 @@ fn is_literal_init_assignment_line(line: &str) -> bool {
             }
             _ => false,
         },
+        ast::Statement::BreakStatement(_)
+        | ast::Statement::ContinueStatement(_)
+        | ast::Statement::LabeledStatement(_) => false,
         _ => false,
     }
 }
@@ -22385,7 +22384,7 @@ mod tests {
         render_jsx_fragment_ast, render_reactive_for_in_statement_ast,
         render_reactive_for_of_statement_ast, render_reactive_for_statement_ast,
         render_hook_guarded_block_ast, render_hook_guarded_call_expression_ast,
-        is_simple_assignment_line,
+        is_literal_init_assignment_line, is_simple_assignment_line,
         render_method_call_expression_with_options_ast, render_tagged_template_expression_ast,
         render_template_literal_ast, render_sequence_expression_ast,
         render_ts_type_cast_expression_ast, render_reactive_assignment_statement_ast,
@@ -22632,6 +22631,14 @@ mod tests {
             "bb2: { break bb2; }",
             "bb1"
         ));
+    }
+
+    #[test]
+    fn detects_literal_init_lines_structurally() {
+        assert!(is_literal_init_assignment_line("const items = [];"));
+        assert!(is_literal_init_assignment_line("items = {};"));
+        assert!(!is_literal_init_assignment_line("$[0] = [];"));
+        assert!(!is_literal_init_assignment_line("break bb1;"));
     }
 
     #[test]
