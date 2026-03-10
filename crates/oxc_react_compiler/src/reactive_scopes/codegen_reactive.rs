@@ -5767,15 +5767,16 @@ fn parse_dual_reassign_scope_branch(
         );
     }
 
-    let mut seq_items: Vec<String> = pre_exprs
+    let seq_items: Vec<String> = pre_exprs
         .iter()
         .map(|expr| wrap_sequence_expr_item_global(expr))
         .collect();
-    seq_items.push(decl_rhs);
-    let branch_expr = if seq_items.len() == 1 {
-        seq_items[0].clone()
+    let final_expr = decl_rhs;
+    let branch_expr = if seq_items.is_empty() {
+        final_expr
     } else {
-        format!("({})", seq_items.join(", "))
+        render_sequence_expression_ast(&seq_items, &final_expr)
+            .expect("dual reassign branch should stay on AST path")
     };
     if !contains_identifier_token(&branch_expr, &reassign_name) {
         skip!(
@@ -6250,15 +6251,15 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
         else_passthrough.push(trimmed.to_string());
     }
 
-    let mut seq_items: Vec<String> = pre_exprs
+    let seq_items: Vec<String> = pre_exprs
         .iter()
         .map(|expr| wrap_sequence_expr_item_global(expr))
         .collect();
-    seq_items.push(decl_rhs);
-    let consequent_expr = if seq_items.len() == 1 {
-        seq_items[0].clone()
+    let consequent_expr = if seq_items.is_empty() {
+        decl_rhs
     } else {
-        format!("({})", seq_items.join(", "))
+        render_sequence_expression_ast(&seq_items, &decl_rhs)
+            .expect("conditional consequent should stay on AST path")
     };
 
     let mut consequent = String::new();
@@ -6670,7 +6671,8 @@ fn maybe_codegen_fused_reassign_then_ternary_branch(
         if !assign_trimmed.is_empty() && branch_expr.contains(assign_trimmed) {
             branch_expr
         } else {
-            format!("(({}), {})", assign_expr, branch_expr)
+            render_sequence_expression_ast(&[assign_expr.to_string()], &branch_expr)
+                .expect("fused branch sequence should stay on AST path")
         }
     }
 
