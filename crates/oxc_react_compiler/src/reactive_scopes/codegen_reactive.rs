@@ -15693,14 +15693,6 @@ fn logical_operator_precedence(op: &LogicalOperator) -> ExprPrecedence {
     }
 }
 
-fn logical_operator_to_str(op: &LogicalOperator) -> &'static str {
-    match op {
-        LogicalOperator::And => "&&",
-        LogicalOperator::Or => "||",
-        LogicalOperator::NullishCoalescing => "??",
-    }
-}
-
 fn codegen_logical_operand_from_expr_value(ev: ExprValue, parent_prec: ExprPrecedence) -> String {
     let is_logical = matches!(
         ev.prec,
