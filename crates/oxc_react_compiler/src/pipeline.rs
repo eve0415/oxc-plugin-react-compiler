@@ -1319,6 +1319,13 @@ fn codegen_outlined_function(
                 }
                 rename_generated_body_shape(inner.as_mut(), from, to);
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Sequential {
+                prefix,
+                inner,
+            } => {
+                rename_generated_body_shape(prefix.as_mut(), from, to);
+                rename_generated_body_shape(inner.as_mut(), from, to);
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
                 value_name,
                 temp_name,

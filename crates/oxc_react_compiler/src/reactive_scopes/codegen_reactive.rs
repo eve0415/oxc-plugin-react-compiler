@@ -203,6 +203,10 @@ pub enum GeneratedBodyShape {
         bindings: Vec<GeneratedBinding>,
         inner: Box<GeneratedBodyShape>,
     },
+    Sequential {
+        prefix: Box<GeneratedBodyShape>,
+        inner: Box<GeneratedBodyShape>,
+    },
     SingleSlotMemoizedReturn {
         value_name: String,
         value_kind: ast::VariableDeclarationKind,
@@ -843,6 +847,10 @@ fn codegen_reactive_function_with_primitives(
 }
 
 fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
+    analyze_generated_body_shape_impl(body, true)
+}
+
+fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> GeneratedBodyShape {
     fn shape_returned_identifier(shape: &GeneratedBodyShape) -> Option<&str> {
         match shape {
             GeneratedBodyShape::Unknown => None,
@@ -855,7 +863,8 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             | GeneratedBodyShape::MultiDependencyMemoizedReturn { value_name, .. }
             | GeneratedBodyShape::SingleSlotMemoizedReturn { value_name, .. } => Some(value_name),
             GeneratedBodyShape::AliasedReturn { alias_name, .. } => Some(alias_name),
-            GeneratedBodyShape::PrefixedBindings { inner, .. } => shape_returned_identifier(inner),
+            GeneratedBodyShape::PrefixedBindings { inner, .. }
+            | GeneratedBodyShape::Sequential { inner, .. } => shape_returned_identifier(inner),
         }
     }
 
@@ -1090,18 +1099,27 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             let Some(init) = declarator.init.as_ref() else {
                 break;
             };
+            if matches!(
+                init.without_parentheses(),
+                ast::Expression::ArrowFunctionExpression(_)
+            ) {
+                break;
+            }
             bindings.push(GeneratedBinding {
                 kind: declaration.kind,
                 name,
-                expression: codegen_expression_with_flow_cast_restore(init),
+                expression: strip_top_level_parenthesized_expression(
+                    codegen_expression_with_flow_cast_restore(init),
+                ),
             });
             prefix_len += 1;
         }
         (bindings, prefix_len)
     }
 
-    fn collect_leading_simple_assignments(
+    fn collect_leading_side_effect_assignments(
         statements: &[ast::Statement<'_>],
+        terminal_identifier: &str,
     ) -> (Vec<GeneratedAssignment>, usize) {
         let mut assignments = Vec::new();
         let mut prefix_len = 0usize;
@@ -1109,6 +1127,11 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             let Some((target, value)) = assignment_statement_parts(statement) else {
                 break;
             };
+            if assignment_target_identifier_name(target) == Some(terminal_identifier)
+                || assignment_target_cache_access(target).is_some()
+            {
+                break;
+            }
             assignments.push(GeneratedAssignment {
                 target: codegen_assignment_target_with_flow_cast_restore(target),
                 value: codegen_expression_with_flow_cast_restore(value),
@@ -1116,6 +1139,87 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             prefix_len += 1;
         }
         (assignments, prefix_len)
+    }
+
+    fn collect_candidate_return_identifiers(statements: &[ast::Statement<'_>]) -> Vec<String> {
+        let mut candidates = Vec::new();
+        for statement in statements.iter().rev() {
+            match statement {
+                ast::Statement::VariableDeclaration(declaration)
+                    if declaration.declarations.len() == 1 =>
+                {
+                    if let Some(name) = binding_identifier_name(&declaration.declarations[0].id)
+                        && !candidates.contains(&name)
+                    {
+                        candidates.push(name);
+                    }
+                }
+                ast::Statement::ExpressionStatement(_) => {
+                    if let Some((target, _)) = assignment_statement_parts(statement)
+                        && let Some(name) = assignment_target_identifier_name(target)
+                    {
+                        let name = name.to_string();
+                        if !candidates.contains(&name) {
+                            candidates.push(name);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        candidates
+    }
+
+    fn count_leading_initialized_identifier_bindings(statements: &[ast::Statement<'_>]) -> usize {
+        let mut prefix_len = 0usize;
+        for statement in statements {
+            let ast::Statement::VariableDeclaration(declaration) = statement else {
+                break;
+            };
+            if declaration.declarations.len() != 1 {
+                break;
+            }
+            let declarator = &declaration.declarations[0];
+            if binding_identifier_name(&declarator.id).is_none() || declarator.init.is_none() {
+                break;
+            }
+            prefix_len += 1;
+        }
+        prefix_len
+    }
+
+    fn collect_sequential_split_indices(statements: &[ast::Statement<'_>]) -> Vec<usize> {
+        let binding_prefix_len = count_leading_initialized_identifier_bindings(statements);
+        let mut candidates = Vec::new();
+        if binding_prefix_len + 2 < statements.len()
+            && matches!(
+                statements.get(binding_prefix_len),
+                Some(ast::Statement::VariableDeclaration(_))
+            )
+            && matches!(
+                statements.get(binding_prefix_len + 1),
+                Some(ast::Statement::IfStatement(_))
+            )
+        {
+            candidates.push(binding_prefix_len + 2);
+        }
+        if binding_prefix_len + 3 < statements.len()
+            && matches!(
+                statements.get(binding_prefix_len),
+                Some(ast::Statement::VariableDeclaration(_))
+            )
+            && matches!(
+                statements.get(binding_prefix_len + 1),
+                Some(ast::Statement::IfStatement(_))
+            )
+            && matches!(
+                statements.get(binding_prefix_len + 2),
+                Some(ast::Statement::VariableDeclaration(_))
+            )
+        {
+            candidates.push(binding_prefix_len + 3);
+        }
+        candidates
     }
 
     for source_type in [
@@ -1150,14 +1254,14 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
                 let prefix_source =
                     codegen_statements_with_flow_cast_restore(&statements[..statements.len() - 2]);
                 let inner_shape = {
-                    let direct_shape = analyze_generated_body_shape(&prefix_source);
+                    let direct_shape = analyze_generated_body_shape_impl(&prefix_source, true);
                     if shape_returned_identifier(&direct_shape)
                         .is_some_and(|name| name == source_name)
                     {
                         direct_shape
                     } else {
                         let synthetic_return = format!("{prefix_source}\nreturn {source_name};");
-                        analyze_generated_body_shape(&synthetic_return)
+                        analyze_generated_body_shape_impl(&synthetic_return, true)
                     }
                 };
                 if shape_returned_identifier(&inner_shape).is_some_and(|name| name == source_name) {
@@ -1270,8 +1374,9 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
                 let (memoized_bindings, binding_prefix_len) =
                     collect_leading_initialized_bindings(&consequent_block.body);
                 let (memoized_assignments, assignment_prefix_len) =
-                    collect_leading_simple_assignments(
+                    collect_leading_side_effect_assignments(
                         &consequent_block.body[binding_prefix_len..],
+                        &value_name,
                     );
                 let setup_len = binding_prefix_len + assignment_prefix_len;
                 if consequent_block.body.len() != setup_len + 2 {
@@ -1313,8 +1418,9 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
                 let (memoized_bindings, binding_prefix_len) =
                     collect_leading_initialized_bindings(&consequent_block.body);
                 let (memoized_assignments, assignment_prefix_len) =
-                    collect_leading_simple_assignments(
+                    collect_leading_side_effect_assignments(
                         &consequent_block.body[binding_prefix_len..],
+                        &value_name,
                     );
                 let setup_len = binding_prefix_len + assignment_prefix_len;
                 if consequent_block.body.len() != setup_len + dependency_guards.len() + 2 {
@@ -1392,7 +1498,10 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             let (memoized_bindings, binding_prefix_len) =
                 collect_leading_initialized_bindings(&consequent_block.body);
             let (memoized_assignments, assignment_prefix_len) =
-                collect_leading_simple_assignments(&consequent_block.body[binding_prefix_len..]);
+                collect_leading_side_effect_assignments(
+                    &consequent_block.body[binding_prefix_len..],
+                    &value_name,
+                );
             let setup_len = binding_prefix_len + assignment_prefix_len;
             if consequent_block.body.len() != setup_len + 3 {
                 continue;
@@ -1458,12 +1567,42 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
         if prefix_len > 0 && prefix_len < statements.len() {
             let suffix_source =
                 codegen_statements_with_flow_cast_restore(&statements[prefix_len..]);
-            let inner_shape = analyze_generated_body_shape(&suffix_source);
+            let inner_shape = analyze_generated_body_shape_impl(&suffix_source, true);
             if !matches!(inner_shape, GeneratedBodyShape::Unknown) {
                 return GeneratedBodyShape::PrefixedBindings {
                     bindings: prefixed_bindings,
                     inner: Box::new(inner_shape),
                 };
+            }
+        }
+
+        if allow_sequential && (4..=12).contains(&statements.len()) {
+            for split_index in collect_sequential_split_indices(statements) {
+                let suffix_source =
+                    codegen_statements_with_flow_cast_restore(&statements[split_index..]);
+                let inner_shape = analyze_generated_body_shape_impl(&suffix_source, true);
+                if matches!(inner_shape, GeneratedBodyShape::Unknown) {
+                    continue;
+                }
+
+                let prefix_source =
+                    codegen_statements_with_flow_cast_restore(&statements[..split_index]);
+                let prefix_shape = collect_candidate_return_identifiers(&statements[..split_index])
+                    .into_iter()
+                    .find_map(|candidate_name| {
+                        let synthetic_return = format!("{prefix_source}\nreturn {candidate_name};");
+                        let synthetic_shape =
+                            analyze_generated_body_shape_impl(&synthetic_return, false);
+                        shape_returned_identifier(&synthetic_shape)
+                            .is_some_and(|name| name == candidate_name)
+                            .then_some(synthetic_shape)
+                    });
+                if let Some(prefix_shape) = prefix_shape {
+                    return GeneratedBodyShape::Sequential {
+                        prefix: Box::new(prefix_shape),
+                        inner: Box::new(inner_shape),
+                    };
+                }
             }
         }
 
@@ -1512,8 +1651,10 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
         };
         let (memoized_bindings, binding_prefix_len) =
             collect_leading_initialized_bindings(&consequent_block.body);
-        let (memoized_assignments, assignment_prefix_len) =
-            collect_leading_simple_assignments(&consequent_block.body[binding_prefix_len..]);
+        let (memoized_assignments, assignment_prefix_len) = collect_leading_side_effect_assignments(
+            &consequent_block.body[binding_prefix_len..],
+            &memo_var,
+        );
         let setup_len = binding_prefix_len + assignment_prefix_len;
         if consequent_block.body.len() != setup_len + 2 || alternate_block.body.len() != 1 {
             continue;
@@ -22952,6 +23093,45 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             body.statements = prefixed;
             Some(body)
         }
+        GeneratedBodyShape::Sequential { prefix, inner } => {
+            let prefix_spec = FunctionBodyRenderSpec {
+                params: spec.params,
+                param_names: spec.param_names,
+                body_source: spec.body_source,
+                body_shape: prefix.as_ref(),
+                directives: spec.directives,
+                cache_prologue: spec.cache_prologue,
+                needs_function_hook_guard_wrapper: spec.needs_function_hook_guard_wrapper,
+                is_async: spec.is_async,
+                is_generator: spec.is_generator,
+            };
+            let mut prefix_body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder,
+                allocator,
+                &prefix_spec,
+            )?;
+            let Some(ast::Statement::ReturnStatement(_)) = prefix_body.statements.pop() else {
+                return None;
+            };
+            let inner_spec = FunctionBodyRenderSpec {
+                params: spec.params,
+                param_names: spec.param_names,
+                body_source: spec.body_source,
+                body_shape: inner.as_ref(),
+                directives: spec.directives,
+                cache_prologue: spec.cache_prologue,
+                needs_function_hook_guard_wrapper: spec.needs_function_hook_guard_wrapper,
+                is_async: spec.is_async,
+                is_generator: spec.is_generator,
+            };
+            let inner_body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder,
+                allocator,
+                &inner_spec,
+            )?;
+            prefix_body.statements.extend(inner_body.statements);
+            Some(prefix_body)
+        }
         GeneratedBodyShape::SingleSlotMemoizedReturn {
             value_name,
             value_kind,
@@ -26223,5 +26403,39 @@ mod tests {
         let rendered = render_pattern_with_oxc(&mut cx, &pattern).expect("expected pattern");
 
         assert_eq!(rendered, "{ value, ...rest }");
+    }
+
+    #[test]
+    fn analyzes_sequential_memoized_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "let t0;\nif ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {\n  t0 = props.items.map(_temp);\n  $[0] = t0;\n} else {\n  t0 = $[0];\n}\nconst mapped = t0;\nlet t1;\nif ($[1] !== mapped) {\n  t1 = mapped.slice(0);\n  $[1] = mapped;\n  $[2] = t1;\n} else {\n  t1 = $[2];\n}\nreturn t1;\n",
+        );
+
+        let super::GeneratedBodyShape::Sequential { prefix, inner } = shape else {
+            panic!("expected sequential body shape");
+        };
+        assert!(matches!(
+            prefix.as_ref(),
+            super::GeneratedBodyShape::ZeroDependencyMemoizedReturn { value_name, value_slot, .. }
+                if value_name == "t0" && *value_slot == 0
+        ));
+        let super::GeneratedBodyShape::PrefixedBindings { bindings, inner } = inner.as_ref() else {
+            panic!("expected prefixed inner body shape");
+        };
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].name, "mapped");
+        assert!(matches!(
+            inner.as_ref(),
+            super::GeneratedBodyShape::SingleDependencyMemoizedReturn {
+                value_name,
+                dep_slot,
+                dep_expr,
+                value_slot,
+                ..
+            } if value_name == "t1"
+                && *dep_slot == 1
+                && dep_expr == "mapped"
+                && *value_slot == 2
+        ));
     }
 }

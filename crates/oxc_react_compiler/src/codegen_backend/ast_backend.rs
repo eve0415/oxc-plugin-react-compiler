@@ -3478,6 +3478,30 @@ fn try_build_function_body_from_shape<'a>(
             body.statements = prefixed;
             Some(body)
         }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Sequential {
+            prefix,
+            inner,
+        } => {
+            let mut prefix_body = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                prefix.as_ref(),
+                cache_prologue,
+            )?;
+            let Some(ast::Statement::ReturnStatement(_)) = prefix_body.statements.pop() else {
+                return None;
+            };
+            let inner_body = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                inner.as_ref(),
+                cache_prologue,
+            )?;
+            prefix_body.statements.extend(inner_body.statements);
+            Some(prefix_body)
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
             value_name,
             value_kind,
@@ -3968,8 +3992,21 @@ fn parse_expression_source<'a>(
     source_type: SourceType,
     expr_source: &str,
 ) -> Result<ast::Expression<'a>, String> {
-    let wrapped = format!("({expr_source});");
-    for attempt_source_type in [source_type, source_type.with_typescript(true)] {
+    let ts_source_type = source_type.with_typescript(true);
+    let mut attempts = vec![
+        (source_type, expr_source.to_string()),
+        (ts_source_type, expr_source.to_string()),
+    ];
+    let flow_cast_normalized = normalize_generated_body_flow_cast_marker_calls(expr_source);
+    if flow_cast_normalized != expr_source {
+        attempts.push((ts_source_type, flow_cast_normalized.clone()));
+    }
+    let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(expr_source);
+    if flow_cast_rewritten != expr_source && flow_cast_rewritten != flow_cast_normalized {
+        attempts.push((ts_source_type, flow_cast_rewritten));
+    }
+    for (attempt_source_type, attempt_expr) in attempts {
+        let wrapped = format!("({attempt_expr});");
         let Ok(mut statements) = parse_statements(
             allocator,
             attempt_source_type,
@@ -3980,7 +4017,21 @@ fn parse_expression_source<'a>(
         let Some(ast::Statement::ExpressionStatement(statement)) = statements.pop() else {
             continue;
         };
-        return Ok(statement.unbox().expression);
+        let mut expression = statement.unbox().expression;
+        loop {
+            match expression {
+                ast::Expression::ParenthesizedExpression(parenthesized)
+                    if matches!(
+                        parenthesized.expression.without_parentheses(),
+                        ast::Expression::ArrowFunctionExpression(_)
+                    ) =>
+                {
+                    expression = parenthesized.unbox().expression;
+                }
+                _ => break,
+            }
+        }
+        return Ok(expression);
     }
     Err("failed to parse expression snippet".to_string())
 }
@@ -7518,6 +7569,80 @@ function Component(props) {
 
         assert!(rewritten.contains("const f = _temp;"));
         assert!(rewritten.contains("t0 = props.items.map(f);"));
+    }
+
+    #[test]
+    fn builds_sequential_body_from_shape_without_generated_source() {
+        let source = "function Foo(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "let t0; if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) { t0 = props.items.map(_temp); $[0] = t0; } else { t0 = $[0]; } const mapped = t0; let t1; if ($[1] !== mapped) { t1 = mapped.slice(0); $[1] = mapped; $[2] = t1; } else { t1 = $[2]; } return t1;",
+            &["props"],
+            false,
+        );
+        compiled_function.generated_body = None;
+        compiled_function.generated_body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Sequential {
+                prefix: Box::new(
+                    crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ZeroDependencyMemoizedReturn {
+                        value_name: "t0".to_string(),
+                        value_kind: ast::VariableDeclarationKind::Let,
+                        value_slot: 0,
+                        memoized_bindings: vec![],
+                        memoized_assignments: vec![],
+                        memoized_expr: "props.items.map(_temp)".to_string(),
+                    },
+                ),
+                inner: Box::new(
+                    crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedBindings {
+                        bindings: vec![
+                            crate::reactive_scopes::codegen_reactive::GeneratedBinding {
+                                kind: ast::VariableDeclarationKind::Const,
+                                name: "mapped".to_string(),
+                                expression: "t0".to_string(),
+                            },
+                        ],
+                        inner: Box::new(
+                            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleDependencyMemoizedReturn {
+                                value_name: "t1".to_string(),
+                                value_kind: ast::VariableDeclarationKind::Let,
+                                dep_slot: 1,
+                                dep_expr: "mapped".to_string(),
+                                value_slot: 2,
+                                memoized_bindings: vec![],
+                                memoized_assignments: vec![],
+                                memoized_expr: "mapped.slice(0)".to_string(),
+                            },
+                        ),
+                    },
+                ),
+            };
+        compiled_function.needs_cache_import = true;
+        compiled_function.cache_prologue =
+            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+                binding_name: "$".to_string(),
+                size: 3,
+                fast_refresh: None,
+            });
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {"));
+        assert!(rewritten.contains("const mapped = t0;"));
+        assert!(rewritten.contains("if ($[1] !== mapped) {"));
+        assert!(rewritten.contains("$[2] = t1;"));
+        assert!(rewritten.contains("return t1;"));
     }
 
     #[test]
