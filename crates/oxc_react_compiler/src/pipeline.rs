@@ -1213,7 +1213,6 @@ fn codegen_outlined_function(
             func.clone(),
             func.id.as_deref().unwrap_or("<outlined>"),
             func.env.config(),
-            true,
         ) {
             Ok(pipeline_output) if pipeline_output.codegen_result.error.is_none() => {
                 pipeline_output.codegen_result
@@ -1450,7 +1449,6 @@ fn run_hir_pipeline(
     mut hir_func: HIRFunction,
     name: &str,
     env_config: &crate::options::EnvironmentConfig,
-    emit_cache_prologue_in_body_flag: bool,
 ) -> Result<PipelineOutput, crate::error::CompilerError> {
     let retry_no_memo_mode = RETRY_NO_MEMO_MODE.with(|flag| flag.get());
     let mut had_validation_error = false;
@@ -1957,7 +1955,6 @@ fn run_hir_pipeline(
         hir_func,
         retry_no_memo_mode,
         should_dememoize,
-        emit_cache_prologue_in_body_flag,
         env_config,
         &reserved_removed_names,
         &fbt_operands,
@@ -2762,7 +2759,6 @@ fn run_reactive_passes(
     hir_func: HIRFunction,
     retry_no_memo_mode: bool,
     should_dememoize: bool,
-    emit_cache_prologue_in_body: bool,
     env_config: &crate::options::EnvironmentConfig,
     reserved_names: &std::collections::HashSet<String>,
     fbt_operands: &std::collections::HashSet<crate::hir::types::IdentifierId>,
@@ -2885,8 +2881,6 @@ fn run_reactive_passes(
                     .enable_reset_cache_on_source_file_changes
                     .unwrap_or(false),
                 enable_name_anonymous_functions: env_config.enable_name_anonymous_functions,
-                emit_directives_in_body: false,
-                emit_cache_prologue_in_body,
                 emit_function_hook_guard_wrapper_in_body: false,
             },
             fbt_operands.clone(),
@@ -5525,7 +5519,7 @@ fn run_hir_pipeline_with_optional_retry(
     options: &PluginOptions,
 ) -> Result<PipelineOutput, CompilerError> {
     RETRY_NO_MEMO_MODE.with(|flag| flag.set(false));
-    let first_attempt = run_hir_pipeline(hir_func.clone(), name, &options.environment, false);
+    let first_attempt = run_hir_pipeline(hir_func.clone(), name, &options.environment);
     match first_attempt {
         Ok(output) => Ok(output),
         Err(first_err) => {
@@ -5541,7 +5535,7 @@ fn run_hir_pipeline_with_optional_retry(
             }
 
             RETRY_NO_MEMO_MODE.with(|flag| flag.set(true));
-            let retry_result = run_hir_pipeline(hir_func, name, &options.environment, false);
+            let retry_result = run_hir_pipeline(hir_func, name, &options.environment);
             RETRY_NO_MEMO_MODE.with(|flag| flag.set(false));
             retry_result
         }

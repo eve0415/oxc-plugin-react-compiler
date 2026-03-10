@@ -355,8 +355,6 @@ pub struct CodegenReactiveOptions {
     pub enable_change_detection_for_debugging: bool,
     pub enable_reset_cache_on_source_file_changes: bool,
     pub enable_name_anonymous_functions: bool,
-    pub emit_directives_in_body: bool,
-    pub emit_cache_prologue_in_body: bool,
     pub emit_function_hook_guard_wrapper_in_body: bool,
 }
 
@@ -370,8 +368,6 @@ impl Default for CodegenReactiveOptions {
             enable_change_detection_for_debugging: false,
             enable_reset_cache_on_source_file_changes: false,
             enable_name_anonymous_functions: false,
-            emit_directives_in_body: true,
-            emit_cache_prologue_in_body: true,
             emit_function_hook_guard_wrapper_in_body: true,
         }
     }
@@ -492,8 +488,6 @@ impl Context {
             enable_change_detection_for_debugging: self.enable_change_detection_for_debugging,
             enable_reset_cache_on_source_file_changes: false,
             enable_name_anonymous_functions: self.enable_name_anonymous_functions,
-            emit_directives_in_body: true,
-            emit_cache_prologue_in_body: true,
             emit_function_hook_guard_wrapper_in_body: true,
         }
     }
@@ -778,12 +772,10 @@ fn codegen_reactive_function_with_primitives(
 
     if std::env::var("DEBUG_REACTIVE_RAW").is_ok() {
         eprintln!(
-            "[REACTIVE_RAW_OUTPUT] function={:?} directives={:?} cache_prologue={:?} emit_directives_in_body={} emit_cache_prologue_in_body={}\n{}",
+            "[REACTIVE_RAW_OUTPUT] function={:?} directives={:?} cache_prologue={:?}\n{}",
             func.name_hint.as_deref(),
             func.directives,
             cache_prologue,
-            options.emit_directives_in_body,
-            options.emit_cache_prologue_in_body,
             body
         );
     }
