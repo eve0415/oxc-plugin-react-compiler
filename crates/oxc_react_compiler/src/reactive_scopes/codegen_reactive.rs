@@ -19267,47 +19267,25 @@ fn resolve_method_property_via_ast(
 }
 
 fn extract_single_computed_member_suffix(suffix: &str) -> Option<String> {
-    let inner_start = if suffix.starts_with("?.[") {
-        3
-    } else if suffix.starts_with('[') {
-        1
-    } else {
-        return None;
-    };
-    let bytes = suffix.as_bytes();
-    let mut depth = 1i32;
-    let mut index = inner_start;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'[' => depth += 1,
-            b']' => {
-                depth -= 1;
-                if depth == 0 {
-                    if index + 1 == bytes.len() {
-                        return Some(suffix[inner_start..index].to_string());
-                    }
-                    return None;
-                }
-            }
-            b'\'' | b'"' | b'`' => {
-                let quote = bytes[index];
-                index += 1;
-                while index < bytes.len() {
-                    if bytes[index] == b'\\' {
-                        index = index.saturating_add(2);
-                        continue;
-                    }
-                    if bytes[index] == quote {
-                        break;
-                    }
-                    index += 1;
-                }
-            }
-            _ => {}
+    const RECEIVER: &str = "__codex_receiver";
+    let allocator = Allocator::default();
+    let expression = parse_rendered_expression_ast(&allocator, &format!("{RECEIVER}{suffix}"))?;
+    match expression.without_parentheses() {
+        ast::Expression::ComputedMemberExpression(member)
+            if codegen_expression_with_flow_cast_restore(&member.object) == RECEIVER =>
+        {
+            Some(codegen_expression_with_flow_cast_restore(&member.expression))
         }
-        index += 1;
+        ast::Expression::ChainExpression(chain) => match &chain.expression {
+            ast::ChainElement::ComputedMemberExpression(member)
+                if codegen_expression_with_flow_cast_restore(&member.object) == RECEIVER =>
+            {
+                Some(codegen_expression_with_flow_cast_restore(&member.expression))
+            }
+            _ => None,
+        },
+        _ => None,
     }
-    None
 }
 
 // ---- Argument codegen ----
