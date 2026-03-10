@@ -5792,36 +5792,15 @@ fn try_compile_function<'a>(
     }
 
     let codegen_result = pipeline_output.codegen_result;
-    let mut generated_body = codegen_result.body.clone();
-    let mut synthesized_default_param_cache = None;
-    let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
-    if let Some((synthesized, synthesized_cache_plan, synthesized_hir_outlined)) =
-        synthesize_default_param_cache_body(&codegen_result.body_shape, &params_result.prefix_statements)
-    {
-        generated_body = synthesized;
-        synthesized_default_param_cache = Some(synthesized_cache_plan);
-        synthesized_hir_outlined_functions = synthesized_hir_outlined;
-    }
+    let directives = extract_emitted_directives(body);
+    let PreparedGeneratedBody {
+        generated_body,
+        synthesized_default_param_cache,
+        synthesized_hir_outlined_functions,
+        cache_prologue,
+    } = prepare_generated_body(&codegen_result, &directives, &params_result.prefix_statements);
     let normalize_use_fire_binding_temps =
         pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite;
-    let mut cache_prologue = if synthesized_default_param_cache.is_some() {
-        Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
-            binding_name: "$".to_string(),
-            size: 2,
-            fast_refresh: None,
-        })
-    } else {
-        codegen_result.cache_prologue.clone()
-    };
-    if synthesized_default_param_cache.is_none()
-        && let Some(prologue) = cache_prologue.as_ref()
-    {
-        if let Some(stripped_body) = strip_leading_cache_prologue(&generated_body, prologue) {
-            generated_body = stripped_body;
-        } else {
-            cache_prologue = None;
-        }
-    }
 
     let ParamsResult {
         compiled_params,
@@ -5877,7 +5856,6 @@ fn try_compile_function<'a>(
     hir_outlined_functions.extend(synthesized_hir_outlined_functions);
     hir_outlined_functions.extend(pipeline_hir_outlined_functions.clone());
     dedupe_hir_outlined_functions(&mut hir_outlined_functions);
-    let directives = extract_emitted_directives(body);
     let needs_instrument_forget = options.environment.enable_emit_instrument_forget
         && codegen_result.needs_cache_import
         && !name.is_empty();
@@ -6023,36 +6001,15 @@ fn try_compile_function_with_name<'a>(
     }
 
     let codegen_result = pipeline_output.codegen_result;
-    let mut generated_body = codegen_result.body.clone();
-    let mut synthesized_default_param_cache = None;
-    let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
-    if let Some((synthesized, synthesized_cache_plan, synthesized_hir_outlined)) =
-        synthesize_default_param_cache_body(&codegen_result.body_shape, &params_result.prefix_statements)
-    {
-        generated_body = synthesized;
-        synthesized_default_param_cache = Some(synthesized_cache_plan);
-        synthesized_hir_outlined_functions = synthesized_hir_outlined;
-    }
+    let directives = extract_emitted_directives(body);
+    let PreparedGeneratedBody {
+        generated_body,
+        synthesized_default_param_cache,
+        synthesized_hir_outlined_functions,
+        cache_prologue,
+    } = prepare_generated_body(&codegen_result, &directives, &params_result.prefix_statements);
     let normalize_use_fire_binding_temps =
         pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite;
-    let mut cache_prologue = if synthesized_default_param_cache.is_some() {
-        Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
-            binding_name: "$".to_string(),
-            size: 2,
-            fast_refresh: None,
-        })
-    } else {
-        codegen_result.cache_prologue.clone()
-    };
-    if synthesized_default_param_cache.is_none()
-        && let Some(prologue) = cache_prologue.as_ref()
-    {
-        if let Some(stripped_body) = strip_leading_cache_prologue(&generated_body, prologue) {
-            generated_body = stripped_body;
-        } else {
-            cache_prologue = None;
-        }
-    }
 
     let ParamsResult {
         compiled_params,
@@ -6108,7 +6065,6 @@ fn try_compile_function_with_name<'a>(
     hir_outlined_functions.extend(synthesized_hir_outlined_functions);
     hir_outlined_functions.extend(pipeline_hir_outlined_functions.clone());
     dedupe_hir_outlined_functions(&mut hir_outlined_functions);
-    let directives = extract_emitted_directives(body);
     let needs_instrument_forget = options.environment.enable_emit_instrument_forget
         && codegen_result.needs_cache_import
         && !name.is_empty();
@@ -6262,36 +6218,15 @@ fn try_compile_arrow<'a>(
     }
 
     let codegen_result = pipeline_output.codegen_result;
-    let mut generated_body = codegen_result.body.clone();
-    let mut synthesized_default_param_cache = None;
-    let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
-    if let Some((synthesized, synthesized_cache_plan, synthesized_hir_outlined)) =
-        synthesize_default_param_cache_body(&codegen_result.body_shape, &params_result.prefix_statements)
-    {
-        generated_body = synthesized;
-        synthesized_default_param_cache = Some(synthesized_cache_plan);
-        synthesized_hir_outlined_functions = synthesized_hir_outlined;
-    }
+    let directives = extract_emitted_directives(&arrow.body);
+    let PreparedGeneratedBody {
+        generated_body,
+        synthesized_default_param_cache,
+        synthesized_hir_outlined_functions,
+        cache_prologue,
+    } = prepare_generated_body(&codegen_result, &directives, &params_result.prefix_statements);
     let normalize_use_fire_binding_temps =
         pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite;
-    let mut cache_prologue = if synthesized_default_param_cache.is_some() {
-        Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
-            binding_name: "$".to_string(),
-            size: 2,
-            fast_refresh: None,
-        })
-    } else {
-        codegen_result.cache_prologue.clone()
-    };
-    if synthesized_default_param_cache.is_none()
-        && let Some(prologue) = cache_prologue.as_ref()
-    {
-        if let Some(stripped_body) = strip_leading_cache_prologue(&generated_body, prologue) {
-            generated_body = stripped_body;
-        } else {
-            cache_prologue = None;
-        }
-    }
 
     let ParamsResult {
         compiled_params,
@@ -6347,7 +6282,6 @@ fn try_compile_arrow<'a>(
     hir_outlined_functions.extend(synthesized_hir_outlined_functions);
     hir_outlined_functions.extend(pipeline_hir_outlined_functions.clone());
     dedupe_hir_outlined_functions(&mut hir_outlined_functions);
-    let directives = extract_emitted_directives(&arrow.body);
     let needs_instrument_forget = options.environment.enable_emit_instrument_forget
         && codegen_result.needs_cache_import
         && !name.is_empty();
@@ -6566,6 +6500,56 @@ type DefaultParamCacheSynthesis = (
     SynthesizedDefaultParamCache,
     Vec<(String, HIRFunction)>,
 );
+
+struct PreparedGeneratedBody {
+    generated_body: String,
+    synthesized_default_param_cache: Option<SynthesizedDefaultParamCache>,
+    synthesized_hir_outlined_functions: Vec<(String, HIRFunction)>,
+    cache_prologue: Option<crate::reactive_scopes::codegen_reactive::CachePrologue>,
+}
+
+fn prepare_generated_body(
+    codegen_result: &codegen_reactive::CodegenResult,
+    directives: &[String],
+    prefix_statements: &[CompiledParamPrefixStatement],
+) -> PreparedGeneratedBody {
+    let mut generated_body = codegen_result.body.clone();
+    let mut synthesized_default_param_cache = None;
+    let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
+    if let Some((synthesized, synthesized_cache_plan, synthesized_hir_outlined)) =
+        synthesize_default_param_cache_body(&codegen_result.body_shape, prefix_statements)
+    {
+        generated_body = synthesized;
+        synthesized_default_param_cache = Some(synthesized_cache_plan);
+        synthesized_hir_outlined_functions = synthesized_hir_outlined;
+    }
+    generated_body = strip_directive_lines(&generated_body, directives);
+    let mut cache_prologue = if synthesized_default_param_cache.is_some() {
+        Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+            binding_name: "$".to_string(),
+            size: 2,
+            fast_refresh: None,
+        })
+    } else {
+        codegen_result.cache_prologue.clone()
+    };
+    if synthesized_default_param_cache.is_none()
+        && let Some(prologue) = cache_prologue.as_ref()
+    {
+        if let Some(stripped_body) = strip_leading_cache_prologue(&generated_body, prologue) {
+            generated_body = stripped_body;
+        } else {
+            cache_prologue = None;
+        }
+    }
+
+    PreparedGeneratedBody {
+        generated_body,
+        synthesized_default_param_cache,
+        synthesized_hir_outlined_functions,
+        cache_prologue,
+    }
+}
 
 fn synthesize_default_param_cache_body(
     body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
