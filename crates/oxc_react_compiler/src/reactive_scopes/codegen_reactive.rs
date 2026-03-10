@@ -19153,15 +19153,33 @@ fn immediate_child_dependency_key(parent: &str, child: &str) -> Option<String> {
 }
 
 fn normalize_root_optional_dependency(path: &str) -> String {
-    if let Some((prefix, suffix)) = path.split_once("?.")
-        && !prefix.contains('.')
-        && !prefix.contains('[')
-        && !prefix.contains('?')
-        && is_valid_js_identifier(suffix)
-    {
-        return format!("{}.{}", prefix, suffix);
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return path.to_string();
     }
-    path.to_string()
+    let allocator = Allocator::default();
+    let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) else {
+        return path.to_string();
+    };
+    match expression.without_parentheses() {
+        ast::Expression::ChainExpression(chain) => match &chain.expression {
+            ast::ChainElement::StaticMemberExpression(member)
+                if member.optional
+                    && matches!(
+                        member.object.without_parentheses(),
+                        ast::Expression::Identifier(_)
+                    ) =>
+            {
+                format!(
+                    "{}.{}",
+                    codegen_expression_with_flow_cast_restore(&member.object),
+                    member.property.name
+                )
+            }
+            _ => path.to_string(),
+        },
+        _ => path.to_string(),
+    }
 }
 
 fn strip_terminal_current_path(path: &str) -> Option<String> {
@@ -22686,6 +22704,7 @@ mod tests {
         rendered_expr_root_identifier_name,
         rendered_expr_contains_push_call_on_target,
         strip_optional_chain_receiver_parens,
+        normalize_root_optional_dependency,
         widen_member_dep_expr_to_root,
         parse_rendered_expression_ast,
         render_function_expression_ast,
@@ -23025,6 +23044,13 @@ mod tests {
             strip_optional_chain_receiver_parens("(foo.bar).baz".to_string()),
             "(foo.bar).baz"
         );
+    }
+
+    #[test]
+    fn normalizes_root_optional_dependencies_via_ast() {
+        assert_eq!(normalize_root_optional_dependency("foo?.bar"), "foo.bar");
+        assert_eq!(normalize_root_optional_dependency("foo?.bar.baz"), "foo?.bar.baz");
+        assert_eq!(normalize_root_optional_dependency("foo[bar]?.baz"), "foo[bar]?.baz");
     }
 
     #[test]
