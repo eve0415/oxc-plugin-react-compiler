@@ -16523,6 +16523,49 @@ fn rendered_expr_contains_optional_chain(expr: &str) -> bool {
     detector.found
 }
 
+struct PropertyPathDetector {
+    found: bool,
+}
+
+impl<'a> Visit<'a> for PropertyPathDetector {
+    fn visit_expression(&mut self, expression: &ast::Expression<'a>) {
+        if self.found {
+            return;
+        }
+        let is_property_path = match expression.without_parentheses() {
+            ast::Expression::StaticMemberExpression(_)
+            | ast::Expression::ComputedMemberExpression(_)
+            | ast::Expression::PrivateFieldExpression(_) => true,
+            ast::Expression::ChainExpression(chain) => matches!(
+                &chain.expression,
+                ast::ChainElement::StaticMemberExpression(_)
+                    | ast::ChainElement::ComputedMemberExpression(_)
+                    | ast::ChainElement::PrivateFieldExpression(_)
+            ),
+            _ => false,
+        };
+        if is_property_path {
+            self.found = true;
+            return;
+        }
+        walk::walk_expression(self, expression);
+    }
+}
+
+fn rendered_expr_has_property_path(expr: &str) -> bool {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let allocator = Allocator::default();
+    let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) else {
+        return false;
+    };
+    let mut detector = PropertyPathDetector { found: false };
+    detector.visit_expression(&expression);
+    detector.found
+}
+
 fn rendered_expr_is_jsx_like(expr: &str) -> bool {
     let trimmed = expr.trim();
     if trimmed.is_empty() {
@@ -18884,7 +18927,7 @@ fn choose_callback_dep_override(
         callback_sorted.dedup();
         let all_property_paths = callback_sorted
             .iter()
-            .all(|dep| dep.contains('.') || dep.contains("?.") || dep.contains('['));
+            .all(|dep| rendered_expr_has_property_path(dep));
         if all_property_paths {
             return callback_sorted;
         }
@@ -18988,9 +19031,7 @@ fn choose_callback_dep_override(
                 }
                 scope_dep_exprs.iter().any(|scope_dep| {
                     dependency_root_name(scope_dep) == root
-                        && (scope_dep.contains('.')
-                            || scope_dep.contains("?.")
-                            || scope_dep.contains('['))
+                        && rendered_expr_has_property_path(scope_dep)
                 })
             });
         if extras_related_to_member_scope_dep {
@@ -22624,6 +22665,7 @@ mod tests {
         rendered_statement_references_label,
         rendered_expr_is_autodeps_placeholder,
         rendered_expr_contains_optional_chain,
+        rendered_expr_has_property_path,
         rendered_expr_contains_logical_or,
         rendered_expr_contains_assignment_to_target,
         rendered_expr_is_array_literal, rendered_expr_is_array_seed_like,
@@ -22914,6 +22956,14 @@ mod tests {
         assert!(rendered_expr_contains_optional_chain("(value?.prop).next"));
         assert!(!rendered_expr_contains_optional_chain("value.prop"));
         assert!(!rendered_expr_contains_optional_chain("value ?? fallback"));
+    }
+
+    #[test]
+    fn detects_rendered_property_paths_via_ast() {
+        assert!(rendered_expr_has_property_path("value.prop"));
+        assert!(rendered_expr_has_property_path("value?.prop"));
+        assert!(rendered_expr_has_property_path("value[index]"));
+        assert!(!rendered_expr_has_property_path("value"));
     }
 
     #[test]
