@@ -1274,9 +1274,9 @@ fn codegen_outlined_function(
             body_shape,
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown
         ) {
-            body
+            Some(body)
         } else {
-            String::new()
+            None
         },
         body_shape,
         directives: func
@@ -5773,7 +5773,11 @@ fn try_compile_function<'a>(
             FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
             return Ok(None);
         };
-        if outlined_function_needs_rendered_body(&outlined_function.body, &of.func) {
+        if outlined_function
+            .body
+            .as_deref()
+            .is_some_and(|body| outlined_function_needs_rendered_body(body, &of.func))
+        {
             outlined.push(outlined_function);
         }
     }
@@ -5994,7 +5998,11 @@ fn try_compile_function_with_name<'a>(
             FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
             return Ok(None);
         };
-        if outlined_function_needs_rendered_body(&outlined_function.body, &of.func) {
+        if outlined_function
+            .body
+            .as_deref()
+            .is_some_and(|body| outlined_function_needs_rendered_body(body, &of.func))
+        {
             outlined.push(outlined_function);
         }
     }
@@ -6223,7 +6231,11 @@ fn try_compile_arrow<'a>(
             FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
             return Ok(None);
         };
-        if outlined_function_needs_rendered_body(&outlined_function.body, &of.func) {
+        if outlined_function
+            .body
+            .as_deref()
+            .is_some_and(|body| outlined_function_needs_rendered_body(body, &of.func))
+        {
             outlined.push(outlined_function);
         }
     }

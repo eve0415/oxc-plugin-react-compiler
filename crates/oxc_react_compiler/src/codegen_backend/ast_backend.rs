@@ -50,7 +50,7 @@ const FLOW_CAST_MARKER_HELPER: &str = "__REACT_COMPILER_FLOW_CAST__";
 struct RenderedOutlinedFunction {
     name: String,
     params: Vec<CompiledParam>,
-    body: String,
+    body: Option<String>,
     body_shape: crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
     directives: Vec<String>,
     cache_prologue: Option<crate::reactive_scopes::codegen_reactive::CachePrologue>,
@@ -3393,7 +3393,7 @@ fn build_rendered_outlined_function_statement<'a>(
             source_type,
             outlined.is_async,
             outlined.is_generator,
-            &outlined.body,
+            outlined.body.as_deref()?,
         )
         .ok()?
     };
@@ -6688,7 +6688,7 @@ function Component(props) {
                     is_rest: true,
                 },
             ],
-            body: "return await load(...rest);".to_string(),
+            body: Some("return await load(...rest);".to_string()),
             body_shape: crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown,
             directives: vec![],
             cache_prologue: None,
