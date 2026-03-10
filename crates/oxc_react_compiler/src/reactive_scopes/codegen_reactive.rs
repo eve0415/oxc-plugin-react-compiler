@@ -17572,19 +17572,18 @@ fn is_effect_like_hook_name(name: &str) -> bool {
 }
 
 fn parse_rendered_array_deps(arg: &str) -> Option<Vec<String>> {
-    let trimmed = arg.trim();
-    if !(trimmed.starts_with('[') && trimmed.ends_with(']')) {
+    let allocator = Allocator::default();
+    let expression = parse_rendered_expression_ast(&allocator, arg.trim())?;
+    let ast::Expression::ArrayExpression(array) = expression.without_parentheses() else {
         return None;
-    }
-    let inner = trimmed[1..trimmed.len() - 1].trim();
-    if inner.is_empty() {
-        return Some(Vec::new());
-    }
+    };
     Some(
-        inner
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
+        array
+            .elements
+            .iter()
+            .filter(|element| !element.is_elision())
+            .map(codegen_array_expression_element_with_flow_cast_restore)
+            .filter(|element| !element.trim().is_empty())
             .collect(),
     )
 }
@@ -20282,6 +20281,12 @@ fn codegen_binding_pattern_with_flow_cast_restore<'a>(
     restore_flow_cast_marker_calls(&codegen_binding_pattern_with_oxc(pattern))
 }
 
+fn codegen_array_expression_element_with_flow_cast_restore<'a>(
+    element: &ast::ArrayExpressionElement<'a>,
+) -> String {
+    restore_flow_cast_marker_calls(&codegen_array_expression_element_with_oxc(element))
+}
+
 fn codegen_statements_with_flow_cast_restore<'a>(
     statements: &[ast::Statement<'a>],
 ) -> String {
@@ -20588,6 +20593,18 @@ fn codegen_binding_pattern_with_oxc(pattern: &ast::BindingPattern<'_>) -> String
         ..CodegenOptions::default()
     });
     pattern.r#gen(&mut codegen, CodegenPrintContext::default());
+    codegen.into_source_text()
+}
+
+fn codegen_array_expression_element_with_oxc(
+    element: &ast::ArrayExpressionElement<'_>,
+) -> String {
+    let mut codegen = Codegen::new().with_options(CodegenOptions {
+        indent_char: IndentChar::Space,
+        indent_width: 2,
+        ..CodegenOptions::default()
+    });
+    element.r#gen(&mut codegen, CodegenPrintContext::default());
     codegen.into_source_text()
 }
 
