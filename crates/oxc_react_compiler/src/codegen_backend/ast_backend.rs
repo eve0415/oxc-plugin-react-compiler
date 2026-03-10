@@ -51,6 +51,8 @@ struct RenderedOutlinedFunction {
     name: String,
     params: Vec<CompiledParam>,
     body: String,
+    directives: Vec<String>,
+    cache_prologue: Option<crate::reactive_scopes::codegen_reactive::CachePrologue>,
     is_async: bool,
     is_generator: bool,
 }
@@ -693,6 +695,7 @@ fn try_rewrite_compiled_statement_ast<'a>(
             allocator,
             source_type,
             &outlined,
+            state,
         )?);
     }
     for cf in compiled {
@@ -2868,8 +2871,14 @@ fn build_compiled_function_body<'a>(
 
     normalize_use_fire_binding_temps_ast(builder, &mut function_body, cf);
     wrap_function_hook_guard_body(builder, allocator, &mut function_body, cf, state);
-    apply_preserved_directives(builder, &mut function_body, cf);
-    prepend_cache_prologue_statements(builder, allocator, &mut function_body, cf, state);
+    apply_preserved_directives(builder, &mut function_body, &cf.directives);
+    prepend_cache_prologue_statements(
+        builder,
+        allocator,
+        &mut function_body,
+        cf.cache_prologue.as_ref(),
+        state,
+    );
     prepend_synthesized_default_param_cache_statements(
         builder,
         allocator,
@@ -3236,8 +3245,9 @@ fn build_rendered_outlined_function_statement<'a>(
     allocator: &'a Allocator,
     source_type: SourceType,
     outlined: &RenderedOutlinedFunction,
+    state: &AstRenderState,
 ) -> Option<ast::Statement<'a>> {
-    let body = parse_rendered_function_body(
+    let mut body = parse_rendered_function_body(
         allocator,
         source_type,
         outlined.is_async,
@@ -3245,6 +3255,14 @@ fn build_rendered_outlined_function_statement<'a>(
         &outlined.body,
     )
     .ok()?;
+    apply_preserved_directives(builder, &mut body, &outlined.directives);
+    prepend_cache_prologue_statements(
+        builder,
+        allocator,
+        &mut body,
+        outlined.cache_prologue.as_ref(),
+        state,
+    );
     let declaration = builder.declaration_function(
         SPAN,
         ast::FunctionType::FunctionDeclaration,
@@ -3616,13 +3634,13 @@ fn skip_quoted(source: &str, start_idx: usize) -> Option<usize> {
 fn apply_preserved_directives<'a>(
     builder: AstBuilder<'a>,
     body: &mut ast::FunctionBody<'a>,
-    cf: &CompiledFunction,
+    directives: &[String],
 ) {
-    if cf.directives.is_empty() {
+    if directives.is_empty() {
         return;
     }
     body.directives = builder.vec_from_iter(
-        cf.directives
+        directives
             .iter()
             .filter_map(|directive| build_directive(builder, directive)),
     );
@@ -3653,10 +3671,10 @@ fn prepend_cache_prologue_statements<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
     body: &mut ast::FunctionBody<'a>,
-    cf: &CompiledFunction,
+    cache_prologue: Option<&crate::reactive_scopes::codegen_reactive::CachePrologue>,
     state: &AstRenderState,
 ) {
-    let Some(cache_prologue) = cf.cache_prologue.as_ref() else {
+    let Some(cache_prologue) = cache_prologue else {
         return;
     };
 
@@ -4224,6 +4242,8 @@ fn collect_rendered_outlined_functions(cf: &CompiledFunction) -> Vec<RenderedOut
             name: outlined_function.name.clone(),
             params: outlined_function.params.clone(),
             body: outlined_function.body.clone(),
+            directives: outlined_function.directives.clone(),
+            cache_prologue: outlined_function.cache_prologue.clone(),
             is_async: outlined_function.is_async,
             is_generator: outlined_function.is_generator,
         })
@@ -6500,6 +6520,8 @@ function Component(props) {
                 },
             ],
             body: "return await load(...rest);".to_string(),
+            directives: vec![],
+            cache_prologue: None,
             is_async: true,
             is_generator: false,
         }];

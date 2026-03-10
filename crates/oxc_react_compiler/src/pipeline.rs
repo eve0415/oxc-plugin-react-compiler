@@ -1269,7 +1269,7 @@ fn codegen_outlined_function(
             is_rest: is_spread,
         });
     }
-    let mut body = codegen.rendered_body;
+    let mut body = codegen.body_without_cache_prologue;
     for (from, to) in rename_pairs {
         body = replace_identifier_tokens(&body, &from, &to);
     }
@@ -1277,6 +1277,12 @@ fn codegen_outlined_function(
         name: func.id.as_ref()?.clone(),
         params: rendered_params,
         body,
+        directives: func
+            .directives
+            .iter()
+            .map(|directive| format!("\"{directive}\""))
+            .collect(),
+        cache_prologue: codegen.cache_prologue.clone(),
         is_async: func.async_,
         is_generator: func.generator,
     })

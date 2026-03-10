@@ -79,6 +79,8 @@ pub(crate) struct CompiledOutlinedFunction {
     pub(crate) name: String,
     pub(crate) params: Vec<CompiledParam>,
     pub(crate) body: String,
+    pub(crate) directives: Vec<String>,
+    pub(crate) cache_prologue: Option<crate::reactive_scopes::codegen_reactive::CachePrologue>,
     pub(crate) is_async: bool,
     pub(crate) is_generator: bool,
 }
