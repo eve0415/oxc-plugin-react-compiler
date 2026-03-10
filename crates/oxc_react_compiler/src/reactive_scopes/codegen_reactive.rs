@@ -14176,67 +14176,134 @@ fn codegen_reactive_scope(
         cx.needs_structural_check_import = true;
         let condition_name = cx.synthesize_name("condition");
         let scope_loc = format_change_detection_scope_loc(scope, block);
-        output.push_str("{\n");
-        output.push_str(&computation);
-        output.push_str(
-            &render_reactive_variable_statement_ast(
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        let mut debug_block = parse_statement_list_for_ast_codegen_with_context(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            cx.function_is_async,
+            cx.function_is_generator,
+            &computation,
+        )
+        .expect("change detection computation should stay on AST path");
+        debug_block.push(ast::Statement::VariableDeclaration(
+            builder.alloc_variable_declaration(
+                SPAN,
                 ast::VariableDeclarationKind::Let,
-                &condition_name,
-                Some(&test_condition),
-            )
-            .expect("change detection condition should stay on AST path"),
-        );
-        let mut cached_body = String::new();
+                builder.vec1(
+                    builder.variable_declarator(
+                        SPAN,
+                        ast::VariableDeclarationKind::Let,
+                        builder.binding_pattern_binding_identifier(
+                            SPAN,
+                            builder.ident(&condition_name),
+                        ),
+                        NONE,
+                        Some(
+                            parse_expression_for_ast_codegen(
+                                &allocator,
+                                SourceType::mjs().with_jsx(true),
+                                &test_condition,
+                            )
+                            .expect("change detection condition should stay on AST path"),
+                        ),
+                        false,
+                    ),
+                ),
+                false,
+            ),
+        ));
+        let mut cached_body = builder.vec();
         for (name, index) in &cache_loads {
             let old_name = cx.synthesize_name(&format!("old${}", name));
-            cached_body.push_str(
-                &render_reactive_variable_statement_ast(
+            cached_body.push(ast::Statement::VariableDeclaration(
+                builder.alloc_variable_declaration(
+                    SPAN,
                     ast::VariableDeclarationKind::Let,
-                    &old_name,
-                    Some(
-                        &render_cache_slot_access_expression_ast(&cache_var, *index)
-                            .expect("cached old-value access should stay on AST path"),
-                    ),
-                )
-                .expect("cached old-value declaration should stay on AST path"),
-            );
-            cached_body.push_str(
-                &render_reactive_expression_statement_ast(
-                    &render_call_expression_from_rendered_args_ast(
-                        "$structuralCheck",
-                        &[
-                            old_name.clone(),
-                            name.clone(),
-                            format!("\"{}\"", escape_string(name)),
-                            format!("\"{}\"", escape_string(&cx.function_name)),
-                            "\"cached\"".to_string(),
-                            format!("\"{}\"", escape_string(&scope_loc)),
-                        ],
+                    builder.vec1(builder.variable_declarator(
+                        SPAN,
+                        ast::VariableDeclarationKind::Let,
+                        builder.binding_pattern_binding_identifier(SPAN, builder.ident(&old_name)),
+                        NONE,
+                        Some(build_computed_member_expression_ast(
+                            builder,
+                            &cache_var,
+                            builder.expression_numeric_literal(
+                                SPAN,
+                                *index as f64,
+                                None,
+                                NumberBase::Decimal,
+                            ),
+                        )),
                         false,
+                    )),
+                    false,
+                ),
+            ));
+            cached_body.push(
+                builder.statement_expression(
+                    SPAN,
+                    parse_expression_for_ast_codegen(
+                        &allocator,
+                        SourceType::mjs().with_jsx(true),
+                        &render_call_expression_from_rendered_args_ast(
+                            "$structuralCheck",
+                            &[
+                                old_name.clone(),
+                                name.clone(),
+                                format!("\"{}\"", escape_string(name)),
+                                format!("\"{}\"", escape_string(&cx.function_name)),
+                                "\"cached\"".to_string(),
+                                format!("\"{}\"", escape_string(&scope_loc)),
+                            ],
+                            false,
+                        )
+                        .expect("cached structural check should stay on AST path"),
                     )
                     .expect("cached structural check should stay on AST path"),
-                )
-                .expect("cached structural check should stay on AST path"),
+                ),
             );
         }
-        output.push_str(
-            &render_reactive_if_statement_ast_with_context(
-                &render_unary_expression_ast(UnaryOperator::Not, &condition_name)
-                    .expect("cached structural check condition should stay on AST path"),
-                &cached_body,
+        debug_block.push(
+            builder.statement_if(
+                SPAN,
+                parse_expression_for_ast_codegen(
+                    &allocator,
+                    SourceType::mjs().with_jsx(true),
+                    &render_unary_expression_ast(UnaryOperator::Not, &condition_name)
+                        .expect("cached structural check condition should stay on AST path"),
+                )
+                .expect("cached structural check condition should stay on AST path"),
+                builder.statement_block(SPAN, cached_body),
                 None,
-                cx.function_is_async,
-                cx.function_is_generator,
-            )
-            .expect("cached structural check guard should stay on AST path"),
+            ),
         );
         for stmt in &cache_store_stmts {
-            output.push_str(stmt);
+            debug_block.extend(
+                parse_statement_list_for_ast_codegen_with_context(
+                    &allocator,
+                    SourceType::mjs().with_jsx(true),
+                    cx.function_is_async,
+                    cx.function_is_generator,
+                    stmt,
+                )
+                .expect("debug cache store should stay on AST path"),
+            );
         }
-        let mut recomputed_body = computation.clone();
+        let mut recomputed_body = parse_statement_list_for_ast_codegen_with_context(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            cx.function_is_async,
+            cx.function_is_generator,
+            &computation,
+        )
+        .expect("recomputed structural check body should stay on AST path");
         for (name, index) in &cache_loads {
-            recomputed_body.push_str(
-                &render_reactive_expression_statement_ast(
+            recomputed_body.push(builder.statement_expression(
+                SPAN,
+                parse_expression_for_ast_codegen(
+                    &allocator,
+                    SourceType::mjs().with_jsx(true),
                     &render_call_expression_from_rendered_args_ast(
                         "$structuralCheck",
                         &[
@@ -14254,23 +14321,32 @@ fn codegen_reactive_scope(
                     .expect("recomputed structural check should stay on AST path"),
                 )
                 .expect("recomputed structural check should stay on AST path"),
-            );
-            recomputed_body.push_str(
-                &render_cache_slot_load_assignment_statement_ast(name, &cache_var, *index)
-                    .expect("recomputed cache load should stay on AST path"),
-            );
+            ));
+            recomputed_body.push(build_identifier_assignment_statement_ast_with_expression(
+                builder,
+                name,
+                build_computed_member_expression_ast(
+                    builder,
+                    &cache_var,
+                    builder.expression_numeric_literal(
+                        SPAN,
+                        *index as f64,
+                        None,
+                        NumberBase::Decimal,
+                    ),
+                ),
+            ));
         }
-        output.push_str(
-            &render_reactive_if_statement_ast_with_context(
-                &condition_name,
-                &recomputed_body,
-                None,
-                cx.function_is_async,
-                cx.function_is_generator,
-            )
-            .expect("recomputed structural check guard should stay on AST path"),
-        );
-        output.push_str("}\n");
+        debug_block.push(builder.statement_if(
+            SPAN,
+            builder.expression_identifier(SPAN, builder.ident(&condition_name)),
+            builder.statement_block(SPAN, recomputed_body),
+            None,
+        ));
+        output.push_str(&format!(
+            "{}\n",
+            codegen_statement_with_flow_cast_restore(&builder.statement_block(SPAN, debug_block))
+        ));
     } else {
         // Emit the standard if/else memoization guard.
         let allocator = Allocator::default();
