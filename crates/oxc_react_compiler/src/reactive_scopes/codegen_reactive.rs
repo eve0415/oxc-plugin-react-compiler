@@ -16635,35 +16635,8 @@ fn codegen_dependency(cx: &mut Context, dep: &ReactiveScopeDependency) -> String
     if dep.path.is_empty() {
         return root_expr;
     }
-    render_dependency_expression_ast(&root_expr, dep).unwrap_or_else(|| {
-        let mut expr = root_expr;
-        for path_entry in &dep.path {
-            if is_valid_js_identifier_name(&path_entry.property) {
-                if path_entry.optional {
-                    expr = format!("{}?.{}", expr, path_entry.property);
-                } else {
-                    expr = format!("{}.{}", expr, path_entry.property);
-                }
-            } else if path_entry.property.chars().all(|c| c.is_ascii_digit()) {
-                if path_entry.optional {
-                    expr = format!("{}?.[{}]", expr, path_entry.property);
-                } else {
-                    expr = format!("{}[{}]", expr, path_entry.property);
-                }
-            } else {
-                let escaped = path_entry
-                    .property
-                    .replace('\\', "\\\\")
-                    .replace('"', "\\\"");
-                if path_entry.optional {
-                    expr = format!("{}?.[\"{}\"]", expr, escaped);
-                } else {
-                    expr = format!("{}[\"{}\"]", expr, escaped);
-                }
-            }
-        }
-        expr
-    })
+    render_dependency_expression_ast(&root_expr, dep)
+        .expect("dependency path should stay on AST path")
 }
 
 fn render_dependency_expression_ast(
@@ -17541,27 +17514,11 @@ fn infer_callback_dependency_paths(
 }
 
 fn callback_scope_dependency_to_path(dep: &ReactiveScopeDependency) -> String {
-    let mut expr = identifier_name_static(&dep.identifier);
-    for entry in &dep.path {
-        if is_valid_js_identifier(&entry.property) {
-            if entry.optional {
-                expr = format!("{}?.{}", expr, entry.property);
-            } else {
-                expr = format!("{}.{}", expr, entry.property);
-            }
-        } else if is_non_negative_integer_string(&entry.property) {
-            if entry.optional {
-                expr = format!("{}?.[{}]", expr, entry.property);
-            } else {
-                expr = format!("{}[{}]", expr, entry.property);
-            }
-        } else if entry.optional {
-            expr = format!("{}?.[\"{}\"]", expr, escape_string(&entry.property));
-        } else {
-            expr = format!("{}[\"{}\"]", expr, escape_string(&entry.property));
-        }
+    if dep.path.is_empty() {
+        return identifier_name_static(&dep.identifier);
     }
-    expr
+    let root = identifier_name_static(&dep.identifier);
+    render_dependency_expression_ast(&root, dep).expect("callback dependency path should stay on AST path")
 }
 
 fn collect_callback_deps_from_reactive_block(
