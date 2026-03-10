@@ -14758,7 +14758,48 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
             let test_expr = codegen_place_to_expression(cx, test);
             let cons_block = codegen_block(cx, consequent);
             let alt_block = alternate.as_ref().map(|alt| codegen_block(cx, alt));
-            render_reactive_if_statement_ast(&test_expr, &cons_block, alt_block.as_deref())
+            let allocator = Allocator::default();
+            let builder = AstBuilder::new(&allocator);
+            let statement = builder.statement_if(
+                SPAN,
+                parse_expression_for_ast_codegen(
+                    &allocator,
+                    SourceType::mjs().with_jsx(true),
+                    &test_expr,
+                )
+                .ok()?,
+                builder.statement_block(
+                    SPAN,
+                    parse_statement_list_for_ast_codegen_with_context(
+                        &allocator,
+                        SourceType::mjs().with_jsx(true),
+                        cx.function_is_async,
+                        cx.function_is_generator,
+                        &cons_block,
+                    )
+                    .ok()?,
+                ),
+                alt_block
+                    .as_deref()
+                    .filter(|body| !body.trim().is_empty())
+                    .map(|body| {
+                        builder.statement_block(
+                            SPAN,
+                            parse_statement_list_for_ast_codegen_with_context(
+                                &allocator,
+                                SourceType::mjs().with_jsx(true),
+                                cx.function_is_async,
+                                cx.function_is_generator,
+                                body,
+                            )
+                            .expect("if alternate should stay on AST path"),
+                        )
+                    }),
+            );
+            Some(format!(
+                "{}\n",
+                codegen_statement_with_flow_cast_restore(&statement)
+            ))
         }
         ReactiveTerminal::Switch { test, cases, .. } => {
             let test_expr = codegen_place_to_expression(cx, test);
