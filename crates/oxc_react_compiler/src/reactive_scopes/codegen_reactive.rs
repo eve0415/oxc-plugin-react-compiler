@@ -2890,6 +2890,18 @@ fn codegen_block_no_reset_with_options(
         }
     }
 
+    fn statement_is_variable_declaration(stmt: &str) -> bool {
+        let allocator = Allocator::default();
+        matches!(
+            parse_single_statement_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
+                stmt.trim(),
+            ),
+            Ok(ast::Statement::VariableDeclaration(_))
+        )
+    }
+
     enum NextEmittedStatement {
         PushOnTarget,
         TerminalIf { multiline_source: bool },
@@ -3104,9 +3116,7 @@ fn codegen_block_no_reset_with_options(
             }
             return false;
         }
-        let is_declaration_assignment = stmt.trim_start().starts_with("let ")
-            || stmt.trim_start().starts_with("const ")
-            || stmt.trim_start().starts_with("var ");
+        let is_declaration_assignment = statement_is_variable_declaration(stmt);
         if is_declaration_assignment {
             if debug {
                 eprintln!(
@@ -5238,9 +5248,7 @@ fn should_insert_blank_after_if_trailing_labeled_break(
             continue;
         };
         let trimmed = next_stmt.trim_start();
-        let should_insert = !trimmed.starts_with("let ")
-            && !trimmed.starts_with("const ")
-            && !trimmed.starts_with("var ");
+        let should_insert = !statement_is_variable_declaration_global(trimmed);
         if debug {
             eprintln!(
                 "[IF_BREAK_SPACE] decision: cursor={} stmt={:?} insert={}",
@@ -5756,6 +5764,18 @@ fn split_top_level_statement_chunks_global(code: &str) -> Option<Vec<String>> {
     } else {
         Some(chunks)
     }
+}
+
+fn statement_is_variable_declaration_global(stmt: &str) -> bool {
+    let allocator = Allocator::default();
+    matches!(
+        parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            stmt.trim(),
+        ),
+        Ok(ast::Statement::VariableDeclaration(_))
+    )
 }
 
 fn extract_simple_expression_statement_global(stmt: &str) -> Option<String> {
