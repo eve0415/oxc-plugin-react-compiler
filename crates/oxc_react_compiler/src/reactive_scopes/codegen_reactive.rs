@@ -15786,9 +15786,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             );
             if *operator == LogicalOperator::NullishCoalescing {
                 let rhs_trimmed = r.trim();
-                if rhs_trimmed.starts_with('<')
-                    && !(rhs_trimmed.starts_with('(') && rhs_trimmed.ends_with(')'))
-                {
+                if rendered_expr_is_jsx_like(rhs_trimmed) && !is_wrapped_in_parens(rhs_trimmed) {
                     r = format!("(\n{}\n)", rhs_trimmed);
                 }
             }
@@ -15830,9 +15828,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             let mut r = codegen_logical_operand(cx, right, prec);
             if *operator == LogicalOperator::NullishCoalescing {
                 let rhs_trimmed = r.trim();
-                if rhs_trimmed.starts_with('<')
-                    && !(rhs_trimmed.starts_with('(') && rhs_trimmed.ends_with(')'))
-                {
+                if rendered_expr_is_jsx_like(rhs_trimmed) && !is_wrapped_in_parens(rhs_trimmed) {
                     r = format!("(\n{}\n)", rhs_trimmed);
                 }
             }
@@ -16166,6 +16162,26 @@ fn find_rendered_autodeps_index(rendered_args: &[String]) -> Option<usize> {
     rendered_args
         .iter()
         .position(|arg| rendered_expr_is_autodeps_placeholder(arg))
+}
+
+fn rendered_expr_is_jsx_like(expr: &str) -> bool {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let allocator = Allocator::default();
+    let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) else {
+        return false;
+    };
+    matches!(
+        expression.without_parentheses(),
+        ast::Expression::JSXElement(_) | ast::Expression::JSXFragment(_)
+    )
+}
+
+fn is_wrapped_in_parens(expr: &str) -> bool {
+    let trimmed = expr.trim();
+    trimmed.starts_with('(') && trimmed.ends_with(')')
 }
 
 fn lower_binary_operator_ast(operator: BinaryOperator) -> AstBinaryOperator {
@@ -22237,7 +22253,8 @@ mod tests {
         is_readonly_console_callee,
         rendered_expr_is_autodeps_placeholder,
         rendered_expr_is_array_literal, rendered_expr_is_array_seed_like,
-        rendered_expr_is_function_like, parse_rendered_expression_ast,
+        rendered_expr_is_function_like, rendered_expr_is_jsx_like,
+        parse_rendered_expression_ast,
         render_function_expression_ast,
         render_assignment_expression_ast,
         render_computed_access_expression_ast, render_primitive_expression_ast,
@@ -22465,6 +22482,13 @@ mod tests {
         let other =
             parse_rendered_expression_ast(&allocator, "logger.info").expect("expected other callee");
         assert!(!is_readonly_console_callee(&other));
+    }
+
+    #[test]
+    fn detects_rendered_jsx_shapes_via_ast() {
+        assert!(rendered_expr_is_jsx_like("<Foo />"));
+        assert!(rendered_expr_is_jsx_like("(<>test</>)"));
+        assert!(!rendered_expr_is_jsx_like("value ?? fallback"));
     }
 
     #[test]
