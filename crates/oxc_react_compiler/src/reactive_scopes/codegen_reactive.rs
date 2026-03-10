@@ -13564,10 +13564,13 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
                 ..
             } => {
                 if let Some(object_name) = resolve_place_name(cx, object) {
-                    cx.resolved_names.insert(
-                        lvalue.identifier.id,
-                        format_property_access(&object_name, property, *optional),
-                    );
+                    let resolved = render_property_access_expression_ast(
+                        &object_name,
+                        property,
+                        *optional,
+                    )
+                    .unwrap_or_else(|| format_property_access(&object_name, property, *optional));
+                    cx.resolved_names.insert(lvalue.identifier.id, resolved);
                 } else if let PropertyLiteral::String(prop) = property {
                     cx.resolved_names.insert(lvalue.identifier.id, prop.clone());
                 }
@@ -15136,12 +15139,8 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             ..
         } => {
             let obj = codegen_member_object_expression(cx, object);
-            let expr = if obj.contains("?.") {
-                format_property_access(&obj, property, *optional)
-            } else {
-                render_property_access_expression_ast(&obj, property, *optional)
-                    .unwrap_or_else(|| format_property_access(&obj, property, *optional))
-            };
+            let expr = render_property_access_expression_ast(&obj, property, *optional)
+                .unwrap_or_else(|| format_property_access(&obj, property, *optional));
             ExprValue::primary(expr)
         }
         InstructionValue::PropertyStore {
@@ -15861,6 +15860,11 @@ fn build_property_access_expression_ast<'a>(
     property: &PropertyLiteral,
     optional: bool,
 ) -> ast::Expression<'a> {
+    if let ast::Expression::ChainExpression(chain) = object {
+        let expression = chain_element_to_expression_ast(chain.unbox().expression);
+        let chain = build_property_access_chain_element_ast(builder, expression, property, optional);
+        return builder.expression_chain(SPAN, chain);
+    }
     match property {
         PropertyLiteral::String(name) if is_non_negative_integer_string(name) => {
             ast::Expression::from(builder.member_expression_computed(
@@ -15895,6 +15899,71 @@ fn build_property_access_expression_ast<'a>(
             builder.expression_numeric_literal(SPAN, *value, None, NumberBase::Decimal),
             optional,
         )),
+    }
+}
+
+fn chain_element_to_expression_ast<'a>(chain: ast::ChainElement<'a>) -> ast::Expression<'a> {
+    match chain {
+        ast::ChainElement::CallExpression(call) => ast::Expression::CallExpression(call),
+        ast::ChainElement::ComputedMemberExpression(member) => {
+            ast::Expression::from(ast::MemberExpression::ComputedMemberExpression(member))
+        }
+        ast::ChainElement::StaticMemberExpression(member) => {
+            ast::Expression::from(ast::MemberExpression::StaticMemberExpression(member))
+        }
+        ast::ChainElement::PrivateFieldExpression(member) => {
+            ast::Expression::from(ast::MemberExpression::PrivateFieldExpression(member))
+        }
+        ast::ChainElement::TSNonNullExpression(expression) => {
+            ast::Expression::TSNonNullExpression(expression)
+        }
+    }
+}
+
+fn build_property_access_chain_element_ast<'a>(
+    builder: AstBuilder<'a>,
+    object: ast::Expression<'a>,
+    property: &PropertyLiteral,
+    optional: bool,
+) -> ast::ChainElement<'a> {
+    match property {
+        PropertyLiteral::String(name) if is_non_negative_integer_string(name) => {
+            ast::ChainElement::ComputedMemberExpression(builder.alloc_computed_member_expression(
+                SPAN,
+                object,
+                builder.expression_numeric_literal(
+                    SPAN,
+                    name.parse::<f64>().ok().unwrap_or_default(),
+                    None,
+                    NumberBase::Decimal,
+                ),
+                optional,
+            ))
+        }
+        PropertyLiteral::String(name) if is_valid_js_identifier(name) => {
+            ast::ChainElement::StaticMemberExpression(builder.alloc_static_member_expression(
+                SPAN,
+                object,
+                builder.identifier_name(SPAN, builder.ident(name)),
+                optional,
+            ))
+        }
+        PropertyLiteral::String(name) => {
+            ast::ChainElement::ComputedMemberExpression(builder.alloc_computed_member_expression(
+                SPAN,
+                object,
+                builder.expression_string_literal(SPAN, builder.atom(name), None),
+                optional,
+            ))
+        }
+        PropertyLiteral::Number(value) => {
+            ast::ChainElement::ComputedMemberExpression(builder.alloc_computed_member_expression(
+                SPAN,
+                object,
+                builder.expression_numeric_literal(SPAN, *value, None, NumberBase::Decimal),
+                optional,
+            ))
+        }
     }
 }
 
@@ -21775,6 +21844,30 @@ mod tests {
                 .expect("expected optional property access");
 
         assert_eq!(rendered, "value?.inner");
+    }
+
+    #[test]
+    fn renders_property_access_on_optional_chain_via_ast() {
+        let rendered = render_property_access_expression_ast(
+            "value?.inner",
+            &PropertyLiteral::String("next".into()),
+            false,
+        )
+        .expect("expected optional-chain property access");
+
+        assert_eq!(rendered, "value?.inner.next");
+    }
+
+    #[test]
+    fn renders_optional_property_access_on_optional_chain_via_ast() {
+        let rendered = render_property_access_expression_ast(
+            "value?.inner",
+            &PropertyLiteral::String("next".into()),
+            true,
+        )
+        .expect("expected optional-chain property access");
+
+        assert_eq!(rendered, "value?.inner?.next");
     }
 
     #[test]
