@@ -5811,36 +5811,62 @@ fn wrap_sequence_expr_item_global(expr: &str) -> String {
 fn parse_named_const_assignment_line(line: &str) -> Option<(String, String, String)> {
     let indent_len = line.len().saturating_sub(line.trim_start().len());
     let indent = line[..indent_len].to_string();
-    let trimmed = line.trim();
-    let rest = trimmed.strip_prefix("const ")?;
-    let rest = rest.strip_suffix(';')?;
-    let (lhs, rhs) = rest.split_once('=')?;
-    let lhs = lhs.trim();
-    if !is_simple_identifier_name(lhs) {
+    let allocator = Allocator::default();
+    let statement = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        line.trim(),
+    )
+    .ok()?;
+    let ast::Statement::VariableDeclaration(declaration) = statement else {
+        return None;
+    };
+    if declaration.kind != ast::VariableDeclarationKind::Const || declaration.declarations.len() != 1
+    {
         return None;
     }
-    let rhs = rhs.trim();
-    if rhs.is_empty() {
+    let declarator = declaration.declarations.first()?;
+    let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id else {
         return None;
-    }
-    Some((indent, lhs.to_string(), rhs.to_string()))
+    };
+    let init = declarator.init.as_ref()?;
+    Some((
+        indent,
+        identifier.name.to_string(),
+        codegen_expression_with_flow_cast_restore(init),
+    ))
 }
 
 fn parse_named_temp_binding_line(line: &str) -> Option<(String, String, String)> {
     let indent_len = line.len().saturating_sub(line.trim_start().len());
     let indent = line[..indent_len].to_string();
-    let trimmed = line.trim();
-    let rest = trimmed
-        .strip_prefix("const ")
-        .or_else(|| trimmed.strip_prefix("let "))?;
-    let rest = rest.strip_suffix(';')?;
-    let (lhs, rhs) = rest.split_once('=')?;
-    let lhs = lhs.trim();
-    let rhs = rhs.trim();
-    if !is_simple_identifier_name(lhs) || rhs.is_empty() {
+    let allocator = Allocator::default();
+    let statement = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        line.trim(),
+    )
+    .ok()?;
+    let ast::Statement::VariableDeclaration(declaration) = statement else {
+        return None;
+    };
+    if !matches!(
+        declaration.kind,
+        ast::VariableDeclarationKind::Const | ast::VariableDeclarationKind::Let
+    ) || declaration.declarations.len() != 1
+    {
         return None;
     }
-    Some((indent, lhs.to_string(), rhs.to_string()))
+    let declarator = declaration.declarations.first()?;
+    let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id else {
+        return None;
+    };
+    let init = declarator.init.as_ref()?;
+    Some((
+        indent,
+        identifier.name.to_string(),
+        codegen_expression_with_flow_cast_restore(init),
+    ))
 }
 
 fn parse_assignment_statement_line(line: &str) -> Option<(String, String, String)> {
@@ -5860,21 +5886,26 @@ fn parse_assignment_statement_line(line: &str) -> Option<(String, String, String
 fn parse_ternary_statement_line(line: &str) -> Option<(String, String, String, String)> {
     let indent_len = line.len().saturating_sub(line.trim_start().len());
     let indent = line[..indent_len].to_string();
-    let trimmed = line.trim();
-    let body = trimmed.strip_suffix(';')?;
-    let (test, rest) = body.split_once(" ? ")?;
-    let (consequent, alternate) = rest.rsplit_once(" : ")?;
-    let test = test.trim();
-    let consequent = consequent.trim();
-    let alternate = alternate.trim();
-    if test.is_empty() || consequent.is_empty() || alternate.is_empty() {
+    let allocator = Allocator::default();
+    let statement = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        line.trim(),
+    )
+    .ok()?;
+    let ast::Statement::ExpressionStatement(expression_statement) = statement else {
         return None;
-    }
+    };
+    let ast::Expression::ConditionalExpression(conditional) =
+        expression_statement.expression.without_parentheses()
+    else {
+        return None;
+    };
     Some((
         indent,
-        test.to_string(),
-        consequent.to_string(),
-        alternate.to_string(),
+        codegen_expression_with_flow_cast_restore(&conditional.test),
+        codegen_expression_with_flow_cast_restore(&conditional.consequent),
+        codegen_expression_with_flow_cast_restore(&conditional.alternate),
     ))
 }
 
