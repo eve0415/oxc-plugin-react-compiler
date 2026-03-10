@@ -2912,13 +2912,6 @@ fn try_build_compiled_function_body_from_hir<'a>(
         return None;
     }
     let hir_function = cf.hir_function.as_ref()?;
-    let lowered_body = super::hir_to_ast::try_lower_function_body(hir_function)?;
-    let rendered_body = cf.generated_body.clone();
-    if normalize_compiled_body_for_hir_match(&lowered_body)
-        != normalize_compiled_body_for_hir_match(&rendered_body)
-    {
-        return None;
-    }
     let statements = super::hir_to_ast::try_lower_function_body_ast(builder, hir_function)?;
     Some(builder.function_body(SPAN, builder.vec(), statements))
 }

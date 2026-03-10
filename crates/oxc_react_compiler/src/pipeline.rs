@@ -1360,13 +1360,17 @@ fn validate_outlined_function_codegen(
 }
 
 fn outlined_function_needs_rendered_body(rendered_body: &str, hir_function: &HIRFunction) -> bool {
+    !compiled_function_body_matches_hir(rendered_body, hir_function)
+}
+
+fn compiled_function_body_matches_hir(generated_body: &str, hir_function: &HIRFunction) -> bool {
     let Some(lowered_body) =
         crate::codegen_backend::hir_to_ast::try_lower_function_body(hir_function)
     else {
-        return true;
+        return false;
     };
-    crate::codegen_backend::ast_backend::normalize_compiled_body_for_hir_match(rendered_body)
-        != crate::codegen_backend::ast_backend::normalize_compiled_body_for_hir_match(&lowered_body)
+    crate::codegen_backend::ast_backend::normalize_compiled_body_for_hir_match(generated_body)
+        == crate::codegen_backend::ast_backend::normalize_compiled_body_for_hir_match(&lowered_body)
 }
 
 fn dedupe_outlined_functions(outlined: &mut Vec<CompiledOutlinedFunction>) {
@@ -6172,7 +6176,10 @@ fn try_compile_function<'a>(
 
     let needs_cache_import =
         codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
-    let body_payload = if !needs_cache_import && outlined_functions_are_hir_lowerable(&outlined) {
+    let body_payload = if !needs_cache_import
+        && outlined_functions_are_hir_lowerable(&outlined)
+        && compiled_function_body_matches_hir(&generated_body, &pipeline_output.final_hir_snapshot)
+    {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
         CompiledBodyPayload::GeneratedString
@@ -6379,7 +6386,10 @@ fn try_compile_function_with_name<'a>(
 
     let needs_cache_import =
         codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
-    let body_payload = if !needs_cache_import && outlined_functions_are_hir_lowerable(&outlined) {
+    let body_payload = if !needs_cache_import
+        && outlined_functions_are_hir_lowerable(&outlined)
+        && compiled_function_body_matches_hir(&generated_body, &pipeline_output.final_hir_snapshot)
+    {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
         CompiledBodyPayload::GeneratedString
@@ -6594,7 +6604,10 @@ fn try_compile_arrow<'a>(
 
     let needs_cache_import =
         codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
-    let body_payload = if !needs_cache_import && outlined_functions_are_hir_lowerable(&outlined) {
+    let body_payload = if !needs_cache_import
+        && outlined_functions_are_hir_lowerable(&outlined)
+        && compiled_function_body_matches_hir(&generated_body, &pipeline_output.final_hir_snapshot)
+    {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
         CompiledBodyPayload::GeneratedString
