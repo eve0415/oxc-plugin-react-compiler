@@ -14951,20 +14951,60 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                 (String::new(), None)
             };
             let catch_body = codegen_block(cx, handler);
-            let rendered_catch_body = if let Some(alias) = &catch_alias {
-                format!("{alias}{catch_body}")
-            } else {
-                catch_body.clone()
-            };
-            render_reactive_try_statement_ast(
+            let allocator = Allocator::default();
+            let builder = AstBuilder::new(&allocator);
+            let try_block = parse_block_statement_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
                 &try_body,
-                if catch_param.is_empty() {
-                    None
-                } else {
-                    Some(catch_param.as_str())
-                },
-                Some(&rendered_catch_body),
             )
+            .ok()?;
+            let mut catch_statements = if catch_body.trim().is_empty() {
+                builder.vec()
+            } else {
+                parse_statement_list_for_ast_codegen(
+                    &allocator,
+                    SourceType::mjs().with_jsx(true),
+                    &catch_body,
+                )
+                .ok()?
+            };
+            if let Some(alias) = &catch_alias {
+                let mut alias_statements = parse_statement_list_for_ast_codegen(
+                    &allocator,
+                    SourceType::mjs().with_jsx(true),
+                    alias,
+                )
+                .ok()?;
+                alias_statements.extend(catch_statements);
+                catch_statements = alias_statements;
+            }
+            let param = if catch_param.is_empty() {
+                None
+            } else {
+                Some(builder.catch_parameter(
+                    SPAN,
+                    builder.binding_pattern_binding_identifier(
+                        SPAN,
+                        builder.ident(catch_param.as_str()),
+                    ),
+                    NONE,
+                ))
+            };
+            let statement = builder.statement_try(
+                SPAN,
+                try_block,
+                Some(builder.alloc_catch_clause(
+                    SPAN,
+                    param,
+                    builder.block_statement(SPAN, catch_statements),
+                )),
+                Option::<oxc_allocator::Box<'_, ast::BlockStatement<'_>>>::None,
+            );
+            Some(format!(
+                "{}\n",
+                codegen_statement_with_flow_cast_restore(&statement)
+            ))
         }
     }
 }
@@ -22300,45 +22340,6 @@ fn render_reactive_do_while_statement_ast(body: &str, test: &str) -> Option<Stri
         parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), test)
             .ok()?;
     let statement = builder.statement_do_while(SPAN, parsed_body, parsed_test);
-    Some(format!(
-        "{}\n",
-        codegen_statement_with_flow_cast_restore(&statement)
-    ))
-}
-
-fn render_reactive_try_statement_ast(
-    try_body: &str,
-    catch_param: Option<&str>,
-    catch_body: Option<&str>,
-) -> Option<String> {
-    let allocator = Allocator::default();
-    let builder = AstBuilder::new(&allocator);
-    let try_block = parse_block_statement_for_ast_codegen(
-        &allocator,
-        SourceType::mjs().with_jsx(true),
-        try_body,
-    )
-    .ok()?;
-    let body = catch_body?;
-    let param = catch_param.map(|name| {
-        builder.catch_parameter(
-            SPAN,
-            builder.binding_pattern_binding_identifier(SPAN, builder.ident(name)),
-            NONE,
-        )
-    });
-    let handler = builder.alloc_catch_clause(
-        SPAN,
-        param,
-        parse_block_statement_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), body)
-            .ok()?,
-    );
-    let statement = builder.statement_try(
-        SPAN,
-        try_block,
-        Some(handler),
-        Option::<oxc_allocator::Box<'_, ast::BlockStatement<'_>>>::None,
-    );
     Some(format!(
         "{}\n",
         codegen_statement_with_flow_cast_restore(&statement)
