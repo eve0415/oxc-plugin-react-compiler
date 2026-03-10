@@ -6785,11 +6785,10 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
             cache_tail_lines.push(trimmed.to_string());
             continue;
         }
-        if let Some(rhs) = trimmed
-            .strip_prefix(&format!("{scope_decl_name} = "))
-            .and_then(|rest| rest.strip_suffix(';'))
+        if let Some((_, name, rhs)) = parse_assignment_statement_line(trimmed)
+            && name == scope_decl_name
         {
-            decl_rhs = Some(rhs.trim().to_string());
+            decl_rhs = Some(rhs);
             continue;
         }
         let Some(expr) = extract_simple_expression_statement_global(trimmed) else {
