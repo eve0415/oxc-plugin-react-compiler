@@ -7751,55 +7751,16 @@ fn maybe_codegen_fused_method_call_eval_order(
         &mut rendered_args,
         hook_name.is_some(),
     );
-    let args_str = join_call_arguments(&rendered_args);
-
-    let call_expr = if !recv.contains("?.") && !recv.starts_with("new ") {
-        render_method_call_expression_with_options_ast(
-            &recv,
-            &prop,
-            args,
-            &rendered_args,
-            is_computed,
-            *receiver_optional,
-            *call_optional,
-        )
-        .unwrap_or_else(|| {
-            if is_computed {
-                let opt_recv = if *receiver_optional { "?." } else { "" };
-                if *call_optional {
-                    format!("{}{}[{}]?.({})", recv, opt_recv, prop, args_str)
-                } else {
-                    format!("{}{}[{}]({})", recv, opt_recv, prop, args_str)
-                }
-            } else {
-                let dot = if *receiver_optional { "?." } else { "." };
-                if *call_optional {
-                    format!("{}{}{}?.({})", recv, dot, prop, args_str)
-                } else {
-                    format!("{}{}{}({})", recv, dot, prop, args_str)
-                }
-            }
-        })
-    } else if is_computed {
-        let opt_recv = if *receiver_optional { "?." } else { "" };
-        if *call_optional {
-            format!("{}{}[{}]?.({})", recv, opt_recv, prop, args_str)
-        } else {
-            format!("{}{}[{}]({})", recv, opt_recv, prop, args_str)
-        }
-    } else {
-        let dot = if *receiver_optional { "?." } else { "." };
-        if *call_optional {
-            format!("{}{}{}?.({})", recv, dot, prop, args_str)
-        } else if !*receiver_optional
-            && recv.starts_with("new ")
-            && (recv.contains('\n') || prop == "build" || recv.matches('.').count() >= 1)
-        {
-            format!("{}\n.{}({})", recv, prop, args_str)
-        } else {
-            format!("{}{}{}({})", recv, dot, prop, args_str)
-        }
-    };
+    let call_expr = render_method_call_expression_with_options_ast(
+        &recv,
+        &prop,
+        args,
+        &rendered_args,
+        is_computed,
+        *receiver_optional,
+        *call_optional,
+    )
+    .expect("fused method call should stay on AST path");
     let call_expr = if cx.emit_hook_guards && hook_name.is_some_and(Environment::is_hook_name) {
         guard_hook_call_expression(call_expr)
     } else {
@@ -8121,56 +8082,16 @@ fn maybe_codegen_fused_method_call_destructure_assignment(
                     &mut rendered_args,
                     hook_name.is_some(),
                 );
-                let args_str = join_call_arguments(&rendered_args);
-                let call_expr = if !recv.contains("?.") && !recv.starts_with("new ") {
-                    render_method_call_expression_with_options_ast(
-                        &recv,
-                        &prop,
-                        args,
-                        &rendered_args,
-                        is_computed,
-                        *receiver_optional,
-                        *call_optional,
-                    )
-                    .unwrap_or_else(|| {
-                        if is_computed {
-                            let opt_recv = if *receiver_optional { "?." } else { "" };
-                            if *call_optional {
-                                format!("{}{}[{}]?.({})", recv, opt_recv, prop, args_str)
-                            } else {
-                                format!("{}{}[{}]({})", recv, opt_recv, prop, args_str)
-                            }
-                        } else {
-                            let dot = if *receiver_optional { "?." } else { "." };
-                            if *call_optional {
-                                format!("{}{}{}?.({})", recv, dot, prop, args_str)
-                            } else {
-                                format!("{}{}{}({})", recv, dot, prop, args_str)
-                            }
-                        }
-                    })
-                } else if is_computed {
-                    let opt_recv = if *receiver_optional { "?." } else { "" };
-                    if *call_optional {
-                        format!("{}{}[{}]?.({})", recv, opt_recv, prop, args_str)
-                    } else {
-                        format!("{}{}[{}]({})", recv, opt_recv, prop, args_str)
-                    }
-                } else {
-                    let dot = if *receiver_optional { "?." } else { "." };
-                    if *call_optional {
-                        format!("{}{}{}?.({})", recv, dot, prop, args_str)
-                    } else if !*receiver_optional
-                        && recv.starts_with("new ")
-                        && (recv.contains('\n')
-                            || prop == "build"
-                            || recv.matches('.').count() >= 1)
-                    {
-                        format!("{}\n.{}({})", recv, prop, args_str)
-                    } else {
-                        format!("{}{}{}({})", recv, dot, prop, args_str)
-                    }
-                };
+                let call_expr = render_method_call_expression_with_options_ast(
+                    &recv,
+                    &prop,
+                    args,
+                    &rendered_args,
+                    is_computed,
+                    *receiver_optional,
+                    *call_optional,
+                )
+                .expect("fused destructure call should stay on AST path");
                 let call_expr =
                     if cx.emit_hook_guards && hook_name.is_some_and(Environment::is_hook_name) {
                         guard_hook_call_expression(call_expr)
@@ -14984,7 +14905,6 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                 &mut rendered_args,
                 hook_name.is_some(),
             );
-            let args_str = join_call_arguments(&rendered_args);
             debug_codegen_expr(
                 "method-call",
                 format!(
@@ -14993,73 +14913,16 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                 ),
             );
             let is_hook_call = !is_computed && Environment::is_hook_name(&prop);
-            let call_expr = if !recv.contains("?.") && !recv.starts_with("new ") {
-                render_method_call_expression_with_options_ast(
-                    &recv,
-                    &prop,
-                    args,
-                    &rendered_args,
-                    is_computed,
-                    *receiver_optional,
-                    *call_optional,
-                )
-                .unwrap_or_else(|| {
-                    if is_computed {
-                        let opt_recv = if *receiver_optional { "?." } else { "" };
-                        if *call_optional {
-                            if should_break_optional_call_args(&rendered_args) {
-                                format!("{}{}[{}]?.(\n{})", recv, opt_recv, prop, args_str)
-                            } else {
-                                format!("{}{}[{}]?.({})", recv, opt_recv, prop, args_str)
-                            }
-                        } else {
-                            format!("{}{}[{}]({})", recv, opt_recv, prop, args_str)
-                        }
-                    } else {
-                        let dot = if *receiver_optional { "?." } else { "." };
-                        if *call_optional {
-                            if should_break_optional_call_args(&rendered_args) {
-                                format!("{}{}{}?.(\n{})", recv, dot, prop, args_str)
-                            } else {
-                                format!("{}{}{}?.({})", recv, dot, prop, args_str)
-                            }
-                        } else {
-                            format!("{}{}{}({})", recv, dot, prop, args_str)
-                        }
-                    }
-                })
-            } else if is_computed {
-                let opt_recv = if *receiver_optional { "?." } else { "" };
-                if *call_optional {
-                    if should_break_optional_call_args(&rendered_args) {
-                        format!("{}{}[{}]?.(\n{})", recv, opt_recv, prop, args_str)
-                    } else {
-                        format!("{}{}[{}]?.({})", recv, opt_recv, prop, args_str)
-                    }
-                } else {
-                    format!("{}{}[{}]({})", recv, opt_recv, prop, args_str)
-                }
-            } else {
-                let dot = if *receiver_optional { "?." } else { "." };
-                if *call_optional {
-                    if should_break_optional_call_args(&rendered_args) {
-                        format!("{}{}{}?.(\n{})", recv, dot, prop, args_str)
-                    } else {
-                        format!("{}{}{}?.({})", recv, dot, prop, args_str)
-                    }
-                } else {
-                    if !*receiver_optional
-                        && recv.starts_with("new ")
-                        && (recv.contains('\n')
-                            || prop == "build"
-                            || recv.matches('.').count() >= 1)
-                    {
-                        format!("{}\n.{}({})", recv, prop, args_str)
-                    } else {
-                        format!("{}{}{}({})", recv, dot, prop, args_str)
-                    }
-                }
-            };
+            let call_expr = render_method_call_expression_with_options_ast(
+                &recv,
+                &prop,
+                args,
+                &rendered_args,
+                is_computed,
+                *receiver_optional,
+                *call_optional,
+            )
+            .expect("method call should stay on AST path");
             if cx.emit_hook_guards && is_hook_call {
                 ExprValue::primary(guard_hook_call_expression(call_expr))
             } else {
@@ -15944,8 +15807,10 @@ fn render_property_access_expression_ast(
     let builder = AstBuilder::new(&allocator);
     let object = parse_rendered_expression_ast(&allocator, object)?;
     let expression = build_property_access_expression_ast(builder, object, property, optional);
-    Some(strip_top_level_parenthesized_expression(
-        codegen_expression_with_flow_cast_restore(&expression),
+    Some(strip_optional_chain_receiver_parens(
+        strip_top_level_parenthesized_expression(codegen_expression_with_flow_cast_restore(
+            &expression,
+        )),
     ))
 }
 
@@ -15978,7 +15843,9 @@ fn render_computed_access_expression_ast(
     } else {
         ast::Expression::from(builder.member_expression_computed(SPAN, object, property, optional))
     };
-    Some(codegen_expression_with_flow_cast_restore(&expression))
+    Some(strip_optional_chain_receiver_parens(
+        codegen_expression_with_flow_cast_restore(&expression),
+    ))
 }
 
 fn render_computed_store_expression_ast(object: &str, property: &str, value: &str) -> Option<String> {
@@ -16112,9 +15979,6 @@ fn render_method_call_expression_with_options_ast(
     receiver_optional: bool,
     call_optional: bool,
 ) -> Option<String> {
-    if !computed && property.starts_with('#') {
-        return None;
-    }
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let receiver = parse_rendered_expression_ast(&allocator, receiver)?;
@@ -16126,6 +15990,13 @@ fn render_method_call_expression_with_options_ast(
             parse_rendered_expression_ast(&allocator, property)?,
             receiver_optional,
         ))
+    } else if let Some(private_name) = property.strip_prefix('#') {
+        ast::Expression::from(builder.member_expression_private_field_expression(
+            SPAN,
+            receiver,
+            builder.private_identifier(SPAN, builder.atom(private_name)),
+            receiver_optional,
+        ))
     } else {
         ast::Expression::from(builder.member_expression_static(
             SPAN,
@@ -16135,8 +16006,10 @@ fn render_method_call_expression_with_options_ast(
         ))
     };
     let expression = builder.expression_call(SPAN, callee, NONE, args, call_optional);
-    Some(strip_top_level_parenthesized_expression(
-        codegen_expression_with_flow_cast_restore(&expression),
+    Some(strip_optional_chain_receiver_parens(
+        strip_top_level_parenthesized_expression(codegen_expression_with_flow_cast_restore(
+            &expression,
+        )),
     ))
 }
 
@@ -16256,6 +16129,21 @@ fn strip_top_level_parenthesized_expression(expression: String) -> String {
         }
         _ => expression,
     }
+}
+
+fn strip_optional_chain_receiver_parens(expression: String) -> String {
+    let trimmed = expression.trim();
+    if !trimmed.starts_with('(') {
+        return expression;
+    }
+    let Some((inner, after_paren)) = parse_balanced_paren_contents(trimmed, 0) else {
+        return expression;
+    };
+    let suffix = &trimmed[after_paren..];
+    if !inner.contains("?.") || !(suffix.starts_with('.') || suffix.starts_with('[')) {
+        return expression;
+    }
+    format!("{}{suffix}", inner.trim())
 }
 
 // ---- Place & identifier helpers ----
@@ -18786,10 +18674,6 @@ fn join_call_arguments(rendered_args: &[String]) -> String {
     } else {
         rendered_args.join(", ")
     }
-}
-
-fn should_break_optional_call_args(rendered_args: &[String]) -> bool {
-    rendered_args.len() == 1 && rendered_args[0].trim_start().starts_with('<')
 }
 
 // ---- JSX codegen ----
@@ -21818,6 +21702,18 @@ mod tests {
     }
 
     #[test]
+    fn strips_optional_call_receiver_parens_for_property_access() {
+        let rendered = render_property_access_expression_ast(
+            "value?.run(arg)",
+            &PropertyLiteral::String("toString".into()),
+            false,
+        )
+        .expect("expected property access on optional call");
+
+        assert_eq!(rendered, "value?.run(arg).toString");
+    }
+
+    #[test]
     fn renders_optional_property_access_on_optional_chain_via_ast() {
         let rendered = render_property_access_expression_ast(
             "value?.inner",
@@ -21909,6 +21805,22 @@ mod tests {
         .expect("expected optional computed method call");
 
         assert_eq!(rendered, "value?.[\"run\"]?.(arg)");
+    }
+
+    #[test]
+    fn strips_optional_call_receiver_parens_for_method_calls() {
+        let rendered = render_method_call_expression_with_options_ast(
+            "value?.run(arg)",
+            "toString",
+            &[],
+            &[],
+            false,
+            false,
+            false,
+        )
+        .expect("expected method call on optional call receiver");
+
+        assert_eq!(rendered, "value?.run(arg).toString()");
     }
 
     #[test]
