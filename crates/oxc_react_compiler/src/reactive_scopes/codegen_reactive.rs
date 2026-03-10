@@ -19183,13 +19183,24 @@ fn normalize_root_optional_dependency(path: &str) -> String {
 }
 
 fn strip_terminal_current_path(path: &str) -> Option<String> {
-    if let Some(base) = path.strip_suffix(".current") {
-        return Some(base.to_string());
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
     }
-    if let Some(base) = path.strip_suffix("?.current") {
-        return Some(base.to_string());
+    let allocator = Allocator::default();
+    let expression = parse_rendered_expression_ast(&allocator, trimmed)?;
+    match expression.without_parentheses() {
+        ast::Expression::StaticMemberExpression(member) if member.property.name == "current" => {
+            Some(codegen_expression_with_flow_cast_restore(&member.object))
+        }
+        ast::Expression::ChainExpression(chain) => match &chain.expression {
+            ast::ChainElement::StaticMemberExpression(member) if member.property.name == "current" => {
+                Some(codegen_expression_with_flow_cast_restore(&member.object))
+            }
+            _ => None,
+        },
+        _ => None,
     }
-    None
 }
 
 fn dependency_root_name(path: &str) -> &str {
@@ -22705,6 +22716,7 @@ mod tests {
         rendered_expr_contains_push_call_on_target,
         strip_optional_chain_receiver_parens,
         normalize_root_optional_dependency,
+        strip_terminal_current_path,
         widen_member_dep_expr_to_root,
         parse_rendered_expression_ast,
         render_function_expression_ast,
@@ -23051,6 +23063,17 @@ mod tests {
         assert_eq!(normalize_root_optional_dependency("foo?.bar"), "foo.bar");
         assert_eq!(normalize_root_optional_dependency("foo?.bar.baz"), "foo?.bar.baz");
         assert_eq!(normalize_root_optional_dependency("foo[bar]?.baz"), "foo[bar]?.baz");
+    }
+
+    #[test]
+    fn strips_terminal_current_paths_via_ast() {
+        assert_eq!(strip_terminal_current_path("foo.current").as_deref(), Some("foo"));
+        assert_eq!(strip_terminal_current_path("foo?.current").as_deref(), Some("foo"));
+        assert_eq!(
+            strip_terminal_current_path("foo.bar.current").as_deref(),
+            Some("foo.bar")
+        );
+        assert_eq!(strip_terminal_current_path("foo.bar"), None);
     }
 
     #[test]
