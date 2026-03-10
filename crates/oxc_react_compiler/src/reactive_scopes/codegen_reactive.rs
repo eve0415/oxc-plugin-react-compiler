@@ -14183,6 +14183,17 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
                 let idx = cx.object_methods_store.len();
                 cx.object_methods_store.push(info);
                 cx.object_methods.insert(lvalue.identifier.id, idx);
+                let rendered = render_lowered_function_expression_source(
+                    cx,
+                    lowered_func,
+                    None,
+                    &FunctionExpressionType::FunctionExpression,
+                    None,
+                );
+                cx.set_temp_expr(
+                    &lvalue.identifier,
+                    rendered.map(ExprValue::primary),
+                );
             }
             None
         }
@@ -15064,24 +15075,8 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             if properties.is_empty() {
                 return ExprValue::primary("{}".to_string());
             }
-            let has_method = properties.iter().any(|property| {
-                matches!(
-                    property,
-                    ObjectPropertyOrSpread::Property(property)
-                        if property.type_ == ObjectPropertyType::Method
-                )
-            });
-            let expr = if has_method {
-                let props: Vec<String> = properties
-                    .iter()
-                    .map(|p| codegen_object_property(cx, p))
-                    .collect();
-                render_object_expression_ast(cx, properties)
-                    .unwrap_or_else(|| format!("{{ {} }}", props.join(", ")))
-            } else {
-                render_object_expression_ast(cx, properties)
-                    .expect("generated object expression should parse")
-            };
+            let expr = render_object_expression_ast(cx, properties)
+                .expect("generated object expression should parse");
             ExprValue::primary(expr)
         }
         InstructionValue::ArrayExpression { elements, .. } => {
@@ -15191,6 +15186,17 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             name,
             expr_type,
         )),
+        InstructionValue::ObjectMethod { lowered_func, .. } => {
+            let expr = render_lowered_function_expression_source(
+                cx,
+                lowered_func,
+                None,
+                &FunctionExpressionType::FunctionExpression,
+                None,
+            )
+            .unwrap_or_else(|| "/* unexpected */".to_string());
+            ExprValue::primary(expr)
+        }
         InstructionValue::TaggedTemplateExpression {
             tag, raw, cooked, ..
         } => {
@@ -15390,8 +15396,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
         | InstructionValue::Destructure { .. }
         | InstructionValue::StartMemoize { .. }
         | InstructionValue::FinishMemoize { .. }
-        | InstructionValue::Debugger { .. }
-        | InstructionValue::ObjectMethod { .. } => {
+        | InstructionValue::Debugger { .. } => {
             // Should not reach here
             ExprValue::primary("/* unexpected */".to_string())
         }
@@ -18558,119 +18563,6 @@ fn maybe_codegen_captured_context_destructure_bridge(
     }
 }
 
-// ---- Object property codegen ----
-
-fn codegen_object_property(cx: &mut Context, prop: &ObjectPropertyOrSpread) -> String {
-    match prop {
-        ObjectPropertyOrSpread::Property(p) => {
-            let key = codegen_object_property_key(cx, &p.key);
-            match &p.type_ {
-                ObjectPropertyType::Property => {
-                    let val = codegen_place_to_expression(cx, &p.place);
-                    // Shorthand check
-                    if key == val && !matches!(&p.key, ObjectPropertyKey::Computed(_)) {
-                        key
-                    } else if matches!(&p.key, ObjectPropertyKey::Computed(_)) {
-                        format!("[{}]: {}", key, val)
-                    } else {
-                        format!("{}: {}", key, val)
-                    }
-                }
-                ObjectPropertyType::Method => {
-                    let computed_key_source = match &p.key {
-                        ObjectPropertyKey::Computed(place) => {
-                            Some(codegen_place_to_expression(cx, place))
-                        }
-                        _ => None,
-                    };
-                    if let Some(&idx) = cx.object_methods.get(&p.place.identifier.id) {
-                        let lf = cx.object_methods_store[idx].lowered_func.clone();
-                        // Build inner function body using reactive codegen
-                        let inner_hir = lf.func.clone();
-                        let mut reactive_func =
-                            super::build_reactive_function::build_reactive_function(inner_hir);
-                        super::prune_unused_labels_reactive::prune_unused_labels(
-                            &mut reactive_func,
-                        );
-                        super::prune_unused_lvalues::prune_unused_lvalues(&mut reactive_func);
-                        let _ = super::prune_hoisted_contexts::prune_hoisted_contexts(
-                            &mut reactive_func,
-                        );
-                        let mut inner_result =
-                            codegen_reactive_function_with_options_and_fbt_operands(
-                                &reactive_func,
-                                cx.unique_identifiers.clone(),
-                                CodegenReactiveOptions {
-                                    enable_name_anonymous_functions: cx
-                                        .enable_name_anonymous_functions,
-                                    ..CodegenReactiveOptions::default()
-                                },
-                                cx.fbt_operands.clone(),
-                            );
-                        adopt_codegen_error(cx, inner_result.error.take());
-                        let body_trimmed = inner_result.body.trim();
-                        if let Some(rendered) = render_object_method_ast(
-                            &p.key,
-                            computed_key_source.as_deref(),
-                            &lf.func.params,
-                            &inner_result.param_names,
-                            body_trimmed,
-                            &lf.func.directives,
-                            lf.func.async_,
-                            lf.func.generator,
-                        ) {
-                            rendered
-                        } else {
-                            cx.codegen_error.get_or_insert_with(|| {
-                                CompilerError::Bail(BailOut {
-                                    reason: "Failed to AST-render object method".to_string(),
-                                    diagnostics: vec![CompilerDiagnostic {
-                                        severity: DiagnosticSeverity::Invariant,
-                                        message: format!(
-                                            "object method AST render failed for key {key}"
-                                        ),
-                                    }],
-                                })
-                            });
-                            format!("{key}: () => {{}}")
-                        }
-                    } else {
-                        let val = codegen_place_to_expression(cx, &p.place);
-                        if let Some(rendered) = function_expr_to_method_property(
-                            &p.key,
-                            computed_key_source.as_deref(),
-                            &val,
-                        ) {
-                            rendered
-                        } else {
-                            format!("{}: {}", key, val)
-                        }
-                    }
-                }
-            }
-        }
-        ObjectPropertyOrSpread::Spread(p) => {
-            format!("...{}", codegen_place_to_expression(cx, p))
-        }
-    }
-}
-
-fn codegen_object_property_key(cx: &mut Context, key: &ObjectPropertyKey) -> String {
-    match key {
-        ObjectPropertyKey::String(s) => {
-            // If the string is a valid JS identifier, emit it unquoted
-            if is_valid_js_identifier(s) {
-                s.clone()
-            } else {
-                format!("\"{}\"", escape_string(s))
-            }
-        }
-        ObjectPropertyKey::Identifier(s) => s.clone(),
-        ObjectPropertyKey::Computed(place) => codegen_place_to_expression(cx, place),
-        ObjectPropertyKey::Number(n) => format!("{}", n),
-    }
-}
-
 fn codegen_object_property_key_str(key: &ObjectPropertyKey) -> String {
     match key {
         ObjectPropertyKey::String(s) => {
@@ -19852,29 +19744,6 @@ fn codegen_statements_with_flow_cast_restore<'a>(
     restore_flow_cast_marker_calls(&codegen_statements_with_oxc(statements))
 }
 
-fn extract_single_object_property_source(rendered_object_expression: &str) -> Option<String> {
-    let stripped = rendered_object_expression.trim();
-    let stripped = stripped
-        .strip_prefix('(')
-        .and_then(|inner| inner.strip_suffix(')'))
-        .unwrap_or(stripped)
-        .trim();
-    let stripped = stripped
-        .strip_prefix('{')
-        .and_then(|inner| inner.strip_suffix('}'))?;
-    Some(stripped.trim().to_string())
-}
-
-fn codegen_object_property_with_oxc(property: ast::ObjectPropertyKind<'_>) -> Option<String> {
-    let allocator = Allocator::default();
-    let builder = AstBuilder::new(&allocator);
-    let expression = ast::Expression::from(
-        builder.expression_object(SPAN, builder.vec1(property.clone_in(&allocator))),
-    );
-    let rendered = codegen_expression_with_flow_cast_restore(&expression);
-    extract_single_object_property_source(&rendered)
-}
-
 fn build_object_method_property_ast<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
@@ -19921,37 +19790,6 @@ fn build_object_method_property_ast<'a>(
     ))
 }
 
-fn render_object_method_ast(
-    key: &ObjectPropertyKey,
-    computed_key_source: Option<&str>,
-    params: &[Argument],
-    param_names: &[String],
-    body_source: &str,
-    directives: &[String],
-    is_async: bool,
-    is_generator: bool,
-) -> Option<String> {
-    let allocator = Allocator::default();
-    let builder = AstBuilder::new(&allocator);
-    let property = build_object_method_property_ast(
-        builder,
-        &allocator,
-        key,
-        computed_key_source,
-        params,
-        param_names,
-        body_source,
-        is_async,
-        is_generator,
-    )?;
-    let rendered = codegen_object_property_with_oxc(property)?;
-    if directives.is_empty() {
-        Some(rendered)
-    } else {
-        Some(rendered)
-    }
-}
-
 fn build_function_property_from_value_ast<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
@@ -19986,23 +19824,6 @@ fn build_function_property_from_value_ast<'a>(
         false,
         computed,
     ))
-}
-
-fn function_expr_to_method_property(
-    key: &ObjectPropertyKey,
-    computed_key_source: Option<&str>,
-    value_source: &str,
-) -> Option<String> {
-    let allocator = Allocator::default();
-    let builder = AstBuilder::new(&allocator);
-    let property = build_function_property_from_value_ast(
-        builder,
-        &allocator,
-        key,
-        computed_key_source,
-        value_source,
-    )?;
-    codegen_object_property_with_oxc(property)
 }
 
 fn is_identifier_expression_named(expression: &ast::Expression<'_>, name: &str) -> bool {
@@ -21263,24 +21084,20 @@ fn function_expr_as_declaration(name: &str, rhs: &str) -> Option<String> {
     ))
 }
 
-fn codegen_function_expression(
+fn render_lowered_function_expression_source(
     cx: &mut Context,
     lowered_func: &LoweredFunction,
-    name: &Option<String>,
+    name: Option<&str>,
     fn_type: &FunctionExpressionType,
-) -> String {
-    // Clone the inner HIR function and build a ReactiveFunction from it,
-    // then run full codegen with reactive scopes (matching upstream behavior).
+    anonymous_name_hint: Option<&str>,
+) -> Option<String> {
     let inner_hir = lowered_func.func.clone();
     let mut reactive_func = super::build_reactive_function::build_reactive_function(inner_hir);
 
-    // Run prune passes (matching upstream CodegenReactiveFunction.ts lines 2316-2321)
     super::prune_unused_labels_reactive::prune_unused_labels(&mut reactive_func);
     super::prune_unused_lvalues::prune_unused_lvalues(&mut reactive_func);
     let _ = super::prune_hoisted_contexts::prune_hoisted_contexts(&mut reactive_func);
 
-    // Preserve parent-resolved names for outer declaration IDs referenced by
-    // the inner lowered function body (not only explicit context captures).
     let inherited_decl_name_overrides =
         collect_inherited_decl_name_overrides_for_lowered_function(cx, lowered_func);
     if std::env::var("DEBUG_INNER_CAPTURE_MAP").is_ok() {
@@ -21289,10 +21106,9 @@ fn codegen_function_expression(
             .map(|(decl, name)| (decl.0, name.clone()))
             .collect();
         pairs.sort_by_key(|(decl, _)| *decl);
-        eprintln!("[INNER_CAPTURE_MAP] fn={:?} inherited={:?}", name, pairs);
+        eprintln!("[INNER_CAPTURE_MAP] fn={name:?} inherited={pairs:?}");
     }
 
-    // Run recursive codegen on the inner function
     let mut inner_result = codegen_reactive_function_with_primitives(
         &reactive_func,
         cx.unique_identifiers.clone(),
@@ -21308,14 +21124,28 @@ fn codegen_function_expression(
     );
     adopt_codegen_error(cx, inner_result.error.take());
 
-    let body_trimmed = inner_result.body.trim();
-    if let Some(rendered) = render_function_expression_ast(
+    render_function_expression_ast(
         &lowered_func.func.params,
         &inner_result.param_names,
-        body_trimmed,
+        inner_result.body.trim(),
         &lowered_func.func.directives,
         lowered_func.func.async_,
         lowered_func.func.generator,
+        name,
+        fn_type,
+        anonymous_name_hint,
+    )
+}
+
+fn codegen_function_expression(
+    cx: &mut Context,
+    lowered_func: &LoweredFunction,
+    name: &Option<String>,
+    fn_type: &FunctionExpressionType,
+) -> String {
+    if let Some(rendered) = render_lowered_function_expression_source(
+        cx,
+        lowered_func,
         name.as_deref(),
         fn_type,
         if cx.enable_name_anonymous_functions && name.is_none() {
@@ -21693,13 +21523,15 @@ mod tests {
 
     use super::{
         CodegenReactiveOptions, Context, FunctionExpressionType, apply_optional_to_rendered_expr,
-        function_expr_as_declaration, function_expr_to_method_property,
+        build_function_property_from_value_ast, build_object_method_property_ast,
+        codegen_expression_with_flow_cast_restore, function_expr_as_declaration,
         maybe_fill_for_header_initializer_from_update, reconstruct_for_init_declaration,
-        render_function_expression_ast, render_object_method_ast,
+        render_function_expression_ast,
         render_computed_access_expression_ast, render_primitive_expression_ast,
         render_property_access_expression_ast, render_pattern_with_oxc,
         render_reactive_function_body_prologue_ast, render_jsx_expression_ast,
         render_reactive_labeled_statement_ast,
+        render_object_expression_ast,
         render_jsx_fragment_ast, render_reactive_for_in_statement_ast,
         render_reactive_for_of_statement_ast, render_reactive_for_statement_ast,
         render_hook_guarded_block_ast, render_hook_guarded_call_expression_ast,
@@ -21708,9 +21540,11 @@ mod tests {
         render_ts_type_cast_expression_ast, render_reactive_assignment_statement_ast,
         render_reactive_expression_statement_ast, render_reactive_return_statement_ast,
         render_reactive_variable_statement_ast,
-        render_cached_inline_hook_callback_block_ast, HOOK_GUARD_POP, HOOK_GUARD_PUSH,
+        render_cached_inline_hook_callback_block_ast, HOOK_GUARD_POP, HOOK_GUARD_PUSH, SPAN,
     };
+    use oxc_allocator::Allocator;
     use oxc_ast::ast;
+    use oxc_ast::AstBuilder;
     use crate::hir::types::{
         Argument, ArrayElement, ArrayPattern, DeclarationId, DependencyPathEntry, Effect,
         Identifier, IdentifierId, IdentifierName, JsxAttribute, JsxTag, MutableRange, ObjectProperty,
@@ -21871,17 +21705,23 @@ mod tests {
 
     #[test]
     fn renders_object_method_via_ast() {
-        let rendered = render_object_method_ast(
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        let property = build_object_method_property_ast(
+            builder,
+            &allocator,
             &ObjectPropertyKey::Identifier("run".to_string()),
             None,
             &[Argument::Place(named_place(0, 0, "value"))],
             &["value".to_string()],
             "return value;",
-            &[],
             false,
             false,
         )
         .expect("expected object method");
+        let expression =
+            ast::Expression::from(builder.expression_object(SPAN, builder.vec1(property)));
+        let rendered = codegen_expression_with_flow_cast_restore(&expression);
 
         assert!(rendered.contains("run(value)"));
         assert!(rendered.contains("return value;"));
@@ -21889,14 +21729,45 @@ mod tests {
 
     #[test]
     fn converts_function_expression_to_method_property_via_ast() {
-        let rendered = function_expr_to_method_property(
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        let property = build_function_property_from_value_ast(
+            builder,
+            &allocator,
             &ObjectPropertyKey::Identifier("callback".to_string()),
             None,
             "async function(value) {\n  return value;\n}",
         )
         .expect("expected method property");
+        let expression =
+            ast::Expression::from(builder.expression_object(SPAN, builder.vec1(property)));
+        let rendered = codegen_expression_with_flow_cast_restore(&expression);
 
         assert!(rendered.contains("async callback(value)"));
+        assert!(rendered.contains("return value;"));
+    }
+
+    #[test]
+    fn renders_object_expression_method_from_temp_function_value_via_ast() {
+        let mut cx = test_context();
+        let method_place = temp_place(10, 10);
+        cx.set_temp_expr(
+            &method_place.identifier,
+            Some(super::ExprValue::primary(
+                "function(value) {\n  return value;\n}".to_string(),
+            )),
+        );
+        let rendered = render_object_expression_ast(
+            &mut cx,
+            &[ObjectPropertyOrSpread::Property(ObjectProperty {
+                key: ObjectPropertyKey::Identifier("run".to_string()),
+                place: method_place,
+                type_: ObjectPropertyType::Method,
+            })],
+        )
+        .expect("expected object expression");
+
+        assert!(rendered.contains("run(value)"));
         assert!(rendered.contains("return value;"));
     }
 
