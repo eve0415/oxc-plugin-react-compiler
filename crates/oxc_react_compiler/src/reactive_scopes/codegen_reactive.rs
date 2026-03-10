@@ -14282,7 +14282,8 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
                 // This preserves source ordering when assignment results are consumed
                 // later across interposing side effects.
                 let lhs = identifier_name_with_cx(cx, &lvalue.place.identifier);
-                let expr = format!("{lhs} = {rhs}");
+                let expr = render_assignment_expression_ast(&lhs, &rhs)
+                    .expect("generated reassignment expression should parse");
                 return codegen_instruction_expr_with_prec_kind(
                     cx,
                     instr,
@@ -15775,7 +15776,7 @@ fn codegen_reactive_sequence_expression_ev(
                     } => {
                         let lhs = codegen_place_to_expression(&mut probe_cx, &store_lvalue.place);
                         let rhs = codegen_place_to_expression(&mut probe_cx, store_value);
-                        Some(format!("{lhs} = {rhs}"))
+                        render_assignment_expression_ast(&lhs, &rhs)
                     }
                     InstructionValue::StoreContext {
                         lvalue: store_lvalue,
@@ -15784,7 +15785,7 @@ fn codegen_reactive_sequence_expression_ev(
                     } => {
                         let lhs = codegen_place_to_expression(&mut probe_cx, &store_lvalue.place);
                         let rhs = codegen_place_to_expression(&mut probe_cx, store_value);
-                        Some(format!("{lhs} = {rhs}"))
+                        render_assignment_expression_ast(&lhs, &rhs)
                     }
                     InstructionValue::CallExpression { .. }
                     | InstructionValue::MethodCall { .. }
