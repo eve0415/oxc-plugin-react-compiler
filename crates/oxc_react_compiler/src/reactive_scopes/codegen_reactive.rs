@@ -3112,11 +3112,20 @@ fn codegen_block_no_reset_with_options(
     }
 
     fn is_assignment_like_sequence_expr(expr: &str) -> bool {
-        let trimmed = expr.trim();
-        if trimmed.starts_with("let ") || trimmed.starts_with("const ") {
-            return false;
+        fn is_assignment_like(expression: &ast::Expression<'_>) -> bool {
+            match expression {
+                ast::Expression::AssignmentExpression(_) => true,
+                ast::Expression::ParenthesizedExpression(parenthesized) => {
+                    is_assignment_like(&parenthesized.expression)
+                }
+                _ => false,
+            }
         }
-        trimmed.contains(" = ")
+
+        let allocator = Allocator::default();
+        parse_rendered_expression_ast(&allocator, expr)
+            .as_ref()
+            .is_some_and(is_assignment_like)
     }
 
     fn wrap_sequence_expr_item(expr: &str) -> String {
@@ -3146,26 +3155,19 @@ fn codegen_block_no_reset_with_options(
         if trimmed.is_empty() || !trimmed.ends_with(';') || trimmed.contains('\n') {
             return None;
         }
-        let expr = trimmed.trim_end_matches(';').trim();
-        if expr.is_empty() {
+        let allocator = Allocator::default();
+        let statement = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            trimmed,
+        )
+        .ok()?;
+        let ast::Statement::ExpressionStatement(expression_statement) = statement else {
             return None;
-        }
-        if expr.starts_with("let ")
-            || expr.starts_with("const ")
-            || expr.starts_with("if ")
-            || expr.starts_with("while ")
-            || expr.starts_with("for ")
-            || expr.starts_with("do ")
-            || expr.starts_with("switch ")
-            || expr.starts_with("return ")
-            || expr.starts_with("throw ")
-            || expr.starts_with("try ")
-            || expr.starts_with("break ")
-            || expr.starts_with("continue ")
-        {
-            return None;
-        }
-        Some(expr.to_string())
+        };
+        Some(codegen_expression_with_flow_cast_restore(
+            &expression_statement.expression,
+        ))
     }
 
     fn source_locs_are_sequence_adjacent(
