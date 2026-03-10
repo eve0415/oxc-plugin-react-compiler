@@ -4922,6 +4922,30 @@ pub(crate) fn strip_directive_lines(body: &str, directives: &[String]) -> String
     if directives.is_empty() {
         return body.to_string();
     }
+    let allocator = oxc_allocator::Allocator::default();
+    if let Some((wrapper_prefix_len, function_body)) = parse_wrapped_function_body(&allocator, body) {
+        let expected_directives: std::collections::HashSet<&str> = directives
+            .iter()
+            .map(|directive| {
+                directive
+                    .trim()
+                    .trim_start_matches(['"', '\''])
+                    .trim_end_matches(['"', '\''])
+            })
+            .collect();
+        let mut last_directive_end = None;
+        for directive in &function_body.directives {
+            if !expected_directives.contains(directive.expression.value.as_str()) {
+                break;
+            }
+            last_directive_end = Some(directive.span.end as usize - wrapper_prefix_len);
+        }
+        if let Some(last_directive_end) = last_directive_end {
+            return body[last_directive_end..]
+                .trim_start_matches(['\n', '\r'])
+                .to_string();
+        }
+    }
     let directive_lines: std::collections::HashSet<String> =
         directives.iter().map(|d| format!("{};", d)).collect();
     let mut out = String::with_capacity(body.len());
@@ -4944,7 +4968,7 @@ fn strip_leading_cache_prologue(
     cache_prologue: &crate::reactive_scopes::codegen_reactive::CachePrologue,
 ) -> Option<String> {
     let allocator = oxc_allocator::Allocator::default();
-    let (wrapper_prefix_len, function_body) = parse_function_body_for_cache_strip(&allocator, body)?;
+    let (wrapper_prefix_len, function_body) = parse_wrapped_function_body(&allocator, body)?;
     let mut stripped_count = 0usize;
     let statements = &function_body.statements;
     if !matches_cache_initializer_statement(statements.get(stripped_count)?, cache_prologue) {
@@ -4968,7 +4992,7 @@ fn strip_leading_cache_prologue(
     Some(body[body_offset..].trim_start_matches(['\n', '\r']).to_string())
 }
 
-fn parse_function_body_for_cache_strip<'a>(
+fn parse_wrapped_function_body<'a>(
     allocator: &'a oxc_allocator::Allocator,
     body: &str,
 ) -> Option<(usize, ast::FunctionBody<'a>)> {
@@ -8152,6 +8176,7 @@ mod tests {
 
     use super::{
         extract_emitted_directives, params_to_result, rewrite_inline_empty_arrow_callback,
+        strip_directive_lines,
     };
 
     #[test]
@@ -8208,6 +8233,30 @@ mod tests {
             extract_emitted_directives(body),
             vec!["\"use no forget\"", "\"use memo\""]
         );
+    }
+
+    #[test]
+    fn strip_directive_lines_removes_only_top_level_directives() {
+        let body = "\"use memo\";\nfunction inner() {\n  \"use memo\";\n  return 1;\n}\nreturn inner();";
+
+        let stripped = strip_directive_lines(body, &["\"use memo\"".to_string()]);
+
+        assert_eq!(
+            stripped,
+            "function inner() {\n  \"use memo\";\n  return 1;\n}\nreturn inner();"
+        );
+    }
+
+    #[test]
+    fn strip_directive_lines_removes_matching_directive_prefix() {
+        let body = "\"use no forget\";\n\"use memo\";\nreturn 1;";
+
+        let stripped = strip_directive_lines(
+            body,
+            &["\"use no forget\"".to_string(), "\"use memo\"".to_string()],
+        );
+
+        assert_eq!(stripped, "return 1;");
     }
 
     #[test]
