@@ -20745,14 +20745,10 @@ fn render_reactive_function_body_prologue_ast(
                             builder.ident(&cache_prologue.binding_name),
                         ),
                         NONE,
-                        Some(
-                            parse_expression_for_ast_codegen(
-                                &allocator,
-                                SourceType::mjs().with_jsx(true),
-                                &format!("_c({})", cache_prologue.size),
-                            )
-                            .ok()?,
-                        ),
+                        Some(build_runtime_cache_call_expression_ast(
+                            builder,
+                            cache_prologue.size,
+                        )),
                         false,
                     ),
                 ),
@@ -20828,6 +20824,21 @@ fn build_symbol_for_call_expression_ast<'a>(
         NONE,
         builder.vec1(ast::Argument::from(
             builder.expression_string_literal(SPAN, builder.atom(value), None),
+        )),
+        false,
+    )
+}
+
+fn build_runtime_cache_call_expression_ast<'a>(
+    builder: AstBuilder<'a>,
+    size: u32,
+) -> ast::Expression<'a> {
+    builder.expression_call(
+        SPAN,
+        builder.expression_identifier(SPAN, builder.ident("_c")),
+        NONE,
+        builder.vec1(ast::Argument::from(
+            builder.expression_numeric_literal(SPAN, size as f64, None, NumberBase::Decimal),
         )),
         false,
     )
