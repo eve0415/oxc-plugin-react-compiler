@@ -161,6 +161,11 @@ pub enum GeneratedBodyShape {
         value_kind: ast::VariableDeclarationKind,
         expression: String,
     },
+    AssignedExpressionReturn {
+        value_name: String,
+        value_kind: ast::VariableDeclarationKind,
+        expression: String,
+    },
     ZeroDependencyMemoizedReturn {
         value_name: String,
         value_kind: ast::VariableDeclarationKind,
@@ -1080,8 +1085,30 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             let Some(value_name) = binding_identifier_name(&value_decl.id) else {
                 continue;
             };
-            if value_decl.init.is_some() {
+            if let Some(init) = value_decl.init.as_ref() {
+                if statement_returns_identifier(&statements[2], &value_name)
+                    && let Some(assigned_expr) =
+                        statement_assigns_identifier_to_expression(&statements[1], &value_name)
+                    && codegen_expression_with_flow_cast_restore(assigned_expr)
+                        == codegen_expression_with_flow_cast_restore(init)
+                {
+                    return GeneratedBodyShape::BoundExpressionReturn {
+                        value_name,
+                        value_kind: value_decl.kind,
+                        expression: codegen_expression_with_flow_cast_restore(init),
+                    };
+                }
                 continue;
+            }
+            if let Some(assigned_expr) =
+                statement_assigns_identifier_to_expression(&statements[1], &value_name)
+                && statement_returns_identifier(&statements[2], &value_name)
+            {
+                return GeneratedBodyShape::AssignedExpressionReturn {
+                    value_name,
+                    value_kind: value_decl.kind,
+                    expression: codegen_expression_with_flow_cast_restore(assigned_expr),
+                };
             }
             let Some(ast::Statement::IfStatement(if_statement)) = statements.get(1) else {
                 continue;
@@ -22166,6 +22193,47 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                         )),
                         false,
                     )),
+                    builder.statement_return(
+                        SPAN,
+                        Some(builder.expression_identifier(SPAN, builder.ident(value_name))),
+                    ),
+                ]),
+            ))
+        }
+        GeneratedBodyShape::AssignedExpressionReturn {
+            value_name,
+            value_kind,
+            expression,
+        } => {
+            let expression = parse_expression_for_ast_codegen(
+                allocator,
+                SourceType::mjs().with_jsx(true),
+                expression,
+            )
+            .ok()?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec_from_iter([
+                    ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+                        SPAN,
+                        *value_kind,
+                        builder.vec1(builder.variable_declarator(
+                            SPAN,
+                            *value_kind,
+                            builder.binding_pattern_binding_identifier(
+                                SPAN,
+                                builder.ident(value_name),
+                            ),
+                            NONE,
+                            None,
+                            false,
+                        )),
+                        false,
+                    )),
+                    build_identifier_assignment_statement_ast_with_expression(
+                        builder, value_name, expression,
+                    ),
                     builder.statement_return(
                         SPAN,
                         Some(builder.expression_identifier(SPAN, builder.ident(value_name))),

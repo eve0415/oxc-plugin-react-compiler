@@ -3010,6 +3010,44 @@ fn try_build_function_body_from_shape<'a>(
                 ]),
             ))
         }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::AssignedExpressionReturn {
+            value_name,
+            value_kind,
+            expression,
+        } => {
+            let expression = parse_expression_source(allocator, source_type, expression).ok()?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec_from_iter([
+                    ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+                        SPAN,
+                        *value_kind,
+                        builder.vec1(builder.variable_declarator(
+                            SPAN,
+                            *value_kind,
+                            builder.binding_pattern_binding_identifier(
+                                SPAN,
+                                builder.ident(value_name),
+                            ),
+                            NONE,
+                            None,
+                            false,
+                        )),
+                        false,
+                    )),
+                    build_identifier_assignment_statement(
+                        builder,
+                        value_name,
+                        expression,
+                    ),
+                    builder.statement_return(
+                        SPAN,
+                        Some(builder.expression_identifier(SPAN, builder.ident(value_name))),
+                    ),
+                ]),
+            ))
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ZeroDependencyMemoizedReturn {
             value_name,
             value_kind,
@@ -7114,6 +7152,41 @@ function Component(props) {
 
         assert!(rewritten.contains("function Foo(props) {"));
         assert!(rewritten.contains("const value = [props.left, props.right];"));
+        assert!(rewritten.contains("return value;"));
+    }
+
+    #[test]
+    fn builds_assigned_expression_return_body_from_shape_without_generated_source() {
+        let source = "function Foo(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "let value; value = [props.left, props.right]; return value;",
+            &["props"],
+            false,
+        );
+        compiled_function.generated_body = None;
+        compiled_function.generated_body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::AssignedExpressionReturn {
+                value_name: "value".to_string(),
+                value_kind: ast::VariableDeclarationKind::Let,
+                expression: "[props.left, props.right]".to_string(),
+            };
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("let value;"));
+        assert!(rewritten.contains("value = [props.left, props.right];"));
         assert!(rewritten.contains("return value;"));
     }
 
