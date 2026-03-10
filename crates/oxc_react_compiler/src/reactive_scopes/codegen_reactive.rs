@@ -2759,20 +2759,33 @@ fn codegen_block_no_reset_with_options(
     }
 
     fn should_insert_blank_line_after_function_assignment(stmt: &str) -> bool {
-        let trimmed = stmt.trim_start();
-        let trimmed_no_trailing = trimmed.trim_end();
-        if !(trimmed.starts_with("const ")
-            || trimmed.starts_with("let ")
-            || trimmed.starts_with("var "))
-        {
+        let trimmed = stmt.trim();
+        if !trimmed.contains('\n') {
             return false;
         }
-        if !trimmed_no_trailing.contains('\n') {
+        let allocator = Allocator::default();
+        let statement = match parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            trimmed,
+        ) {
+            Ok(statement) => statement,
+            Err(_) => return false,
+        };
+        let ast::Statement::VariableDeclaration(declaration) = statement else {
+            return false;
+        };
+        if declaration.declarations.len() != 1 {
             return false;
         }
-        trimmed.contains("= function")
-            || trimmed.contains("= async function")
-            || trimmed.contains("=>")
+        let Some(init) = declaration.declarations.first().and_then(|declarator| declarator.init.as_ref())
+        else {
+            return false;
+        };
+        matches!(
+            init.without_parentheses(),
+            ast::Expression::FunctionExpression(_) | ast::Expression::ArrowFunctionExpression(_)
+        )
     }
 
     fn append_statement_with_source_gap(
