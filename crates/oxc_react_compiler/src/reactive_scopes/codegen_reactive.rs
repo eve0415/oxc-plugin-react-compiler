@@ -3256,6 +3256,19 @@ fn codegen_block_no_reset_with_options(
             && current.end.column >= prefix.end.column
     }
 
+    fn assignment_expression_rhs(expr: &str) -> Option<String> {
+        let allocator = Allocator::default();
+        let expression = parse_rendered_expression_ast(&allocator, expr)?;
+        let ast::Expression::AssignmentExpression(assignment) = expression.without_parentheses()
+        else {
+            return None;
+        };
+        if assignment.operator != AssignmentOperator::Assign {
+            return None;
+        }
+        Some(codegen_expression_with_flow_cast_restore(&assignment.right))
+    }
+
     fn combine_assignment_statement_with_sequence_prefix(
         stmt: &str,
         prefix_expr: &str,
@@ -3349,8 +3362,8 @@ fn codegen_block_no_reset_with_options(
                 let left_expr = codegen_logical_operand(cx, left, logical_prec);
                 let right_expr = codegen_logical_operand(cx, right, logical_prec);
                 let left_from_prefix = pending.exprs.last().and_then(|expr| {
-                    expr.split_once(" = ")
-                        .map(|(_, rhs)| normalize_fusion_match_text(rhs))
+                    assignment_expression_rhs(expr)
+                        .map(|rhs| normalize_fusion_match_text(&rhs))
                 });
                 let normalized_left_expr = normalize_fusion_match_text(&left_expr);
                 let combined_left = if left_from_prefix
