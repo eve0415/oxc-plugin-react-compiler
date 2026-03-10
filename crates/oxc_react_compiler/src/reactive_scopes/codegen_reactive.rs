@@ -165,6 +165,8 @@ pub enum GeneratedBodyShape {
 pub struct CodegenResult {
     /// Generated function body (statements inside the function).
     pub body: String,
+    /// Whether `body` still includes rendered cache prologue statements.
+    pub body_includes_cache_prologue: bool,
     /// Structured shape of the emitted body for downstream AST-based rewrites.
     pub body_shape: GeneratedBodyShape,
     /// Number of cache slots used.
@@ -350,6 +352,7 @@ pub struct CodegenReactiveOptions {
     pub enable_reset_cache_on_source_file_changes: bool,
     pub enable_name_anonymous_functions: bool,
     pub emit_directives_in_body: bool,
+    pub emit_cache_prologue_in_body: bool,
     pub emit_function_hook_guard_wrapper_in_body: bool,
 }
 
@@ -364,6 +367,7 @@ impl Default for CodegenReactiveOptions {
             enable_reset_cache_on_source_file_changes: false,
             enable_name_anonymous_functions: false,
             emit_directives_in_body: true,
+            emit_cache_prologue_in_body: true,
             emit_function_hook_guard_wrapper_in_body: true,
         }
     }
@@ -485,6 +489,7 @@ impl Context {
             enable_reset_cache_on_source_file_changes: false,
             enable_name_anonymous_functions: self.enable_name_anonymous_functions,
             emit_directives_in_body: true,
+            emit_cache_prologue_in_body: true,
             emit_function_hook_guard_wrapper_in_body: true,
         }
     }
@@ -773,13 +778,18 @@ fn codegen_reactive_function_with_primitives(
     };
 
     let mut output = String::new();
+    let rendered_cache_prologue = if options.emit_cache_prologue_in_body {
+        cache_prologue.as_ref()
+    } else {
+        None
+    };
     if let Some(prologue) = render_reactive_function_body_prologue_ast(
         if options.emit_directives_in_body {
             Some(&func.directives)
         } else {
             None
         },
-        cache_prologue.as_ref(),
+        rendered_cache_prologue,
     ) {
         output.push_str(&prologue);
     }
@@ -793,10 +803,11 @@ fn codegen_reactive_function_with_primitives(
         );
     }
 
-    let body_shape = analyze_generated_body_shape(&output);
+    let body_shape = analyze_generated_body_shape(&body);
 
     CodegenResult {
         body: output,
+        body_includes_cache_prologue: rendered_cache_prologue.is_some(),
         body_shape,
         cache_size,
         needs_cache_import,
