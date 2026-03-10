@@ -12592,8 +12592,41 @@ fn debug_loc(loc: &SourceLocation) -> String {
     }
 }
 
-fn is_readonly_console_callee(callee: &str) -> bool {
-    callee.starts_with("console.") || callee.starts_with("global.console.")
+fn is_readonly_console_callee(callee: &ast::Expression<'_>) -> bool {
+    match callee.without_parentheses() {
+        ast::Expression::StaticMemberExpression(member) => {
+            let object = member.object.without_parentheses();
+            matches!(
+                object,
+                ast::Expression::Identifier(identifier) if identifier.name == "console"
+            ) || matches!(
+                object,
+                ast::Expression::StaticMemberExpression(parent)
+                    if matches!(
+                        parent.object.without_parentheses(),
+                        ast::Expression::Identifier(identifier) if identifier.name == "global"
+                    ) && parent.property.name == "console"
+            )
+        }
+        ast::Expression::ChainExpression(chain) => match &chain.expression {
+            ast::ChainElement::StaticMemberExpression(member) => {
+                let object = member.object.without_parentheses();
+                matches!(
+                    object,
+                    ast::Expression::Identifier(identifier) if identifier.name == "console"
+                ) || matches!(
+                    object,
+                    ast::Expression::StaticMemberExpression(parent)
+                        if matches!(
+                            parent.object.without_parentheses(),
+                            ast::Expression::Identifier(identifier) if identifier.name == "global"
+                        ) && parent.property.name == "console"
+                )
+            }
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 fn strip_wrapping_parens(mut expr: &str) -> &str {
@@ -12653,8 +12686,7 @@ fn is_readonly_output_call_line(line: &str, output_names: &HashSet<String>) -> b
         },
         _ => return false,
     };
-    let callee = codegen_expression_with_flow_cast_restore(callee);
-    if !is_readonly_console_callee(&callee) {
+    if !is_readonly_console_callee(callee) {
         return false;
     }
     arguments.iter().any(|arg| {
@@ -22202,9 +22234,10 @@ mod tests {
         build_function_property_from_value_ast, build_object_method_property_ast,
         codegen_expression_with_flow_cast_restore, function_expr_as_declaration,
         maybe_fill_for_header_initializer_from_update, reconstruct_for_init_declaration,
+        is_readonly_console_callee,
         rendered_expr_is_autodeps_placeholder,
         rendered_expr_is_array_literal, rendered_expr_is_array_seed_like,
-        rendered_expr_is_function_like,
+        rendered_expr_is_function_like, parse_rendered_expression_ast,
         render_function_expression_ast,
         render_assignment_expression_ast,
         render_computed_access_expression_ast, render_primitive_expression_ast,
@@ -22416,6 +22449,22 @@ mod tests {
         assert!(rendered_expr_is_autodeps_placeholder("runtime?.AUTODEPS"));
         assert!(rendered_expr_is_autodeps_placeholder("runtime[\"AUTODEPS\"]"));
         assert!(!rendered_expr_is_autodeps_placeholder("deps"));
+    }
+
+    #[test]
+    fn detects_readonly_console_callees_via_ast() {
+        let allocator = Allocator::default();
+        let callee =
+            parse_rendered_expression_ast(&allocator, "console.log").expect("expected console callee");
+        assert!(is_readonly_console_callee(&callee));
+
+        let global_callee = parse_rendered_expression_ast(&allocator, "global.console.warn")
+            .expect("expected global console callee");
+        assert!(is_readonly_console_callee(&global_callee));
+
+        let other =
+            parse_rendered_expression_ast(&allocator, "logger.info").expect("expected other callee");
+        assert!(!is_readonly_console_callee(&other));
     }
 
     #[test]
