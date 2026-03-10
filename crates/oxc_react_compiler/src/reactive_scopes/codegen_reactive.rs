@@ -12588,15 +12588,14 @@ fn codegen_reactive_scope(
             cx.used_declaration_names.insert(shifted_name.clone());
             cx.unique_identifiers.insert(shifted_name);
 
-            if let Some(stmt) = render_reactive_variable_statement_ast(
-                ast::VariableDeclarationKind::Const,
-                &alias_name,
-                Some(&dep_expr),
-            ) {
-                output.push_str(&stmt);
-            } else {
-                output.push_str(&format!("const {} = {};\n", alias_name, dep_expr));
-            }
+            output.push_str(
+                &render_reactive_variable_statement_ast(
+                    ast::VariableDeclarationKind::Const,
+                    &alias_name,
+                    Some(&dep_expr),
+                )
+                .expect("optional dependency alias should stay on AST path"),
+            );
             selected_dep_exprs[dep_index] = alias_name.clone();
             optional_dep_alias = Some((dep_expr, alias_name));
         }
@@ -12612,7 +12611,7 @@ fn codegen_reactive_scope(
                     &change_name,
                     Some(&comparison),
                 )
-                .unwrap_or_else(|| format!("let {} = {};\n", change_name, comparison)),
+                .expect("change variable should stay on AST path"),
             );
             change_exprs.push(change_name);
         } else {
@@ -12623,7 +12622,7 @@ fn codegen_reactive_scope(
                 "{}[{}] = {}",
                 cache_var, index, dep_expr
             ))
-            .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, index, dep_expr)),
+            .expect("dependency cache store should stay on AST path"),
         );
     }
     let active_dep_exprs: HashSet<String> = selected_dep_exprs.iter().cloned().collect();
@@ -12676,15 +12675,14 @@ fn codegen_reactive_scope(
             first_output_index = Some(index);
         }
         if !has_materialized_named_binding(cx, &decl.identifier) {
-            if let Some(stmt) = render_reactive_variable_statement_ast(
-                ast::VariableDeclarationKind::Let,
-                &name,
-                None,
-            ) {
-                output.push_str(&stmt);
-            } else {
-                output.push_str(&format!("let {};\n", name));
-            }
+            output.push_str(
+                &render_reactive_variable_statement_ast(
+                    ast::VariableDeclarationKind::Let,
+                    &name,
+                    None,
+                )
+                .expect("scope output declaration should stay on AST path"),
+            );
             if let Some(names) = cx.block_scope_output_names.last_mut() {
                 names.insert(name.clone());
             }
@@ -12773,7 +12771,7 @@ fn codegen_reactive_scope(
                 "{}[{}] = {}",
                 cache_var, index, name
             ))
-            .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, index, name)),
+            .expect("scope output cache store should stay on AST path"),
         );
     }
 
@@ -12781,7 +12779,7 @@ fn codegen_reactive_scope(
     for (name, index) in &cache_loads {
         cache_load_stmts.push(
             render_reactive_assignment_statement_ast(name, &format!("{}[{}]", cache_var, index))
-                .unwrap_or_else(|| format!("{} = {}[{}];\n", name, cache_var, index)),
+                .expect("scope output cache load should stay on AST path"),
         );
     }
 
@@ -12798,7 +12796,7 @@ fn codegen_reactive_scope(
                 &condition_name,
                 Some(&test_condition),
             )
-            .unwrap_or_else(|| format!("let {} = {};\n", condition_name, test_condition)),
+            .expect("change detection condition should stay on AST path"),
         );
         let mut cached_body = String::new();
         for (name, index) in &cache_loads {
@@ -12809,24 +12807,19 @@ fn codegen_reactive_scope(
                     &old_name,
                     Some(&format!("{}[{}]", cache_var, index)),
                 )
-                .unwrap_or_else(|| format!("let {} = {}[{}];\n", old_name, cache_var, index)),
+                .expect("cached old-value declaration should stay on AST path"),
             );
             cached_body.push_str(
                 &render_reactive_expression_statement_ast(&format!(
                     "$structuralCheck({}, {}, \"{}\", \"{}\", \"cached\", \"{}\")",
                     old_name, name, name, cx.function_name, scope_loc
                 ))
-                .unwrap_or_else(|| {
-                    format!(
-                        "$structuralCheck({}, {}, \"{}\", \"{}\", \"cached\", \"{}\");\n",
-                        old_name, name, name, cx.function_name, scope_loc
-                    )
-                }),
+                .expect("cached structural check should stay on AST path"),
             );
         }
         output.push_str(
             &render_reactive_if_statement_ast(&format!("!{}", condition_name), &cached_body, None)
-                .unwrap_or_else(|| format!("if (!{}) {{\n{}}}\n", condition_name, cached_body)),
+                .expect("cached structural check guard should stay on AST path"),
         );
         for stmt in &cache_store_stmts {
             output.push_str(stmt);
@@ -12838,24 +12831,19 @@ fn codegen_reactive_scope(
                     "$structuralCheck({}[{}], {}, \"{}\", \"{}\", \"recomputed\", \"{}\")",
                     cache_var, index, name, name, cx.function_name, scope_loc
                 ))
-                .unwrap_or_else(|| {
-                    format!(
-                        "$structuralCheck({}[{}], {}, \"{}\", \"{}\", \"recomputed\", \"{}\");\n",
-                        cache_var, index, name, name, cx.function_name, scope_loc
-                    )
-                }),
+                .expect("recomputed structural check should stay on AST path"),
             );
             recomputed_body.push_str(
                 &render_reactive_assignment_statement_ast(
                     name,
                     &format!("{}[{}]", cache_var, index),
                 )
-                .unwrap_or_else(|| format!("{} = {}[{}];\n", name, cache_var, index)),
+                .expect("recomputed cache load should stay on AST path"),
             );
         }
         output.push_str(
             &render_reactive_if_statement_ast(&condition_name, &recomputed_body, None)
-                .unwrap_or_else(|| format!("if ({}) {{\n{}}}\n", condition_name, recomputed_body)),
+                .expect("recomputed structural check guard should stay on AST path"),
         );
         output.push_str("}\n");
     } else {
@@ -12920,19 +12908,14 @@ fn codegen_reactive_scope(
     if let Some(early_return) = &scope.early_return_value {
         let name = identifier_name_with_cx(cx, &early_return.value);
         let consequent = render_reactive_return_statement_ast(Some(&name))
-            .unwrap_or_else(|| format!("return {};\n", name));
+            .expect("early return should stay on AST path");
         output.push_str(
             &render_reactive_if_statement_ast(
                 &format!("{} !== Symbol.for(\"{}\")", name, EARLY_RETURN_SENTINEL),
                 &consequent,
                 None,
             )
-            .unwrap_or_else(|| {
-                format!(
-                    "if ({} !== Symbol.for(\"{}\")) {{\nreturn {};\n}}\n",
-                    name, EARLY_RETURN_SENTINEL, name
-                )
-            }),
+            .expect("early return guard should stay on AST path"),
         );
     }
 }
