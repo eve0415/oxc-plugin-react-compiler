@@ -3081,7 +3081,8 @@ fn codegen_block_no_reset_with_options(
             for expr in pending_expr.exprs {
                 append_statement_with_source_gap(
                     output,
-                    &format!("{};\n", expr),
+                    &render_reactive_expression_statement_ast(&expr)
+                        .expect("pending sequence expression should stay on AST path"),
                     Some(&pending_expr.loc),
                     last_source_end_line,
                 );
@@ -20421,14 +20422,6 @@ fn codegen_directives_and_statements_with_oxc(
         .to_string()
 }
 
-fn is_quoted_string_literal_source(expr: &str) -> bool {
-    let trimmed = expr.trim();
-    let Some(first) = trimmed.chars().next() else {
-        return false;
-    };
-    matches!(first, '"' | '\'') && trimmed.ends_with(first) && trimmed.len() >= 2
-}
-
 fn render_reactive_variable_statement_ast(
     kind: ast::VariableDeclarationKind,
     name: &str,
@@ -20533,9 +20526,6 @@ fn render_reactive_assignment_statement_ast(target_name: &str, rhs: &str) -> Opt
 }
 
 fn render_reactive_expression_statement_ast(expression: &str) -> Option<String> {
-    if is_quoted_string_literal_source(expression) {
-        return Some(format!("{expression};\n"));
-    }
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let parsed_expression =
