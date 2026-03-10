@@ -1271,6 +1271,18 @@ fn codegen_outlined_function(
                 }
                 rename_generated_body_shape(inner.as_mut(), from, to);
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedBindings {
+                bindings,
+                inner,
+            } => {
+                for binding in bindings {
+                    if binding.name == from {
+                        binding.name = to.to_string();
+                    }
+                    binding.expression = replace_identifier_tokens(&binding.expression, from, to);
+                }
+                rename_generated_body_shape(inner.as_mut(), from, to);
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
                 value_name,
                 temp_name,

@@ -193,12 +193,23 @@ pub enum GeneratedBodyShape {
         source_name: String,
         inner: Box<GeneratedBodyShape>,
     },
+    PrefixedBindings {
+        bindings: Vec<GeneratedBinding>,
+        inner: Box<GeneratedBodyShape>,
+    },
     SingleSlotMemoizedReturn {
         value_name: String,
         value_kind: ast::VariableDeclarationKind,
         temp_name: String,
         memoized_expr: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedBinding {
+    pub kind: ast::VariableDeclarationKind,
+    pub name: String,
+    pub expression: String,
 }
 
 pub struct CodegenResult {
@@ -830,6 +841,7 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             | GeneratedBodyShape::MultiDependencyMemoizedReturn { value_name, .. }
             | GeneratedBodyShape::SingleSlotMemoizedReturn { value_name, .. } => Some(value_name),
             GeneratedBodyShape::AliasedReturn { alias_name, .. } => Some(alias_name),
+            GeneratedBodyShape::PrefixedBindings { inner, .. } => shape_returned_identifier(inner),
         }
     }
 
@@ -1339,6 +1351,41 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
                 value_slot,
                 memoized_expr,
             };
+        }
+
+        let mut prefixed_bindings = Vec::new();
+        let mut prefix_len = 0usize;
+        for statement in statements {
+            let ast::Statement::VariableDeclaration(declaration) = statement else {
+                break;
+            };
+            if declaration.declarations.len() != 1 {
+                break;
+            }
+            let declarator = &declaration.declarations[0];
+            let Some(name) = binding_identifier_name(&declarator.id) else {
+                break;
+            };
+            let Some(init) = declarator.init.as_ref() else {
+                break;
+            };
+            prefixed_bindings.push(GeneratedBinding {
+                kind: declaration.kind,
+                name,
+                expression: codegen_expression_with_flow_cast_restore(init),
+            });
+            prefix_len += 1;
+        }
+        if prefix_len > 0 && prefix_len < statements.len() {
+            let suffix_source =
+                codegen_statements_with_flow_cast_restore(&statements[prefix_len..]);
+            let inner_shape = analyze_generated_body_shape(&suffix_source);
+            if !matches!(inner_shape, GeneratedBodyShape::Unknown) {
+                return GeneratedBodyShape::PrefixedBindings {
+                    bindings: prefixed_bindings,
+                    inner: Box::new(inner_shape),
+                };
+            }
         }
 
         if statements.len() != 5 {
@@ -22681,6 +22728,54 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 SPAN,
                 Some(builder.expression_identifier(SPAN, builder.ident(alias_name))),
             ));
+            Some(body)
+        }
+        GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
+            let inner_spec = FunctionBodyRenderSpec {
+                params: spec.params,
+                param_names: spec.param_names,
+                body_source: spec.body_source,
+                body_shape: inner.as_ref(),
+                directives: spec.directives,
+                cache_prologue: spec.cache_prologue,
+                needs_function_hook_guard_wrapper: spec.needs_function_hook_guard_wrapper,
+                is_async: spec.is_async,
+                is_generator: spec.is_generator,
+            };
+            let mut body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder,
+                allocator,
+                &inner_spec,
+            )?;
+            let mut prefixed = builder.vec();
+            for binding in bindings {
+                let expression = parse_expression_for_ast_codegen(
+                    allocator,
+                    SourceType::mjs().with_jsx(true),
+                    &binding.expression,
+                )
+                .ok()?;
+                prefixed.push(ast::Statement::VariableDeclaration(
+                    builder.alloc_variable_declaration(
+                        SPAN,
+                        binding.kind,
+                        builder.vec1(builder.variable_declarator(
+                            SPAN,
+                            binding.kind,
+                            builder.binding_pattern_binding_identifier(
+                                SPAN,
+                                builder.ident(&binding.name),
+                            ),
+                            NONE,
+                            Some(expression),
+                            false,
+                        )),
+                        false,
+                    ),
+                ));
+            }
+            prefixed.extend(body.statements);
+            body.statements = prefixed;
             Some(body)
         }
         GeneratedBodyShape::SingleSlotMemoizedReturn {

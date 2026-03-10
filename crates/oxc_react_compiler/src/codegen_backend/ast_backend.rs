@@ -3322,6 +3322,44 @@ fn try_build_function_body_from_shape<'a>(
             ));
             Some(body)
         }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedBindings {
+            bindings,
+            inner,
+        } => {
+            let mut body = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                inner.as_ref(),
+                cache_prologue,
+            )?;
+            let mut prefixed = builder.vec();
+            for binding in bindings {
+                let expression =
+                    parse_expression_source(allocator, source_type, &binding.expression).ok()?;
+                prefixed.push(ast::Statement::VariableDeclaration(
+                    builder.alloc_variable_declaration(
+                        SPAN,
+                        binding.kind,
+                        builder.vec1(builder.variable_declarator(
+                            SPAN,
+                            binding.kind,
+                            builder.binding_pattern_binding_identifier(
+                                SPAN,
+                                builder.ident(&binding.name),
+                            ),
+                            NONE,
+                            Some(expression),
+                            false,
+                        )),
+                        false,
+                    ),
+                ));
+            }
+            prefixed.extend(body.statements);
+            body.statements = prefixed;
+            Some(body)
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
             value_name,
             value_kind,
@@ -7287,6 +7325,61 @@ function Component(props) {
 
         assert!(rewritten.contains("const mapped = t0;"));
         assert!(rewritten.contains("return mapped;"));
+    }
+
+    #[test]
+    fn builds_prefixed_binding_body_from_shape_without_generated_source() {
+        let source = "function Foo(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "const f = _temp; let t0; if ($[0] !== props.items) { t0 = props.items.map(f); $[0] = props.items; $[1] = t0; } else { t0 = $[1]; } return t0;",
+            &["props"],
+            false,
+        );
+        compiled_function.generated_body = None;
+        compiled_function.generated_body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedBindings {
+                bindings: vec![
+                    crate::reactive_scopes::codegen_reactive::GeneratedBinding {
+                        kind: ast::VariableDeclarationKind::Const,
+                        name: "f".to_string(),
+                        expression: "_temp".to_string(),
+                    },
+                ],
+                inner: Box::new(
+                    crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleDependencyMemoizedReturn {
+                        value_name: "t0".to_string(),
+                        value_kind: ast::VariableDeclarationKind::Let,
+                        dep_slot: 0,
+                        dep_expr: "props.items".to_string(),
+                        value_slot: 1,
+                        memoized_expr: "props.items.map(f)".to_string(),
+                    },
+                ),
+            };
+        compiled_function.needs_cache_import = true;
+        compiled_function.cache_prologue =
+            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+                binding_name: "$".to_string(),
+                size: 2,
+                fast_refresh: None,
+            });
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("const f = _temp;"));
+        assert!(rewritten.contains("t0 = props.items.map(f);"));
     }
 
     #[test]
