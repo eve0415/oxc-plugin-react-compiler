@@ -3277,45 +3277,51 @@ fn codegen_block_no_reset_with_options(
         if trimmed.is_empty() || !trimmed.ends_with(';') || trimmed.contains('\n') {
             return None;
         }
-        let body = trimmed.trim_end_matches(';').trim();
-        let prefix_trimmed = prefix_expr.trim();
-        let prefix_expr = if prefix_trimmed.contains('=')
-            && !prefix_trimmed.contains(',')
-            && !(prefix_trimmed.starts_with('(') && prefix_trimmed.ends_with(')'))
-        {
-            format!("({prefix_expr})")
-        } else {
-            prefix_trimmed.to_string()
-        };
-        if let Some(rest) = body.strip_prefix("let ")
-            && let Some((lhs, rhs)) = rest.split_once(" = ")
-        {
-            return Some(format!(
-                "let {} = ({}, {});\n",
-                lhs.trim(),
-                prefix_expr.as_str(),
-                rhs.trim()
-            ));
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        let prefix_expression = parse_expression_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            prefix_expr.trim(),
+        )
+        .ok()?;
+        let mut statement = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            trimmed,
+        )
+        .ok()?;
+
+        match &mut statement {
+            ast::Statement::VariableDeclaration(declaration) => {
+                if declaration.declarations.len() != 1 {
+                    return None;
+                }
+                let declarator = declaration.declarations.first_mut()?;
+                let init = declarator.init.as_ref()?.clone_in(&allocator);
+                declarator.init = Some(builder.expression_sequence(
+                    SPAN,
+                    builder.vec_from_iter([prefix_expression.clone_in(&allocator), init]),
+                ));
+            }
+            ast::Statement::ExpressionStatement(expression_statement) => {
+                let ast::Expression::AssignmentExpression(assignment) =
+                    &mut expression_statement.expression
+                else {
+                    return None;
+                };
+                let rhs = assignment.right.clone_in(&allocator);
+                assignment.right = builder.expression_sequence(
+                    SPAN,
+                    builder.vec_from_iter([prefix_expression.clone_in(&allocator), rhs]),
+                );
+            }
+            _ => return None,
         }
-        if let Some(rest) = body.strip_prefix("const ")
-            && let Some((lhs, rhs)) = rest.split_once(" = ")
-        {
-            return Some(format!(
-                "const {} = ({}, {});\n",
-                lhs.trim(),
-                prefix_expr.as_str(),
-                rhs.trim()
-            ));
-        }
-        if let Some((lhs, rhs)) = body.split_once(" = ") {
-            return Some(format!(
-                "{} = ({}, {});\n",
-                lhs.trim(),
-                prefix_expr.as_str(),
-                rhs.trim()
-            ));
-        }
-        None
+
+        let mut rendered = codegen_statement_with_flow_cast_restore(&statement);
+        rendered.push('\n');
+        Some(rendered)
     }
 
     fn maybe_combine_instruction_with_pending_sequence(
