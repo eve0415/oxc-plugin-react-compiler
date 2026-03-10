@@ -6472,26 +6472,14 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
         &scope_block.instructions,
     );
     let null_stmt = codegen_instruction_nullable(cx, null_instr);
-    let ternary_stmt = match codegen_instruction_nullable(cx, ternary_instr) {
-        Some(stmt) => stmt,
-        None => {
-            output.push_str(&test_stmt);
-            output.push_str(&scope_stmt);
-            if let Some(stmt) = null_stmt {
-                output.push_str(&stmt);
-            }
-            return Some(4);
-        }
-    };
-
-    let fallback_emit = |output: &mut String| {
+    if codegen_instruction_nullable(cx, ternary_instr).is_none() {
         output.push_str(&test_stmt);
         output.push_str(&scope_stmt);
-        if let Some(stmt) = &null_stmt {
-            output.push_str(stmt);
+        if let Some(stmt) = null_stmt {
+            output.push_str(&stmt);
         }
-        output.push_str(&ternary_stmt);
-    };
+        return Some(4);
+    }
 
     let test_ev = codegen_instruction_value_ev(cx, &test_instr.value);
     let cond_expr = if test_ev.prec <= ExprPrecedence::Assignment {
@@ -6505,8 +6493,7 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
         lines.pop();
     }
     if lines.len() < 5 {
-        fallback_emit(output);
-        return Some(4);
+        return None;
     }
 
     let decl_line = lines[0].trim();
@@ -6514,57 +6501,46 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
         .strip_prefix("let ")
         .and_then(|rest| rest.strip_suffix(';'))
     else {
-        fallback_emit(output);
-        return Some(4);
+        return None;
     };
     let if_line = lines[1].trim();
     let Some(if_cond_raw) = if_line
         .strip_prefix("if (")
         .and_then(|rest| rest.strip_suffix(") {"))
     else {
-        fallback_emit(output);
-        return Some(4);
+        return None;
     };
     if if_cond_raw.contains("||") {
-        fallback_emit(output);
-        return Some(4);
+        return None;
     }
     let Some((guard_lhs_raw, dep_expr_raw)) = if_cond_raw.split_once("!==") else {
-        fallback_emit(output);
-        return Some(4);
+        return None;
     };
     let guard_lhs = guard_lhs_raw.trim();
     let dep_expr = dep_expr_raw.trim().to_string();
     let Some(lb) = guard_lhs.find('[') else {
-        fallback_emit(output);
-        return Some(4);
+        return None;
     };
     let Some(rb) = guard_lhs.rfind(']') else {
-        fallback_emit(output);
-        return Some(4);
+        return None;
     };
     if rb <= lb {
-        fallback_emit(output);
-        return Some(4);
+        return None;
     }
     let cache_var = guard_lhs[..lb].trim().to_string();
     let dep_slot = guard_lhs[lb + 1..rb].trim().to_string();
     if cache_var.is_empty() || dep_slot.is_empty() {
-        fallback_emit(output);
-        return Some(4);
+        return None;
     }
 
     let Some(else_idx) = lines.iter().position(|line| line.trim() == "} else {") else {
-        fallback_emit(output);
-        return Some(4);
+        return None;
     };
     let Some(end_idx) = lines.iter().rposition(|line| line.trim() == "}") else {
-        fallback_emit(output);
-        return Some(4);
+        return None;
     };
     if else_idx <= 1 || end_idx <= else_idx {
-        fallback_emit(output);
-        return Some(4);
+        return None;
     }
     let body_lines = &lines[2..else_idx];
     let else_lines = &lines[else_idx + 1..end_idx];
@@ -6600,19 +6576,16 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
             continue;
         }
         let Some(expr) = extract_simple_expression_statement_global(trimmed) else {
-            fallback_emit(output);
-            return Some(4);
+            return None;
         };
         pre_exprs.push(expr);
     }
 
     let Some(decl_rhs) = decl_rhs else {
-        fallback_emit(output);
-        return Some(4);
+        return None;
     };
     let Some(decl_slot) = decl_slot else {
-        fallback_emit(output);
-        return Some(4);
+        return None;
     };
 
     let mut else_passthrough: Vec<String> = Vec::new();
