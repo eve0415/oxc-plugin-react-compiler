@@ -2808,40 +2808,73 @@ fn codegen_block_no_reset_with_options(
     }
 
     fn parse_uninitialized_declaration_name(stmt: &str) -> Option<String> {
-        let stmt = stmt.trim().trim_end_matches(';').trim();
-        let body = stmt
-            .strip_prefix("let ")
-            .or_else(|| stmt.strip_prefix("const "))
-            .or_else(|| stmt.strip_prefix("var "))?
-            .trim();
-        if body.contains('=') || body.contains(',') || !is_simple_identifier(body) {
+        let allocator = Allocator::default();
+        let statement = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            stmt.trim(),
+        )
+        .ok()?;
+        let ast::Statement::VariableDeclaration(declaration) = statement else {
+            return None;
+        };
+        if declaration.declarations.len() != 1 {
             return None;
         }
-        Some(body.to_string())
+        let declarator = declaration.declarations.first()?;
+        if declarator.init.is_some() {
+            return None;
+        }
+        let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id else {
+            return None;
+        };
+        Some(identifier.name.to_string())
     }
 
     fn parse_simple_assignment(stmt: &str) -> Option<(String, String)> {
-        let stmt = stmt.trim().trim_end_matches(';').trim();
-        if let Some(body) = stmt
-            .strip_prefix("let ")
-            .or_else(|| stmt.strip_prefix("const "))
-            .or_else(|| stmt.strip_prefix("var "))
-        {
-            let (lhs, rhs) = body.split_once('=')?;
-            let lhs = lhs.trim();
-            let rhs = rhs.trim();
-            if !is_simple_identifier(lhs) {
-                return None;
+        let allocator = Allocator::default();
+        let statement = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            stmt.trim(),
+        )
+        .ok()?;
+        match statement {
+            ast::Statement::VariableDeclaration(declaration) => {
+                if declaration.declarations.len() != 1 {
+                    return None;
+                }
+                let declarator = declaration.declarations.first()?;
+                let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id else {
+                    return None;
+                };
+                let init = declarator.init.as_ref()?;
+                Some((
+                    identifier.name.to_string(),
+                    codegen_expression_with_flow_cast_restore(init),
+                ))
             }
-            return Some((lhs.to_string(), rhs.to_string()));
+            ast::Statement::ExpressionStatement(expression_statement) => {
+                let ast::Expression::AssignmentExpression(assignment) =
+                    expression_statement.expression.without_parentheses()
+                else {
+                    return None;
+                };
+                if assignment.operator != AssignmentOperator::Assign {
+                    return None;
+                }
+                let ast::AssignmentTarget::AssignmentTargetIdentifier(identifier) =
+                    &assignment.left
+                else {
+                    return None;
+                };
+                Some((
+                    identifier.name.to_string(),
+                    codegen_expression_with_flow_cast_restore(&assignment.right),
+                ))
+            }
+            _ => None,
         }
-        let (lhs, rhs) = stmt.split_once('=')?;
-        let lhs = lhs.trim();
-        let rhs = rhs.trim();
-        if !is_simple_identifier(lhs) {
-            return None;
-        }
-        Some((lhs.to_string(), rhs.to_string()))
     }
 
     enum NextEmittedStatement {
