@@ -5442,11 +5442,10 @@ fn maybe_emit_reused_optional_dependency_reads(
     for dep in optional_deps {
         let dep_expr = codegen_dependency(cx, &dep);
         if dep_expr.contains("?.") && cx.emitted_optional_dep_reads.insert(dep_expr.clone()) {
-            if let Some(stmt) = render_reactive_expression_statement_ast(&dep_expr) {
-                output.push_str(&stmt);
-            } else {
-                output.push_str(&format!("{};\n", dep_expr));
-            }
+            output.push_str(
+                &render_reactive_expression_statement_ast(&dep_expr)
+                    .expect("optional dependency read should stay on AST path"),
+            );
         }
     }
 }
