@@ -10187,16 +10187,27 @@ fn maybe_codegen_fused_ternary_source_scope(
     let cond_slot = include_cond_dep.then(|| cx.alloc_cache_slot());
     let dep_slot = cx.alloc_cache_slot();
     let output_slot = cx.alloc_cache_slot();
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
     let decl_name = identifier_name_with_cx(cx, &decl.identifier);
     if !has_materialized_named_binding(cx, &decl.identifier) {
-        output.push_str(
-            &render_reactive_variable_statement_ast(
+        let statement = ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+            SPAN,
+            ast::VariableDeclarationKind::Let,
+            builder.vec1(builder.variable_declarator(
+                SPAN,
                 ast::VariableDeclarationKind::Let,
-                &decl_name,
+                builder.binding_pattern_binding_identifier(SPAN, builder.ident(&decl_name)),
+                NONE,
                 None,
-            )
-            .expect("fused ternary declaration should stay on AST path"),
-        );
+                false,
+            )),
+            false,
+        ));
+        output.push_str(&format!(
+            "{}\n",
+            codegen_statement_with_flow_cast_restore(&statement)
+        ));
         cx.mark_decl_runtime_emitted(decl.identifier.declaration_id);
     }
     cx.declare(&decl.identifier);
@@ -10208,61 +10219,104 @@ fn maybe_codegen_fused_ternary_source_scope(
         );
     }
 
-    let guard_test = if let Some(cond_slot) = cond_slot {
-        render_logical_chain_expression_ast(
-            &[
-                render_cache_slot_comparison_expression_ast(
-                    &cache_var,
-                    cond_slot,
-                    BinaryOperator::StrictNotEq,
-                    &cond_expr,
-                )
-                .expect("fused ternary condition comparison should stay on AST path"),
-                render_cache_slot_comparison_expression_ast(
-                    &cache_var,
-                    dep_slot,
-                    BinaryOperator::StrictNotEq,
-                    &dep_expr,
-                )
-                .expect("fused ternary dependency comparison should stay on AST path"),
-            ],
-            LogicalOperator::Or,
-        )
-        .expect("fused ternary guard should stay on AST path")
-    } else {
-        render_cache_slot_comparison_expression_ast(
+    let dep_guard_expr =
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), &dep_expr)
+            .expect("fused ternary dependency comparison should stay on AST path");
+    let dep_guard = builder.expression_binary(
+        SPAN,
+        build_computed_member_expression_ast(
+            builder,
             &cache_var,
-            dep_slot,
-            BinaryOperator::StrictNotEq,
-            &dep_expr,
+            builder.expression_numeric_literal(SPAN, dep_slot as f64, None, NumberBase::Decimal),
+        ),
+        AstBinaryOperator::StrictInequality,
+        dep_guard_expr,
+    );
+    let guard_test = if let Some(cond_slot) = cond_slot {
+        let cond_guard_expr = parse_expression_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            &cond_expr,
         )
-        .expect("fused ternary dependency comparison should stay on AST path")
+        .expect("fused ternary condition comparison should stay on AST path");
+        builder.expression_logical(
+            SPAN,
+            builder.expression_binary(
+                SPAN,
+                build_computed_member_expression_ast(
+                    builder,
+                    &cache_var,
+                    builder.expression_numeric_literal(
+                        SPAN,
+                        cond_slot as f64,
+                        None,
+                        NumberBase::Decimal,
+                    ),
+                ),
+                AstBinaryOperator::StrictInequality,
+                cond_guard_expr,
+            ),
+            AstLogicalOperator::Or,
+            dep_guard,
+        )
+    } else {
+        dep_guard
     };
-    let rhs_expr = render_conditional_expression_ast(&cond_expr, &consequent_expr, &alternate_expr)
-        .expect("fused ternary expression should stay on AST path");
-    let mut consequent = render_reactive_assignment_statement_ast(&decl_name, &rhs_expr)
-        .expect("fused ternary assignment should stay on AST path");
+    let rhs_expr = parse_expression_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        &render_conditional_expression_ast(&cond_expr, &consequent_expr, &alternate_expr)
+            .expect("fused ternary expression should stay on AST path"),
+    )
+    .expect("fused ternary assignment should stay on AST path");
+    let mut consequent = builder.vec1(build_identifier_assignment_statement_ast_with_expression(
+        builder, &decl_name, rhs_expr,
+    ));
     if let Some(cond_slot) = cond_slot {
-        consequent.push_str(
-            &render_cache_slot_store_statement_ast(&cache_var, cond_slot, &cond_expr)
-                .expect("fused ternary condition store should stay on AST path"),
-        );
+        consequent.push(build_computed_member_assignment_statement_ast(
+            builder,
+            &cache_var,
+            builder.expression_numeric_literal(SPAN, cond_slot as f64, None, NumberBase::Decimal),
+            parse_expression_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
+                &cond_expr,
+            )
+            .expect("fused ternary condition store should stay on AST path"),
+        ));
     }
-    consequent.push_str(
-        &render_cache_slot_store_statement_ast(&cache_var, dep_slot, &dep_expr)
+    consequent.push(build_computed_member_assignment_statement_ast(
+        builder,
+        &cache_var,
+        builder.expression_numeric_literal(SPAN, dep_slot as f64, None, NumberBase::Decimal),
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), &dep_expr)
             .expect("fused ternary dependency store should stay on AST path"),
+    ));
+    consequent.push(build_computed_member_assignment_statement_ast(
+        builder,
+        &cache_var,
+        builder.expression_numeric_literal(SPAN, output_slot as f64, None, NumberBase::Decimal),
+        builder.expression_identifier(SPAN, builder.ident(&decl_name)),
+    ));
+    let alternate = builder.vec1(build_identifier_assignment_statement_ast_with_expression(
+        builder,
+        &decl_name,
+        build_computed_member_expression_ast(
+            builder,
+            &cache_var,
+            builder.expression_numeric_literal(SPAN, output_slot as f64, None, NumberBase::Decimal),
+        ),
+    ));
+    let statement = builder.statement_if(
+        SPAN,
+        guard_test,
+        builder.statement_block(SPAN, consequent),
+        Some(builder.statement_block(SPAN, alternate)),
     );
-    consequent.push_str(
-        &render_cache_slot_store_statement_ast(&cache_var, output_slot, &decl_name)
-            .expect("fused ternary output store should stay on AST path"),
-    );
-    let alternate =
-        render_cache_slot_load_assignment_statement_ast(&decl_name, &cache_var, output_slot)
-            .expect("fused ternary cache load should stay on AST path");
-    output.push_str(
-        &render_reactive_if_statement_ast(&guard_test, &consequent, Some(&alternate))
-            .expect("fused ternary guard should stay on AST path"),
-    );
+    output.push_str(&format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ));
 
     // The skipped ternary instruction's lvalue aliases the fused scope output.
     cx.set_temp_expr(
