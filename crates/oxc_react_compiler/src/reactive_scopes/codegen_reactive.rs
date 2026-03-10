@@ -2952,12 +2952,10 @@ fn codegen_block_no_reset_with_options(
                 } else {
                     format!("({prefix_expr}, {left_expr})")
                 };
-                render_reactive_expression_statement_ast(&format!(
-                    "{} {} {}",
-                    combined_left,
-                    logical_operator_to_str(operator),
-                    right_expr
-                ))
+                render_reactive_expression_statement_ast(
+                    &render_logical_expression_ast(&combined_left, *operator, &right_expr)
+                        .expect("pending logical expression should stay on AST path"),
+                )
             }
             _ => None,
         }
@@ -6290,9 +6288,9 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
     };
 
     let mut consequent = String::new();
-    consequent.push_str(&render_reactive_expression_statement_ast(&format!(
-        "{cond_expr} ? {consequent_expr} : null"
-    ))?);
+    consequent.push_str(&render_reactive_expression_statement_ast(
+        &render_conditional_expression_ast(&cond_expr, &consequent_expr, "null")?,
+    )?);
     consequent.push_str(&render_reactive_expression_statement_ast(
         &render_computed_store_expression_ast(&cache_var, &dep_slot, &cond_expr)?,
     )?);
@@ -9882,21 +9880,19 @@ fn emit_zero_dep_target_guard(
     cx.declare(target_ident);
     let mut consequent = computation_stmt.to_string();
     consequent.push_str(
-        &render_reactive_expression_statement_ast(&format!(
-            "{}[{}] = {}",
-            cache_var, output_slot, target_name
-        ))
+        &render_cache_slot_store_statement_ast(&cache_var, output_slot, &target_name)
         .expect("memo cache store should stay on AST path"),
     );
-    let alternate = render_reactive_assignment_statement_ast(
-        &target_name,
-        &format!("{}[{}]", cache_var, output_slot),
+    let alternate =
+        render_cache_slot_load_assignment_statement_ast(&target_name, &cache_var, output_slot)
+            .expect("memo cache load should stay on AST path");
+    let guard_test = render_cache_slot_comparison_expression_ast(
+        &cache_var,
+        output_slot,
+        BinaryOperator::StrictEq,
+        &format!("Symbol.for(\"{}\")", MEMO_CACHE_SENTINEL),
     )
-    .expect("memo cache load should stay on AST path");
-    let guard_test = format!(
-        "{}[{}] === Symbol.for(\"{}\")",
-        cache_var, output_slot, MEMO_CACHE_SENTINEL
-    );
+    .expect("memo cache guard should stay on AST path");
     output.push_str(
         &render_reactive_if_statement_ast(&guard_test, &consequent, Some(&alternate))
             .expect("memo cache guard should stay on AST path"),
@@ -10663,31 +10659,22 @@ fn maybe_codegen_fused_effect_callback_empty_array_scope(
         "{}{}{}{}",
         render_reactive_assignment_statement_ast(&callback_name, &callback_expr)?,
         render_reactive_assignment_statement_ast(&deps_name, &deps_expr)?,
-        render_reactive_expression_statement_ast(&format!(
-            "{}[{}] = {}",
-            cache_var, callback_slot, callback_name
-        ))?,
-        render_reactive_expression_statement_ast(&format!(
-            "{}[{}] = {}",
-            cache_var, deps_slot, deps_name
-        ))?,
+        render_cache_slot_store_statement_ast(&cache_var, callback_slot, &callback_name)?,
+        render_cache_slot_store_statement_ast(&cache_var, deps_slot, &deps_name)?,
     );
     let alternate = format!(
         "{}{}",
-        render_reactive_assignment_statement_ast(
-            &callback_name,
-            &format!("{}[{}]", cache_var, callback_slot),
-        )?,
-        render_reactive_assignment_statement_ast(
-            &deps_name,
-            &format!("{}[{}]", cache_var, deps_slot),
-        )?,
+        render_cache_slot_load_assignment_statement_ast(&callback_name, &cache_var, callback_slot)?,
+        render_cache_slot_load_assignment_statement_ast(&deps_name, &cache_var, deps_slot)?,
     );
     rendered.push_str(&render_reactive_if_statement_ast(
-        &format!(
-            "{}[{}] === Symbol.for(\"{}\")",
-            cache_var, callback_slot, MEMO_CACHE_SENTINEL
-        ),
+        &render_cache_slot_comparison_expression_ast(
+            &cache_var,
+            callback_slot,
+            BinaryOperator::StrictEq,
+            &format!("Symbol.for(\"{}\")", MEMO_CACHE_SENTINEL),
+        )
+        .expect("memo callback sentinel guard should stay on AST path"),
         &consequent,
         Some(&alternate),
     )?);
