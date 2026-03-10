@@ -6042,6 +6042,38 @@ fn parse_assignment_statement_line(line: &str) -> Option<(String, String, String
     ))
 }
 
+fn parse_computed_member_assignment_line(line: &str) -> Option<(String, String, String, String)> {
+    let indent_len = line.len().saturating_sub(line.trim_start().len());
+    let indent = line[..indent_len].to_string();
+    let allocator = Allocator::default();
+    let statement = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        line.trim(),
+    )
+    .ok()?;
+    let ast::Statement::ExpressionStatement(expression_statement) = statement else {
+        return None;
+    };
+    let ast::Expression::AssignmentExpression(assignment) =
+        expression_statement.expression.without_parentheses()
+    else {
+        return None;
+    };
+    if assignment.operator != AssignmentOperator::Assign {
+        return None;
+    }
+    let ast::AssignmentTarget::ComputedMemberExpression(member) = &assignment.left else {
+        return None;
+    };
+    Some((
+        indent,
+        codegen_expression_with_flow_cast_restore(&member.object),
+        codegen_expression_with_flow_cast_restore(&member.expression),
+        codegen_expression_with_flow_cast_restore(&assignment.right),
+    ))
+}
+
 fn parse_ternary_statement_line(line: &str) -> Option<(String, String, String, String)> {
     let indent_len = line.len().saturating_sub(line.trim_start().len());
     let indent = line[..indent_len].to_string();
@@ -6740,14 +6772,17 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
         if trimmed.is_empty() {
             continue;
         }
-        if trimmed == format!("{cache_var}[{dep_slot}] = {dep_expr};") {
-            continue;
-        }
-        if let Some(after_cache) = trimmed.strip_prefix(&format!("{cache_var}["))
-            && let Some((slot, rhs_part)) = after_cache.split_once(']')
-            && rhs_part.trim() == format!("= {scope_decl_name};")
+        if let Some((_, object, slot, rhs)) = parse_computed_member_assignment_line(trimmed)
+            && object == cache_var
         {
-            decl_slot = Some(slot.trim().to_string());
+            if slot == dep_slot && rhs == dep_expr {
+                continue;
+            }
+            if rhs == scope_decl_name {
+                decl_slot = Some(slot);
+                continue;
+            }
+            cache_tail_lines.push(trimmed.to_string());
             continue;
         }
         if let Some(rhs) = trimmed
@@ -6755,10 +6790,6 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
             .and_then(|rest| rest.strip_suffix(';'))
         {
             decl_rhs = Some(rhs.trim().to_string());
-            continue;
-        }
-        if trimmed.starts_with(&format!("{cache_var}[")) {
-            cache_tail_lines.push(trimmed.to_string());
             continue;
         }
         let Some(expr) = extract_simple_expression_statement_global(trimmed) else {
