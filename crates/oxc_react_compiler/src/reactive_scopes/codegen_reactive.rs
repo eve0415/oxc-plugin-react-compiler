@@ -203,6 +203,10 @@ pub enum GeneratedBodyShape {
         bindings: Vec<GeneratedBinding>,
         inner: Box<GeneratedBodyShape>,
     },
+    PrefixedAssignments {
+        assignments: Vec<GeneratedAssignment>,
+        inner: Box<GeneratedBodyShape>,
+    },
     Sequential {
         prefix: Box<GeneratedBodyShape>,
         inner: Box<GeneratedBodyShape>,
@@ -864,6 +868,7 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
             | GeneratedBodyShape::SingleSlotMemoizedReturn { value_name, .. } => Some(value_name),
             GeneratedBodyShape::AliasedReturn { alias_name, .. } => Some(alias_name),
             GeneratedBodyShape::PrefixedBindings { inner, .. }
+            | GeneratedBodyShape::PrefixedAssignments { inner, .. }
             | GeneratedBodyShape::Sequential { inner, .. } => shape_returned_identifier(inner),
         }
     }
@@ -1164,6 +1169,16 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
                         }
                     }
                 }
+                ast::Statement::ReturnStatement(return_statement) => {
+                    if let Some(argument) = return_statement.argument.as_ref()
+                        && let Some(name) = expression_identifier_name(argument)
+                    {
+                        let name = name.to_string();
+                        if !candidates.contains(&name) {
+                            candidates.push(name);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -1286,6 +1301,38 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
                     codegen_expression_with_flow_cast_restore(argument),
                 ),
             };
+        }
+
+        let (prefixed_bindings, prefix_len) = collect_leading_initialized_bindings(statements);
+        if prefix_len > 0 && prefix_len < statements.len() {
+            let suffix_source =
+                codegen_statements_with_flow_cast_restore(&statements[prefix_len..]);
+            let inner_shape = analyze_generated_body_shape_impl(&suffix_source, true);
+            if !matches!(inner_shape, GeneratedBodyShape::Unknown) {
+                return GeneratedBodyShape::PrefixedBindings {
+                    bindings: prefixed_bindings,
+                    inner: Box::new(inner_shape),
+                };
+            }
+        }
+
+        for terminal_identifier in collect_candidate_return_identifiers(statements) {
+            let (prefixed_assignments, prefix_len) =
+                collect_leading_side_effect_assignments(statements, &terminal_identifier);
+            if prefix_len == 0 || prefix_len >= statements.len() {
+                continue;
+            }
+            let suffix_source =
+                codegen_statements_with_flow_cast_restore(&statements[prefix_len..]);
+            let inner_shape = analyze_generated_body_shape_impl(&suffix_source, true);
+            if shape_returned_identifier(&inner_shape)
+                .is_some_and(|name| name == terminal_identifier)
+            {
+                return GeneratedBodyShape::PrefixedAssignments {
+                    assignments: prefixed_assignments,
+                    inner: Box::new(inner_shape),
+                };
+            }
         }
 
         if statements.len() == 2 {
@@ -1563,14 +1610,20 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
             };
         }
 
-        let (prefixed_bindings, prefix_len) = collect_leading_initialized_bindings(statements);
-        if prefix_len > 0 && prefix_len < statements.len() {
+        for terminal_identifier in collect_candidate_return_identifiers(statements) {
+            let (prefixed_assignments, prefix_len) =
+                collect_leading_side_effect_assignments(statements, &terminal_identifier);
+            if prefix_len == 0 || prefix_len >= statements.len() {
+                continue;
+            }
             let suffix_source =
                 codegen_statements_with_flow_cast_restore(&statements[prefix_len..]);
             let inner_shape = analyze_generated_body_shape_impl(&suffix_source, true);
-            if !matches!(inner_shape, GeneratedBodyShape::Unknown) {
-                return GeneratedBodyShape::PrefixedBindings {
-                    bindings: prefixed_bindings,
+            if shape_returned_identifier(&inner_shape)
+                .is_some_and(|name| name == terminal_identifier)
+            {
+                return GeneratedBodyShape::PrefixedAssignments {
+                    assignments: prefixed_assignments,
                     inner: Box::new(inner_shape),
                 };
             }
@@ -23093,6 +23146,29 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             body.statements = prefixed;
             Some(body)
         }
+        GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
+            let inner_spec = FunctionBodyRenderSpec {
+                params: spec.params,
+                param_names: spec.param_names,
+                body_source: spec.body_source,
+                body_shape: inner.as_ref(),
+                directives: spec.directives,
+                cache_prologue: spec.cache_prologue,
+                needs_function_hook_guard_wrapper: spec.needs_function_hook_guard_wrapper,
+                is_async: spec.is_async,
+                is_generator: spec.is_generator,
+            };
+            let mut body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder,
+                allocator,
+                &inner_spec,
+            )?;
+            let mut prefixed =
+                build_generated_assignment_statements_ast(builder, allocator, assignments)?;
+            prefixed.extend(body.statements);
+            body.statements = prefixed;
+            Some(body)
+        }
         GeneratedBodyShape::Sequential { prefix, inner } => {
             let prefix_spec = FunctionBodyRenderSpec {
                 params: spec.params,
@@ -26436,6 +26512,22 @@ mod tests {
                 && *dep_slot == 1
                 && dep_expr == "mapped"
                 && *value_slot == 2
+        ));
+    }
+
+    #[test]
+    fn analyzes_prefixed_assignment_body_shape() {
+        let shape = super::analyze_generated_body_shape("foo = bar;\nreturn bar;\n");
+
+        let super::GeneratedBodyShape::PrefixedAssignments { assignments, inner } = shape else {
+            panic!("expected prefixed assignments, got {shape:?}");
+        };
+        assert_eq!(assignments.len(), 1);
+        assert_eq!(assignments[0].target, "foo");
+        assert_eq!(assignments[0].value, "bar");
+        assert!(matches!(
+            inner.as_ref(),
+            super::GeneratedBodyShape::ReturnIdentifier(name) if name == "bar"
         ));
     }
 }

@@ -3478,6 +3478,23 @@ fn try_build_function_body_from_shape<'a>(
             body.statements = prefixed;
             Some(body)
         }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedAssignments {
+            assignments,
+            inner,
+        } => {
+            let mut body = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                inner.as_ref(),
+                cache_prologue,
+            )?;
+            let mut prefixed =
+                build_generated_assignment_statements(builder, allocator, source_type, assignments)?;
+            prefixed.extend(body.statements);
+            body.statements = prefixed;
+            Some(body)
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Sequential {
             prefix,
             inner,
@@ -7643,6 +7660,58 @@ function Component(props) {
         assert!(rewritten.contains("if ($[1] !== mapped) {"));
         assert!(rewritten.contains("$[2] = t1;"));
         assert!(rewritten.contains("return t1;"));
+    }
+
+    #[test]
+    fn builds_prefixed_assignment_body_from_shape_without_generated_source() {
+        let source = "function Foo(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "const mapped = props.items; foo = mapped; return mapped;",
+            &["props"],
+            false,
+        );
+        compiled_function.generated_body = None;
+        compiled_function.generated_body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedBindings {
+                bindings: vec![crate::reactive_scopes::codegen_reactive::GeneratedBinding {
+                    kind: ast::VariableDeclarationKind::Const,
+                    name: "mapped".to_string(),
+                    expression: "props.items".to_string(),
+                }],
+                inner: Box::new(
+                    crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedAssignments {
+                        assignments: vec![
+                            crate::reactive_scopes::codegen_reactive::GeneratedAssignment {
+                                target: "foo".to_string(),
+                                value: "mapped".to_string(),
+                            },
+                        ],
+                        inner: Box::new(
+                            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(
+                                "mapped".to_string(),
+                            ),
+                        ),
+                    },
+                ),
+            };
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("const mapped = props.items;"));
+        assert!(rewritten.contains("foo = mapped;"));
+        assert!(rewritten.contains("return mapped;"));
     }
 
     #[test]

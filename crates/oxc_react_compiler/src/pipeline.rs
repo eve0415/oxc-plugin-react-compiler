@@ -1319,6 +1319,16 @@ fn codegen_outlined_function(
                 }
                 rename_generated_body_shape(inner.as_mut(), from, to);
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedAssignments {
+                assignments,
+                inner,
+            } => {
+                for assignment in assignments {
+                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
+                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
+                }
+                rename_generated_body_shape(inner.as_mut(), from, to);
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Sequential {
                 prefix,
                 inner,
