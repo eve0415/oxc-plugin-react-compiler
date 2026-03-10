@@ -5079,24 +5079,44 @@ fn maybe_codegen_labeled_if_adjacent_block(
         bail!("codegen-terminal-none");
     };
     let label_name = format!("bb{}", label.id.0);
-    let mut rewritten_body = String::new();
-
     let had_prefix_stmt = prefix_stmt.is_some();
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let mut rewritten_body = builder.vec();
     if let Some(prefix) = prefix_stmt {
-        rewritten_body.push_str(prefix.trim());
-        rewritten_body.push_str("\n\n");
+        rewritten_body.extend(
+            parse_statement_list_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
+                prefix.trim(),
+            )
+            .ok()?,
+        );
     }
-    rewritten_body.push_str(if_stmt.trim_end());
-    if had_prefix_stmt {
-        rewritten_body.push('\n');
-    } else {
-        // Keep a spacer between `if (...)` and the following lifted statement.
-        rewritten_body.push_str("\n\n");
-    }
-    rewritten_body.push_str(following_stmt.trim_end());
-    rewritten_body.push('\n');
-
-    let rewritten = render_reactive_labeled_statement_ast(&label_name, &rewritten_body, true)?;
+    rewritten_body.extend(
+        parse_statement_list_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            if_stmt.trim_end(),
+        )
+        .ok()?,
+    );
+    rewritten_body.extend(
+        parse_statement_list_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            following_stmt.trim_end(),
+        )
+        .ok()?,
+    );
+    let rewritten = format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&builder.statement_labeled(
+            SPAN,
+            builder.label_identifier(SPAN, builder.atom(&label_name)),
+            builder.statement_block(SPAN, rewritten_body),
+        ))
+    );
     let next_is_cache_store =
         next_emitted_statement_is_cache_store(cx, block, idx + 1 + consumed_following);
     if matches!(next_is_cache_store, Some(false)) {
