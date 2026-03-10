@@ -11095,16 +11095,27 @@ fn maybe_codegen_fused_zero_dep_ternary_default_scope(
     let cache_var = cx.synthesize_name("$");
     let dep_slot = cx.alloc_cache_slot();
     let output_slot = cx.alloc_cache_slot();
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
 
     if !has_materialized_named_binding(cx, output_ident) {
-        output.push_str(
-            &render_reactive_variable_statement_ast(
+        let statement = ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+            SPAN,
+            ast::VariableDeclarationKind::Let,
+            builder.vec1(builder.variable_declarator(
+                SPAN,
                 ast::VariableDeclarationKind::Let,
-                &output_name,
+                builder.binding_pattern_binding_identifier(SPAN, builder.ident(&output_name)),
+                NONE,
                 None,
-            )
-            .expect("conditional output declaration should stay on AST path"),
-        );
+                false,
+            )),
+            false,
+        ));
+        output.push_str(&format!(
+            "{}\n",
+            codegen_statement_with_flow_cast_restore(&statement)
+        ));
         cx.mark_decl_runtime_emitted(output_ident.declaration_id);
     }
     cx.declare(output_ident);
@@ -11116,30 +11127,67 @@ fn maybe_codegen_fused_zero_dep_ternary_default_scope(
     }
     .expect("conditional output expression should stay on AST path");
 
-    let mut consequent = render_reactive_assignment_statement_ast(&output_name, &rhs_expr)
-        .expect("conditional output assignment should stay on AST path");
-    consequent.push_str(
-        &render_cache_slot_store_statement_ast(&cache_var, dep_slot, &dep_expr_guard)
-            .expect("conditional dependency store should stay on AST path"),
-    );
-    consequent.push_str(
-        &render_cache_slot_store_statement_ast(&cache_var, output_slot, &output_name)
-            .expect("conditional output store should stay on AST path"),
-    );
-    let alternate =
-        render_cache_slot_load_assignment_statement_ast(&output_name, &cache_var, output_slot)
-            .expect("conditional output load should stay on AST path");
-    let guard_test = render_cache_slot_comparison_expression_ast(
+    let mut consequent = builder.vec1(build_identifier_assignment_statement_ast_with_expression(
+        builder,
+        &output_name,
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), &rhs_expr)
+            .expect("conditional output assignment should stay on AST path"),
+    ));
+    consequent.push(build_computed_member_assignment_statement_ast(
+        builder,
         &cache_var,
-        dep_slot,
-        BinaryOperator::StrictNotEq,
-        &dep_expr_guard,
-    )
-    .expect("conditional output guard should stay on AST path");
-    output.push_str(
-        &render_reactive_if_statement_ast(&guard_test, &consequent, Some(&alternate))
+        builder.expression_numeric_literal(SPAN, dep_slot as f64, None, NumberBase::Decimal),
+        parse_expression_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            &dep_expr_guard,
+        )
+        .expect("conditional dependency store should stay on AST path"),
+    ));
+    consequent.push(build_computed_member_assignment_statement_ast(
+        builder,
+        &cache_var,
+        builder.expression_numeric_literal(SPAN, output_slot as f64, None, NumberBase::Decimal),
+        builder.expression_identifier(SPAN, builder.ident(&output_name)),
+    ));
+    let alternate = builder.vec1(build_identifier_assignment_statement_ast_with_expression(
+        builder,
+        &output_name,
+        build_computed_member_expression_ast(
+            builder,
+            &cache_var,
+            builder.expression_numeric_literal(SPAN, output_slot as f64, None, NumberBase::Decimal),
+        ),
+    ));
+    let statement = builder.statement_if(
+        SPAN,
+        builder.expression_binary(
+            SPAN,
+            build_computed_member_expression_ast(
+                builder,
+                &cache_var,
+                builder.expression_numeric_literal(
+                    SPAN,
+                    dep_slot as f64,
+                    None,
+                    NumberBase::Decimal,
+                ),
+            ),
+            AstBinaryOperator::StrictInequality,
+            parse_expression_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
+                &dep_expr_guard,
+            )
             .expect("conditional output guard should stay on AST path"),
+        ),
+        builder.statement_block(SPAN, consequent),
+        Some(builder.statement_block(SPAN, alternate)),
     );
+    output.push_str(&format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ));
 
     cx.set_temp_expr(
         &ternary_lvalue.identifier,
