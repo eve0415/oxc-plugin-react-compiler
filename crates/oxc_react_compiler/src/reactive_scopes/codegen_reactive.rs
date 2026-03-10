@@ -7318,46 +7318,109 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
             .expect("conditional consequent should stay on AST path")
     };
 
-    let mut consequent = String::new();
-    consequent.push_str(&render_reactive_expression_statement_ast(
-        &render_conditional_expression_ast(&cond_expr, &consequent_expr, "null")?,
-    )?);
-    consequent.push_str(&render_reactive_expression_statement_ast(
-        &render_computed_store_expression_ast(&cache_var, &dep_slot, &cond_expr)?,
-    )?);
-    consequent.push_str(&render_reactive_expression_statement_ast(
-        &render_computed_store_expression_ast(&cache_var, &decl_slot, &dep_expr)?,
-    )?);
+    let builder = AstBuilder::new(&allocator);
+    let mut consequent = builder.vec1(
+        builder.statement_expression(
+            SPAN,
+            parse_expression_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
+                &render_conditional_expression_ast(&cond_expr, &consequent_expr, "null")?,
+            )
+            .ok()?,
+        ),
+    );
+    consequent.push(build_computed_member_assignment_statement_ast(
+        builder,
+        &cache_var,
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), &dep_slot)
+            .ok()?,
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), &cond_expr)
+            .ok()?,
+    ));
+    consequent.push(build_computed_member_assignment_statement_ast(
+        builder,
+        &cache_var,
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), &decl_slot)
+            .ok()?,
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), &dep_expr)
+            .ok()?,
+    ));
     for line in cache_tail_lines {
-        consequent.push_str(&render_reactive_expression_statement_ast(&line)?);
+        consequent.push(
+            parse_single_statement_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
+                &line,
+            )
+            .ok()?,
+        );
     }
-    let mut alternate = String::new();
+    let mut alternate = builder.vec();
     for line in else_passthrough {
-        alternate.push_str(&render_reactive_expression_statement_ast(&line)?);
+        alternate.push(
+            parse_single_statement_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
+                &line,
+            )
+            .ok()?,
+        );
     }
-    let guard_expr = render_logical_chain_expression_ast(
-        &[
-            render_binary_expression_ast(
-                &render_computed_access_expression_ast(&cache_var, &dep_slot, false)?,
-                BinaryOperator::StrictNotEq,
+    let guard_expr = builder.expression_logical(
+        SPAN,
+        builder.expression_binary(
+            SPAN,
+            build_computed_member_expression_ast(
+                builder,
+                &cache_var,
+                parse_expression_for_ast_codegen(
+                    &allocator,
+                    SourceType::mjs().with_jsx(true),
+                    &dep_slot,
+                )
+                .ok()?,
+            ),
+            AstBinaryOperator::StrictInequality,
+            parse_expression_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
                 &cond_expr,
             )
-            .expect("condition dependency comparison should stay on AST path"),
-            render_binary_expression_ast(
-                &render_computed_access_expression_ast(&cache_var, &decl_slot, false)?,
-                BinaryOperator::StrictNotEq,
+            .ok()?,
+        ),
+        AstLogicalOperator::Or,
+        builder.expression_binary(
+            SPAN,
+            build_computed_member_expression_ast(
+                builder,
+                &cache_var,
+                parse_expression_for_ast_codegen(
+                    &allocator,
+                    SourceType::mjs().with_jsx(true),
+                    &decl_slot,
+                )
+                .ok()?,
+            ),
+            AstBinaryOperator::StrictInequality,
+            parse_expression_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
                 &dep_expr,
             )
-            .expect("declaration dependency comparison should stay on AST path"),
-        ],
-        LogicalOperator::Or,
-    )
-    .expect("scope decl ternary guard should stay on AST path");
-    output.push_str(&render_reactive_if_statement_ast(
-        &guard_expr,
-        &consequent,
-        Some(&alternate),
-    )?);
+            .ok()?,
+        ),
+    );
+    let statement = builder.statement_if(
+        SPAN,
+        guard_expr,
+        builder.statement_block(SPAN, consequent),
+        Some(builder.statement_block(SPAN, alternate)),
+    );
+    output.push_str(&format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ));
     debug_codegen_expr(
         "fused-named-test-scope-decl-ternary-statement",
         format!(
