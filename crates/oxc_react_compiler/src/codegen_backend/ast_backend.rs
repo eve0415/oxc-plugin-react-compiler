@@ -4627,6 +4627,73 @@ impl<'a> Visit<'a> for IdentifierReferenceDetector<'_> {
     }
 }
 
+fn function_body_contains_undefined_fallback(
+    statements: &oxc_allocator::Vec<'_, ast::Statement<'_>>,
+) -> bool {
+    let mut detector = UndefinedFallbackDetector { found: false };
+    detector.visit_statements(statements);
+    detector.found
+}
+
+struct UndefinedFallbackDetector {
+    found: bool,
+}
+
+impl<'a> Visit<'a> for UndefinedFallbackDetector {
+    fn visit_expression(&mut self, expression: &ast::Expression<'a>) {
+        if self.found {
+            return;
+        }
+        if let ast::Expression::ConditionalExpression(conditional) = expression
+            && conditional_expression_is_undefined_fallback(conditional)
+        {
+            self.found = true;
+            return;
+        }
+        walk::walk_expression(self, expression);
+    }
+}
+
+fn conditional_expression_is_undefined_fallback(
+    conditional: &ast::ConditionalExpression<'_>,
+) -> bool {
+    fn compared_identifier_name<'a>(expression: &'a ast::Expression<'a>) -> Option<&'a str> {
+        let ast::Expression::BinaryExpression(binary) = expression.without_parentheses() else {
+            return None;
+        };
+        if binary.operator != BinaryOperator::StrictEquality {
+            return None;
+        }
+        if expression_is_undefined(&binary.right) {
+            return identifier_reference_name(&binary.left);
+        }
+        if expression_is_undefined(&binary.left) {
+            return identifier_reference_name(&binary.right);
+        }
+        None
+    }
+
+    fn identifier_reference_name<'a>(expression: &'a ast::Expression<'a>) -> Option<&'a str> {
+        let ast::Expression::Identifier(identifier) = expression.without_parentheses() else {
+            return None;
+        };
+        Some(identifier.name.as_str())
+    }
+
+    fn expression_is_undefined(expression: &ast::Expression<'_>) -> bool {
+        matches!(
+            expression.without_parentheses(),
+            ast::Expression::Identifier(identifier) if identifier.name == "undefined"
+        )
+    }
+
+    let Some(ident) = compared_identifier_name(&conditional.test) else {
+        return false;
+    };
+    expression_references_identifier(&conditional.consequent, ident)
+        || expression_references_identifier(&conditional.alternate, ident)
+}
+
 fn collect_compiled_body_prefix_statements<'a>(
     allocator: &'a Allocator,
     source_type: SourceType,
@@ -4634,17 +4701,25 @@ fn collect_compiled_body_prefix_statements<'a>(
 ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
     let builder = AstBuilder::new(allocator);
     let mut statements = oxc_allocator::Vec::new_in(allocator);
-    if cf.param_prefix_statements.is_empty() || cf.generated_body.contains("=== undefined ?") {
+    if cf.param_prefix_statements.is_empty() {
         return Some(statements);
     }
-    let body_identifier_references = parse_rendered_function_body(
+    let parsed_body = parse_rendered_function_body(
         allocator,
         source_type,
         cf.is_async,
         cf.is_generator,
         &cf.generated_body,
     )
-        .ok()
+    .ok();
+    if parsed_body
+        .as_ref()
+        .is_some_and(|body| function_body_contains_undefined_fallback(&body.statements))
+    {
+        return Some(statements);
+    }
+    let body_identifier_references = parsed_body
+        .as_ref()
         .map(|body| collect_identifier_references_in_statements(&body.statements));
     for (index, statement) in cf.param_prefix_statements.iter().enumerate() {
         let later_statements = &cf.param_prefix_statements[index + 1..];
@@ -5611,6 +5686,53 @@ function Component(props) {
         assert!(!rewritten.contains("value } = props;"));
         assert!(rewritten.contains("console.log(\"value\");"));
         assert!(rewritten.contains("return other;"));
+    }
+
+    #[test]
+    fn skips_prefix_pruning_for_structural_undefined_fallbacks() {
+        let source = r#"const FancyButton = (props) => { return null; };"#;
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.ts"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::VariableDeclaration(variable) = statement else {
+            panic!("expected variable declaration");
+        };
+        let ast::Expression::ArrowFunctionExpression(arrow) = variable.declarations[0]
+            .init
+            .as_ref()
+            .expect("expected initializer")
+        else {
+            panic!("expected arrow function");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "FancyButton",
+            arrow.span.start,
+            arrow.span.end,
+            "const value = t0 === undefined ? props.value : t0;\nreturn value;",
+            &["props"],
+            true,
+        );
+        compiled_function.param_prefix_statements = vec![CompiledParamPrefixStatement {
+            kind: ast::VariableDeclarationKind::Const,
+            pattern: CompiledBindingPattern::Object(CompiledObjectPattern {
+                properties: vec![CompiledObjectPatternProperty {
+                    key: CompiledPropertyKey::StaticIdentifier("value".to_string()),
+                    value: CompiledBindingPattern::Identifier("value".to_string()),
+                    shorthand: true,
+                    computed: false,
+                }],
+                rest: None,
+            }),
+            init: CompiledInitializer::Identifier("props".to_string()),
+        }];
+
+        let rewritten = rewrite_single_statement_for_test("fixture.ts", source, &compiled_function);
+
+        assert!(!rewritten.contains("const { value } = props;"));
+        assert!(rewritten.contains("const value = t0 === undefined ? props.value : t0;"));
+        assert!(rewritten.contains("return value;"));
     }
 
     #[test]
