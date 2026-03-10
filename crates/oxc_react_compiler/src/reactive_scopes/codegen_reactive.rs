@@ -17876,17 +17876,26 @@ fn block_has_optional_computed_load_call_key(block: &ReactiveBlock) -> bool {
 }
 
 fn widen_member_dep_expr_to_root(dep_expr: &str) -> Option<String> {
-    let dep = dep_expr.trim();
-    if dep.contains("?.") || dep.contains('[') {
+    fn plain_static_member_root(expression: &ast::Expression<'_>) -> Option<String> {
+        match expression.without_parentheses() {
+            ast::Expression::Identifier(identifier) => Some(identifier.name.to_string()),
+            ast::Expression::StaticMemberExpression(member) if !member.optional => {
+                plain_static_member_root(&member.object)
+            }
+            _ => None,
+        }
+    }
+
+    let trimmed = dep_expr.trim();
+    if trimmed.is_empty() {
         return None;
     }
-    let dot = dep.find('.')?;
-    let root = dep[..dot].trim();
-    if is_valid_js_identifier_name(root) {
-        Some(root.to_string())
-    } else {
-        None
-    }
+    let allocator = Allocator::default();
+    let expression = parse_rendered_expression_ast(&allocator, trimmed)?;
+    let ast::Expression::StaticMemberExpression(_) = expression.without_parentheses() else {
+        return None;
+    };
+    plain_static_member_root(&expression)
 }
 
 fn is_valid_js_identifier_name(name: &str) -> bool {
@@ -22622,6 +22631,7 @@ mod tests {
         rendered_expr_is_function_like, rendered_expr_is_jsx_like,
         rendered_expr_root_identifier_name,
         rendered_expr_contains_push_call_on_target,
+        widen_member_dep_expr_to_root,
         parse_rendered_expression_ast,
         render_function_expression_ast,
         render_assignment_expression_ast,
@@ -22924,6 +22934,14 @@ mod tests {
         ));
         assert!(rendered_statement_is_push_call_on_target("items.push(prev);", "items"));
         assert!(!rendered_statement_is_push_call_on_target("other.push(prev);", "items"));
+    }
+
+    #[test]
+    fn widens_static_member_deps_via_ast() {
+        assert_eq!(widen_member_dep_expr_to_root("foo.bar").as_deref(), Some("foo"));
+        assert_eq!(widen_member_dep_expr_to_root("foo.bar.baz").as_deref(), Some("foo"));
+        assert_eq!(widen_member_dep_expr_to_root("foo?.bar"), None);
+        assert_eq!(widen_member_dep_expr_to_root("foo[bar]"), None);
     }
 
     #[test]
