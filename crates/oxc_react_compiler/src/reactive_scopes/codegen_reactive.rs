@@ -11961,44 +11961,40 @@ fn maybe_codegen_fused_effect_callback_empty_array_scope(
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
 
-    let mut rendered = String::new();
+    let mut rendered = builder.vec();
     if !has_materialized_named_binding(cx, &callback_ident) {
-        let statement = ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
-            SPAN,
-            ast::VariableDeclarationKind::Let,
-            builder.vec1(builder.variable_declarator(
+        rendered.push(ast::Statement::VariableDeclaration(
+            builder.alloc_variable_declaration(
                 SPAN,
                 ast::VariableDeclarationKind::Let,
-                builder.binding_pattern_binding_identifier(SPAN, builder.ident(&callback_name)),
-                NONE,
-                None,
+                builder.vec1(builder.variable_declarator(
+                    SPAN,
+                    ast::VariableDeclarationKind::Let,
+                    builder.binding_pattern_binding_identifier(SPAN, builder.ident(&callback_name)),
+                    NONE,
+                    None,
+                    false,
+                )),
                 false,
-            )),
-            false,
-        ));
-        rendered.push_str(&format!(
-            "{}\n",
-            codegen_statement_with_flow_cast_restore(&statement)
+            ),
         ));
         cx.mark_decl_runtime_emitted(callback_ident.declaration_id);
     }
     if !has_materialized_named_binding(cx, &deps_ident) {
-        let statement = ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
-            SPAN,
-            ast::VariableDeclarationKind::Let,
-            builder.vec1(builder.variable_declarator(
+        rendered.push(ast::Statement::VariableDeclaration(
+            builder.alloc_variable_declaration(
                 SPAN,
                 ast::VariableDeclarationKind::Let,
-                builder.binding_pattern_binding_identifier(SPAN, builder.ident(&deps_name)),
-                NONE,
-                None,
+                builder.vec1(builder.variable_declarator(
+                    SPAN,
+                    ast::VariableDeclarationKind::Let,
+                    builder.binding_pattern_binding_identifier(SPAN, builder.ident(&deps_name)),
+                    NONE,
+                    None,
+                    false,
+                )),
                 false,
-            )),
-            false,
-        ));
-        rendered.push_str(&format!(
-            "{}\n",
-            codegen_statement_with_flow_cast_restore(&statement)
+            ),
         ));
         cx.mark_decl_runtime_emitted(deps_ident.declaration_id);
     }
@@ -12081,17 +12077,18 @@ fn maybe_codegen_fused_effect_callback_empty_array_scope(
         AstBinaryOperator::StrictEquality,
         build_symbol_for_call_expression_ast(builder, MEMO_CACHE_SENTINEL),
     );
-    let statement = builder.statement_if(
+    rendered.push(builder.statement_if(
         SPAN,
         test,
         builder.statement_block(SPAN, consequent),
         Some(builder.statement_block(SPAN, alternate)),
-    );
-    rendered.push_str(&format!(
-        "{}\n",
-        codegen_statement_with_flow_cast_restore(&statement)
     ));
-    output.push_str(&rendered);
+    for statement in rendered {
+        output.push_str(&format!(
+            "{}\n",
+            codegen_statement_with_flow_cast_restore(&statement)
+        ));
+    }
 
     cx.stable_zero_dep_decls
         .insert(callback_ident.declaration_id);
