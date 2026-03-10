@@ -12524,31 +12524,6 @@ fn is_readonly_console_callee(callee: &str) -> bool {
     callee.starts_with("console.") || callee.starts_with("global.console.")
 }
 
-fn split_top_level_call_args(args: &str) -> Vec<&str> {
-    let mut parts: Vec<&str> = Vec::new();
-    let mut start = 0usize;
-    let mut paren_depth = 0i32;
-    let mut bracket_depth = 0i32;
-    let mut brace_depth = 0i32;
-    for (idx, ch) in args.char_indices() {
-        match ch {
-            '(' => paren_depth += 1,
-            ')' => paren_depth -= 1,
-            '[' => bracket_depth += 1,
-            ']' => bracket_depth -= 1,
-            '{' => brace_depth += 1,
-            '}' => brace_depth -= 1,
-            ',' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
-                parts.push(args[start..idx].trim());
-                start = idx + 1;
-            }
-            _ => {}
-        }
-    }
-    parts.push(args[start..].trim());
-    parts
-}
-
 fn strip_wrapping_parens(mut expr: &str) -> &str {
     loop {
         let trimmed = expr.trim();
@@ -12586,31 +12561,37 @@ fn is_readonly_output_call_line(line: &str, output_names: &HashSet<String>) -> b
     if trimmed.is_empty() || !trimmed.ends_with(");") {
         return false;
     }
-    if trimmed.starts_with("if ")
-        || trimmed.starts_with("for ")
-        || trimmed.starts_with("while ")
-        || trimmed.starts_with("switch ")
-        || trimmed.starts_with("try ")
-        || trimmed.starts_with("return ")
-        || trimmed.starts_with("throw ")
-        || trimmed.contains(" = ")
-    {
-        return false;
-    }
-
-    let Some(open_paren) = trimmed.find('(') else {
+    let allocator = Allocator::default();
+    let statement = match parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        trimmed,
+    ) {
+        Ok(statement) => statement,
+        Err(_) => return false,
+    };
+    let ast::Statement::ExpressionStatement(expression_statement) = statement else {
         return false;
     };
-    let callee = trimmed[..open_paren].trim();
-    if !is_readonly_console_callee(callee) {
+    let (callee, arguments) = match expression_statement.expression.without_parentheses() {
+        ast::Expression::CallExpression(call) => (&call.callee, &call.arguments),
+        ast::Expression::ChainExpression(chain) => match &chain.expression {
+            ast::ChainElement::CallExpression(call) => (&call.callee, &call.arguments),
+            _ => return false,
+        },
+        _ => return false,
+    };
+    let callee = codegen_expression_with_flow_cast_restore(callee);
+    if !is_readonly_console_callee(&callee) {
         return false;
     }
-
-    let args = &trimmed[open_paren + 1..trimmed.len() - 2];
-    let args = split_top_level_call_args(args);
-    args.iter().any(|arg| {
-        let normalized = strip_wrapping_parens(arg);
-        output_names.contains(normalized)
+    arguments.iter().any(|arg| {
+        let ast::Argument::SpreadElement(_) = arg else {
+            let rendered = codegen_expression_with_flow_cast_restore(arg.to_expression());
+            let normalized = strip_wrapping_parens(&rendered);
+            return output_names.contains(normalized);
+        };
+        false
     })
 }
 
