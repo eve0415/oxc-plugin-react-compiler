@@ -346,7 +346,7 @@ struct ObjectMethodInfo {
     lowered_func: LoweredFunction,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct CodegenReactiveOptions {
     pub disable_memoization_features: bool,
     pub disable_memoization_for_debugging: bool,
@@ -355,22 +355,6 @@ pub struct CodegenReactiveOptions {
     pub enable_change_detection_for_debugging: bool,
     pub enable_reset_cache_on_source_file_changes: bool,
     pub enable_name_anonymous_functions: bool,
-    pub emit_function_hook_guard_wrapper_in_body: bool,
-}
-
-impl Default for CodegenReactiveOptions {
-    fn default() -> Self {
-        Self {
-            disable_memoization_features: false,
-            disable_memoization_for_debugging: false,
-            enable_change_variable_codegen: false,
-            enable_emit_hook_guards: false,
-            enable_change_detection_for_debugging: false,
-            enable_reset_cache_on_source_file_changes: false,
-            enable_name_anonymous_functions: false,
-            emit_function_hook_guard_wrapper_in_body: true,
-        }
-    }
 }
 
 #[derive(Default)]
@@ -488,7 +472,6 @@ impl Context {
             enable_change_detection_for_debugging: self.enable_change_detection_for_debugging,
             enable_reset_cache_on_source_file_changes: false,
             enable_name_anonymous_functions: self.enable_name_anonymous_functions,
-            emit_function_hook_guard_wrapper_in_body: true,
         }
     }
 }
@@ -743,10 +726,6 @@ fn codegen_reactive_function_with_primitives(
 
     let mut body = strip_trailing_bare_return(&body, func.async_, func.generator);
     let needs_function_hook_guard_wrapper = cx.emit_hook_guards && emit_function_hook_guard;
-    if needs_function_hook_guard_wrapper && options.emit_function_hook_guard_wrapper_in_body {
-        body = render_hook_guarded_block_ast(&body, HOOK_GUARD_PUSH, HOOK_GUARD_POP)
-            .expect("generated hook-guarded function body should parse");
-    }
     body = prune_unused_const_literal_decls(&body, func.async_, func.generator);
 
     let cache_size = cx.next_cache_index;
@@ -1455,6 +1434,7 @@ fn build_hook_guard_call_statement_ast<'a>(
     builder.statement_expression(SPAN, build_hook_guard_call_expression_ast(builder, mode))
 }
 
+#[cfg(test)]
 fn render_hook_guarded_block_ast(body: &str, before: u8, after: u8) -> Option<String> {
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
@@ -21119,6 +21099,7 @@ struct FunctionBodyRenderSpec<'a> {
     body_source: &'a str,
     directives: &'a [String],
     cache_prologue: Option<&'a CachePrologue>,
+    needs_function_hook_guard_wrapper: bool,
     is_async: bool,
     is_generator: bool,
 }
@@ -21152,6 +21133,7 @@ fn build_object_method_property_ast<'a>(
         &mut parsed_body,
         spec.directives,
         spec.cache_prologue,
+        spec.needs_function_hook_guard_wrapper,
     )?;
     let formal_params = make_reactive_formal_params(builder, spec.params, spec.param_names)?;
     let function = builder.expression_function(
@@ -21309,6 +21291,8 @@ fn render_object_expression_ast(
                                 body_source: inner_result.body_without_cache_prologue.trim(),
                                 directives: &lf.func.directives,
                                 cache_prologue: inner_result.cache_prologue.as_ref(),
+                                needs_function_hook_guard_wrapper: inner_result
+                                    .needs_function_hook_guard_wrapper,
                                 is_async: lf.func.async_,
                                 is_generator: lf.func.generator,
                             },
@@ -21928,6 +21912,7 @@ fn apply_function_body_preludes_ast<'a>(
     body: &mut ast::FunctionBody<'a>,
     directives: &[String],
     cache_prologue: Option<&CachePrologue>,
+    needs_function_hook_guard_wrapper: bool,
 ) -> Option<()> {
     if !directives.is_empty() {
         body.directives = builder.vec_from_iter(directives.iter().map(|directive| {
@@ -21937,6 +21922,28 @@ fn apply_function_body_preludes_ast<'a>(
                 builder.atom(directive.as_str()),
             )
         }));
+    }
+
+    if needs_function_hook_guard_wrapper {
+        let mut try_statements = builder.vec1(build_hook_guard_call_statement_ast(
+            builder,
+            HOOK_GUARD_PUSH,
+        ));
+        try_statements.extend(
+            body.statements
+                .iter()
+                .map(|statement| statement.clone_in(allocator)),
+        );
+        let finalizer = builder.alloc_block_statement(
+            SPAN,
+            builder.vec1(build_hook_guard_call_statement_ast(builder, HOOK_GUARD_POP)),
+        );
+        body.statements = builder.vec1(ast::Statement::TryStatement(builder.alloc_try_statement(
+            SPAN,
+            builder.alloc_block_statement(SPAN, try_statements),
+            None::<oxc_allocator::Box<'a, ast::CatchClause<'a>>>,
+            Some(finalizer),
+        )));
     }
 
     let Some(cache_prologue) = cache_prologue else {
@@ -22401,6 +22408,7 @@ fn render_function_expression_ast(spec: &FunctionExpressionRenderSpec<'_>) -> Op
         FunctionExpressionType::ArrowFunctionExpression => {
             if spec.body.directives.is_empty()
                 && spec.body.cache_prologue.is_none()
+                && !spec.body.needs_function_hook_guard_wrapper
                 && let Some(return_expr) =
                     single_return_expression_from_body(&allocator, &parsed_body)
             {
@@ -22424,6 +22432,7 @@ fn render_function_expression_ast(spec: &FunctionExpressionRenderSpec<'_>) -> Op
                     &mut parsed_body,
                     spec.body.directives,
                     spec.body.cache_prologue,
+                    spec.body.needs_function_hook_guard_wrapper,
                 )?;
                 builder.expression_arrow_function(
                     SPAN,
@@ -22444,6 +22453,7 @@ fn render_function_expression_ast(spec: &FunctionExpressionRenderSpec<'_>) -> Op
                 &mut parsed_body,
                 spec.body.directives,
                 spec.body.cache_prologue,
+                spec.body.needs_function_hook_guard_wrapper,
             )?;
             builder.expression_function(
                 SPAN,
@@ -22540,6 +22550,7 @@ fn render_lowered_function_expression_source(
             body_source: inner_result.body_without_cache_prologue.trim(),
             directives: &lowered_func.func.directives,
             cache_prologue: inner_result.cache_prologue.as_ref(),
+            needs_function_hook_guard_wrapper: inner_result.needs_function_hook_guard_wrapper,
             is_async: lowered_func.func.async_,
             is_generator: lowered_func.func.generator,
         },
@@ -23067,6 +23078,7 @@ mod tests {
                 body_source: "return value;",
                 directives: &[],
                 cache_prologue: None,
+                needs_function_hook_guard_wrapper: false,
                 is_async: false,
                 is_generator: false,
             },
@@ -23089,6 +23101,7 @@ mod tests {
                 body_source: "return value;",
                 directives: &[],
                 cache_prologue: None,
+                needs_function_hook_guard_wrapper: false,
                 is_async: false,
                 is_generator: false,
             },
@@ -23117,6 +23130,7 @@ mod tests {
                 body_source: "return value;",
                 directives: &directives,
                 cache_prologue: Some(&cache_prologue),
+                needs_function_hook_guard_wrapper: false,
                 is_async: false,
                 is_generator: false,
             },
@@ -23129,6 +23143,30 @@ mod tests {
         assert!(rendered.contains("\"worklet\";"));
         assert!(rendered.contains("const $ = _c(2);"));
         assert!(rendered.contains("return value;"));
+    }
+
+    #[test]
+    fn renders_function_expression_hook_guard_wrapper_via_ast() {
+        let rendered = render_function_expression_ast(&FunctionExpressionRenderSpec {
+            body: FunctionBodyRenderSpec {
+                params: &[Argument::Place(named_place(0, 0, "value"))],
+                param_names: &["value".to_string()],
+                body_source: "return useMemo(value);",
+                directives: &[],
+                cache_prologue: None,
+                needs_function_hook_guard_wrapper: true,
+                is_async: false,
+                is_generator: false,
+            },
+            name: Some("useFoo"),
+            fn_type: &FunctionExpressionType::FunctionExpression,
+            anonymous_name_hint: None,
+        })
+        .expect("expected hook-guarded function expression");
+
+        assert!(rendered.contains("try {"));
+        assert!(rendered.contains("$dispatcherGuard(0);"));
+        assert!(rendered.contains("$dispatcherGuard(1);"));
     }
 
     #[test]
@@ -23451,6 +23489,7 @@ mod tests {
                 body_source: "return value;",
                 directives: &[],
                 cache_prologue: None,
+                needs_function_hook_guard_wrapper: false,
                 is_async: false,
                 is_generator: false,
             },
@@ -23484,6 +23523,7 @@ mod tests {
                 body_source: "return value;",
                 directives: &directives,
                 cache_prologue: Some(&cache_prologue),
+                needs_function_hook_guard_wrapper: false,
                 is_async: false,
                 is_generator: false,
             },

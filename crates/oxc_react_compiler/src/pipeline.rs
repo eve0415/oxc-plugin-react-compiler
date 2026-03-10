@@ -1276,6 +1276,7 @@ fn codegen_outlined_function(
             .map(|directive| format!("\"{directive}\""))
             .collect(),
         cache_prologue: codegen.cache_prologue.clone(),
+        needs_function_hook_guard_wrapper: codegen.needs_function_hook_guard_wrapper,
         is_async: func.async_,
         is_generator: func.generator,
     })
@@ -2881,7 +2882,6 @@ fn run_reactive_passes(
                     .enable_reset_cache_on_source_file_changes
                     .unwrap_or(false),
                 enable_name_anonymous_functions: env_config.enable_name_anonymous_functions,
-                emit_function_hook_guard_wrapper_in_body: false,
             },
             fbt_operands.clone(),
         );

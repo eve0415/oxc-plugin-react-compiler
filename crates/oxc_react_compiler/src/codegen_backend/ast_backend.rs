@@ -53,6 +53,7 @@ struct RenderedOutlinedFunction {
     body: String,
     directives: Vec<String>,
     cache_prologue: Option<crate::reactive_scopes::codegen_reactive::CachePrologue>,
+    needs_function_hook_guard_wrapper: bool,
     is_async: bool,
     is_generator: bool,
 }
@@ -3256,6 +3257,13 @@ fn build_rendered_outlined_function_statement<'a>(
     )
     .ok()?;
     apply_preserved_directives(builder, &mut body, &outlined.directives);
+    wrap_hook_guard_body(
+        builder,
+        allocator,
+        &mut body,
+        outlined.needs_function_hook_guard_wrapper,
+        state,
+    );
     prepend_cache_prologue_statements(
         builder,
         allocator,
@@ -3822,7 +3830,23 @@ fn wrap_function_hook_guard_body<'a>(
     cf: &CompiledFunction,
     state: &AstRenderState,
 ) {
-    if !cf.needs_function_hook_guard_wrapper || state.hook_guard_ident.is_empty() {
+    wrap_hook_guard_body(
+        builder,
+        allocator,
+        body,
+        cf.needs_function_hook_guard_wrapper,
+        state,
+    );
+}
+
+fn wrap_hook_guard_body<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    body: &mut ast::FunctionBody<'a>,
+    needs_function_hook_guard_wrapper: bool,
+    state: &AstRenderState,
+) {
+    if !needs_function_hook_guard_wrapper || state.hook_guard_ident.is_empty() {
         return;
     }
 
@@ -4244,6 +4268,7 @@ fn collect_rendered_outlined_functions(cf: &CompiledFunction) -> Vec<RenderedOut
             body: outlined_function.body.clone(),
             directives: outlined_function.directives.clone(),
             cache_prologue: outlined_function.cache_prologue.clone(),
+            needs_function_hook_guard_wrapper: outlined_function.needs_function_hook_guard_wrapper,
             is_async: outlined_function.is_async,
             is_generator: outlined_function.is_generator,
         })
@@ -6522,6 +6547,7 @@ function Component(props) {
             body: "return await load(...rest);".to_string(),
             directives: vec![],
             cache_prologue: None,
+            needs_function_hook_guard_wrapper: false,
             is_async: true,
             is_generator: false,
         }];

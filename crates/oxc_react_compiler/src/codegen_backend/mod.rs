@@ -81,6 +81,7 @@ pub(crate) struct CompiledOutlinedFunction {
     pub(crate) body: String,
     pub(crate) directives: Vec<String>,
     pub(crate) cache_prologue: Option<crate::reactive_scopes::codegen_reactive::CachePrologue>,
+    pub(crate) needs_function_hook_guard_wrapper: bool,
     pub(crate) is_async: bool,
     pub(crate) is_generator: bool,
 }
