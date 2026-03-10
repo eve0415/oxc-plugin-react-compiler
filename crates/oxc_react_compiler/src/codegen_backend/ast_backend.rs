@@ -3639,11 +3639,7 @@ fn skip_quoted(source: &str, start_idx: usize) -> Option<usize> {
 }
 
 fn render_compiled_body_source(cf: &CompiledFunction, _state: &AstRenderState) -> String {
-    let mut body = cf.generated_body.clone();
-    if !cf.directives.is_empty() {
-        body = crate::pipeline::strip_directive_lines(&body, &cf.directives);
-    }
-    body
+    cf.generated_body.clone()
 }
 
 fn apply_preserved_directives<'a>(
