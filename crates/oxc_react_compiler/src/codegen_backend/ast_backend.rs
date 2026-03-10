@@ -4637,10 +4637,24 @@ fn collect_compiled_body_prefix_statements<'a>(
     if cf.param_prefix_statements.is_empty() || cf.generated_body.contains("=== undefined ?") {
         return Some(statements);
     }
+    let body_identifier_references = parse_rendered_function_body(
+        allocator,
+        source_type,
+        cf.is_async,
+        cf.is_generator,
+        &cf.generated_body,
+    )
+        .ok()
+        .map(|body| collect_identifier_references_in_statements(&body.statements));
     for (index, statement) in cf.param_prefix_statements.iter().enumerate() {
         let later_statements = &cf.param_prefix_statements[index + 1..];
-        let Some(pruned) =
-            prune_compiled_prefix_statement(statement, &cf.generated_body, later_statements)
+        let Some(pruned) = prune_compiled_prefix_statement(
+            allocator,
+            source_type,
+            statement,
+            body_identifier_references.as_ref(),
+            later_statements,
+        )
         else {
             continue;
         };
@@ -4655,8 +4669,10 @@ fn collect_compiled_body_prefix_statements<'a>(
 }
 
 fn prune_compiled_prefix_statement(
+    allocator: &Allocator,
+    source_type: SourceType,
     statement: &CompiledParamPrefixStatement,
-    body: &str,
+    body_identifier_references: Option<&HashSet<String>>,
     later_statements: &[CompiledParamPrefixStatement],
 ) -> Option<CompiledParamPrefixStatement> {
     let CompiledBindingPattern::Object(pattern) = &statement.pattern else {
@@ -4665,13 +4681,26 @@ fn prune_compiled_prefix_statement(
 
     let mut properties = Vec::new();
     for property in &pattern.properties {
-        if compiled_binding_pattern_is_used(&property.value, body, later_statements) {
+        if compiled_binding_pattern_is_used(
+            allocator,
+            source_type,
+            &property.value,
+            body_identifier_references,
+            later_statements,
+        ) {
             properties.push(property.clone());
         }
     }
 
     let rest = pattern.rest.as_ref().and_then(|rest| {
-        compiled_binding_pattern_is_used(rest, body, later_statements).then(|| rest.clone())
+        compiled_binding_pattern_is_used(
+            allocator,
+            source_type,
+            rest,
+            body_identifier_references,
+            later_statements,
+        )
+        .then(|| rest.clone())
     });
 
     if properties.is_empty() && rest.is_none() {
@@ -4686,17 +4715,27 @@ fn prune_compiled_prefix_statement(
 }
 
 fn compiled_binding_pattern_is_used(
+    allocator: &Allocator,
+    source_type: SourceType,
     pattern: &CompiledBindingPattern,
-    body: &str,
+    body_identifier_references: Option<&HashSet<String>>,
     later_statements: &[CompiledParamPrefixStatement],
 ) -> bool {
     let mut bound_identifiers = Vec::new();
     collect_compiled_binding_pattern_identifiers(pattern, &mut bound_identifiers);
     bound_identifiers.into_iter().any(|ident| {
-        expression_references_identifier_in_source(body, &ident)
+        body_identifier_references
+            .is_none_or(|references| references.contains(&ident))
             || later_statements
                 .iter()
-                .any(|statement| compiled_prefix_statement_references_identifier(statement, &ident))
+                .any(|statement| {
+                    compiled_prefix_statement_references_identifier(
+                        allocator,
+                        source_type,
+                        statement,
+                        &ident,
+                    )
+                })
     })
 }
 
@@ -4729,6 +4768,8 @@ fn collect_compiled_binding_pattern_identifiers(
 }
 
 fn compiled_prefix_statement_references_identifier(
+    allocator: &Allocator,
+    source_type: SourceType,
     statement: &CompiledParamPrefixStatement,
     ident: &str,
 ) -> bool {
@@ -4737,27 +4778,34 @@ fn compiled_prefix_statement_references_identifier(
         CompiledInitializer::UndefinedFallback {
             temp_name,
             default_expr,
-        } => temp_name == ident || expression_references_identifier_in_source(default_expr, ident),
-    }
-}
-
-fn expression_references_identifier_in_source(source: &str, ident: &str) -> bool {
-    let mut start = 0usize;
-    while let Some(idx) = source[start..].find(ident) {
-        let abs_idx = start + idx;
-        let before_ok = abs_idx == 0 || !is_ident_char(source.as_bytes()[abs_idx - 1]);
-        let after_idx = abs_idx + ident.len();
-        let after_ok = after_idx >= source.len() || !is_ident_char(source.as_bytes()[after_idx]);
-        if before_ok && after_ok {
-            return true;
+        } => {
+            temp_name == ident
+                || parse_expression_source(allocator, source_type, default_expr)
+                    .ok()
+                    .is_none_or(|expr| expression_references_identifier(&expr, ident))
         }
-        start = abs_idx + 1;
     }
-    false
 }
 
-fn is_ident_char(byte: u8) -> bool {
-    byte == b'_' || byte == b'$' || byte.is_ascii_alphanumeric()
+fn collect_identifier_references_in_statements(
+    statements: &oxc_allocator::Vec<'_, ast::Statement<'_>>,
+) -> HashSet<String> {
+    let mut collector = StatementIdentifierReferenceCollector::default();
+    for statement in statements {
+        collector.visit_statement(statement);
+    }
+    collector.references
+}
+
+#[derive(Default)]
+struct StatementIdentifierReferenceCollector {
+    references: HashSet<String>,
+}
+
+impl<'a> Visit<'a> for StatementIdentifierReferenceCollector {
+    fn visit_identifier_reference(&mut self, it: &ast::IdentifierReference<'a>) {
+        self.references.insert(it.name.to_string());
+    }
 }
 
 fn build_compiled_prefix_statement<'a>(
@@ -5507,6 +5555,62 @@ function Component(props) {
         assert!(rewritten.contains("} = props;"));
         assert!(rewritten.contains("enum Color"));
         assert!(rewritten.contains("return value;"));
+    }
+
+    #[test]
+    fn prunes_generated_prefix_properties_using_ast_identifier_references() {
+        let source = r#"const FancyButton = (props) => { return null; };"#;
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.ts"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::VariableDeclaration(variable) = statement else {
+            panic!("expected variable declaration");
+        };
+        let ast::Expression::ArrowFunctionExpression(arrow) = variable.declarations[0]
+            .init
+            .as_ref()
+            .expect("expected initializer")
+        else {
+            panic!("expected arrow function");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "FancyButton",
+            arrow.span.start,
+            arrow.span.end,
+            "console.log(\"value\");\nreturn other;",
+            &["props"],
+            true,
+        );
+        compiled_function.param_prefix_statements = vec![CompiledParamPrefixStatement {
+            kind: ast::VariableDeclarationKind::Const,
+            pattern: CompiledBindingPattern::Object(CompiledObjectPattern {
+                properties: vec![
+                    CompiledObjectPatternProperty {
+                        key: CompiledPropertyKey::StaticIdentifier("value".to_string()),
+                        value: CompiledBindingPattern::Identifier("value".to_string()),
+                        shorthand: true,
+                        computed: false,
+                    },
+                    CompiledObjectPatternProperty {
+                        key: CompiledPropertyKey::StaticIdentifier("other".to_string()),
+                        value: CompiledBindingPattern::Identifier("other".to_string()),
+                        shorthand: true,
+                        computed: false,
+                    },
+                ],
+                rest: None,
+            }),
+            init: CompiledInitializer::Identifier("props".to_string()),
+        }];
+
+        let rewritten = rewrite_single_statement_for_test("fixture.ts", source, &compiled_function);
+
+        assert!(rewritten.contains("const { other } = props;"));
+        assert!(!rewritten.contains("value } = props;"));
+        assert!(rewritten.contains("console.log(\"value\");"));
+        assert!(rewritten.contains("return other;"));
     }
 
     #[test]
