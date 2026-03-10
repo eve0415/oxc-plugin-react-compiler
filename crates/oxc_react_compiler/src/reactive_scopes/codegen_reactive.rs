@@ -3129,9 +3129,7 @@ fn codegen_block_no_reset_with_options(
         let Some((name, rhs)) = assignment else {
             return false;
         };
-        let rhs_is_iife_like = rhs == "[]"
-            || rhs.contains("?? []")
-            || matches!(rhs.strip_prefix('t'), Some(rest) if !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit()));
+        let rhs_is_iife_like = rendered_expr_is_array_seed_like(&rhs);
         if !rhs_is_iife_like {
             return false;
         }
@@ -16080,6 +16078,33 @@ fn rendered_expr_is_array_literal(expr: &str) -> bool {
     matches!(expression.without_parentheses(), ast::Expression::ArrayExpression(_))
 }
 
+fn rendered_expr_is_array_seed_like(expr: &str) -> bool {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let allocator = Allocator::default();
+    let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) else {
+        return matches!(
+            trimmed.strip_prefix('t'),
+            Some(rest) if !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit())
+        );
+    };
+    match expression.without_parentheses() {
+        ast::Expression::ArrayExpression(_) => true,
+        ast::Expression::Identifier(identifier) => is_codegen_temp_name(identifier.name.as_str()),
+        ast::Expression::LogicalExpression(logical)
+            if logical.operator == AstLogicalOperator::Coalesce =>
+        {
+            matches!(
+                logical.right.without_parentheses(),
+                ast::Expression::ArrayExpression(_)
+            )
+        }
+        _ => false,
+    }
+}
+
 fn lower_binary_operator_ast(operator: BinaryOperator) -> AstBinaryOperator {
     match operator {
         BinaryOperator::Eq => AstBinaryOperator::Equality,
@@ -22148,7 +22173,8 @@ mod tests {
         build_function_property_from_value_ast, build_object_method_property_ast,
         codegen_expression_with_flow_cast_restore, function_expr_as_declaration,
         maybe_fill_for_header_initializer_from_update, reconstruct_for_init_declaration,
-        rendered_expr_is_array_literal, rendered_expr_is_function_like,
+        rendered_expr_is_array_literal, rendered_expr_is_array_seed_like,
+        rendered_expr_is_function_like,
         render_function_expression_ast,
         render_assignment_expression_ast,
         render_computed_access_expression_ast, render_primitive_expression_ast,
@@ -22343,6 +22369,14 @@ mod tests {
         assert!(rendered_expr_is_array_literal("[value, other]"));
         assert!(rendered_expr_is_array_literal("([])"));
         assert!(!rendered_expr_is_array_literal("deps"));
+    }
+
+    #[test]
+    fn detects_rendered_array_seed_shapes_via_ast() {
+        assert!(rendered_expr_is_array_seed_like("[]"));
+        assert!(rendered_expr_is_array_seed_like("input ?? []"));
+        assert!(rendered_expr_is_array_seed_like("t0"));
+        assert!(!rendered_expr_is_array_seed_like("deps"));
     }
 
     #[test]
