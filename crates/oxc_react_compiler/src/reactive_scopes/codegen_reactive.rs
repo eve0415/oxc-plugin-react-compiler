@@ -836,7 +836,6 @@ fn codegen_reactive_function_with_primitives(
     }
 
     let body_shape = analyze_generated_body_shape(&body);
-
     CodegenResult {
         body_without_cache_prologue: matches!(body_shape, GeneratedBodyShape::Unknown)
             .then_some(body.clone()),
@@ -1204,7 +1203,7 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
         candidates
     }
 
-    fn count_leading_initialized_identifier_bindings(statements: &[ast::Statement<'_>]) -> usize {
+    fn count_leading_initialized_bindings(statements: &[ast::Statement<'_>]) -> usize {
         let mut prefix_len = 0usize;
         for statement in statements {
             let ast::Statement::VariableDeclaration(declaration) = statement else {
@@ -1214,7 +1213,7 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
                 break;
             }
             let declarator = &declaration.declarations[0];
-            if binding_identifier_name(&declarator.id).is_none() || declarator.init.is_none() {
+            if declarator.init.is_none() {
                 break;
             }
             prefix_len += 1;
@@ -1223,7 +1222,7 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
     }
 
     fn collect_sequential_split_indices(statements: &[ast::Statement<'_>]) -> Vec<usize> {
-        let binding_prefix_len = count_leading_initialized_identifier_bindings(statements);
+        let binding_prefix_len = count_leading_initialized_bindings(statements);
         let mut candidates = Vec::new();
         if binding_prefix_len + 2 < statements.len()
             && matches!(
@@ -26587,7 +26586,7 @@ mod tests {
         );
 
         let super::GeneratedBodyShape::Sequential { prefix, inner } = shape else {
-            panic!("expected sequential body shape");
+            panic!("expected sequential body shape, got {:?}", shape);
         };
         assert!(matches!(
             prefix.as_ref(),
@@ -26611,6 +26610,61 @@ mod tests {
                 && *dep_slot == 1
                 && dep_expr == "mapped"
                 && *value_slot == 2
+        ));
+    }
+
+    #[test]
+    fn analyzes_sequential_memoized_body_shape_with_destructured_prefix() {
+        let shape = super::analyze_generated_body_shape(
+            "const { a } = t0;\nlet t1;\nif ($[0] !== a) {\n  t1 = [a];\n  $[0] = a;\n  $[1] = t1;\n} else {\n  t1 = $[1];\n}\nconst mapped = t1;\nlet t2;\nif ($[2] !== mapped) {\n  t2 = mapped.slice(0);\n  $[2] = mapped;\n  $[3] = t2;\n} else {\n  t2 = $[3];\n}\nreturn t2;\n",
+        );
+
+        let super::GeneratedBodyShape::PrefixedBindings { bindings, inner } = shape else {
+            panic!("expected prefixed outer body shape, got {:?}", shape);
+        };
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].pattern, "{ a }");
+        let super::GeneratedBodyShape::Sequential { prefix, inner } = inner.as_ref() else {
+            panic!("expected sequential inner body shape");
+        };
+        let super::GeneratedBodyShape::SingleDependencyMemoizedReturn { .. } = prefix.as_ref()
+        else {
+            panic!("expected memoized prefix body shape");
+        };
+        assert!(matches!(
+            prefix.as_ref(),
+            super::GeneratedBodyShape::SingleDependencyMemoizedReturn {
+                value_name,
+                dep_slot,
+                dep_expr,
+                value_slot,
+                ..
+            } if value_name == "t1"
+                && *dep_slot == 0
+                && dep_expr == "a"
+                && *value_slot == 1
+        ));
+        let super::GeneratedBodyShape::PrefixedBindings {
+            bindings,
+            inner: suffix_inner,
+        } = inner.as_ref()
+        else {
+            panic!("expected prefixed inner body shape");
+        };
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].pattern, "mapped");
+        assert!(matches!(
+            suffix_inner.as_ref(),
+            super::GeneratedBodyShape::SingleDependencyMemoizedReturn {
+                value_name,
+                dep_slot,
+                dep_expr,
+                value_slot,
+                ..
+            } if value_name == "t2"
+                && *dep_slot == 2
+                && dep_expr == "mapped"
+                && *value_slot == 3
         ));
     }
 
