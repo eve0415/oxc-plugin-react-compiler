@@ -1269,7 +1269,7 @@ fn codegen_outlined_function(
             is_rest: is_spread,
         });
     }
-    let mut body = codegen.body;
+    let mut body = codegen.rendered_body;
     for (from, to) in rename_pairs {
         body = replace_identifier_tokens(&body, &from, &to);
     }

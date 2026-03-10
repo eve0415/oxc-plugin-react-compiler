@@ -163,9 +163,9 @@ pub enum GeneratedBodyShape {
 }
 
 pub struct CodegenResult {
-    /// Generated function body (statements inside the function).
-    pub body: String,
-    /// Generated function body without rendered cache prologue statements.
+    /// Fully rendered function body, including emitted directives/cache prologue.
+    pub rendered_body: String,
+    /// Generated function body without rendered directives/cache prologue statements.
     pub body_without_cache_prologue: String,
     /// Structured shape of the emitted body for downstream AST-based rewrites.
     pub body_shape: GeneratedBodyShape,
@@ -807,7 +807,7 @@ fn codegen_reactive_function_with_primitives(
     let body_shape = analyze_generated_body_shape(&body);
 
     CodegenResult {
-        body: output,
+        rendered_body: output,
         body_without_cache_prologue: body.clone(),
         body_shape,
         cache_size,
@@ -21317,7 +21317,7 @@ fn render_object_expression_ast(
                             computed_key_source.as_deref(),
                             &lf.func.params,
                             &inner_result.param_names,
-                            inner_result.body.trim(),
+                            inner_result.rendered_body.trim(),
                             lf.func.async_,
                             lf.func.generator,
                         )?
@@ -22563,7 +22563,7 @@ fn render_lowered_function_expression_source(
     render_function_expression_ast(
         &lowered_func.func.params,
         &inner_result.param_names,
-        inner_result.body.trim(),
+        inner_result.rendered_body.trim(),
         &lowered_func.func.directives,
         lowered_func.func.async_,
         lowered_func.func.generator,
