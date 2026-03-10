@@ -14838,7 +14838,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
             let deps_array_index = if callback_index + 1 < autodeps_index {
                 let idx = callback_index + 1;
                 let arg = call_args[idx].trim();
-                if arg.starts_with('[') && arg.ends_with(']') {
+                if parse_rendered_array_deps(arg).is_some() {
                     Some(idx)
                 } else {
                     None
@@ -14929,7 +14929,7 @@ fn maybe_codegen_inline_hook_callback_with_autodeps(
             let deps_array_index = if callback_index + 1 < autodeps_index {
                 let idx = callback_index + 1;
                 let arg = call_args[idx].trim();
-                if arg.starts_with('[') && arg.ends_with(']') {
+                if parse_rendered_array_deps(arg).is_some() {
                     Some(idx)
                 } else {
                     None
@@ -17585,16 +17585,7 @@ fn maybe_replace_autodeps_with_inferred_deps(
         // AUTODEPS when it is already an explicit array literal.
         if deps.is_empty() {
             let prev = rendered_args[autodeps_index - 1].trim();
-            if prev.starts_with('[') && prev.ends_with(']') {
-                let inner = prev[1..prev.len() - 1].trim();
-                if !inner.is_empty() {
-                    deps = inner
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                }
-            }
+            deps = parse_rendered_array_deps(prev).unwrap_or_default();
         }
     }
 
