@@ -9286,7 +9286,7 @@ fn maybe_codegen_fused_ternary_source_scope(
                 &decl_name,
                 None,
             )
-            .unwrap_or_else(|| format!("let {};\n", decl_name)),
+            .expect("fused ternary declaration should stay on AST path"),
         );
         cx.mark_decl_runtime_emitted(decl.identifier.declaration_id);
     }
@@ -9311,19 +9311,14 @@ fn maybe_codegen_fused_ternary_source_scope(
         &decl_name,
         &format!("{} ? {} : {}", cond_expr, consequent_expr, alternate_expr),
     )
-    .unwrap_or_else(|| {
-        format!(
-            "{} = {} ? {} : {};\n",
-            decl_name, cond_expr, consequent_expr, alternate_expr
-        )
-    });
+    .expect("fused ternary assignment should stay on AST path");
     if let Some(cond_slot) = cond_slot {
         consequent.push_str(
             &render_reactive_expression_statement_ast(&format!(
                 "{}[{}] = {}",
                 cache_var, cond_slot, cond_expr
             ))
-            .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, cond_slot, cond_expr)),
+            .expect("fused ternary condition store should stay on AST path"),
         );
     }
     consequent.push_str(
@@ -9331,20 +9326,20 @@ fn maybe_codegen_fused_ternary_source_scope(
             "{}[{}] = {}",
             cache_var, dep_slot, dep_expr
         ))
-        .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, dep_slot, dep_expr)),
+        .expect("fused ternary dependency store should stay on AST path"),
     );
     consequent.push_str(
         &render_reactive_expression_statement_ast(&format!(
             "{}[{}] = {}",
             cache_var, output_slot, decl_name
         ))
-        .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, output_slot, decl_name)),
+        .expect("fused ternary output store should stay on AST path"),
     );
     let alternate = render_reactive_assignment_statement_ast(
         &decl_name,
         &format!("{}[{}]", cache_var, output_slot),
     )
-    .unwrap_or_else(|| format!("{} = {}[{}];\n", decl_name, cache_var, output_slot));
+    .expect("fused ternary cache load should stay on AST path");
     output.push_str(
         &render_reactive_if_statement_ast(&guard_test, &consequent, Some(&alternate))
             .unwrap_or_else(|| {
@@ -9893,7 +9888,7 @@ fn emit_zero_dep_target_guard(
                 &target_name,
                 None,
             )
-            .unwrap_or_else(|| format!("let {};\n", target_name)),
+            .expect("memo cache declaration should stay on AST path"),
         );
         cx.mark_decl_runtime_emitted(target_ident.declaration_id);
     }
@@ -9904,13 +9899,13 @@ fn emit_zero_dep_target_guard(
             "{}[{}] = {}",
             cache_var, output_slot, target_name
         ))
-        .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, output_slot, target_name)),
+        .expect("memo cache store should stay on AST path"),
     );
     let alternate = render_reactive_assignment_statement_ast(
         &target_name,
         &format!("{}[{}]", cache_var, output_slot),
     )
-    .unwrap_or_else(|| format!("{} = {}[{}];\n", target_name, cache_var, output_slot));
+    .expect("memo cache load should stay on AST path");
     let guard_test = format!(
         "{}[{}] === Symbol.for(\"{}\")",
         cache_var, output_slot, MEMO_CACHE_SENTINEL
@@ -10152,7 +10147,7 @@ fn maybe_codegen_fused_zero_dep_ternary_default_scope(
                 &output_name,
                 None,
             )
-            .unwrap_or_else(|| format!("let {};\n", output_name)),
+            .expect("conditional output declaration should stay on AST path"),
         );
         cx.mark_decl_runtime_emitted(output_ident.declaration_id);
     }
@@ -10165,26 +10160,26 @@ fn maybe_codegen_fused_zero_dep_ternary_default_scope(
     };
 
     let mut consequent = render_reactive_assignment_statement_ast(&output_name, &rhs_expr)
-        .unwrap_or_else(|| format!("{} = {};\n", output_name, rhs_expr));
+        .expect("conditional output assignment should stay on AST path");
     consequent.push_str(
         &render_reactive_expression_statement_ast(&format!(
             "{}[{}] = {}",
             cache_var, dep_slot, dep_expr_guard
         ))
-        .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, dep_slot, dep_expr_guard)),
+        .expect("conditional dependency store should stay on AST path"),
     );
     consequent.push_str(
         &render_reactive_expression_statement_ast(&format!(
             "{}[{}] = {}",
             cache_var, output_slot, output_name
         ))
-        .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, output_slot, output_name)),
+        .expect("conditional output store should stay on AST path"),
     );
     let alternate = render_reactive_assignment_statement_ast(
         &output_name,
         &format!("{}[{}]", cache_var, output_slot),
     )
-    .unwrap_or_else(|| format!("{} = {}[{}];\n", output_name, cache_var, output_slot));
+    .expect("conditional output load should stay on AST path");
     let guard_test = format!("{}[{}] !== {}", cache_var, dep_slot, dep_expr_guard);
     output.push_str(
         &render_reactive_if_statement_ast(&guard_test, &consequent, Some(&alternate))
