@@ -5926,6 +5926,30 @@ fn wrap_sequence_expr_item_global(expr: &str) -> String {
     }
 }
 
+fn parse_uninitialized_declaration_name(line: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let statement = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        line.trim(),
+    )
+    .ok()?;
+    let ast::Statement::VariableDeclaration(declaration) = statement else {
+        return None;
+    };
+    if declaration.declarations.len() != 1 {
+        return None;
+    }
+    let declarator = declaration.declarations.first()?;
+    if declarator.init.is_some() {
+        return None;
+    }
+    let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id else {
+        return None;
+    };
+    Some(identifier.name.to_string())
+}
+
 fn parse_named_const_assignment_line(line: &str) -> Option<(String, String, String)> {
     let indent_len = line.len().saturating_sub(line.trim_start().len());
     let indent = line[..indent_len].to_string();
@@ -6667,39 +6691,31 @@ fn maybe_codegen_fused_named_test_scope_decl_ternary_statement(
     }
 
     let decl_line = lines[0].trim();
-    let Some(scope_decl_name) = decl_line
-        .strip_prefix("let ")
-        .and_then(|rest| rest.strip_suffix(';'))
-    else {
-        return None;
-    };
+    let scope_decl_name = parse_uninitialized_declaration_name(decl_line)?;
     let if_line = lines[1].trim();
-    let Some(if_cond_raw) = if_line
-        .strip_prefix("if (")
-        .and_then(|rest| rest.strip_suffix(") {"))
-    else {
+    let allocator = Allocator::default();
+    let if_statement = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        if_line,
+    )
+    .ok()?;
+    let ast::Statement::IfStatement(if_statement) = if_statement else {
         return None;
     };
-    if if_cond_raw.contains("||") {
+    let ast::Expression::BinaryExpression(binary) = if_statement.test.without_parentheses() else {
+        return None;
+    };
+    if binary.operator != AstBinaryOperator::StrictInequality {
         return None;
     }
-    let Some((guard_lhs_raw, dep_expr_raw)) = if_cond_raw.split_once("!==") else {
+    let ast::Expression::ComputedMemberExpression(member) = binary.left.without_parentheses() else {
         return None;
     };
-    let guard_lhs = guard_lhs_raw.trim();
-    let dep_expr = dep_expr_raw.trim().to_string();
-    let Some(lb) = guard_lhs.find('[') else {
-        return None;
-    };
-    let Some(rb) = guard_lhs.rfind(']') else {
-        return None;
-    };
-    if rb <= lb {
-        return None;
-    }
-    let cache_var = guard_lhs[..lb].trim().to_string();
-    let dep_slot = guard_lhs[lb + 1..rb].trim().to_string();
-    if cache_var.is_empty() || dep_slot.is_empty() {
+    let cache_var = codegen_expression_with_flow_cast_restore(&member.object);
+    let dep_slot = codegen_expression_with_flow_cast_restore(&member.expression);
+    let dep_expr = codegen_expression_with_flow_cast_restore(&binary.right);
+    if cache_var.is_empty() || dep_slot.is_empty() || dep_expr.contains("||") {
         return None;
     }
 
