@@ -15099,12 +15099,24 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             if properties.is_empty() {
                 return ExprValue::primary("{}".to_string());
             }
-            let props: Vec<String> = properties
-                .iter()
-                .map(|p| codegen_object_property(cx, p))
-                .collect();
-            let expr = render_object_expression_ast(cx, properties)
-                .unwrap_or_else(|| format!("{{ {} }}", props.join(", ")));
+            let has_method = properties.iter().any(|property| {
+                matches!(
+                    property,
+                    ObjectPropertyOrSpread::Property(property)
+                        if property.type_ == ObjectPropertyType::Method
+                )
+            });
+            let expr = if has_method {
+                let props: Vec<String> = properties
+                    .iter()
+                    .map(|p| codegen_object_property(cx, p))
+                    .collect();
+                render_object_expression_ast(cx, properties)
+                    .unwrap_or_else(|| format!("{{ {} }}", props.join(", ")))
+            } else {
+                render_object_expression_ast(cx, properties)
+                    .expect("generated object expression should parse")
+            };
             ExprValue::primary(expr)
         }
         InstructionValue::ArrayExpression { elements, .. } => {
