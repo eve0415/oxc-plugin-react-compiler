@@ -1270,6 +1270,7 @@ fn codegen_outlined_function(
         name: func.id.as_ref()?.clone(),
         params: rendered_params,
         body,
+        body_shape: codegen.body_shape,
         directives: func
             .directives
             .iter()

@@ -51,6 +51,7 @@ struct RenderedOutlinedFunction {
     name: String,
     params: Vec<CompiledParam>,
     body: String,
+    body_shape: crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
     directives: Vec<String>,
     cache_prologue: Option<crate::reactive_scopes::codegen_reactive::CachePrologue>,
     needs_function_hook_guard_wrapper: bool,
@@ -2939,7 +2940,23 @@ fn try_build_compiled_function_body_from_shape<'a>(
     source_type: SourceType,
     cf: &CompiledFunction,
 ) -> Option<ast::FunctionBody<'a>> {
-    match &cf.generated_body_shape {
+    try_build_function_body_from_shape(
+        builder,
+        allocator,
+        source_type,
+        &cf.generated_body_shape,
+        cf.cache_prologue.as_ref(),
+    )
+}
+
+fn try_build_function_body_from_shape<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
+    cache_prologue: Option<&crate::reactive_scopes::codegen_reactive::CachePrologue>,
+) -> Option<ast::FunctionBody<'a>> {
+    match body_shape {
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown => None,
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(name) => {
             Some(builder.function_body(
@@ -2957,7 +2974,7 @@ fn try_build_compiled_function_body_from_shape<'a>(
             temp_name,
             memoized_expr,
         } => {
-            let cache_binding_name = &cf.cache_prologue.as_ref()?.binding_name;
+            let cache_binding_name = &cache_prologue?.binding_name;
             let memo_name = "__memo";
             let memo_expr = parse_expression_source(allocator, source_type, memoized_expr).ok()?;
             let conditional = builder.expression_conditional(
@@ -3362,14 +3379,24 @@ fn build_rendered_outlined_function_statement<'a>(
     outlined: &RenderedOutlinedFunction,
     state: &AstRenderState,
 ) -> Option<ast::Statement<'a>> {
-    let mut body = parse_rendered_function_body(
+    let mut body = if let Some(body) = try_build_function_body_from_shape(
+        builder,
         allocator,
         source_type,
-        outlined.is_async,
-        outlined.is_generator,
-        &outlined.body,
-    )
-    .ok()?;
+        &outlined.body_shape,
+        outlined.cache_prologue.as_ref(),
+    ) {
+        body
+    } else {
+        parse_rendered_function_body(
+            allocator,
+            source_type,
+            outlined.is_async,
+            outlined.is_generator,
+            &outlined.body,
+        )
+        .ok()?
+    };
     apply_preserved_directives(builder, &mut body, &outlined.directives);
     wrap_hook_guard_body(
         builder,
@@ -4380,6 +4407,7 @@ fn collect_rendered_outlined_functions(cf: &CompiledFunction) -> Vec<RenderedOut
             name: outlined_function.name.clone(),
             params: outlined_function.params.clone(),
             body: outlined_function.body.clone(),
+            body_shape: outlined_function.body_shape.clone(),
             directives: outlined_function.directives.clone(),
             cache_prologue: outlined_function.cache_prologue.clone(),
             needs_function_hook_guard_wrapper: outlined_function.needs_function_hook_guard_wrapper,
@@ -6661,6 +6689,7 @@ function Component(props) {
                 },
             ],
             body: "return await load(...rest);".to_string(),
+            body_shape: crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown,
             directives: vec![],
             cache_prologue: None,
             needs_function_hook_guard_wrapper: false,
