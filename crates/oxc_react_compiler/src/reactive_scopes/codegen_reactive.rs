@@ -13,7 +13,7 @@ use oxc_allocator::{Allocator, CloneIn};
 use oxc_ast::{AstBuilder, NONE, ast};
 use oxc_codegen::{Codegen, CodegenOptions, Context as CodegenPrintContext, Gen, IndentChar};
 use oxc_parser::Parser;
-use oxc_span::{SPAN, SourceType};
+use oxc_span::{GetSpan, SPAN, SourceType};
 use oxc_ast_visit::{Visit, walk};
 use oxc_syntax::number::NumberBase;
 use oxc_syntax::operator::{
@@ -756,7 +756,7 @@ fn codegen_reactive_function_with_primitives(
         body = render_hook_guarded_block_ast(&body, HOOK_GUARD_PUSH, HOOK_GUARD_POP)
             .expect("generated hook-guarded function body should parse");
     }
-    body = prune_unused_const_literal_decls(&body);
+    body = prune_unused_const_literal_decls(&body, func.async_, func.generator);
 
     let cache_size = cx.next_cache_index;
     let needs_cache_import = cache_size > 0;
@@ -1168,7 +1168,59 @@ fn strip_trailing_bare_return(body: &str, is_async: bool, is_generator: bool) ->
     }
 }
 
-fn prune_unused_const_literal_decls(body: &str) -> String {
+fn prune_unused_const_literal_decls(body: &str, is_async: bool, is_generator: bool) -> String {
+    let allocator = Allocator::default();
+    if let Ok((wrapper_prefix_len, parsed_body)) = parse_function_body_for_ast_codegen_with_offset(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        is_async,
+        is_generator,
+        body,
+    ) {
+        let removable: HashSet<usize> = parsed_body
+            .statements
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, statement)| {
+                let name = const_literal_decl_identifier(statement)?;
+                let used_elsewhere = parsed_body
+                    .statements
+                    .iter()
+                    .enumerate()
+                    .any(|(other_idx, other_statement)| {
+                        other_idx != idx
+                            && statement_references_identifier(other_statement, name.as_str())
+                    });
+                (!used_elsewhere).then_some(idx)
+            })
+            .collect();
+        if removable.is_empty() {
+            return body.to_string();
+        }
+
+        let mut out = String::with_capacity(body.len());
+        let mut cursor = 0usize;
+        for (idx, statement) in parsed_body.statements.iter().enumerate() {
+            if !removable.contains(&idx) {
+                continue;
+            }
+            let start = statement.span().start as usize - wrapper_prefix_len;
+            let end = parsed_body
+                .statements
+                .get(idx + 1)
+                .map(|next| next.span().start as usize - wrapper_prefix_len)
+                .unwrap_or(body.len());
+            out.push_str(&body[cursor..start]);
+            cursor = end;
+        }
+        out.push_str(&body[cursor..]);
+        return out;
+    }
+
+    prune_unused_const_literal_decls_line_fallback(body)
+}
+
+fn prune_unused_const_literal_decls_line_fallback(body: &str) -> String {
     let lines: Vec<&str> = body.lines().collect();
     if lines.is_empty() {
         return body.to_string();
@@ -1230,6 +1282,21 @@ fn prune_unused_const_literal_decls(body: &str) -> String {
     out
 }
 
+fn const_literal_decl_identifier(statement: &ast::Statement<'_>) -> Option<String> {
+    let ast::Statement::VariableDeclaration(declaration) = statement else {
+        return None;
+    };
+    if declaration.kind != ast::VariableDeclarationKind::Const || declaration.declarations.len() != 1 {
+        return None;
+    }
+    let declarator = &declaration.declarations[0];
+    let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id else {
+        return None;
+    };
+    let init = declarator.init.as_ref()?;
+    expression_is_inlineable_primitive_literal(init).then(|| identifier.name.to_string())
+}
+
 fn parse_const_literal_decl(line: &str) -> Option<(String, String)> {
     let allocator = Allocator::default();
     let statement = parse_single_statement_for_ast_codegen(
@@ -1282,6 +1349,28 @@ fn contains_identifier_token(haystack: &str, needle: &str) -> bool {
         start = end;
     }
     false
+}
+
+fn statement_references_identifier(statement: &ast::Statement<'_>, ident: &str) -> bool {
+    let mut detector = IdentifierReferenceDetector {
+        ident,
+        found: false,
+    };
+    detector.visit_statement(statement);
+    detector.found
+}
+
+struct IdentifierReferenceDetector<'ident> {
+    ident: &'ident str,
+    found: bool,
+}
+
+impl<'a> Visit<'a> for IdentifierReferenceDetector<'_> {
+    fn visit_identifier_reference(&mut self, it: &ast::IdentifierReference<'a>) {
+        if it.name == self.ident {
+            self.found = true;
+        }
+    }
 }
 
 fn contains_base_identifier_token(haystack: &str, needle: &str) -> bool {
@@ -17471,6 +17560,10 @@ fn is_inlineable_primitive_literal_expression(expr: &str) -> bool {
     let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) else {
         return false;
     };
+    expression_is_inlineable_primitive_literal(&expression)
+}
+
+fn expression_is_inlineable_primitive_literal(expression: &ast::Expression<'_>) -> bool {
     match expression.without_parentheses() {
         ast::Expression::BooleanLiteral(_)
         | ast::Expression::NullLiteral(_)
@@ -22753,6 +22846,7 @@ mod tests {
         rendered_expr_contains_push_call_on_target,
         strip_optional_chain_receiver_parens,
         normalize_root_optional_dependency,
+        prune_unused_const_literal_decls,
         strip_trailing_bare_return,
         strip_terminal_current_path,
         widen_member_dep_expr_to_root,
@@ -23127,6 +23221,26 @@ mod tests {
         assert_eq!(
             strip_trailing_bare_return("return value;\n", false, false),
             "return value;\n"
+        );
+    }
+
+    #[test]
+    fn prunes_unused_const_literal_decls_via_ast() {
+        assert_eq!(
+            prune_unused_const_literal_decls("const unused = 1;\nwork();\n", false, false),
+            "work();\n"
+        );
+        assert_eq!(
+            prune_unused_const_literal_decls("const unused = 1;\nawait load();\n", true, false),
+            "await load();\n"
+        );
+    }
+
+    #[test]
+    fn keeps_used_const_literal_decls_via_ast() {
+        assert_eq!(
+            prune_unused_const_literal_decls("const used = 1;\nreturn used;\n", false, false),
+            "const used = 1;\nreturn used;\n"
         );
     }
 
