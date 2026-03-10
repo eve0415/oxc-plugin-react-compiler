@@ -7489,29 +7489,26 @@ fn maybe_codegen_fused_reassign_stmt_into_following_logical(
                     if normalize_fusion_match_text(&assign_rhs)
                         == normalize_fusion_match_text(&left_expr)
                     {
-                        format!("({assign_expr}) {} null", logical_operator_to_str(operator))
+                        render_logical_expression_ast(&assign_expr, *operator, "null")
+                            .expect("fused logical reassign should stay on AST path")
                     } else {
-                        format!(
-                            "{} {} (({}), null)",
-                            left_expr,
-                            logical_operator_to_str(operator),
-                            assign_expr
-                        )
+                        let sequenced_null =
+                            render_sequence_expression_ast(std::slice::from_ref(&assign_expr), "null")
+                                .expect("fused logical null sequence should stay on AST path");
+                        render_logical_expression_ast(&left_expr, *operator, &sequenced_null)
+                            .expect("fused logical reassign should stay on AST path")
                     }
                 } else {
                     let combined_left = if normalize_fusion_match_text(&assign_rhs)
                         == normalize_fusion_match_text(&left_expr)
                     {
-                        format!("({assign_expr})")
+                        assign_expr.clone()
                     } else {
-                        format!("(({assign_expr}), {left_expr})")
+                        render_sequence_expression_ast(std::slice::from_ref(&assign_expr), &left_expr)
+                            .expect("fused logical left sequence should stay on AST path")
                     };
-                    format!(
-                        "{} {} {}",
-                        combined_left,
-                        logical_operator_to_str(operator),
-                        right_expr
-                    )
+                    render_logical_expression_ast(&combined_left, *operator, &right_expr)
+                        .expect("fused logical reassign should stay on AST path")
                 };
                 debug_codegen_expr(
                     "fused-reassign-following-logical",
