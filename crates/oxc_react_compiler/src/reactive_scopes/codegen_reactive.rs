@@ -4856,13 +4856,33 @@ fn maybe_codegen_inverted_labeled_if_fallthrough(
 
     let label_name = format!("bb{}", label.id.0);
     let target_label = format!("bb{}", cons_target.0);
-    let guarded_break = render_reactive_break_statement_ast(Some(&label_name))?;
-    let labeled_if = render_reactive_labeled_statement_ast(
-        &label_name,
-        render_reactive_if_statement_ast(&test_expr, &guarded_break, None)?.trim_end(),
-        false,
-    )?;
-    let mut rewritten = labeled_if;
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let labeled_if = builder.statement_labeled(
+        SPAN,
+        builder.label_identifier(SPAN, builder.atom(&label_name)),
+        builder.statement_if(
+            SPAN,
+            parse_expression_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
+                &test_expr,
+            )
+            .ok()?,
+            builder.statement_block(
+                SPAN,
+                builder.vec1(builder.statement_break(
+                    SPAN,
+                    Some(builder.label_identifier(SPAN, builder.atom(&label_name))),
+                )),
+            ),
+            None,
+        ),
+    );
+    let mut rewritten = format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&labeled_if)
+    );
     rewritten.push_str(&fallthrough_code);
     rewritten.push_str(&render_reactive_break_statement_ast(Some(&target_label))?);
     rewritten.push_str(&consequent_code);
@@ -22283,20 +22303,7 @@ fn render_reactive_throw_statement_ast(argument: &str) -> Option<String> {
     ))
 }
 
-fn render_reactive_if_statement_ast(
-    test: &str,
-    consequent_body: &str,
-    alternate_body: Option<&str>,
-) -> Option<String> {
-    render_reactive_if_statement_ast_with_context(
-        test,
-        consequent_body,
-        alternate_body,
-        false,
-        false,
-    )
-}
-
+#[cfg(test)]
 fn render_reactive_if_statement_ast_with_context(
     test: &str,
     consequent_body: &str,
