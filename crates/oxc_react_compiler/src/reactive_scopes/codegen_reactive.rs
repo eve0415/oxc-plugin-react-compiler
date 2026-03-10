@@ -7366,7 +7366,7 @@ fn maybe_codegen_fused_named_temp_logical_expression(
                     if has_materialized_named_binding(&probe_cx, &lvalue.identifier) {
                         output.push_str(
                             &render_reactive_assignment_statement_ast(&target_name, &logical_expr)
-                                .unwrap_or_else(|| format!("{} = {};\n", target_name, logical_expr)),
+                                .expect("fused logical assignment should stay on AST path"),
                         );
                     } else {
                         probe_cx.declare(&lvalue.identifier);
@@ -7377,7 +7377,7 @@ fn maybe_codegen_fused_named_temp_logical_expression(
                                 &target_name,
                                 Some(&logical_expr),
                             )
-                            .unwrap_or_else(|| format!("const {} = {};\n", target_name, logical_expr)),
+                            .expect("fused logical declaration should stay on AST path"),
                         );
                     }
                     probe_cx.set_temp_expr(&lvalue.identifier, None);
@@ -7828,7 +7828,7 @@ fn maybe_codegen_fused_method_call_eval_order(
     );
     output.push_str(
         &render_reactive_expression_statement_ast(&call_expr)
-            .unwrap_or_else(|| format!("{call_expr};\n")),
+            .expect("fused method call should stay on AST path"),
     );
     Some(consumed_top_level)
 }
@@ -8192,7 +8192,7 @@ fn maybe_codegen_fused_method_call_destructure_assignment(
                 );
                 output.push_str(
                     &render_reactive_expression_statement_ast(&call_expr)
-                        .unwrap_or_else(|| format!("{call_expr};\n")),
+                        .expect("fused destructure call should stay on AST path"),
                 );
                 return Some(idx - start + 1);
             }
@@ -8913,7 +8913,7 @@ fn codegen_scope_computation_no_reset(
         }
         output.push_str(
             &render_reactive_assignment_statement_ast(&target_name, &rhs_expr)
-                .unwrap_or_else(|| format!("{} = {};\n", target_name, rhs_expr)),
+                .expect("reactive assignment should stay on AST path"),
         );
         return output;
     }
