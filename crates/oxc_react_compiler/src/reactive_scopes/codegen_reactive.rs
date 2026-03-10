@@ -776,29 +776,15 @@ fn codegen_reactive_function_with_primitives(
         None
     };
 
-    let mut output = String::new();
-    let rendered_cache_prologue = if options.emit_cache_prologue_in_body {
-        cache_prologue.as_ref()
-    } else {
-        None
-    };
-    if let Some(prologue) = render_reactive_function_body_prologue_ast(
-        if options.emit_directives_in_body {
-            Some(&func.directives)
-        } else {
-            None
-        },
-        rendered_cache_prologue,
-    ) {
-        output.push_str(&prologue);
-    }
-    output.push_str(&body);
-
     if std::env::var("DEBUG_REACTIVE_RAW").is_ok() {
         eprintln!(
-            "[REACTIVE_RAW_OUTPUT] function={:?}\n{}",
+            "[REACTIVE_RAW_OUTPUT] function={:?} directives={:?} cache_prologue={:?} emit_directives_in_body={} emit_cache_prologue_in_body={}\n{}",
             func.name_hint.as_deref(),
-            output
+            func.directives,
+            cache_prologue,
+            options.emit_directives_in_body,
+            options.emit_cache_prologue_in_body,
+            body
         );
     }
 
@@ -21469,43 +21455,6 @@ fn codegen_array_expression_element_with_oxc(element: &ast::ArrayExpressionEleme
     codegen.into_source_text()
 }
 
-fn codegen_directives_and_statements_with_oxc(
-    directives: &[String],
-    statements: &[ast::Statement<'_>],
-) -> String {
-    let allocator = Allocator::default();
-    let builder = AstBuilder::new(&allocator);
-    let program = builder.program(
-        SPAN,
-        SourceType::mjs().with_jsx(true),
-        "",
-        builder.vec(),
-        None,
-        builder.vec_from_iter(directives.iter().map(|directive| {
-            builder.directive(
-                SPAN,
-                builder.string_literal(SPAN, directive.as_str(), None),
-                directive.as_str(),
-            )
-        })),
-        builder.vec_from_iter(
-            statements
-                .iter()
-                .map(|statement| statement.clone_in(&allocator)),
-        ),
-    );
-    Codegen::new()
-        .with_options(CodegenOptions {
-            indent_char: IndentChar::Space,
-            indent_width: 2,
-            ..CodegenOptions::default()
-        })
-        .build(&program)
-        .code
-        .trim_end()
-        .to_string()
-}
-
 fn render_reactive_variable_statement_ast(
     kind: ast::VariableDeclarationKind,
     name: &str,
@@ -21979,58 +21928,6 @@ fn render_reactive_for_in_statement_ast(
         "{}\n",
         codegen_statement_with_oxc(&builder.statement_for_in(SPAN, left, right, body))
     ))
-}
-
-fn render_reactive_function_body_prologue_ast(
-    directives: Option<&[String]>,
-    cache_prologue: Option<&CachePrologue>,
-) -> Option<String> {
-    let allocator = Allocator::default();
-    let builder = AstBuilder::new(&allocator);
-    let mut statements: Vec<ast::Statement<'_>> = Vec::new();
-    let directives = directives.unwrap_or(&[]);
-
-    if let Some(cache_prologue) = cache_prologue {
-        statements.push(ast::Statement::VariableDeclaration(
-            builder.alloc_variable_declaration(
-                SPAN,
-                ast::VariableDeclarationKind::Const,
-                builder.vec1(builder.variable_declarator(
-                    SPAN,
-                    ast::VariableDeclarationKind::Const,
-                    builder.binding_pattern_binding_identifier(
-                        SPAN,
-                        builder.ident(&cache_prologue.binding_name),
-                    ),
-                    NONE,
-                    Some(build_runtime_cache_call_expression_ast(
-                        builder,
-                        cache_prologue.size,
-                    )),
-                    false,
-                )),
-                false,
-            ),
-        ));
-
-        if let Some(fast_refresh) = &cache_prologue.fast_refresh {
-            let refresh_statement = build_fast_refresh_cache_reset_statement_ast(
-                builder,
-                cache_prologue,
-                fast_refresh,
-            )?;
-            statements.push(refresh_statement);
-        }
-    }
-
-    if directives.is_empty() && statements.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "{}\n",
-            codegen_directives_and_statements_with_oxc(directives, &statements)
-        ))
-    }
 }
 
 fn apply_function_body_preludes_ast<'a>(
@@ -23038,20 +22935,20 @@ mod tests {
         render_property_access_expression_ast, render_reactive_assignment_statement_ast,
         render_reactive_expression_statement_ast, render_reactive_for_in_statement_ast,
         render_reactive_for_of_statement_ast, render_reactive_for_statement_ast,
-        render_reactive_function_body_prologue_ast, render_reactive_if_statement_ast_with_context,
-        render_reactive_labeled_statement_ast, render_reactive_return_statement_ast,
-        render_reactive_variable_statement_ast, render_sequence_expression_ast,
-        render_tagged_template_expression_ast, render_template_literal_ast,
-        render_ts_type_cast_expression_ast, rendered_expr_contains_assignment_to_target,
-        rendered_expr_contains_logical_or, rendered_expr_contains_optional_chain,
-        rendered_expr_contains_push_call_on_target, rendered_expr_has_property_path,
-        rendered_expr_is_array_literal, rendered_expr_is_array_seed_like,
-        rendered_expr_is_autodeps_placeholder, rendered_expr_is_direct_root_identifier,
-        rendered_expr_is_empty_array_literal, rendered_expr_is_function_like,
-        rendered_expr_is_jsx_like, rendered_expr_root_identifier_name,
-        rendered_statement_is_cache_store, rendered_statement_is_push_call_on_target,
-        rendered_statement_references_label, strip_optional_chain_receiver_parens,
-        strip_terminal_current_path, strip_trailing_bare_return, widen_member_dep_expr_to_root,
+        render_reactive_if_statement_ast_with_context, render_reactive_labeled_statement_ast,
+        render_reactive_return_statement_ast, render_reactive_variable_statement_ast,
+        render_sequence_expression_ast, render_tagged_template_expression_ast,
+        render_template_literal_ast, render_ts_type_cast_expression_ast,
+        rendered_expr_contains_assignment_to_target, rendered_expr_contains_logical_or,
+        rendered_expr_contains_optional_chain, rendered_expr_contains_push_call_on_target,
+        rendered_expr_has_property_path, rendered_expr_is_array_literal,
+        rendered_expr_is_array_seed_like, rendered_expr_is_autodeps_placeholder,
+        rendered_expr_is_direct_root_identifier, rendered_expr_is_empty_array_literal,
+        rendered_expr_is_function_like, rendered_expr_is_jsx_like,
+        rendered_expr_root_identifier_name, rendered_statement_is_cache_store,
+        rendered_statement_is_push_call_on_target, rendered_statement_references_label,
+        strip_optional_chain_receiver_parens, strip_terminal_current_path,
+        strip_trailing_bare_return, widen_member_dep_expr_to_root,
     };
     use crate::hir::types::{
         Argument, ArrayElement, ArrayPattern, DeclarationId, DependencyPathEntry, Effect,
@@ -23060,7 +22957,7 @@ mod tests {
         ObjectPropertyType, Pattern, Place, PrimitiveValue, PropertyLiteral,
         ReactiveScopeDependency, SourceLocation, TemplateQuasi, Type, TypeAnnotationKind,
     };
-    use crate::reactive_scopes::codegen_reactive::{CachePrologue, FastRefreshPrologue};
+    use crate::reactive_scopes::codegen_reactive::CachePrologue;
     use oxc_allocator::Allocator;
     use oxc_ast::AstBuilder;
     use oxc_ast::ast;
@@ -24169,53 +24066,6 @@ mod tests {
             .expect("expected for-in statement");
 
         assert_eq!(rendered, "for (const key in items) {\n  work(key);\n}\n");
-    }
-
-    #[test]
-    fn renders_function_body_directives_via_ast() {
-        let rendered =
-            render_reactive_function_body_prologue_ast(Some(&["worklet".to_string()]), None)
-                .expect("expected prologue");
-
-        assert_eq!(rendered.trim(), "\"worklet\";");
-    }
-
-    #[test]
-    fn renders_function_body_directives_and_cache_via_ast() {
-        let rendered = render_reactive_function_body_prologue_ast(
-            Some(&["use strict".to_string()]),
-            Some(&CachePrologue {
-                binding_name: "$".to_string(),
-                size: 1,
-                fast_refresh: None,
-            }),
-        )
-        .expect("expected prologue");
-
-        assert!(rendered.starts_with("\"use strict\";"));
-        assert!(rendered.contains("const $ = _c(1);"));
-    }
-
-    #[test]
-    fn renders_function_body_fast_refresh_prologue_via_ast() {
-        let rendered = render_reactive_function_body_prologue_ast(
-            None,
-            Some(&CachePrologue {
-                binding_name: "$".to_string(),
-                size: 2,
-                fast_refresh: Some(FastRefreshPrologue {
-                    cache_index: 1,
-                    hash: "hash".to_string(),
-                    index_binding_name: "i".to_string(),
-                }),
-            }),
-        )
-        .expect("expected prologue");
-
-        assert!(rendered.contains("if ($[1] !== \"hash\")"));
-        assert!(rendered.contains("for (let i = 0; i < 2; i += 1)"));
-        assert!(rendered.contains("$[i] = Symbol.for(\"react.memo_cache_sentinel\")"));
-        assert!(rendered.contains("$[1] = \"hash\""));
     }
 
     #[test]
