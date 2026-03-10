@@ -279,6 +279,10 @@ struct Context {
     needs_structural_check_import: bool,
     /// Function display name used by debug change-detection diagnostics.
     function_name: String,
+    /// Whether the enclosing reactive function is async.
+    function_is_async: bool,
+    /// Whether the enclosing reactive function is a generator.
+    function_is_generator: bool,
     /// Canonical display names for function parameters keyed by declaration id.
     param_display_names: HashMap<DeclarationId, String>,
     /// Names declared in nested lowered functions; used to avoid reusing those
@@ -625,6 +629,8 @@ fn codegen_reactive_function_with_primitives(
         enable_name_anonymous_functions: options.enable_name_anonymous_functions,
         needs_structural_check_import: false,
         function_name,
+        function_is_async: func.async_,
+        function_is_generator: func.generator,
         param_display_names: HashMap::new(),
         reserved_child_decl_names: inherited_reserved_child_decl_names,
         block_scope_declared_temp_names: Vec::new(),
@@ -13159,11 +13165,13 @@ fn codegen_reactive_scope(
             );
         }
         output.push_str(
-            &render_reactive_if_statement_ast(
+            &render_reactive_if_statement_ast_with_context(
                 &render_unary_expression_ast(UnaryOperator::Not, &condition_name)
                     .expect("cached structural check condition should stay on AST path"),
                 &cached_body,
                 None,
+                cx.function_is_async,
+                cx.function_is_generator,
             )
             .expect("cached structural check guard should stay on AST path"),
         );
@@ -13197,7 +13205,13 @@ fn codegen_reactive_scope(
             );
         }
         output.push_str(
-            &render_reactive_if_statement_ast(&condition_name, &recomputed_body, None)
+            &render_reactive_if_statement_ast_with_context(
+                &condition_name,
+                &recomputed_body,
+                None,
+                cx.function_is_async,
+                cx.function_is_generator,
+            )
                 .expect("recomputed structural check guard should stay on AST path"),
         );
         output.push_str("}\n");
@@ -13209,31 +13223,14 @@ fn codegen_reactive_scope(
         }
         let alternate = cache_load_stmts.concat();
         output.push_str(
-            &render_reactive_if_statement_ast(&test_condition, &consequent, Some(&alternate))
-                .unwrap_or_else(|| {
-                    let multiline_guard = !change_exprs.is_empty()
-                        && change_exprs.len() > 1
-                        && format!("if ({}) {{", test_condition).len() > 80;
-                    let mut fallback = String::new();
-                    if multiline_guard {
-                        fallback.push_str("if (\n");
-                        for (index, expr) in change_exprs.iter().enumerate() {
-                            if index + 1 < change_exprs.len() {
-                                fallback.push_str(&format!("{} ||\n", expr));
-                            } else {
-                                fallback.push_str(&format!("{}\n", expr));
-                            }
-                        }
-                        fallback.push_str(") {\n");
-                    } else {
-                        fallback.push_str(&format!("if ({}) {{\n", test_condition));
-                    }
-                    fallback.push_str(&consequent);
-                    fallback.push_str("} else {\n");
-                    fallback.push_str(&alternate);
-                    fallback.push_str("}\n");
-                    fallback
-                }),
+            &render_reactive_if_statement_ast_with_context(
+                &test_condition,
+                &consequent,
+                Some(&alternate),
+                cx.function_is_async,
+                cx.function_is_generator,
+            )
+            .expect("memo cache guard should stay on AST path"),
         );
     }
     for stmt in &deferred_post_scope_calls {
@@ -19602,20 +19599,28 @@ fn parse_function_body_for_ast_codegen<'a>(
     is_generator: bool,
     body_source: &str,
 ) -> Result<ast::FunctionBody<'a>, String> {
+    fn push_attempt(
+        attempts: &mut Vec<(SourceType, String)>,
+        source_type: SourceType,
+        source: &str,
+    ) {
+        if !attempts.iter().any(|(existing_type, existing_source)| {
+            *existing_type == source_type && existing_source == source
+        }) {
+            attempts.push((source_type, source.to_string()));
+        }
+    }
+
     let async_prefix = if is_async { "async " } else { "" };
     let generator_prefix = if is_generator { "*" } else { "" };
     let flow_cast_normalized = normalize_flow_cast_marker_calls(body_source);
     let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(body_source);
-    let mut attempts = vec![(source_type, body_source.to_string())];
-    for candidate in [
-        (source_type.with_typescript(true), flow_cast_normalized),
-        (source_type.with_typescript(true), flow_cast_rewritten.clone()),
-        (source_type, flow_cast_rewritten),
-    ] {
-        if candidate.1 != body_source {
-            attempts.push(candidate);
-        }
-    }
+    let mut attempts = Vec::new();
+    push_attempt(&mut attempts, source_type, body_source);
+    push_attempt(&mut attempts, source_type.with_typescript(true), body_source);
+    push_attempt(&mut attempts, source_type.with_typescript(true), &flow_cast_normalized);
+    push_attempt(&mut attempts, source_type.with_typescript(true), &flow_cast_rewritten);
+    push_attempt(&mut attempts, source_type, &flow_cast_rewritten);
 
     for (attempt_source_type, attempt_body) in attempts {
         let wrapper = format!(
@@ -19721,11 +19726,27 @@ fn parse_statement_list_for_ast_codegen<'a>(
     source_type: SourceType,
     statement_source: &str,
 ) -> Result<oxc_allocator::Vec<'a, ast::Statement<'a>>, String> {
-    let parsed_body = parse_function_body_for_ast_codegen(
+    parse_statement_list_for_ast_codegen_with_context(
         allocator,
         source_type,
         false,
         false,
+        statement_source,
+    )
+}
+
+fn parse_statement_list_for_ast_codegen_with_context<'a>(
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    is_async: bool,
+    is_generator: bool,
+    statement_source: &str,
+) -> Result<oxc_allocator::Vec<'a, ast::Statement<'a>>, String> {
+    let parsed_body = parse_function_body_for_ast_codegen(
+        allocator,
+        source_type,
+        is_async,
+        is_generator,
         statement_source,
     )?;
     if !parsed_body.directives.is_empty() {
@@ -20665,6 +20686,22 @@ fn render_reactive_if_statement_ast(
     consequent_body: &str,
     alternate_body: Option<&str>,
 ) -> Option<String> {
+    render_reactive_if_statement_ast_with_context(
+        test,
+        consequent_body,
+        alternate_body,
+        false,
+        false,
+    )
+}
+
+fn render_reactive_if_statement_ast_with_context(
+    test: &str,
+    consequent_body: &str,
+    alternate_body: Option<&str>,
+    is_async: bool,
+    is_generator: bool,
+) -> Option<String> {
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let parsed_test =
@@ -20672,9 +20709,11 @@ fn render_reactive_if_statement_ast(
             .ok()?;
     let consequent = builder.statement_block(
         SPAN,
-        parse_statement_list_for_ast_codegen(
+        parse_statement_list_for_ast_codegen_with_context(
             &allocator,
             SourceType::mjs().with_jsx(true),
+            is_async,
+            is_generator,
             consequent_body,
         )
         .ok()?,
@@ -20683,9 +20722,11 @@ fn render_reactive_if_statement_ast(
         Some(body) => Some(
             builder.statement_block(
                 SPAN,
-                parse_statement_list_for_ast_codegen(
+                parse_statement_list_for_ast_codegen_with_context(
                     &allocator,
                     SourceType::mjs().with_jsx(true),
+                    is_async,
+                    is_generator,
                     body,
                 )
                 .ok()?,
@@ -21941,7 +21982,7 @@ mod tests {
         render_computed_access_expression_ast, render_primitive_expression_ast,
         render_property_access_expression_ast, render_pattern_with_oxc,
         render_reactive_function_body_prologue_ast, render_jsx_expression_ast,
-        render_reactive_labeled_statement_ast,
+        render_reactive_if_statement_ast_with_context, render_reactive_labeled_statement_ast,
         render_object_expression_ast,
         render_jsx_fragment_ast, render_reactive_for_in_statement_ast,
         render_reactive_for_of_statement_ast, render_reactive_for_statement_ast,
@@ -22007,6 +22048,8 @@ mod tests {
             enable_name_anonymous_functions: options.enable_name_anonymous_functions,
             needs_structural_check_import: false,
             function_name: "<test>".to_string(),
+            function_is_async: false,
+            function_is_generator: false,
             param_display_names: HashMap::new(),
             reserved_child_decl_names: HashSet::new(),
             block_scope_declared_temp_names: Vec::new(),
@@ -22112,6 +22155,39 @@ mod tests {
 
         assert!(declaration.starts_with("async function useFoo(value)"));
         assert!(declaration.contains("return value;"));
+    }
+
+    #[test]
+    fn renders_async_if_statement_body_via_ast() {
+        let rendered = render_reactive_if_statement_ast_with_context(
+            "$[0] !== props.id",
+            "t0 = await load(props.id);\n$[0] = props.id;\n$[1] = t0;\n",
+            Some("t0 = $[1];\n"),
+            true,
+            false,
+        )
+        .expect("expected async if statement");
+
+        assert!(rendered.contains("if ($[0] !== props.id) {"));
+        assert!(rendered.contains("t0 = await load(props.id);"));
+        assert!(rendered.contains("} else {"));
+        assert!(rendered.contains("t0 = $[1];"));
+    }
+
+    #[test]
+    fn renders_typescript_if_statement_body_via_ast() {
+        let rendered = render_reactive_if_statement_ast_with_context(
+            "$[0] !== fn",
+            "t2 = fn(\"hi\" as T);\n$[0] = fn;\n$[1] = t2;\n",
+            Some("t2 = $[1];\n"),
+            false,
+            false,
+        )
+        .expect("expected typed if statement");
+
+        assert!(rendered.contains("if ($[0] !== fn) {"));
+        assert!(rendered.contains("t2 = fn(\"hi\" as T);"));
+        assert!(rendered.contains("t2 = $[1];"));
     }
 
     #[test]
