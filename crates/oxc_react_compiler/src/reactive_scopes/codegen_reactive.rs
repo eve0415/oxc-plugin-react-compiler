@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 
 use oxc_allocator::{Allocator, CloneIn};
 use oxc_ast::{AstBuilder, NONE, ast};
-use oxc_codegen::{Codegen, CodegenOptions, IndentChar};
+use oxc_codegen::{Codegen, CodegenOptions, Context as CodegenPrintContext, Gen, IndentChar};
 use oxc_parser::Parser;
 use oxc_span::{SPAN, SourceType};
 use oxc_syntax::number::NumberBase;
@@ -18637,20 +18637,10 @@ fn codegen_pattern(cx: &mut Context, pattern: &Pattern) -> String {
 }
 
 fn render_pattern_with_oxc(cx: &mut Context, pattern: &Pattern) -> Option<String> {
-    const PLACEHOLDER: &str = "__codex_pattern_rhs";
-    let rendered = render_reactive_destructure_statement_ast(
-        cx,
-        pattern,
-        PLACEHOLDER,
-        Some(ast::VariableDeclarationKind::Let),
-    )?;
-    let trimmed = rendered.trim();
-    let body = trimmed.strip_prefix("let ")?;
-    let (lhs, rhs) = body.split_once(" = ")?;
-    if rhs.trim_end_matches(';').trim() != PLACEHOLDER {
-        return None;
-    }
-    Some(lhs.trim().to_string())
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let pattern = try_build_reactive_binding_pattern_ast(builder, &allocator, cx, pattern)?;
+    Some(codegen_binding_pattern_with_flow_cast_restore(&pattern))
 }
 
 fn pattern_operands(pattern: &Pattern) -> Vec<&Place> {
@@ -20271,6 +20261,12 @@ fn codegen_statement_with_flow_cast_restore<'a>(statement: &ast::Statement<'a>) 
     restore_flow_cast_marker_calls(&codegen_statement_with_oxc(statement))
 }
 
+fn codegen_binding_pattern_with_flow_cast_restore<'a>(
+    pattern: &ast::BindingPattern<'a>,
+) -> String {
+    restore_flow_cast_marker_calls(&codegen_binding_pattern_with_oxc(pattern))
+}
+
 fn codegen_statements_with_flow_cast_restore<'a>(
     statements: &[ast::Statement<'a>],
 ) -> String {
@@ -20568,6 +20564,16 @@ fn codegen_statements_with_oxc(statements: &[ast::Statement<'_>]) -> String {
         .code
         .trim_end()
         .to_string()
+}
+
+fn codegen_binding_pattern_with_oxc(pattern: &ast::BindingPattern<'_>) -> String {
+    let mut codegen = Codegen::new().with_options(CodegenOptions {
+        indent_char: IndentChar::Space,
+        indent_width: 2,
+        ..CodegenOptions::default()
+    });
+    pattern.r#gen(&mut codegen, CodegenPrintContext::default());
+    codegen.into_source_text()
 }
 
 fn codegen_directives_and_statements_with_oxc(
