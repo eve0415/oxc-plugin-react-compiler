@@ -1415,6 +1415,9 @@ fn contains_base_identifier_token(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return false;
     }
+    if let Some(found) = rendered_source_references_identifier(haystack, needle) {
+        return found;
+    }
     let mut start = 0usize;
     while let Some(found) = haystack[start..].find(needle) {
         let idx = start + found;
@@ -22885,6 +22888,7 @@ mod tests {
         strip_optional_chain_receiver_parens,
         normalize_root_optional_dependency,
         contains_identifier_token,
+        contains_base_identifier_token,
         prune_unused_const_literal_decls,
         strip_trailing_bare_return,
         strip_terminal_current_path,
@@ -23289,6 +23293,14 @@ mod tests {
         assert!(contains_identifier_token("if (value) {\n  work(value);\n}", "value"));
         assert!(!contains_identifier_token("valueProp", "value"));
         assert!(!contains_identifier_token("\"value\";", "value"));
+    }
+
+    #[test]
+    fn detects_base_identifier_tokens_via_ast() {
+        assert!(contains_base_identifier_token("value.prop", "value"));
+        assert!(contains_base_identifier_token("call(value)", "value"));
+        assert!(!contains_base_identifier_token("other.value", "value"));
+        assert!(!contains_base_identifier_token("\"value\";", "value"));
     }
 
     #[test]
