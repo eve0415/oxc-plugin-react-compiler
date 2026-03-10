@@ -19288,35 +19288,16 @@ fn render_jsx_attributes_ast<'a>(
     for prop in props {
         match prop {
             JsxAttribute::Attribute { name, place } => {
-                if cx.fbt_operands.contains(&place.identifier.id) {
-                    return None;
-                }
                 let rendered_expr = codegen_place_expr_value(cx, place).expr;
                 let expression = parse_rendered_expression_ast(allocator, &rendered_expr)?;
-                let value = match expression {
-                    ast::Expression::StringLiteral(literal) => {
-                        let inner = rendered_expr
-                            .trim()
-                            .strip_prefix('"')
-                            .and_then(|inner| inner.strip_suffix('"'))?;
-                        if jsx_attr_needs_expression_container(inner) {
-                            Some(ast::JSXAttributeValue::ExpressionContainer(
-                                builder.alloc_jsx_expression_container(
-                                    SPAN,
-                                    ast::JSXExpression::StringLiteral(literal),
-                                ),
-                            ))
-                        } else {
-                            Some(ast::JSXAttributeValue::StringLiteral(literal))
-                        }
-                    }
-                    expression => Some(ast::JSXAttributeValue::ExpressionContainer(
-                        builder.alloc_jsx_expression_container(
-                            SPAN,
-                            ast::JSXExpression::from(expression),
-                        ),
-                    )),
-                };
+                let value = render_jsx_attribute_value_ast(
+                    builder,
+                    allocator,
+                    cx,
+                    place,
+                    rendered_expr.as_str(),
+                    expression,
+                )?;
                 attributes.push(builder.jsx_attribute_item_attribute(
                     SPAN,
                     builder.jsx_attribute_name_identifier(SPAN, builder.atom(name)),
@@ -19335,6 +19316,52 @@ fn render_jsx_attributes_ast<'a>(
         }
     }
     Some(attributes)
+}
+
+fn render_jsx_attribute_value_ast<'a>(
+    builder: AstBuilder<'a>,
+    _allocator: &'a Allocator,
+    cx: &mut Context,
+    place: &Place,
+    rendered_expr: &str,
+    expression: ast::Expression<'a>,
+) -> Option<Option<ast::JSXAttributeValue<'a>>> {
+    let is_fbt_operand = cx.fbt_operands.contains(&place.identifier.id);
+    Some(match expression {
+        ast::Expression::StringLiteral(literal) => {
+            let inner = rendered_expr
+                .trim()
+                .strip_prefix('"')
+                .and_then(|inner| inner.strip_suffix('"'))?;
+            if is_fbt_operand {
+                let value = if inner.contains("\\\"") {
+                    inner.replace("\\\"", "&quot;")
+                } else {
+                    inner
+                        .replace("\\n", "\n")
+                        .replace("\\r", "\r")
+                        .replace("\\t", "\t")
+                };
+                Some(builder.jsx_attribute_value_string_literal(
+                    SPAN,
+                    builder.atom(value.as_str()),
+                    None,
+                ))
+            } else if jsx_attr_needs_expression_container(inner) {
+                Some(ast::JSXAttributeValue::ExpressionContainer(
+                    builder.alloc_jsx_expression_container(
+                        SPAN,
+                        ast::JSXExpression::StringLiteral(literal),
+                    ),
+                ))
+            } else {
+                Some(ast::JSXAttributeValue::StringLiteral(literal))
+            }
+        }
+        expression => Some(ast::JSXAttributeValue::ExpressionContainer(
+            builder.alloc_jsx_expression_container(SPAN, ast::JSXExpression::from(expression)),
+        )),
+    })
 }
 
 fn collect_inherited_decl_name_overrides_for_lowered_function(
@@ -22112,6 +22139,54 @@ mod tests {
 
         assert!(rendered.starts_with("<div title={"));
         assert!(rendered.contains("\"a\\\\nb\""));
+    }
+
+    #[test]
+    fn renders_fbt_jsx_string_attribute_via_ast() {
+        let mut cx = test_context();
+        let place = temp_place(5, 5);
+        cx.fbt_operands.insert(place.identifier.id);
+        cx.set_temp_expr(
+            &place.identifier,
+            Some(super::ExprValue::primary("\"a\\\\nb\"".to_string())),
+        );
+        let rendered = render_jsx_expression_ast(
+            &mut cx,
+            &JsxTag::BuiltinTag("fbt:param".to_string()),
+            &[JsxAttribute::Attribute {
+                name: "name".to_string(),
+                place,
+            }],
+            &Some(vec![named_place(0, 0, "value")]),
+        )
+        .expect("expected fbt jsx element");
+
+        assert!(rendered.starts_with("<fbt:param name=\"a"));
+        assert!(rendered.contains("b\">"));
+        assert!(!rendered.contains("name={"));
+    }
+
+    #[test]
+    fn renders_fbt_jsx_quoted_attribute_via_ast() {
+        let mut cx = test_context();
+        let place = temp_place(6, 6);
+        cx.fbt_operands.insert(place.identifier.id);
+        cx.set_temp_expr(
+            &place.identifier,
+            Some(super::ExprValue::primary("\"\\\"user\\\" name\"".to_string())),
+        );
+        let rendered = render_jsx_expression_ast(
+            &mut cx,
+            &JsxTag::BuiltinTag("fbt:param".to_string()),
+            &[JsxAttribute::Attribute {
+                name: "name".to_string(),
+                place,
+            }],
+            &Some(vec![named_place(0, 0, "value")]),
+        )
+        .expect("expected fbt jsx element");
+
+        assert!(rendered.contains("name=\"&quot;user&quot; name\""));
     }
 
     #[test]
