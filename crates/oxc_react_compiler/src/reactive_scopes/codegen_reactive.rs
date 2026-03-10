@@ -9225,11 +9225,11 @@ fn maybe_codegen_fused_ternary_source_scope(
     } else {
         format!("{}[{}] !== {}", cache_var, dep_slot, dep_expr)
     };
-    let mut consequent = render_reactive_assignment_statement_ast(
-        &decl_name,
-        &format!("{} ? {} : {}", cond_expr, consequent_expr, alternate_expr),
-    )
-    .expect("fused ternary assignment should stay on AST path");
+    let rhs_expr = render_conditional_expression_ast(&cond_expr, &consequent_expr, &alternate_expr)
+        .expect("fused ternary expression should stay on AST path");
+    let mut consequent =
+        render_reactive_assignment_statement_ast(&decl_name, &rhs_expr)
+            .expect("fused ternary assignment should stay on AST path");
     if let Some(cond_slot) = cond_slot {
         consequent.push_str(
             &render_reactive_expression_statement_ast(&format!(
@@ -9260,12 +9260,7 @@ fn maybe_codegen_fused_ternary_source_scope(
     .expect("fused ternary cache load should stay on AST path");
     output.push_str(
         &render_reactive_if_statement_ast(&guard_test, &consequent, Some(&alternate))
-            .unwrap_or_else(|| {
-                format!(
-                    "if ({}) {{\n{}}} else {{\n{}}}\n",
-                    guard_test, consequent, alternate
-                )
-            }),
+            .expect("fused ternary guard should stay on AST path"),
     );
 
     // The skipped ternary instruction's lvalue aliases the fused scope output.
@@ -9830,12 +9825,7 @@ fn emit_zero_dep_target_guard(
     );
     output.push_str(
         &render_reactive_if_statement_ast(&guard_test, &consequent, Some(&alternate))
-            .unwrap_or_else(|| {
-                format!(
-                    "if ({}) {{\n{}}} else {{\n{}}}\n",
-                    guard_test, consequent, alternate
-                )
-            }),
+            .expect("memo cache guard should stay on AST path"),
     );
 }
 
@@ -10072,10 +10062,11 @@ fn maybe_codegen_fused_zero_dep_ternary_default_scope(
     cx.declare(output_ident);
 
     let rhs_expr = if source_is_consequent {
-        format!("{} ? {} : {}", cond_expr, source_expr, dep_expr_cond)
+        render_conditional_expression_ast(&cond_expr, &source_expr, &dep_expr_cond)
     } else {
-        format!("{} ? {} : {}", cond_expr, dep_expr_cond, source_expr)
-    };
+        render_conditional_expression_ast(&cond_expr, &dep_expr_cond, &source_expr)
+    }
+    .expect("conditional output expression should stay on AST path");
 
     let mut consequent = render_reactive_assignment_statement_ast(&output_name, &rhs_expr)
         .expect("conditional output assignment should stay on AST path");
@@ -10101,12 +10092,7 @@ fn maybe_codegen_fused_zero_dep_ternary_default_scope(
     let guard_test = format!("{}[{}] !== {}", cache_var, dep_slot, dep_expr_guard);
     output.push_str(
         &render_reactive_if_statement_ast(&guard_test, &consequent, Some(&alternate))
-            .unwrap_or_else(|| {
-                format!(
-                    "if ({}) {{\n{}}} else {{\n{}}}\n",
-                    guard_test, consequent, alternate
-                )
-            }),
+            .expect("conditional output guard should stay on AST path"),
     );
 
     cx.set_temp_expr(
