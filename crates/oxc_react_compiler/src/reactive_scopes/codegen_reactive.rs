@@ -14902,7 +14902,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             let l = codegen_place_with_min_prec(cx, left, prec);
             let r = codegen_place_with_min_prec(cx, right, prec);
             let expr = render_binary_expression_ast(&l, *operator, &r)
-                .unwrap_or_else(|| format!("{} {} {}", l, operator_to_str(operator), r));
+                .expect("generated binary expression should parse");
             ExprValue::new(expr, prec)
         }
         InstructionValue::UnaryExpression {
@@ -14911,14 +14911,8 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             ..
         } => {
             let expr = codegen_place_with_min_prec(cx, operand, ExprPrecedence::Unary);
-            let op = unary_operator_to_str(operator);
-            let rendered = render_unary_expression_ast(*operator, &expr).unwrap_or_else(|| {
-                if op.chars().all(|c| c.is_alphanumeric()) {
-                    format!("{} {}", op, expr)
-                } else {
-                    format!("{}{}", op, expr)
-                }
-            });
+            let rendered = render_unary_expression_ast(*operator, &expr)
+                .expect("generated unary expression should parse");
             ExprValue::new(rendered, ExprPrecedence::Unary)
         }
         InstructionValue::CallExpression {
@@ -15208,7 +15202,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
         } => {
             let v = codegen_place_to_expression(cx, val);
             let expr = render_global_store_expression_ast(name, &v)
-                .unwrap_or_else(|| format!("{} = {}", name, v));
+                .expect("generated global store should parse");
             ExprValue::new(expr, ExprPrecedence::Assignment)
         }
         InstructionValue::JsxExpression {
@@ -15283,18 +15277,18 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
         }
         InstructionValue::RegExpLiteral { pattern, flags, .. } => {
             let expr = render_regexp_literal_expression_ast(pattern, flags)
-                .unwrap_or_else(|| format!("/{}/{}", pattern, flags));
+                .expect("generated regexp literal should parse");
             ExprValue::primary(expr)
         }
         InstructionValue::MetaProperty { meta, property, .. } => {
             let expr = render_meta_property_expression_ast(meta, property)
-                .unwrap_or_else(|| format!("{}.{}", meta, property));
+                .expect("generated meta property should parse");
             ExprValue::primary(expr)
         }
         InstructionValue::Await { value: val, .. } => {
             let expr = codegen_place_to_expression(cx, val);
             let rendered = render_await_expression_ast(&expr)
-                .unwrap_or_else(|| format!("await {}", expr));
+                .expect("generated await expression should parse");
             ExprValue::new(rendered, ExprPrecedence::Unary)
         }
         InstructionValue::GetIterator { collection, .. } => {
@@ -15311,7 +15305,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             // `value` still maps to the LoadLocal that loaded the original variable.
             let expr = codegen_place_to_expression(cx, value);
             let rendered = render_update_expression_ast(&expr, *operation, false)
-                .unwrap_or_else(|| format!("{}{}", expr, update_op_to_str(operation)));
+                .expect("generated postfix update should parse");
             ExprValue::primary(rendered)
         }
         InstructionValue::PrefixUpdate {
@@ -15319,7 +15313,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
         } => {
             let expr = codegen_place_to_expression(cx, value);
             let rendered = render_update_expression_ast(&expr, *operation, true)
-                .unwrap_or_else(|| format!("{}{}", update_op_to_str(operation), expr));
+                .expect("generated prefix update should parse");
             ExprValue::primary(rendered)
         }
         InstructionValue::ReactiveSequenceExpression {
@@ -21467,51 +21461,6 @@ fn codegen_primitive(value: &PrimitiveValue) -> String {
 }
 
 // ---- Operator helpers ----
-
-fn operator_to_str(op: &BinaryOperator) -> &'static str {
-    match op {
-        BinaryOperator::Add => "+",
-        BinaryOperator::Sub => "-",
-        BinaryOperator::Mul => "*",
-        BinaryOperator::Div => "/",
-        BinaryOperator::Mod => "%",
-        BinaryOperator::Exp => "**",
-        BinaryOperator::StrictEq => "===",
-        BinaryOperator::StrictNotEq => "!==",
-        BinaryOperator::Eq => "==",
-        BinaryOperator::NotEq => "!=",
-        BinaryOperator::Lt => "<",
-        BinaryOperator::LtEq => "<=",
-        BinaryOperator::Gt => ">",
-        BinaryOperator::GtEq => ">=",
-        BinaryOperator::BitAnd => "&",
-        BinaryOperator::BitOr => "|",
-        BinaryOperator::BitXor => "^",
-        BinaryOperator::LShift => "<<",
-        BinaryOperator::RShift => ">>",
-        BinaryOperator::URShift => ">>>",
-        BinaryOperator::In => "in",
-        BinaryOperator::InstanceOf => "instanceof",
-    }
-}
-
-fn unary_operator_to_str(op: &UnaryOperator) -> &'static str {
-    match op {
-        UnaryOperator::Minus => "-",
-        UnaryOperator::Plus => "+",
-        UnaryOperator::Not => "!",
-        UnaryOperator::BitNot => "~",
-        UnaryOperator::TypeOf => "typeof",
-        UnaryOperator::Void => "void",
-    }
-}
-
-fn update_op_to_str(op: &UpdateOperator) -> &'static str {
-    match op {
-        UpdateOperator::Increment => "++",
-        UpdateOperator::Decrement => "--",
-    }
-}
 
 /// Format a property access expression, using dot notation for string properties
 /// and bracket notation for numeric properties. Supports optional chaining.
