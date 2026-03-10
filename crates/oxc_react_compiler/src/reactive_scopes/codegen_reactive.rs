@@ -3550,29 +3550,24 @@ fn codegen_block_no_reset_with_options(
                     "{}[{}] = {}",
                     cache_var, dep_slot, dep_expr
                 ))
-                .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, dep_slot, dep_expr)),
+                .expect("scope bridge dependency store should stay on AST path"),
             );
             consequent.push_str(
                 &render_reactive_expression_statement_ast(&format!(
                     "{}[{}] = {}",
                     cache_var, value_slot, target_name
                 ))
-                .unwrap_or_else(|| format!("{}[{}] = {};\n", cache_var, value_slot, target_name)),
+                .expect("scope bridge value store should stay on AST path"),
             );
             let alternate = render_reactive_assignment_statement_ast(
                 &target_name,
                 &format!("{}[{}]", cache_var, value_slot),
             )
-            .unwrap_or_else(|| format!("{} = {}[{}];\n", target_name, cache_var, value_slot));
+            .expect("scope bridge cache load should stay on AST path");
             let guard_test = format!("{}[{}] !== {}", cache_var, dep_slot, dep_expr);
             output.push_str(
                 &render_reactive_if_statement_ast(&guard_test, &consequent, Some(&alternate))
-                    .unwrap_or_else(|| {
-                        format!(
-                            "if ({}) {{\n{}}} else {{\n{}}}\n",
-                            guard_test, consequent, alternate
-                        )
-                    }),
+                    .expect("scope bridge guard should stay on AST path"),
             );
             last_source_end_line = None;
             i += 1;
