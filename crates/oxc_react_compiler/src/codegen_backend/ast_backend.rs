@@ -2968,6 +2968,17 @@ fn try_build_function_body_from_shape<'a>(
                 )),
             ))
         }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnExpression(
+            expression_source,
+        ) => {
+            let expression = parse_expression_source(allocator, source_type, expression_source)
+                .ok()?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_return(SPAN, Some(expression))),
+            ))
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
             value_name,
             value_kind,
@@ -6780,6 +6791,38 @@ function Component(props) {
 
         assert!(rewritten.contains("function Foo(props) {"));
         assert!(rewritten.contains("return value;"));
+    }
+
+    #[test]
+    fn builds_return_expression_body_from_shape_without_generated_source() {
+        let source = "function Foo(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "return [props.left, props.right];",
+            &["props"],
+            false,
+        );
+        compiled_function.generated_body = None;
+        compiled_function.generated_body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnExpression(
+                "[props.left, props.right]".to_string(),
+            );
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("function Foo(props) {"));
+        assert!(rewritten.contains("return [props.left, props.right];"));
     }
 
     #[test]

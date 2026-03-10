@@ -155,6 +155,7 @@ pub struct CachePrologue {
 pub enum GeneratedBodyShape {
     Unknown,
     ReturnIdentifier(String),
+    ReturnExpression(String),
     SingleSlotMemoizedReturn {
         value_name: String,
         value_kind: ast::VariableDeclarationKind,
@@ -982,9 +983,15 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
 
         if let [ast::Statement::ReturnStatement(return_stmt)] = statements.as_slice()
             && let Some(argument) = return_stmt.argument.as_ref()
-            && let ast::Expression::Identifier(identifier) = argument.without_parentheses()
         {
-            return GeneratedBodyShape::ReturnIdentifier(identifier.name.to_string());
+            return match argument.without_parentheses() {
+                ast::Expression::Identifier(identifier) => {
+                    GeneratedBodyShape::ReturnIdentifier(identifier.name.to_string())
+                }
+                _ => GeneratedBodyShape::ReturnExpression(
+                    codegen_expression_with_flow_cast_restore(argument),
+                ),
+            };
         }
 
         if statements.len() != 5 {
@@ -21846,6 +21853,19 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 Some(builder.expression_identifier(SPAN, builder.ident(name))),
             )),
         )),
+        GeneratedBodyShape::ReturnExpression(expression_source) => {
+            let expression = parse_expression_for_ast_codegen(
+                allocator,
+                SourceType::mjs().with_jsx(true),
+                expression_source,
+            )
+            .ok()?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_return(SPAN, Some(expression))),
+            ))
+        }
         GeneratedBodyShape::SingleSlotMemoizedReturn {
             value_name,
             value_kind,

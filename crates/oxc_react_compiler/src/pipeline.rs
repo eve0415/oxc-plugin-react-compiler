@@ -1196,6 +1196,11 @@ fn codegen_outlined_function(
                     *name = to.to_string();
                 }
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnExpression(
+                expression,
+            ) => {
+                *expression = replace_identifier_tokens(expression, from, to);
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
                 value_name,
                 temp_name,
@@ -1402,8 +1407,19 @@ fn validate_outlined_function_codegen(
     Ok(())
 }
 
-fn outlined_function_needs_rendered_body(rendered_body: &str, hir_function: &HIRFunction) -> bool {
-    !compiled_function_body_matches_hir(rendered_body, hir_function)
+fn outlined_function_needs_backend_render(
+    outlined_function: &CompiledOutlinedFunction,
+    hir_function: &HIRFunction,
+) -> bool {
+    !matches!(
+        outlined_function.body_shape,
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown
+    ) || outlined_function
+        .body
+        .as_deref()
+        .is_some_and(|rendered_body| {
+            !compiled_function_body_matches_hir(rendered_body, hir_function)
+        })
 }
 
 fn compiled_function_body_matches_hir(generated_body: &str, hir_function: &HIRFunction) -> bool {
@@ -5807,11 +5823,7 @@ fn try_compile_function<'a>(
             FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
             return Ok(None);
         };
-        if outlined_function
-            .body
-            .as_deref()
-            .is_some_and(|body| outlined_function_needs_rendered_body(body, &of.func))
-        {
+        if outlined_function_needs_backend_render(&outlined_function, &of.func) {
             outlined.push(outlined_function);
         }
     }
@@ -6032,11 +6044,7 @@ fn try_compile_function_with_name<'a>(
             FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
             return Ok(None);
         };
-        if outlined_function
-            .body
-            .as_deref()
-            .is_some_and(|body| outlined_function_needs_rendered_body(body, &of.func))
-        {
+        if outlined_function_needs_backend_render(&outlined_function, &of.func) {
             outlined.push(outlined_function);
         }
     }
@@ -6265,11 +6273,7 @@ fn try_compile_arrow<'a>(
             FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
             return Ok(None);
         };
-        if outlined_function
-            .body
-            .as_deref()
-            .is_some_and(|body| outlined_function_needs_rendered_body(body, &of.func))
-        {
+        if outlined_function_needs_backend_render(&outlined_function, &of.func) {
             outlined.push(outlined_function);
         }
     }
