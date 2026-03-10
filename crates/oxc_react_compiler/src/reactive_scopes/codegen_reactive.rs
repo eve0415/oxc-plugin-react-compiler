@@ -15447,7 +15447,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
                 &FunctionExpressionType::FunctionExpression,
                 None,
             )
-            .unwrap_or_else(|| "/* unexpected */".to_string());
+            .expect("object method should stay on AST path");
             ExprValue::primary(expr)
         }
         InstructionValue::TaggedTemplateExpression {
