@@ -17375,7 +17375,9 @@ fn strip_optional_chain_receiver_parens(expression: String) -> String {
         return expression;
     };
     let suffix = &trimmed[after_paren..];
-    if !inner.contains("?.") || !(suffix.starts_with('.') || suffix.starts_with('[')) {
+    if !rendered_expr_contains_optional_chain(&inner)
+        || !(suffix.starts_with('.') || suffix.starts_with('['))
+    {
         return expression;
     }
     format!("{}{suffix}", inner.trim())
@@ -19089,7 +19091,7 @@ fn dedupe_dependency_paths_with_roots(
             if other == path || !is_dependency_prefix(path, other) {
                 continue;
             }
-            if other.contains("?.") {
+            if rendered_expr_contains_optional_chain(other) {
                 has_optional_child = true;
             }
             if let Some(key) = immediate_child_dependency_key(path, other) {
@@ -22683,6 +22685,7 @@ mod tests {
         rendered_expr_is_function_like, rendered_expr_is_jsx_like,
         rendered_expr_root_identifier_name,
         rendered_expr_contains_push_call_on_target,
+        strip_optional_chain_receiver_parens,
         widen_member_dep_expr_to_root,
         parse_rendered_expression_ast,
         render_function_expression_ast,
@@ -23010,6 +23013,18 @@ mod tests {
         assert_eq!(widen_member_dep_expr_to_root("foo.bar.baz").as_deref(), Some("foo"));
         assert_eq!(widen_member_dep_expr_to_root("foo?.bar"), None);
         assert_eq!(widen_member_dep_expr_to_root("foo[bar]"), None);
+    }
+
+    #[test]
+    fn strips_optional_chain_receiver_parens_structurally() {
+        assert_eq!(
+            strip_optional_chain_receiver_parens("(foo?.bar).baz".to_string()),
+            "foo?.bar.baz"
+        );
+        assert_eq!(
+            strip_optional_chain_receiver_parens("(foo.bar).baz".to_string()),
+            "(foo.bar).baz"
+        );
     }
 
     #[test]
