@@ -5183,7 +5183,8 @@ fn maybe_codegen_fused_nullish_self_reassign(
     let lhs = codegen_instruction_value_ev(cx, &first_instr.value)
         .wrap_if_needed(ExprPrecedence::NullishCoalescing);
     let rhs = codegen_place_with_min_prec(cx, right_place, ExprPrecedence::NullishCoalescing);
-    let fused_expr = format!("{} ?? {}", lhs, rhs);
+    let fused_expr =
+        render_logical_expression_ast(&lhs, LogicalOperator::NullishCoalescing, &rhs)?;
 
     if first_lvalue.identifier.name.is_none() {
         let ev = ExprValue::new(fused_expr, ExprPrecedence::NullishCoalescing);
