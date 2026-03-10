@@ -2978,6 +2978,55 @@ fn build_generated_binding_statements<'a>(
     Some(statements)
 }
 
+fn expression_to_simple_assignment_target<'a>(
+    builder: AstBuilder<'a>,
+    expression: ast::Expression<'a>,
+) -> Option<ast::SimpleAssignmentTarget<'a>> {
+    match expression {
+        ast::Expression::ParenthesizedExpression(parenthesized) => {
+            expression_to_simple_assignment_target(builder, parenthesized.unbox().expression)
+        }
+        ast::Expression::Identifier(identifier) => Some(
+            builder.simple_assignment_target_assignment_target_identifier(SPAN, identifier.name),
+        ),
+        ast::Expression::ComputedMemberExpression(member) => {
+            Some(ast::SimpleAssignmentTarget::from(
+                ast::MemberExpression::ComputedMemberExpression(member),
+            ))
+        }
+        ast::Expression::StaticMemberExpression(member) => Some(ast::SimpleAssignmentTarget::from(
+            ast::MemberExpression::StaticMemberExpression(member),
+        )),
+        ast::Expression::PrivateFieldExpression(member) => Some(ast::SimpleAssignmentTarget::from(
+            ast::MemberExpression::PrivateFieldExpression(member),
+        )),
+        _ => None,
+    }
+}
+
+fn build_generated_assignment_statements<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    assignments: &[crate::reactive_scopes::codegen_reactive::GeneratedAssignment],
+) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
+    let mut statements = builder.vec();
+    for assignment in assignments {
+        let target_expression =
+            parse_expression_source(allocator, source_type, &assignment.target).ok()?;
+        let target = ast::AssignmentTarget::from(expression_to_simple_assignment_target(
+            builder,
+            target_expression,
+        )?);
+        let value = parse_expression_source(allocator, source_type, &assignment.value).ok()?;
+        statements.push(builder.statement_expression(
+            SPAN,
+            builder.expression_assignment(SPAN, AssignmentOperator::Assign, target, value),
+        ));
+    }
+    Some(statements)
+}
+
 fn try_build_function_body_from_shape<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
@@ -3082,6 +3131,7 @@ fn try_build_function_body_from_shape<'a>(
             value_kind,
             value_slot,
             memoized_bindings,
+            memoized_assignments,
             memoized_expr,
         } => {
             let cache_binding_name = &cache_prologue?.binding_name;
@@ -3092,6 +3142,12 @@ fn try_build_function_body_from_shape<'a>(
                 source_type,
                 memoized_bindings,
             )?;
+            consequent.extend(build_generated_assignment_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_assignments,
+            )?);
             consequent.push(build_identifier_assignment_statement(
                 builder,
                 value_name,
@@ -3158,6 +3214,7 @@ fn try_build_function_body_from_shape<'a>(
             dep_expr,
             value_slot,
             memoized_bindings,
+            memoized_assignments,
             memoized_expr,
         } => {
             let cache_binding_name = &cache_prologue?.binding_name;
@@ -3169,6 +3226,12 @@ fn try_build_function_body_from_shape<'a>(
                 source_type,
                 memoized_bindings,
             )?;
+            consequent.extend(build_generated_assignment_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_assignments,
+            )?);
             consequent.push(build_identifier_assignment_statement(
                 builder,
                 value_name,
@@ -3240,6 +3303,7 @@ fn try_build_function_body_from_shape<'a>(
             deps,
             value_slot,
             memoized_bindings,
+            memoized_assignments,
             memoized_expr,
         } => {
             let cache_binding_name = &cache_prologue?.binding_name;
@@ -3270,6 +3334,12 @@ fn try_build_function_body_from_shape<'a>(
                 source_type,
                 memoized_bindings,
             )?;
+            consequent.extend(build_generated_assignment_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_assignments,
+            )?);
             consequent.push(build_identifier_assignment_statement(
                 builder,
                 value_name,
@@ -3413,6 +3483,7 @@ fn try_build_function_body_from_shape<'a>(
             value_kind,
             temp_name,
             memoized_bindings,
+            memoized_assignments,
             memoized_expr,
         } => {
             let cache_binding_name = &cache_prologue?.binding_name;
@@ -3435,6 +3506,12 @@ fn try_build_function_body_from_shape<'a>(
                 source_type,
                 memoized_bindings,
             )?;
+            consequent.extend(build_generated_assignment_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_assignments,
+            )?);
             consequent.push(build_identifier_assignment_statement(
                 builder,
                 memo_name,
@@ -7366,6 +7443,7 @@ function Component(props) {
                         dep_expr: "props.items".to_string(),
                         value_slot: 1,
                         memoized_bindings: vec![],
+                        memoized_assignments: vec![],
                         memoized_expr: "props.items.map(_temp)".to_string(),
                     },
                 ),
@@ -7422,6 +7500,7 @@ function Component(props) {
                         dep_expr: "props.items".to_string(),
                         value_slot: 1,
                         memoized_bindings: vec![],
+                        memoized_assignments: vec![],
                         memoized_expr: "props.items.map(f)".to_string(),
                     },
                 ),
@@ -7467,6 +7546,7 @@ function Component(props) {
                 value_kind: ast::VariableDeclarationKind::Let,
                 value_slot: 0,
                 memoized_bindings: vec![],
+                memoized_assignments: vec![],
                 memoized_expr: "[props.left, props.right]".to_string(),
             };
         compiled_function.needs_cache_import = true;
@@ -7484,6 +7564,68 @@ function Component(props) {
         assert!(rewritten.contains("if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {"));
         assert!(rewritten.contains("$[0] = value;"));
         assert!(rewritten.contains("return value;"));
+    }
+
+    #[test]
+    fn builds_memoized_branch_assignments_from_shape_without_generated_source() {
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        let body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ZeroDependencyMemoizedReturn {
+                value_name: "value".to_string(),
+                value_kind: ast::VariableDeclarationKind::Let,
+                value_slot: 0,
+                memoized_bindings: vec![
+                    crate::reactive_scopes::codegen_reactive::GeneratedBinding {
+                        kind: ast::VariableDeclarationKind::Const,
+                        name: "x".to_string(),
+                        expression: "[{}]".to_string(),
+                    },
+                    crate::reactive_scopes::codegen_reactive::GeneratedBinding {
+                        kind: ast::VariableDeclarationKind::Const,
+                        name: "y".to_string(),
+                        expression: "x.map(_temp)".to_string(),
+                    },
+                ],
+                memoized_assignments: vec![
+                    crate::reactive_scopes::codegen_reactive::GeneratedAssignment {
+                        target: "y[0].flag".to_string(),
+                        value: "true".to_string(),
+                    },
+                ],
+                memoized_expr: "[x, y]".to_string(),
+            };
+        let function_body = super::try_build_function_body_from_shape(
+            builder,
+            &allocator,
+            source_type_for_filename("fixture.jsx"),
+            &body_shape,
+            Some(&crate::reactive_scopes::codegen_reactive::CachePrologue {
+                binding_name: "$".to_string(),
+                size: 1,
+                fast_refresh: None,
+            }),
+        )
+        .expect("expected AST-native body");
+        let rewritten = function_body
+            .statements
+            .iter()
+            .map(|statement| {
+                codegen_statement_source(
+                    &allocator,
+                    source_type_for_filename("fixture.jsx"),
+                    statement,
+                )
+                .trim_end_matches('\n')
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rewritten.contains("const x = [{}];"));
+        assert!(rewritten.contains("const y = x.map(_temp);"));
+        assert!(rewritten.contains("y[0].flag = true;"));
+        assert!(rewritten.contains("value = [x, y];"));
     }
 
     #[test]
@@ -7514,6 +7656,7 @@ function Component(props) {
                 dep_expr: "props.items".to_string(),
                 value_slot: 1,
                 memoized_bindings: vec![],
+                memoized_assignments: vec![],
                 memoized_expr: "props.items.map(_temp)".to_string(),
             };
         compiled_function.needs_cache_import = true;
@@ -7565,6 +7708,7 @@ function Component(props) {
                 ],
                 value_slot: 2,
                 memoized_bindings: vec![],
+                memoized_assignments: vec![],
                 memoized_expr: "[props.left, props.right]".to_string(),
             };
         compiled_function.needs_cache_import = true;
@@ -7610,6 +7754,7 @@ function Component(props) {
                 value_kind: ast::VariableDeclarationKind::Let,
                 temp_name: "t0".to_string(),
                 memoized_bindings: vec![],
+                memoized_assignments: vec![],
                 memoized_expr: "props.value".to_string(),
             };
         compiled_function.needs_cache_import = true;

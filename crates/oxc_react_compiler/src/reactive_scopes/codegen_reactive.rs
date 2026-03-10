@@ -171,6 +171,7 @@ pub enum GeneratedBodyShape {
         value_kind: ast::VariableDeclarationKind,
         value_slot: u32,
         memoized_bindings: Vec<GeneratedBinding>,
+        memoized_assignments: Vec<GeneratedAssignment>,
         memoized_expr: String,
     },
     SingleDependencyMemoizedReturn {
@@ -180,6 +181,7 @@ pub enum GeneratedBodyShape {
         dep_expr: String,
         value_slot: u32,
         memoized_bindings: Vec<GeneratedBinding>,
+        memoized_assignments: Vec<GeneratedAssignment>,
         memoized_expr: String,
     },
     MultiDependencyMemoizedReturn {
@@ -188,6 +190,7 @@ pub enum GeneratedBodyShape {
         deps: Vec<(u32, String)>,
         value_slot: u32,
         memoized_bindings: Vec<GeneratedBinding>,
+        memoized_assignments: Vec<GeneratedAssignment>,
         memoized_expr: String,
     },
     AliasedReturn {
@@ -205,6 +208,7 @@ pub enum GeneratedBodyShape {
         value_kind: ast::VariableDeclarationKind,
         temp_name: String,
         memoized_bindings: Vec<GeneratedBinding>,
+        memoized_assignments: Vec<GeneratedAssignment>,
         memoized_expr: String,
     },
 }
@@ -214,6 +218,12 @@ pub struct GeneratedBinding {
     pub kind: ast::VariableDeclarationKind,
     pub name: String,
     pub expression: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedAssignment {
+    pub target: String,
+    pub value: String,
 }
 
 pub struct CodegenResult {
@@ -1090,6 +1100,24 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
         (bindings, prefix_len)
     }
 
+    fn collect_leading_simple_assignments(
+        statements: &[ast::Statement<'_>],
+    ) -> (Vec<GeneratedAssignment>, usize) {
+        let mut assignments = Vec::new();
+        let mut prefix_len = 0usize;
+        for statement in statements {
+            let Some((target, value)) = assignment_statement_parts(statement) else {
+                break;
+            };
+            assignments.push(GeneratedAssignment {
+                target: codegen_assignment_target_with_flow_cast_restore(target),
+                value: codegen_expression_with_flow_cast_restore(value),
+            });
+            prefix_len += 1;
+        }
+        (assignments, prefix_len)
+    }
+
     for source_type in [
         SourceType::mjs().with_jsx(true),
         SourceType::ts().with_jsx(true),
@@ -1241,18 +1269,23 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             {
                 let (memoized_bindings, binding_prefix_len) =
                     collect_leading_initialized_bindings(&consequent_block.body);
-                if consequent_block.body.len() != binding_prefix_len + 2 {
+                let (memoized_assignments, assignment_prefix_len) =
+                    collect_leading_simple_assignments(
+                        &consequent_block.body[binding_prefix_len..],
+                    );
+                let setup_len = binding_prefix_len + assignment_prefix_len;
+                if consequent_block.body.len() != setup_len + 2 {
                     continue;
                 }
                 let Some(memoized_expr) = statement_assigns_identifier_to_expression(
-                    &consequent_block.body[binding_prefix_len],
+                    &consequent_block.body[setup_len],
                     &value_name,
                 )
                 .map(codegen_expression_with_flow_cast_restore) else {
                     continue;
                 };
                 if !statement_assigns_cache_slot_from_identifier(
-                    &consequent_block.body[binding_prefix_len + 1],
+                    &consequent_block.body[setup_len + 1],
                     cache_var,
                     value_slot,
                     &value_name,
@@ -1270,6 +1303,7 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
                     value_kind: value_decl.kind,
                     value_slot,
                     memoized_bindings,
+                    memoized_assignments,
                     memoized_expr,
                 };
             }
@@ -1278,11 +1312,16 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             {
                 let (memoized_bindings, binding_prefix_len) =
                     collect_leading_initialized_bindings(&consequent_block.body);
-                if consequent_block.body.len() != binding_prefix_len + dependency_guards.len() + 2 {
+                let (memoized_assignments, assignment_prefix_len) =
+                    collect_leading_simple_assignments(
+                        &consequent_block.body[binding_prefix_len..],
+                    );
+                let setup_len = binding_prefix_len + assignment_prefix_len;
+                if consequent_block.body.len() != setup_len + dependency_guards.len() + 2 {
                     continue;
                 }
                 let Some(memoized_expr) = statement_assigns_identifier_to_expression(
-                    &consequent_block.body[binding_prefix_len],
+                    &consequent_block.body[setup_len],
                     &value_name,
                 )
                 .map(codegen_expression_with_flow_cast_restore) else {
@@ -1296,9 +1335,9 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
                 for (index, (expected_cache_var, dep_slot, dep_expr)) in
                     dependency_guards.iter().enumerate()
                 {
-                    let Some((dep_target, dep_value)) = assignment_statement_parts(
-                        &consequent_block.body[binding_prefix_len + index + 1],
-                    ) else {
+                    let Some((dep_target, dep_value)) =
+                        assignment_statement_parts(&consequent_block.body[setup_len + index + 1])
+                    else {
                         guards_match = false;
                         break;
                     };
@@ -1315,7 +1354,7 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
                     continue;
                 }
                 let Some((value_target, value_value)) = assignment_statement_parts(
-                    &consequent_block.body[binding_prefix_len + dependency_guards.len() + 1],
+                    &consequent_block.body[setup_len + dependency_guards.len() + 1],
                 ) else {
                     continue;
                 };
@@ -1342,6 +1381,7 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
                     deps: dep_pairs,
                     value_slot,
                     memoized_bindings,
+                    memoized_assignments,
                     memoized_expr,
                 };
             }
@@ -1351,7 +1391,10 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             }
             let (memoized_bindings, binding_prefix_len) =
                 collect_leading_initialized_bindings(&consequent_block.body);
-            if consequent_block.body.len() != binding_prefix_len + 3 {
+            let (memoized_assignments, assignment_prefix_len) =
+                collect_leading_simple_assignments(&consequent_block.body[binding_prefix_len..]);
+            let setup_len = binding_prefix_len + assignment_prefix_len;
+            if consequent_block.body.len() != setup_len + 3 {
                 continue;
             }
             let Some((cache_var, dep_slot)) = expression_cache_access(&test.left) else {
@@ -1359,14 +1402,14 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             };
             let dep_expr = codegen_expression_with_flow_cast_restore(&test.right);
             let Some(memoized_expr) = statement_assigns_identifier_to_expression(
-                &consequent_block.body[binding_prefix_len],
+                &consequent_block.body[setup_len],
                 &value_name,
             )
             .map(codegen_expression_with_flow_cast_restore) else {
                 continue;
             };
             let Some((dep_target, dep_value)) =
-                assignment_statement_parts(&consequent_block.body[binding_prefix_len + 1])
+                assignment_statement_parts(&consequent_block.body[setup_len + 1])
             else {
                 continue;
             };
@@ -1376,7 +1419,7 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
                 continue;
             }
             let Some((value_target, value_value)) =
-                assignment_statement_parts(&consequent_block.body[binding_prefix_len + 2])
+                assignment_statement_parts(&consequent_block.body[setup_len + 2])
             else {
                 continue;
             };
@@ -1406,6 +1449,7 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
                 dep_expr,
                 value_slot,
                 memoized_bindings,
+                memoized_assignments,
                 memoized_expr,
             };
         }
@@ -1468,20 +1512,22 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
         };
         let (memoized_bindings, binding_prefix_len) =
             collect_leading_initialized_bindings(&consequent_block.body);
-        if consequent_block.body.len() != binding_prefix_len + 2 || alternate_block.body.len() != 1
-        {
+        let (memoized_assignments, assignment_prefix_len) =
+            collect_leading_simple_assignments(&consequent_block.body[binding_prefix_len..]);
+        let setup_len = binding_prefix_len + assignment_prefix_len;
+        if consequent_block.body.len() != setup_len + 2 || alternate_block.body.len() != 1 {
             continue;
         }
 
         let Some(memoized_expr) = statement_assigns_identifier_to_expression(
-            &consequent_block.body[binding_prefix_len],
+            &consequent_block.body[setup_len],
             &memo_var,
         )
         .map(codegen_expression_with_flow_cast_restore) else {
             continue;
         };
         if !statement_assigns_cache_slot_from_identifier(
-            &consequent_block.body[binding_prefix_len + 1],
+            &consequent_block.body[setup_len + 1],
             &cache_var,
             0,
             &memo_var,
@@ -1544,6 +1590,7 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
             value_kind: value_decl.kind,
             temp_name,
             memoized_bindings,
+            memoized_assignments,
             memoized_expr,
         };
     }
@@ -18097,6 +18144,9 @@ fn expression_to_simple_assignment_target_ast<'a>(
     expression: ast::Expression<'a>,
 ) -> Option<ast::SimpleAssignmentTarget<'a>> {
     match expression {
+        ast::Expression::ParenthesizedExpression(parenthesized) => {
+            expression_to_simple_assignment_target_ast(builder, parenthesized.unbox().expression)
+        }
         ast::Expression::Identifier(identifier) => Some(
             builder.simple_assignment_target_assignment_target_identifier(SPAN, identifier.name),
         ),
@@ -22239,6 +22289,12 @@ fn codegen_statement_with_flow_cast_restore<'a>(statement: &ast::Statement<'a>) 
     restore_flow_cast_marker_calls(&codegen_statement_with_oxc(statement))
 }
 
+fn codegen_assignment_target_with_flow_cast_restore<'a>(
+    target: &ast::AssignmentTarget<'a>,
+) -> String {
+    restore_flow_cast_marker_calls(&codegen_assignment_target_with_oxc(target))
+}
+
 fn codegen_binding_pattern_with_flow_cast_restore<'a>(pattern: &ast::BindingPattern<'a>) -> String {
     restore_flow_cast_marker_calls(&codegen_binding_pattern_with_oxc(pattern))
 }
@@ -22280,6 +22336,34 @@ fn build_generated_binding_statements_ast<'a>(
                 )),
                 false,
             ),
+        ));
+    }
+    Some(statements)
+}
+
+fn build_generated_assignment_statements_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    assignments: &[GeneratedAssignment],
+) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
+    let mut statements = builder.vec();
+    for assignment in assignments {
+        let target_expression = parse_expression_for_ast_codegen(
+            allocator,
+            SourceType::mjs().with_jsx(true),
+            &assignment.target,
+        )
+        .ok()?;
+        let target = expression_to_assignment_target_ast(builder, target_expression)?;
+        let value = parse_expression_for_ast_codegen(
+            allocator,
+            SourceType::mjs().with_jsx(true),
+            &assignment.value,
+        )
+        .ok()?;
+        statements.push(builder.statement_expression(
+            SPAN,
+            builder.expression_assignment(SPAN, AssignmentOperator::Assign, target, value),
         ));
     }
     Some(statements)
@@ -22416,6 +22500,7 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             value_kind,
             value_slot,
             memoized_bindings,
+            memoized_assignments,
             memoized_expr,
         } => {
             let cache_binding_name = &spec.cache_prologue?.binding_name;
@@ -22427,6 +22512,11 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             .ok()?;
             let mut consequent =
                 build_generated_binding_statements_ast(builder, allocator, memoized_bindings)?;
+            consequent.extend(build_generated_assignment_statements_ast(
+                builder,
+                allocator,
+                memoized_assignments,
+            )?);
             consequent.push(build_identifier_assignment_statement_ast_with_expression(
                 builder,
                 value_name,
@@ -22515,6 +22605,7 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             dep_expr,
             value_slot,
             memoized_bindings,
+            memoized_assignments,
             memoized_expr,
         } => {
             let cache_binding_name = &spec.cache_prologue?.binding_name;
@@ -22532,6 +22623,11 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             .ok()?;
             let mut consequent =
                 build_generated_binding_statements_ast(builder, allocator, memoized_bindings)?;
+            consequent.extend(build_generated_assignment_statements_ast(
+                builder,
+                allocator,
+                memoized_assignments,
+            )?);
             consequent.push(build_identifier_assignment_statement_ast_with_expression(
                 builder,
                 value_name,
@@ -22630,6 +22726,7 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             deps,
             value_slot,
             memoized_bindings,
+            memoized_assignments,
             memoized_expr,
         } => {
             let cache_binding_name = &spec.cache_prologue?.binding_name;
@@ -22680,6 +22777,11 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             }
             let mut consequent =
                 build_generated_binding_statements_ast(builder, allocator, memoized_bindings)?;
+            consequent.extend(build_generated_assignment_statements_ast(
+                builder,
+                allocator,
+                memoized_assignments,
+            )?);
             consequent.push(build_identifier_assignment_statement_ast_with_expression(
                 builder,
                 value_name,
@@ -22855,6 +22957,7 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             value_kind,
             temp_name,
             memoized_bindings,
+            memoized_assignments,
             memoized_expr,
         } => {
             let cache_binding_name = &spec.cache_prologue?.binding_name;
@@ -22878,6 +22981,11 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             );
             let mut consequent =
                 build_generated_binding_statements_ast(builder, allocator, memoized_bindings)?;
+            consequent.extend(build_generated_assignment_statements_ast(
+                builder,
+                allocator,
+                memoized_assignments,
+            )?);
             consequent.push(build_identifier_assignment_statement_ast_with_expression(
                 builder, memo_name, memo_expr,
             ));
@@ -23252,6 +23360,16 @@ fn codegen_statement_with_oxc(statement: &ast::Statement<'_>) -> String {
         .code
         .trim_end()
         .to_string()
+}
+
+fn codegen_assignment_target_with_oxc(target: &ast::AssignmentTarget<'_>) -> String {
+    let mut codegen = Codegen::new().with_options(CodegenOptions {
+        indent_char: IndentChar::Space,
+        indent_width: 2,
+        ..CodegenOptions::default()
+    });
+    target.r#gen(&mut codegen, CodegenPrintContext::default());
+    codegen.into_source_text()
 }
 
 fn codegen_statements_with_oxc(statements: &[ast::Statement<'_>]) -> String {

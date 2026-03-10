@@ -1224,6 +1224,7 @@ fn codegen_outlined_function(
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ZeroDependencyMemoizedReturn {
                 value_name,
                 memoized_bindings,
+                memoized_assignments,
                 memoized_expr,
                 ..
             } => {
@@ -1236,12 +1237,17 @@ fn codegen_outlined_function(
                     }
                     binding.expression = replace_identifier_tokens(&binding.expression, from, to);
                 }
+                for assignment in memoized_assignments {
+                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
+                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
+                }
                 *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
             }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleDependencyMemoizedReturn {
                 value_name,
                 dep_expr,
                 memoized_bindings,
+                memoized_assignments,
                 memoized_expr,
                 ..
             } => {
@@ -1255,12 +1261,17 @@ fn codegen_outlined_function(
                     }
                     binding.expression = replace_identifier_tokens(&binding.expression, from, to);
                 }
+                for assignment in memoized_assignments {
+                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
+                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
+                }
                 *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
             }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MultiDependencyMemoizedReturn {
                 value_name,
                 deps,
                 memoized_bindings,
+                memoized_assignments,
                 memoized_expr,
                 ..
             } => {
@@ -1275,6 +1286,10 @@ fn codegen_outlined_function(
                         binding.name = to.to_string();
                     }
                     binding.expression = replace_identifier_tokens(&binding.expression, from, to);
+                }
+                for assignment in memoized_assignments {
+                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
+                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
                 }
                 *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
             }
@@ -1308,6 +1323,7 @@ fn codegen_outlined_function(
                 value_name,
                 temp_name,
                 memoized_bindings,
+                memoized_assignments,
                 memoized_expr,
                 ..
             } => {
@@ -1322,6 +1338,10 @@ fn codegen_outlined_function(
                         binding.name = to.to_string();
                     }
                     binding.expression = replace_identifier_tokens(&binding.expression, from, to);
+                }
+                for assignment in memoized_assignments {
+                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
+                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
                 }
                 *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
             }
