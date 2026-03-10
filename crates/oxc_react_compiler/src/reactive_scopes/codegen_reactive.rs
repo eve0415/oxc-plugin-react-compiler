@@ -6263,11 +6263,8 @@ fn parse_dual_reassign_scope_branch(
         if trimmed.is_empty() {
             continue;
         }
-        if let Some(rhs) = trimmed
-            .strip_prefix(&format!("const {decl_name} = "))
-            .or_else(|| trimmed.strip_prefix(&format!("let {decl_name} = ")))
-            .and_then(|rhs| rhs.strip_suffix(';'))
-            .map(|rhs| rhs.trim().to_string())
+        if let Some((_, name, rhs)) = parse_named_temp_binding_line(trimmed)
+            && name == decl_name
         {
             decl_rhs = Some(rhs);
             continue;
