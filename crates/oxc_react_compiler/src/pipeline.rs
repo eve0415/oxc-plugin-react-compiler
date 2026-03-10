@@ -4918,95 +4918,6 @@ pub(crate) fn has_early_binding_reference(before: &str, ident: &str) -> bool {
     false
 }
 
-pub(crate) fn strip_directive_lines(body: &str, directives: &[String]) -> String {
-    if directives.is_empty() {
-        return body.to_string();
-    }
-    let allocator = oxc_allocator::Allocator::default();
-    if let Some((wrapper_prefix_len, function_body)) = parse_wrapped_function_body(&allocator, body) {
-        let expected_directives: std::collections::HashSet<&str> = directives
-            .iter()
-            .map(|directive| {
-                directive
-                    .trim()
-                    .trim_start_matches(['"', '\''])
-                    .trim_end_matches(['"', '\''])
-            })
-            .collect();
-        let mut last_directive_end = None;
-        for directive in &function_body.directives {
-            if !expected_directives.contains(directive.expression.value.as_str()) {
-                break;
-            }
-            last_directive_end = Some(directive.span.end as usize - wrapper_prefix_len);
-        }
-        if let Some(last_directive_end) = last_directive_end {
-            return body[last_directive_end..]
-                .trim_start_matches(['\n', '\r'])
-                .to_string();
-        }
-    }
-    let directive_lines: std::collections::HashSet<String> =
-        directives.iter().map(|d| format!("{};", d)).collect();
-    let mut out = String::with_capacity(body.len());
-    let mut first = true;
-    for line in body.lines() {
-        if directive_lines.contains(line.trim()) {
-            continue;
-        }
-        if !first {
-            out.push('\n');
-        }
-        out.push_str(line);
-        first = false;
-    }
-    out
-}
-
-fn parse_wrapped_function_body<'a>(
-    allocator: &'a oxc_allocator::Allocator,
-    body: &str,
-) -> Option<(usize, ast::FunctionBody<'a>)> {
-    let rewritten_flow_casts = rewrite_flow_cast_expressions(body);
-    let mut attempts = vec![
-        (oxc_span::SourceType::mjs().with_jsx(true), body.to_string()),
-        (oxc_span::SourceType::ts().with_jsx(true), body.to_string()),
-        (oxc_span::SourceType::tsx(), body.to_string()),
-    ];
-    if rewritten_flow_casts != body {
-        attempts.extend([
-            (
-                oxc_span::SourceType::mjs().with_jsx(true),
-                rewritten_flow_casts.clone(),
-            ),
-            (
-                oxc_span::SourceType::ts().with_jsx(true),
-                rewritten_flow_casts.clone(),
-            ),
-            (oxc_span::SourceType::tsx(), rewritten_flow_casts),
-        ]);
-    }
-
-    for (source_type, attempt_body) in attempts {
-        let wrapper_prefix = "function __codex_cache_strip() {\n";
-        let wrapper = format!("{wrapper_prefix}{}\n}}", attempt_body);
-        let parsed =
-            oxc_parser::Parser::new(allocator, allocator.alloc_str(&wrapper), source_type).parse();
-        if parsed.panicked || !parsed.errors.is_empty() {
-            continue;
-        }
-        let Some(ast::Statement::FunctionDeclaration(function)) = parsed.program.body.into_iter().next()
-        else {
-            continue;
-        };
-        let Some(body) = function.unbox().body else {
-            continue;
-        };
-        return Some((wrapper_prefix.len(), body.unbox()));
-    }
-    None
-}
-
 fn is_valid_js_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
@@ -5805,13 +5716,12 @@ fn try_compile_function<'a>(
     }
 
     let codegen_result = pipeline_output.codegen_result;
-    let directives = extract_emitted_directives(body);
     let PreparedGeneratedBody {
         generated_body,
         synthesized_default_param_cache,
         synthesized_hir_outlined_functions,
         cache_prologue,
-    } = prepare_generated_body(&codegen_result, &directives, &params_result.prefix_statements);
+    } = prepare_generated_body(&codegen_result, &params_result.prefix_statements);
     let normalize_use_fire_binding_temps =
         pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite;
 
@@ -5917,7 +5827,7 @@ fn try_compile_function<'a>(
         is_async: func.r#async,
         is_generator: func.generator,
         is_function_declaration,
-        directives,
+        directives: extract_emitted_directives(body),
         hir_function: Some(pipeline_output.final_hir_snapshot),
         cache_prologue,
         needs_function_hook_guard_wrapper: codegen_result.needs_function_hook_guard_wrapper,
@@ -6021,13 +5931,12 @@ fn try_compile_function_with_name<'a>(
     }
 
     let codegen_result = pipeline_output.codegen_result;
-    let directives = extract_emitted_directives(body);
     let PreparedGeneratedBody {
         generated_body,
         synthesized_default_param_cache,
         synthesized_hir_outlined_functions,
         cache_prologue,
-    } = prepare_generated_body(&codegen_result, &directives, &params_result.prefix_statements);
+    } = prepare_generated_body(&codegen_result, &params_result.prefix_statements);
     let normalize_use_fire_binding_temps =
         pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite;
 
@@ -6133,7 +6042,7 @@ fn try_compile_function_with_name<'a>(
         is_async: func.r#async,
         is_generator: func.generator,
         is_function_declaration: false,
-        directives,
+        directives: extract_emitted_directives(body),
         hir_function: Some(pipeline_output.final_hir_snapshot),
         cache_prologue,
         needs_function_hook_guard_wrapper: codegen_result.needs_function_hook_guard_wrapper,
@@ -6245,13 +6154,12 @@ fn try_compile_arrow<'a>(
     }
 
     let codegen_result = pipeline_output.codegen_result;
-    let directives = extract_emitted_directives(&arrow.body);
     let PreparedGeneratedBody {
         generated_body,
         synthesized_default_param_cache,
         synthesized_hir_outlined_functions,
         cache_prologue,
-    } = prepare_generated_body(&codegen_result, &directives, &params_result.prefix_statements);
+    } = prepare_generated_body(&codegen_result, &params_result.prefix_statements);
     let normalize_use_fire_binding_temps =
         pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite;
 
@@ -6357,7 +6265,7 @@ fn try_compile_arrow<'a>(
         is_async: arrow.r#async,
         is_generator: false,
         is_function_declaration: false,
-        directives,
+        directives: extract_emitted_directives(&arrow.body),
         hir_function: Some(pipeline_output.final_hir_snapshot),
         cache_prologue,
         needs_function_hook_guard_wrapper: codegen_result.needs_function_hook_guard_wrapper,
@@ -6541,7 +6449,6 @@ struct PreparedGeneratedBody {
 
 fn prepare_generated_body(
     codegen_result: &codegen_reactive::CodegenResult,
-    directives: &[String],
     prefix_statements: &[CompiledParamPrefixStatement],
 ) -> PreparedGeneratedBody {
     let mut generated_body = Some(codegen_result.body_without_cache_prologue.clone());
@@ -6553,9 +6460,6 @@ fn prepare_generated_body(
         generated_body = None;
         synthesized_default_param_cache = Some(synthesized_cache_plan);
         synthesized_hir_outlined_functions = synthesized_hir_outlined;
-    }
-    if let Some(body) = generated_body.as_mut() {
-        *body = strip_directive_lines(body, directives);
     }
     let cache_prologue = if synthesized_default_param_cache.is_some() {
         Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
@@ -7854,7 +7758,6 @@ mod tests {
 
     use super::{
         extract_emitted_directives, params_to_result, rewrite_inline_empty_arrow_callback,
-        strip_directive_lines,
     };
 
     #[test]
@@ -7911,30 +7814,6 @@ mod tests {
             extract_emitted_directives(body),
             vec!["\"use no forget\"", "\"use memo\""]
         );
-    }
-
-    #[test]
-    fn strip_directive_lines_removes_only_top_level_directives() {
-        let body = "\"use memo\";\nfunction inner() {\n  \"use memo\";\n  return 1;\n}\nreturn inner();";
-
-        let stripped = strip_directive_lines(body, &["\"use memo\"".to_string()]);
-
-        assert_eq!(
-            stripped,
-            "function inner() {\n  \"use memo\";\n  return 1;\n}\nreturn inner();"
-        );
-    }
-
-    #[test]
-    fn strip_directive_lines_removes_matching_directive_prefix() {
-        let body = "\"use no forget\";\n\"use memo\";\nreturn 1;";
-
-        let stripped = strip_directive_lines(
-            body,
-            &["\"use no forget\"".to_string(), "\"use memo\"".to_string()],
-        );
-
-        assert_eq!(stripped, "return 1;");
     }
 
     #[test]
