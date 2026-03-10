@@ -6172,9 +6172,7 @@ fn try_compile_function<'a>(
 
     let needs_cache_import =
         codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
-    let body_payload = if !needs_cache_import
-        && outlined_functions_are_hir_lowerable(&outlined, &pipeline_hir_outlined_functions)
-    {
+    let body_payload = if !needs_cache_import && outlined_functions_are_hir_lowerable(&outlined) {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
         CompiledBodyPayload::GeneratedString
@@ -6381,9 +6379,7 @@ fn try_compile_function_with_name<'a>(
 
     let needs_cache_import =
         codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
-    let body_payload = if !needs_cache_import
-        && outlined_functions_are_hir_lowerable(&outlined, &pipeline_hir_outlined_functions)
-    {
+    let body_payload = if !needs_cache_import && outlined_functions_are_hir_lowerable(&outlined) {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
         CompiledBodyPayload::GeneratedString
@@ -6598,9 +6594,7 @@ fn try_compile_arrow<'a>(
 
     let needs_cache_import =
         codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
-    let body_payload = if !needs_cache_import
-        && outlined_functions_are_hir_lowerable(&outlined, &pipeline_hir_outlined_functions)
-    {
+    let body_payload = if !needs_cache_import && outlined_functions_are_hir_lowerable(&outlined) {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
         CompiledBodyPayload::GeneratedString
@@ -6647,13 +6641,11 @@ struct ParamsResult {
 
 fn outlined_functions_are_hir_lowerable(
     outlined_functions: &[CompiledOutlinedFunction],
-    hir_outlined_functions: &[(String, HIRFunction)],
 ) -> bool {
-    outlined_functions.iter().all(|outlined| {
-        hir_outlined_functions
-            .iter()
-            .any(|(hir_name, _)| hir_name == &outlined.name)
-    })
+    // `outlined_functions` only retains rendered bodies that still differ from
+    // the HIR-lowered form. If any rendered outlined body remains, the parent
+    // function cannot be emitted purely from final HIR.
+    outlined_functions.is_empty()
 }
 
 fn extract_simple_default_binding_candidate(

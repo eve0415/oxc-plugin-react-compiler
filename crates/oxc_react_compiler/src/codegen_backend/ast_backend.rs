@@ -53,7 +53,6 @@ struct RenderedOutlinedFunction {
     body: String,
     is_async: bool,
     is_generator: bool,
-    hir_function: Option<crate::hir::types::HIRFunction>,
 }
 
 pub(crate) fn emit_module(
@@ -703,14 +702,6 @@ fn try_rewrite_compiled_statement_ast<'a>(
     let mut emitted_hir_outlined_names = HashSet::new();
     for outlined in outlined_functions {
         emitted_hir_outlined_names.insert(outlined.name.clone());
-        if let Some(hir_function) = outlined.hir_function.as_ref()
-            && let Some(statement) =
-                super::hir_to_ast::try_lower_function_declaration_ast(builder, hir_function)
-        {
-            statements.push(statement);
-            continue;
-        }
-
         statements.push(build_rendered_outlined_function_statement(
             builder,
             allocator,
@@ -3158,18 +3149,6 @@ fn is_basic_block_label_open_brace(line: &str) -> bool {
     !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit())
 }
 
-fn outlined_hir_matches_rendered_body(
-    rendered_body: &str,
-    hir_function: &crate::hir::types::HIRFunction,
-) -> bool {
-    let Some(lowered_body) = super::hir_to_ast::try_lower_function_body(hir_function) else {
-        return false;
-    };
-    let lowered = normalize_compiled_body_for_hir_match(&lowered_body);
-    let rendered = normalize_compiled_body_for_hir_match(rendered_body);
-    lowered == rendered
-}
-
 fn parse_compiled_function_body<'a>(
     allocator: &'a Allocator,
     source_type: SourceType,
@@ -4244,23 +4223,12 @@ fn prepend_instrument_forget_statement<'a>(
 fn collect_rendered_outlined_functions(cf: &CompiledFunction) -> Vec<RenderedOutlinedFunction> {
     cf.outlined_functions
         .iter()
-        .map(|outlined_function| {
-            let hir_function = cf
-                .hir_outlined_functions
-                .iter()
-                .find(|(outlined_name, _)| outlined_name == &outlined_function.name)
-                .and_then(|(_, hir_function)| {
-                    outlined_hir_matches_rendered_body(&outlined_function.body, hir_function)
-                        .then(|| hir_function.clone())
-                });
-            RenderedOutlinedFunction {
-                name: outlined_function.name.clone(),
-                params: outlined_function.params.clone(),
-                body: outlined_function.body.clone(),
-                is_async: outlined_function.is_async,
-                is_generator: outlined_function.is_generator,
-                hir_function,
-            }
+        .map(|outlined_function| RenderedOutlinedFunction {
+            name: outlined_function.name.clone(),
+            params: outlined_function.params.clone(),
+            body: outlined_function.body.clone(),
+            is_async: outlined_function.is_async,
+            is_generator: outlined_function.is_generator,
         })
         .collect()
 }
@@ -4285,19 +4253,10 @@ fn try_lower_compiled_statement_ast<'a>(
     prepend_hir_instrument_forget_statement(builder, allocator, function, cf, state)?;
     apply_emit_freeze_to_hir_function_body(builder, allocator, function, cf, state)?;
     statements.push(function_statement);
-    let mut emitted_hir_outlined_names = HashSet::new();
-    for outlined in collect_rendered_outlined_functions(cf) {
-        emitted_hir_outlined_names.insert(outlined.name.clone());
-        let hir_function = outlined.hir_function.as_ref()?;
-        statements.push(super::hir_to_ast::try_lower_function_declaration_ast(
-            builder,
-            hir_function,
-        )?);
+    if !cf.outlined_functions.is_empty() {
+        return None;
     }
-    for (name, hir_function) in &cf.hir_outlined_functions {
-        if !emitted_hir_outlined_names.insert(name.clone()) {
-            continue;
-        }
+    for (_, hir_function) in &cf.hir_outlined_functions {
         statements.push(super::hir_to_ast::try_lower_function_declaration_ast(
             builder,
             hir_function,
