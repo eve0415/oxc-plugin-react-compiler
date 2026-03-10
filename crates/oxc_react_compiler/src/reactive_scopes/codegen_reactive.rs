@@ -15166,13 +15166,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             let obj = codegen_member_object_expression(cx, object);
             let prop = codegen_place_to_expression(cx, property);
             let expr = render_computed_access_expression_ast(&obj, &prop, *optional)
-                .unwrap_or_else(|| {
-                    if *optional {
-                        format!("{}?.[{}]", obj, prop)
-                    } else {
-                        format!("{}[{}]", obj, prop)
-                    }
-                });
+                .expect("generated computed load should parse");
             ExprValue::primary(expr)
         }
         InstructionValue::ComputedStore {
@@ -15185,7 +15179,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             let prop = codegen_place_to_expression(cx, property);
             let v = codegen_place_to_expression(cx, val);
             let expr = render_computed_store_expression_ast(&obj, &prop, &v)
-                .unwrap_or_else(|| format!("{}[{}] = {}", obj, prop, v));
+                .expect("generated computed store should parse");
             ExprValue::new(expr, ExprPrecedence::Assignment)
         }
         InstructionValue::ComputedDelete {
@@ -15194,7 +15188,7 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             let obj = codegen_member_object_expression(cx, object);
             let prop = codegen_place_to_expression(cx, property);
             let expr = render_computed_delete_expression_ast(&obj, &prop)
-                .unwrap_or_else(|| format!("delete {}[{}]", obj, prop));
+                .expect("generated computed delete should parse");
             ExprValue::new(expr, ExprPrecedence::Unary)
         }
         InstructionValue::StoreGlobal {
@@ -16009,9 +16003,17 @@ fn render_computed_access_expression_ast(
     let builder = AstBuilder::new(&allocator);
     let object = parse_rendered_expression_ast(&allocator, object)?;
     let property = parse_rendered_expression_ast(&allocator, property)?;
-    let expression = ast::Expression::from(
-        builder.member_expression_computed(SPAN, object, property, optional),
-    );
+    let expression = if let ast::Expression::ChainExpression(chain) = object {
+        let object = chain_element_to_expression_ast(chain.unbox().expression);
+        builder.expression_chain(
+            SPAN,
+            ast::ChainElement::ComputedMemberExpression(builder.alloc_computed_member_expression(
+                SPAN, object, property, optional,
+            )),
+        )
+    } else {
+        ast::Expression::from(builder.member_expression_computed(SPAN, object, property, optional))
+    };
     Some(codegen_expression_with_oxc(&expression))
 }
 
@@ -21560,7 +21562,8 @@ mod tests {
         function_expr_as_declaration, function_expr_to_method_property,
         maybe_fill_for_header_initializer_from_update, reconstruct_for_init_declaration,
         render_function_expression_ast, render_object_method_ast,
-        render_primitive_expression_ast, render_property_access_expression_ast, render_pattern_with_oxc,
+        render_computed_access_expression_ast, render_primitive_expression_ast,
+        render_property_access_expression_ast, render_pattern_with_oxc,
         render_reactive_function_body_prologue_ast, render_jsx_expression_ast,
         render_reactive_labeled_statement_ast,
         render_jsx_fragment_ast, render_reactive_for_in_statement_ast,
@@ -21816,6 +21819,24 @@ mod tests {
         .expect("expected optional-chain property access");
 
         assert_eq!(rendered, "value?.inner?.next");
+    }
+
+    #[test]
+    fn renders_computed_access_on_optional_chain_via_ast() {
+        let rendered =
+            render_computed_access_expression_ast("value?.inner", "index", false)
+                .expect("expected optional-chain computed access");
+
+        assert_eq!(rendered, "value?.inner[index]");
+    }
+
+    #[test]
+    fn renders_optional_computed_access_on_optional_chain_via_ast() {
+        let rendered =
+            render_computed_access_expression_ast("value?.inner", "index", true)
+                .expect("expected optional-chain computed access");
+
+        assert_eq!(rendered, "value?.inner?.[index]");
     }
 
     #[test]
