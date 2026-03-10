@@ -11749,23 +11749,54 @@ fn maybe_codegen_fused_callback_reassign_scope(
             .expect("callback cache store should stay on AST path"),
     );
 
-    let mut consequent = computation;
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let mut consequent = parse_statement_list_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        &computation,
+    )
+    .ok()?;
     for stmt in &cache_store_stmts {
-        consequent.push_str(stmt);
-    }
-    output.push_str(&render_reactive_if_statement_ast(
-        &render_logical_chain_expression_ast(&change_exprs, LogicalOperator::Or)
-            .expect("callback change guard should stay on AST path"),
-        &consequent,
-        Some(
-            &render_cache_slot_load_assignment_statement_ast(
-                &target_name,
-                &cache_var,
-                callback_slot,
+        consequent.extend(
+            parse_statement_list_for_ast_codegen(
+                &allocator,
+                SourceType::mjs().with_jsx(true),
+                stmt,
             )
-            .expect("callback cache load should stay on AST path"),
+            .ok()?,
+        );
+    }
+    let alternate = builder.vec1(build_identifier_assignment_statement_ast_with_expression(
+        builder,
+        &target_name,
+        build_computed_member_expression_ast(
+            builder,
+            &cache_var,
+            builder.expression_numeric_literal(
+                SPAN,
+                callback_slot as f64,
+                None,
+                NumberBase::Decimal,
+            ),
         ),
-    )?);
+    ));
+    let statement = builder.statement_if(
+        SPAN,
+        parse_expression_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            &render_logical_chain_expression_ast(&change_exprs, LogicalOperator::Or)
+                .expect("callback change guard should stay on AST path"),
+        )
+        .expect("callback change guard should stay on AST path"),
+        builder.statement_block(SPAN, consequent),
+        Some(builder.statement_block(SPAN, alternate)),
+    );
+    output.push_str(&format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ));
 
     cx.restore_temps(temp_snapshot);
     Some(dep_scope_idx + consumed_after_dep)
