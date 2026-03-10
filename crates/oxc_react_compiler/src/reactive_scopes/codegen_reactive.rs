@@ -11575,50 +11575,139 @@ fn maybe_codegen_fused_effect_callback_empty_array_scope(
         .wrap_if_needed(ExprPrecedence::Assignment);
     let deps_expr = codegen_instruction_value_ev(cx, &deps_instr.value)
         .wrap_if_needed(ExprPrecedence::Assignment);
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
 
     let mut rendered = String::new();
     if !has_materialized_named_binding(cx, &callback_ident) {
-        rendered.push_str(&render_reactive_variable_statement_ast(
+        let statement = ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+            SPAN,
             ast::VariableDeclarationKind::Let,
-            &callback_name,
-            None,
-        )?);
+            builder.vec1(builder.variable_declarator(
+                SPAN,
+                ast::VariableDeclarationKind::Let,
+                builder.binding_pattern_binding_identifier(SPAN, builder.ident(&callback_name)),
+                NONE,
+                None,
+                false,
+            )),
+            false,
+        ));
+        rendered.push_str(&format!(
+            "{}\n",
+            codegen_statement_with_flow_cast_restore(&statement)
+        ));
         cx.mark_decl_runtime_emitted(callback_ident.declaration_id);
     }
     if !has_materialized_named_binding(cx, &deps_ident) {
-        rendered.push_str(&render_reactive_variable_statement_ast(
+        let statement = ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+            SPAN,
             ast::VariableDeclarationKind::Let,
-            &deps_name,
-            None,
-        )?);
+            builder.vec1(builder.variable_declarator(
+                SPAN,
+                ast::VariableDeclarationKind::Let,
+                builder.binding_pattern_binding_identifier(SPAN, builder.ident(&deps_name)),
+                NONE,
+                None,
+                false,
+            )),
+            false,
+        ));
+        rendered.push_str(&format!(
+            "{}\n",
+            codegen_statement_with_flow_cast_restore(&statement)
+        ));
         cx.mark_decl_runtime_emitted(deps_ident.declaration_id);
     }
     cx.declare(&callback_ident);
     cx.declare(&deps_ident);
 
-    let consequent = format!(
-        "{}{}{}{}",
-        render_reactive_assignment_statement_ast(&callback_name, &callback_expr)?,
-        render_reactive_assignment_statement_ast(&deps_name, &deps_expr)?,
-        render_cache_slot_store_statement_ast(&cache_var, callback_slot, &callback_name)?,
-        render_cache_slot_store_statement_ast(&cache_var, deps_slot, &deps_name)?,
-    );
-    let alternate = format!(
-        "{}{}",
-        render_cache_slot_load_assignment_statement_ast(&callback_name, &cache_var, callback_slot)?,
-        render_cache_slot_load_assignment_statement_ast(&deps_name, &cache_var, deps_slot)?,
-    );
-    rendered.push_str(&render_reactive_if_statement_ast(
-        &render_cache_slot_comparison_expression_ast(
-            &cache_var,
-            callback_slot,
-            BinaryOperator::StrictEq,
-            &render_symbol_for_call_expression_source(MEMO_CACHE_SENTINEL),
+    let mut consequent = builder.vec();
+    consequent.push(build_identifier_assignment_statement_ast_with_expression(
+        builder,
+        &callback_name,
+        parse_expression_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            &callback_expr,
         )
-        .expect("memo callback sentinel guard should stay on AST path"),
-        &consequent,
-        Some(&alternate),
-    )?);
+        .ok()?,
+    ));
+    consequent.push(build_identifier_assignment_statement_ast_with_expression(
+        builder,
+        &deps_name,
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), &deps_expr)
+            .ok()?,
+    ));
+    consequent.push(build_computed_member_assignment_statement_ast(
+        builder,
+        &cache_var,
+        builder.expression_numeric_literal(SPAN, callback_slot as f64, None, NumberBase::Decimal),
+        builder.expression_identifier(SPAN, builder.ident(&callback_name)),
+    ));
+    consequent.push(build_computed_member_assignment_statement_ast(
+        builder,
+        &cache_var,
+        builder.expression_numeric_literal(SPAN, deps_slot as f64, None, NumberBase::Decimal),
+        builder.expression_identifier(SPAN, builder.ident(&deps_name)),
+    ));
+
+    let alternate = builder.vec_from_iter([
+        build_identifier_assignment_statement_ast_with_expression(
+            builder,
+            &callback_name,
+            build_computed_member_expression_ast(
+                builder,
+                &cache_var,
+                builder.expression_numeric_literal(
+                    SPAN,
+                    callback_slot as f64,
+                    None,
+                    NumberBase::Decimal,
+                ),
+            ),
+        ),
+        build_identifier_assignment_statement_ast_with_expression(
+            builder,
+            &deps_name,
+            build_computed_member_expression_ast(
+                builder,
+                &cache_var,
+                builder.expression_numeric_literal(
+                    SPAN,
+                    deps_slot as f64,
+                    None,
+                    NumberBase::Decimal,
+                ),
+            ),
+        ),
+    ]);
+
+    let test = builder.expression_binary(
+        SPAN,
+        build_computed_member_expression_ast(
+            builder,
+            &cache_var,
+            builder.expression_numeric_literal(
+                SPAN,
+                callback_slot as f64,
+                None,
+                NumberBase::Decimal,
+            ),
+        ),
+        AstBinaryOperator::StrictEquality,
+        build_symbol_for_call_expression_ast(builder, MEMO_CACHE_SENTINEL),
+    );
+    let statement = builder.statement_if(
+        SPAN,
+        test,
+        builder.statement_block(SPAN, consequent),
+        Some(builder.statement_block(SPAN, alternate)),
+    );
+    rendered.push_str(&format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ));
     output.push_str(&rendered);
 
     cx.stable_zero_dep_decls
