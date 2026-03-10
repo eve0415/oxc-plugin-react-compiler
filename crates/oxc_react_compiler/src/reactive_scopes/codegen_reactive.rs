@@ -163,8 +163,6 @@ pub enum GeneratedBodyShape {
 }
 
 pub struct CodegenResult {
-    /// Fully rendered function body, including emitted directives/cache prologue.
-    pub rendered_body: String,
     /// Generated function body without rendered directives/cache prologue statements.
     pub body_without_cache_prologue: String,
     /// Structured shape of the emitted body for downstream AST-based rewrites.
@@ -807,7 +805,6 @@ fn codegen_reactive_function_with_primitives(
     let body_shape = analyze_generated_body_shape(&body);
 
     CodegenResult {
-        rendered_body: output,
         body_without_cache_prologue: body.clone(),
         body_shape,
         cache_size,
@@ -21143,6 +21140,7 @@ struct FunctionBodyRenderSpec<'a> {
     param_names: &'a [String],
     body_source: &'a str,
     directives: &'a [String],
+    cache_prologue: Option<&'a CachePrologue>,
     is_async: bool,
     is_generator: bool,
 }
@@ -21169,6 +21167,14 @@ fn build_object_method_property_ast<'a>(
         spec.body_source,
     )
     .ok()?;
+    let mut parsed_body = parsed_body;
+    apply_function_body_preludes_ast(
+        builder,
+        allocator,
+        &mut parsed_body,
+        spec.directives,
+        spec.cache_prologue,
+    )?;
     let formal_params = make_reactive_formal_params(builder, spec.params, spec.param_names)?;
     let function = builder.expression_function(
         SPAN,
@@ -21322,8 +21328,9 @@ fn render_object_expression_ast(
                             &FunctionBodyRenderSpec {
                                 params: &lf.func.params,
                                 param_names: &inner_result.param_names,
-                                body_source: inner_result.rendered_body.trim(),
+                                body_source: inner_result.body_without_cache_prologue.trim(),
                                 directives: &lf.func.directives,
+                                cache_prologue: inner_result.cache_prologue.as_ref(),
                                 is_async: lf.func.async_,
                                 is_generator: lf.func.generator,
                             },
@@ -22026,6 +22033,66 @@ fn render_reactive_function_body_prologue_ast(
     }
 }
 
+fn apply_function_body_preludes_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    body: &mut ast::FunctionBody<'a>,
+    directives: &[String],
+    cache_prologue: Option<&CachePrologue>,
+) -> Option<()> {
+    if !directives.is_empty() {
+        body.directives = builder.vec_from_iter(directives.iter().map(|directive| {
+            builder.directive(
+                SPAN,
+                builder.string_literal(SPAN, builder.atom(directive.as_str()), None),
+                builder.atom(directive.as_str()),
+            )
+        }));
+    }
+
+    let Some(cache_prologue) = cache_prologue else {
+        return Some(());
+    };
+
+    let mut statements = builder.vec1(ast::Statement::VariableDeclaration(
+        builder.alloc_variable_declaration(
+            SPAN,
+            ast::VariableDeclarationKind::Const,
+            builder.vec1(builder.variable_declarator(
+                SPAN,
+                ast::VariableDeclarationKind::Const,
+                builder.binding_pattern_binding_identifier(
+                    SPAN,
+                    builder.ident(&cache_prologue.binding_name),
+                ),
+                NONE,
+                Some(build_runtime_cache_call_expression_ast(
+                    builder,
+                    cache_prologue.size,
+                )),
+                false,
+            )),
+            false,
+        ),
+    ));
+
+    if let Some(fast_refresh) = &cache_prologue.fast_refresh {
+        statements.push(build_fast_refresh_cache_reset_statement_ast(
+            builder,
+            cache_prologue,
+            fast_refresh,
+        )?);
+    }
+
+    statements.extend(
+        body.statements
+            .iter()
+            .map(|statement| statement.clone_in(allocator)),
+    );
+    body.statements = statements;
+    Some(())
+}
+
 fn build_computed_member_expression_ast<'a>(
     builder: AstBuilder<'a>,
     object_name: &str,
@@ -22437,12 +22504,14 @@ fn render_function_expression_ast(spec: &FunctionExpressionRenderSpec<'_>) -> Op
         spec.body.body_source,
     )
     .ok()?;
+    let mut parsed_body = parsed_body;
     let builder = AstBuilder::new(&allocator);
     let formal_params =
         make_reactive_formal_params(builder, spec.body.params, spec.body.param_names)?;
     let expression = match spec.fn_type {
         FunctionExpressionType::ArrowFunctionExpression => {
             if spec.body.directives.is_empty()
+                && spec.body.cache_prologue.is_none()
                 && let Some(return_expr) =
                     single_return_expression_from_body(&allocator, &parsed_body)
             {
@@ -22460,6 +22529,13 @@ fn render_function_expression_ast(spec: &FunctionExpressionRenderSpec<'_>) -> Op
                     )),
                 )
             } else {
+                apply_function_body_preludes_ast(
+                    builder,
+                    &allocator,
+                    &mut parsed_body,
+                    spec.body.directives,
+                    spec.body.cache_prologue,
+                )?;
                 builder.expression_arrow_function(
                     SPAN,
                     false,
@@ -22472,20 +22548,29 @@ fn render_function_expression_ast(spec: &FunctionExpressionRenderSpec<'_>) -> Op
             }
         }
         FunctionExpressionType::FunctionExpression
-        | FunctionExpressionType::FunctionDeclaration => builder.expression_function(
-            SPAN,
-            ast::FunctionType::FunctionExpression,
-            spec.name
-                .map(|name| builder.binding_identifier(SPAN, builder.atom(name))),
-            spec.body.is_generator,
-            spec.body.is_async,
-            false,
-            NONE,
-            NONE,
-            formal_params,
-            NONE,
-            Some(builder.alloc(parsed_body)),
-        ),
+        | FunctionExpressionType::FunctionDeclaration => {
+            apply_function_body_preludes_ast(
+                builder,
+                &allocator,
+                &mut parsed_body,
+                spec.body.directives,
+                spec.body.cache_prologue,
+            )?;
+            builder.expression_function(
+                SPAN,
+                ast::FunctionType::FunctionExpression,
+                spec.name
+                    .map(|name| builder.binding_identifier(SPAN, builder.atom(name))),
+                spec.body.is_generator,
+                spec.body.is_async,
+                false,
+                NONE,
+                NONE,
+                formal_params,
+                NONE,
+                Some(builder.alloc(parsed_body)),
+            )
+        }
     };
     let expression = if let Some(name_hint) = spec.anonymous_name_hint {
         wrap_named_anonymous_function_expression(builder, expression, name_hint)
@@ -22563,8 +22648,9 @@ fn render_lowered_function_expression_source(
         body: FunctionBodyRenderSpec {
             params: &lowered_func.func.params,
             param_names: &inner_result.param_names,
-            body_source: inner_result.rendered_body.trim(),
+            body_source: inner_result.body_without_cache_prologue.trim(),
             directives: &lowered_func.func.directives,
+            cache_prologue: inner_result.cache_prologue.as_ref(),
             is_async: lowered_func.func.async_,
             is_generator: lowered_func.func.generator,
         },
@@ -23091,6 +23177,7 @@ mod tests {
                 param_names: &["value".to_string()],
                 body_source: "return value;",
                 directives: &[],
+                cache_prologue: None,
                 is_async: false,
                 is_generator: false,
             },
@@ -23112,6 +23199,7 @@ mod tests {
                 param_names: &["value".to_string()],
                 body_source: "return value;",
                 directives: &[],
+                cache_prologue: None,
                 is_async: false,
                 is_generator: false,
             },
@@ -23123,6 +23211,35 @@ mod tests {
 
         assert!(rendered.contains("=>"));
         assert!(!rendered.contains("return value;"));
+    }
+
+    #[test]
+    fn renders_function_expression_preludes_via_ast() {
+        let cache_prologue = CachePrologue {
+            binding_name: "$".to_string(),
+            size: 2,
+            fast_refresh: None,
+        };
+        let directives = ["worklet".to_string()];
+        let rendered = render_function_expression_ast(&FunctionExpressionRenderSpec {
+            body: FunctionBodyRenderSpec {
+                params: &[Argument::Place(named_place(0, 0, "value"))],
+                param_names: &["value".to_string()],
+                body_source: "return value;",
+                directives: &directives,
+                cache_prologue: Some(&cache_prologue),
+                is_async: false,
+                is_generator: false,
+            },
+            name: Some("useFoo"),
+            fn_type: &FunctionExpressionType::FunctionExpression,
+            anonymous_name_hint: None,
+        })
+        .expect("expected function expression");
+
+        assert!(rendered.contains("\"worklet\";"));
+        assert!(rendered.contains("const $ = _c(2);"));
+        assert!(rendered.contains("return value;"));
     }
 
     #[test]
@@ -23444,6 +23561,7 @@ mod tests {
                 param_names: &["value".to_string()],
                 body_source: "return value;",
                 directives: &[],
+                cache_prologue: None,
                 is_async: false,
                 is_generator: false,
             },
@@ -23454,6 +23572,40 @@ mod tests {
 
         assert!(rendered.contains("run(value)"));
         assert!(rendered.contains("return value;"));
+    }
+
+    #[test]
+    fn renders_object_method_preludes_via_ast() {
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        let cache_prologue = CachePrologue {
+            binding_name: "$".to_string(),
+            size: 1,
+            fast_refresh: None,
+        };
+        let directives = ["worklet".to_string()];
+        let property = build_object_method_property_ast(
+            builder,
+            &allocator,
+            &ObjectPropertyKey::Identifier("run".to_string()),
+            None,
+            &FunctionBodyRenderSpec {
+                params: &[Argument::Place(named_place(0, 0, "value"))],
+                param_names: &["value".to_string()],
+                body_source: "return value;",
+                directives: &directives,
+                cache_prologue: Some(&cache_prologue),
+                is_async: false,
+                is_generator: false,
+            },
+        )
+        .expect("expected object method");
+        let expression = builder.expression_object(SPAN, builder.vec1(property));
+        let rendered = codegen_expression_with_flow_cast_restore(&expression);
+
+        assert!(rendered.contains("run(value)"));
+        assert!(rendered.contains("\"worklet\";"));
+        assert!(rendered.contains("const $ = _c(1);"));
     }
 
     #[test]
