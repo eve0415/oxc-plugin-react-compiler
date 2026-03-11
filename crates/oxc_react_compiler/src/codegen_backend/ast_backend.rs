@@ -2980,30 +2980,33 @@ fn build_generated_binding_statements<'a>(
     Some(statements)
 }
 
-fn expression_to_simple_assignment_target<'a>(
+fn build_generated_declaration_statements<'a>(
     builder: AstBuilder<'a>,
-    expression: ast::Expression<'a>,
-) -> Option<ast::SimpleAssignmentTarget<'a>> {
-    match expression {
-        ast::Expression::ParenthesizedExpression(parenthesized) => {
-            expression_to_simple_assignment_target(builder, parenthesized.unbox().expression)
-        }
-        ast::Expression::Identifier(identifier) => Some(
-            builder.simple_assignment_target_assignment_target_identifier(SPAN, identifier.name),
-        ),
-        ast::Expression::ComputedMemberExpression(member) => {
-            Some(ast::SimpleAssignmentTarget::from(
-                ast::MemberExpression::ComputedMemberExpression(member),
-            ))
-        }
-        ast::Expression::StaticMemberExpression(member) => Some(ast::SimpleAssignmentTarget::from(
-            ast::MemberExpression::StaticMemberExpression(member),
-        )),
-        ast::Expression::PrivateFieldExpression(member) => Some(ast::SimpleAssignmentTarget::from(
-            ast::MemberExpression::PrivateFieldExpression(member),
-        )),
-        _ => None,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    declarations: &[crate::reactive_scopes::codegen_reactive::GeneratedDeclaration],
+) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
+    let mut statements = builder.vec();
+    for declaration in declarations {
+        let pattern =
+            parse_binding_pattern_source(allocator, source_type, &declaration.pattern).ok()?;
+        statements.push(ast::Statement::VariableDeclaration(
+            builder.alloc_variable_declaration(
+                SPAN,
+                declaration.kind,
+                builder.vec1(builder.variable_declarator(
+                    SPAN,
+                    declaration.kind,
+                    pattern,
+                    NONE,
+                    None,
+                    false,
+                )),
+                false,
+            ),
+        ));
     }
+    Some(statements)
 }
 
 fn build_generated_assignment_statements<'a>(
@@ -3014,12 +3017,8 @@ fn build_generated_assignment_statements<'a>(
 ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
     let mut statements = builder.vec();
     for assignment in assignments {
-        let target_expression =
-            parse_expression_source(allocator, source_type, &assignment.target).ok()?;
-        let target = ast::AssignmentTarget::from(expression_to_simple_assignment_target(
-            builder,
-            target_expression,
-        )?);
+        let target =
+            parse_assignment_target_source(allocator, source_type, &assignment.target).ok()?;
         let value = parse_expression_source(allocator, source_type, &assignment.value).ok()?;
         statements.push(builder.statement_expression(
             SPAN,
@@ -3556,6 +3555,40 @@ fn try_build_function_body_from_shape<'a>(
             replace_final_return_expression(&mut body, expression)?;
             Some(body)
         }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::AssignedAliasReturn {
+            alias_name,
+            source_name,
+            inner,
+        } => {
+            let mut body = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                inner.as_ref(),
+                cache_prologue,
+            )?;
+            let last = body.statements.pop()?;
+            let ast::Statement::ReturnStatement(return_stmt) = last else {
+                return None;
+            };
+            let argument = return_stmt.argument.as_ref()?;
+            let ast::Expression::Identifier(identifier) = argument.without_parentheses() else {
+                return None;
+            };
+            if identifier.name.as_str() != source_name {
+                return None;
+            }
+            body.statements.push(build_identifier_assignment_statement(
+                builder,
+                alias_name,
+                builder.expression_identifier(SPAN, builder.ident(source_name)),
+            ));
+            body.statements.push(builder.statement_return(
+                SPAN,
+                Some(builder.expression_identifier(SPAN, builder.ident(alias_name))),
+            ));
+            Some(body)
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::AliasedReturn {
             alias_name,
             alias_kind,
@@ -3617,6 +3650,23 @@ fn try_build_function_body_from_shape<'a>(
             )?;
             let mut prefixed =
                 build_generated_binding_statements(builder, allocator, source_type, bindings)?;
+            prefixed.extend(body.statements);
+            body.statements = prefixed;
+            Some(body)
+        }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } => {
+            let mut body = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                inner.as_ref(),
+                cache_prologue,
+            )?;
+            let mut prefixed =
+                build_generated_declaration_statements(builder, allocator, source_type, declarations)?;
             prefixed.extend(body.statements);
             body.statements = prefixed;
             Some(body)
@@ -4260,6 +4310,48 @@ fn parse_binding_pattern_source<'a>(
         return Ok(declarator.id);
     }
     Err("failed to parse binding pattern snippet".to_string())
+}
+
+fn parse_assignment_target_source<'a>(
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    target_source: &str,
+) -> Result<ast::AssignmentTarget<'a>, String> {
+    let ts_source_type = source_type.with_typescript(true);
+    let mut attempts = vec![
+        (source_type, target_source.to_string()),
+        (ts_source_type, target_source.to_string()),
+    ];
+    let flow_cast_normalized = normalize_generated_body_flow_cast_marker_calls(target_source);
+    if flow_cast_normalized != target_source {
+        attempts.push((ts_source_type, flow_cast_normalized.clone()));
+    }
+    let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(target_source);
+    if flow_cast_rewritten != target_source && flow_cast_rewritten != flow_cast_normalized {
+        attempts.push((ts_source_type, flow_cast_rewritten));
+    }
+    for (attempt_source_type, attempt_target) in attempts {
+        let wrapped = format!("({attempt_target} = __codex_target);");
+        let Ok(mut statements) = parse_statements(
+            allocator,
+            attempt_source_type,
+            allocator.alloc_str(&wrapped),
+        ) else {
+            continue;
+        };
+        let Some(ast::Statement::ExpressionStatement(statement)) = statements.pop() else {
+            continue;
+        };
+        let mut expression = statement.unbox().expression;
+        while let ast::Expression::ParenthesizedExpression(parenthesized) = expression {
+            expression = parenthesized.unbox().expression;
+        }
+        let ast::Expression::AssignmentExpression(assignment) = expression else {
+            continue;
+        };
+        return Ok(assignment.unbox().left);
+    }
+    Err("failed to parse assignment target snippet".to_string())
 }
 
 fn normalize_generated_body_iife_parenthesization(body_source: &str) -> String {

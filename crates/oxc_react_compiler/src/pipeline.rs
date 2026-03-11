@@ -1353,6 +1353,19 @@ fn codegen_outlined_function(
                 *expression = replace_identifier_tokens(expression, from, to);
                 rename_generated_body_shape(inner.as_mut(), from, to);
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::AssignedAliasReturn {
+                alias_name,
+                source_name,
+                inner,
+            } => {
+                if alias_name == from {
+                    *alias_name = to.to_string();
+                }
+                if source_name == from {
+                    *source_name = to.to_string();
+                }
+                rename_generated_body_shape(inner.as_mut(), from, to);
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::AliasedReturn {
                 alias_name,
                 source_name,
@@ -1364,6 +1377,15 @@ fn codegen_outlined_function(
                 }
                 if source_name == from {
                     *source_name = to.to_string();
+                }
+                rename_generated_body_shape(inner.as_mut(), from, to);
+            }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedDeclarations {
+                declarations,
+                inner,
+            } => {
+                for declaration in declarations {
+                    declaration.pattern = replace_identifier_tokens(&declaration.pattern, from, to);
                 }
                 rename_generated_body_shape(inner.as_mut(), from, to);
             }
