@@ -969,11 +969,10 @@ fn codegen_reactive_function_with_primitives(
         }
     }
 
+    let mut shape_cx = cx.clone();
     let body = codegen_block(&mut cx, &func.body);
-    let direct_body_shape = {
-        let mut shape_cx = cx.clone();
-        try_build_generated_body_shape_from_reactive_block(&mut shape_cx, &func.body)
-    };
+    let direct_body_shape =
+        try_build_generated_body_shape_from_reactive_block(&mut shape_cx, &func.body);
     let needs_function_hook_guard_wrapper = cx.emit_hook_guards && emit_function_hook_guard;
 
     let cache_size = cx.next_cache_index;
