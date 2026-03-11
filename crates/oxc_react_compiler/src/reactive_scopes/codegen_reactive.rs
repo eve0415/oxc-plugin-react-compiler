@@ -1105,8 +1105,6 @@ fn try_build_generated_body_shape_from_reactive_scope_return(
     term_stmt: &ReactiveTerminalStatement,
 ) -> Option<GeneratedBodyShape> {
     if term_stmt.label.is_some()
-        || !scope_block.scope.declarations.is_empty()
-        || scope_block.scope.reassignments.len() != 1
         || !scope_block
             .instructions
             .iter()
@@ -1117,62 +1115,35 @@ fn try_build_generated_body_shape_from_reactive_scope_return(
     let ReactiveTerminal::Return { value, .. } = &term_stmt.terminal else {
         return None;
     };
-    let output_ident = &scope_block.scope.reassignments[0];
-    if value.identifier.declaration_id != output_ident.declaration_id {
-        return None;
-    }
-    let value_name = identifier_name_with_cx(cx, output_ident);
+    let return_name = identifier_name_with_cx(cx, &value.identifier);
     let computation_shape = try_build_generated_body_shape_from_instruction_prefixes(
         cx,
         &scope_block.instructions,
-        GeneratedBodyShape::ReturnIdentifier(value_name.clone()),
+        GeneratedBodyShape::ReturnIdentifier(return_name),
     )?;
-    let parts =
-        try_decompose_direct_memoized_existing_return_shape(computation_shape, &value_name)?;
     let dep_exprs =
         collect_direct_scope_dependency_exprs(cx, &scope_block.scope, &scope_block.instructions)?;
-    if dep_exprs.is_empty() {
-        let value_slot = cx.alloc_cache_slot();
-        return Some(GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
-            value_name,
-            value_slot,
-            memoized_bindings: parts.bindings,
-            memoized_assignments: parts.assignments,
-            memoized_expressions: parts.expressions,
-            memoized_setup_statements: parts.setup_statements,
-            memoized_expr: parts.memoized_expr,
-        });
+    if scope_block.scope.reassignments.len() == 1 && scope_block.scope.declarations.is_empty() {
+        let output_ident = &scope_block.scope.reassignments[0];
+        if value.identifier.declaration_id != output_ident.declaration_id {
+            return None;
+        }
+        let value_name = identifier_name_with_cx(cx, output_ident);
+        let parts =
+            try_decompose_direct_memoized_existing_return_shape(computation_shape, &value_name)?;
+        return build_direct_existing_memoized_return_shape(cx, value_name, dep_exprs, parts);
     }
-    if dep_exprs.len() == 1 {
-        let dep_slot = cx.alloc_cache_slot();
-        let value_slot = cx.alloc_cache_slot();
-        return Some(GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
-            value_name,
-            dep_slot,
-            dep_expr: dep_exprs[0].clone(),
-            value_slot,
-            memoized_bindings: parts.bindings,
-            memoized_assignments: parts.assignments,
-            memoized_expressions: parts.expressions,
-            memoized_setup_statements: parts.setup_statements,
-            memoized_expr: parts.memoized_expr,
-        });
+    if scope_block.scope.declarations.len() == 1 && scope_block.scope.reassignments.is_empty() {
+        let output_decl = scope_block.scope.declarations.values().next()?;
+        if value.identifier.declaration_id != output_decl.identifier.declaration_id {
+            return None;
+        }
+        let value_name = identifier_name_with_cx(cx, &output_decl.identifier);
+        let parts =
+            try_decompose_direct_memoized_declared_return_shape(computation_shape, &value_name)?;
+        return build_direct_declared_memoized_return_shape(cx, value_name, dep_exprs, parts);
     }
-    let mut deps = Vec::with_capacity(dep_exprs.len());
-    for dep_expr in dep_exprs {
-        deps.push((cx.alloc_cache_slot(), dep_expr));
-    }
-    let value_slot = cx.alloc_cache_slot();
-    Some(GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
-        value_name,
-        deps,
-        value_slot,
-        memoized_bindings: parts.bindings,
-        memoized_assignments: parts.assignments,
-        memoized_expressions: parts.expressions,
-        memoized_setup_statements: parts.setup_statements,
-        memoized_expr: parts.memoized_expr,
-    })
+    None
 }
 
 fn try_build_generated_body_shape_from_instruction_prefixes(
@@ -1268,6 +1239,168 @@ fn collect_direct_scope_dependency_exprs(
         }
     }
     Some(dep_exprs)
+}
+
+fn build_direct_existing_memoized_return_shape(
+    cx: &mut Context,
+    value_name: String,
+    dep_exprs: Vec<String>,
+    parts: DirectMemoizedExistingReturnParts,
+) -> Option<GeneratedBodyShape> {
+    if dep_exprs.is_empty() {
+        let value_slot = cx.alloc_cache_slot();
+        return Some(GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+            value_name,
+            value_slot,
+            memoized_bindings: parts.bindings,
+            memoized_assignments: parts.assignments,
+            memoized_expressions: parts.expressions,
+            memoized_setup_statements: parts.setup_statements,
+            memoized_expr: parts.memoized_expr,
+        });
+    }
+    if dep_exprs.len() == 1 {
+        let dep_slot = cx.alloc_cache_slot();
+        let value_slot = cx.alloc_cache_slot();
+        return Some(GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+            value_name,
+            dep_slot,
+            dep_expr: dep_exprs[0].clone(),
+            value_slot,
+            memoized_bindings: parts.bindings,
+            memoized_assignments: parts.assignments,
+            memoized_expressions: parts.expressions,
+            memoized_setup_statements: parts.setup_statements,
+            memoized_expr: parts.memoized_expr,
+        });
+    }
+    let mut deps = Vec::with_capacity(dep_exprs.len());
+    for dep_expr in dep_exprs {
+        deps.push((cx.alloc_cache_slot(), dep_expr));
+    }
+    let value_slot = cx.alloc_cache_slot();
+    Some(GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+        value_name,
+        deps,
+        value_slot,
+        memoized_bindings: parts.bindings,
+        memoized_assignments: parts.assignments,
+        memoized_expressions: parts.expressions,
+        memoized_setup_statements: parts.setup_statements,
+        memoized_expr: parts.memoized_expr,
+    })
+}
+
+fn build_direct_declared_memoized_return_shape(
+    cx: &mut Context,
+    value_name: String,
+    dep_exprs: Vec<String>,
+    parts: DirectMemoizedExistingReturnParts,
+) -> Option<GeneratedBodyShape> {
+    let value_kind = ast::VariableDeclarationKind::Let;
+    if dep_exprs.is_empty() {
+        let value_slot = cx.alloc_cache_slot();
+        return Some(GeneratedBodyShape::ZeroDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            value_slot,
+            memoized_bindings: parts.bindings,
+            memoized_assignments: parts.assignments,
+            memoized_expressions: parts.expressions,
+            memoized_setup_statements: parts.setup_statements,
+            memoized_expr: parts.memoized_expr,
+        });
+    }
+    if dep_exprs.len() == 1 {
+        let dep_slot = cx.alloc_cache_slot();
+        let value_slot = cx.alloc_cache_slot();
+        return Some(GeneratedBodyShape::SingleDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            dep_slot,
+            dep_expr: dep_exprs[0].clone(),
+            value_slot,
+            memoized_bindings: parts.bindings,
+            memoized_assignments: parts.assignments,
+            memoized_expressions: parts.expressions,
+            memoized_setup_statements: parts.setup_statements,
+            memoized_expr: parts.memoized_expr,
+        });
+    }
+    let mut deps = Vec::with_capacity(dep_exprs.len());
+    for dep_expr in dep_exprs {
+        deps.push((cx.alloc_cache_slot(), dep_expr));
+    }
+    let value_slot = cx.alloc_cache_slot();
+    Some(GeneratedBodyShape::MultiDependencyMemoizedReturn {
+        value_name,
+        value_kind,
+        deps,
+        value_slot,
+        memoized_bindings: parts.bindings,
+        memoized_assignments: parts.assignments,
+        memoized_expressions: parts.expressions,
+        memoized_setup_statements: parts.setup_statements,
+        memoized_expr: parts.memoized_expr,
+    })
+}
+
+fn try_decompose_direct_memoized_declared_return_shape(
+    shape: GeneratedBodyShape,
+    value_name: &str,
+) -> Option<DirectMemoizedExistingReturnParts> {
+    match shape {
+        GeneratedBodyShape::ReturnIdentifier(name) if name == value_name => {
+            Some(DirectMemoizedExistingReturnParts::default())
+        }
+        GeneratedBodyShape::AssignedExpressionReturn {
+            value_name: assigned_name,
+            expression,
+            ..
+        } if assigned_name == value_name => Some(DirectMemoizedExistingReturnParts {
+            memoized_expr: Some(expression),
+            ..Default::default()
+        }),
+        GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
+            let mut parts =
+                try_decompose_direct_memoized_declared_return_shape(*inner, value_name)?;
+            for binding in bindings {
+                if binding.pattern == value_name {
+                    if parts.memoized_expr.is_some() {
+                        return None;
+                    }
+                    parts.memoized_expr = Some(binding.expression);
+                } else {
+                    parts.bindings.push(binding);
+                }
+            }
+            Some(parts)
+        }
+        GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
+            let mut parts =
+                try_decompose_direct_memoized_declared_return_shape(*inner, value_name)?;
+            for assignment in assignments {
+                if assignment.target == value_name {
+                    if parts.memoized_expr.is_some() {
+                        return None;
+                    }
+                    parts.memoized_expr = Some(assignment.value);
+                } else {
+                    parts.assignments.push(assignment);
+                }
+            }
+            Some(parts)
+        }
+        GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
+            let mut parts =
+                try_decompose_direct_memoized_declared_return_shape(*inner, value_name)?;
+            let mut prefixed_expressions = expressions;
+            prefixed_expressions.extend(parts.expressions);
+            parts.expressions = prefixed_expressions;
+            Some(parts)
+        }
+        _ => None,
+    }
 }
 
 fn can_inline_direct_scope_shape(scope: &ReactiveScope) -> bool {
@@ -30138,6 +30271,100 @@ mod tests {
                 ]
                 && memoized_setup_statements.is_empty()
                 && memoized_expr.is_none()
+        ));
+    }
+
+    #[test]
+    fn directly_lowers_declared_scope_return_body_shape_from_reactive_block() {
+        let mut cx = test_context();
+        let value = named_place(0, 0, "value");
+        let props = named_place(1, 1, "props");
+        let owner_scope = ReactiveScope {
+            id: ScopeId::new(99),
+            range: MutableRange::default(),
+            dependencies: vec![],
+            declarations: Default::default(),
+            reassignments: vec![],
+            merged_id: None,
+            early_return_value: None,
+        };
+        let mut declarations = indexmap::IndexMap::new();
+        declarations.insert(
+            value.identifier.id,
+            crate::hir::types::ScopeDeclaration {
+                identifier: value.identifier.clone(),
+                scope: owner_scope,
+            },
+        );
+        let block = vec![
+            ReactiveStatement::Scope(ReactiveScopeBlock {
+                scope: ReactiveScope {
+                    id: ScopeId::new(1),
+                    range: MutableRange::default(),
+                    dependencies: vec![ReactiveScopeDependency {
+                        identifier: props.identifier.clone(),
+                        path: vec![DependencyPathEntry {
+                            property: "value".to_string(),
+                            optional: false,
+                        }],
+                    }],
+                    declarations,
+                    reassignments: vec![],
+                    merged_id: None,
+                    early_return_value: None,
+                },
+                instructions: vec![ReactiveStatement::Instruction(Box::new(
+                    ReactiveInstruction {
+                        id: crate::hir::types::make_instruction_id(0),
+                        lvalue: Some(value.clone()),
+                        value: InstructionValue::StoreLocal {
+                            lvalue: LValue {
+                                place: value.clone(),
+                                kind: InstructionKind::Let,
+                            },
+                            value: named_place(2, 2, "props.value"),
+                            loc: SourceLocation::Generated,
+                        },
+                        loc: SourceLocation::Generated,
+                    },
+                ))],
+            }),
+            ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                terminal: ReactiveTerminal::Return {
+                    value: value.clone(),
+                    id: crate::hir::types::make_instruction_id(1),
+                    loc: SourceLocation::Generated,
+                },
+                label: None,
+            }),
+        ];
+
+        let shape = super::try_build_generated_body_shape_from_reactive_block(&mut cx, &block)
+            .expect("expected direct body shape");
+
+        assert!(matches!(
+            shape,
+            super::GeneratedBodyShape::SingleDependencyMemoizedReturn {
+                value_name,
+                value_kind,
+                dep_slot,
+                dep_expr,
+                value_slot,
+                memoized_bindings,
+                memoized_assignments,
+                memoized_expressions,
+                memoized_setup_statements,
+                memoized_expr,
+            } if value_name == "value"
+                && value_kind == ast::VariableDeclarationKind::Let
+                && dep_slot == 0
+                && dep_expr == "props.value"
+                && value_slot == 1
+                && memoized_bindings.is_empty()
+                && memoized_assignments.is_empty()
+                && memoized_expressions.is_empty()
+                && memoized_setup_statements.is_empty()
+                && memoized_expr.as_deref() == Some("props.value")
         ));
     }
 
