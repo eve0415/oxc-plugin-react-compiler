@@ -1127,8 +1127,29 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
                 inner: Box::new(inner),
             })
         }
-        _ => None,
+        _ => Some(GeneratedBodyShape::PrefixedExpressionStatements {
+            expressions: vec![rendered_single_expression_statement(
+                codegen_instruction_nullable(cx, instr)?.as_str(),
+            )?],
+            inner: Box::new(inner),
+        }),
     }
+}
+
+fn rendered_single_expression_statement(rendered: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let statements = parse_statement_list_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        rendered,
+    )
+    .ok()?;
+    let [ast::Statement::ExpressionStatement(expr_stmt)] = statements.as_slice() else {
+        return None;
+    };
+    Some(codegen_expression_with_flow_cast_restore(
+        &expr_stmt.expression,
+    ))
 }
 
 fn variable_declaration_kind(kind: InstructionKind) -> Option<ast::VariableDeclarationKind> {
@@ -29767,6 +29788,45 @@ mod tests {
         assert_eq!(
             shape,
             super::GeneratedBodyShape::ReturnIdentifier("value".to_string())
+        );
+    }
+
+    #[test]
+    fn directly_lowers_prefixed_expression_then_return_body_shape_from_reactive_block() {
+        let mut cx = test_context();
+        let block = vec![
+            ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                id: crate::hir::types::make_instruction_id(0),
+                lvalue: None,
+                value: InstructionValue::CallExpression {
+                    callee: named_place(0, 0, "touch"),
+                    args: vec![Argument::Place(named_place(1, 1, "value"))],
+                    optional: false,
+                    loc: SourceLocation::Generated,
+                },
+                loc: SourceLocation::Generated,
+            })),
+            ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                terminal: ReactiveTerminal::Return {
+                    value: named_place(2, 2, "result"),
+                    id: crate::hir::types::make_instruction_id(1),
+                    loc: SourceLocation::Generated,
+                },
+                label: None,
+            }),
+        ];
+
+        let shape = super::try_build_generated_body_shape_from_reactive_block(&mut cx, &block)
+            .expect("expected direct body shape");
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::PrefixedExpressionStatements {
+                expressions: vec!["touch(value)".to_string()],
+                inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                    "result".to_string()
+                )),
+            }
         );
     }
 
