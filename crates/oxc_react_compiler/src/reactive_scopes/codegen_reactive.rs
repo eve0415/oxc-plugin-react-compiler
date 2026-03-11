@@ -1772,8 +1772,22 @@ fn analyze_generated_body_shape_uncached(
     fn collect_sequential_split_indices(statements: &[ast::Statement<'_>]) -> Vec<usize> {
         let binding_prefix_len = count_leading_initialized_bindings(statements);
         let mut candidates = Vec::new();
+        let can_be_structured_prefix = |statement: &ast::Statement<'_>| {
+            matches!(
+                statement,
+                ast::Statement::BlockStatement(_)
+                    | ast::Statement::LabeledStatement(_)
+                    | ast::Statement::SwitchStatement(_)
+            )
+        };
         if statements.len() >= 2
             && matches!(statements.first(), Some(ast::Statement::IfStatement(_)))
+            && statements.get(1).is_some_and(can_start_sequential_suffix)
+        {
+            candidates.push(1);
+        }
+        if statements.len() >= 2
+            && statements.first().is_some_and(can_be_structured_prefix)
             && statements.get(1).is_some_and(can_start_sequential_suffix)
         {
             candidates.push(1);
@@ -1790,6 +1804,16 @@ fn analyze_generated_body_shape_uncached(
                 statements.get(binding_prefix_len),
                 Some(ast::Statement::IfStatement(_))
             )
+            && statements
+                .get(binding_prefix_len + 1)
+                .is_some_and(can_start_sequential_suffix)
+        {
+            candidates.push(binding_prefix_len + 1);
+        }
+        if binding_prefix_len + 1 < statements.len()
+            && statements
+                .get(binding_prefix_len)
+                .is_some_and(can_be_structured_prefix)
             && statements
                 .get(binding_prefix_len + 1)
                 .is_some_and(can_start_sequential_suffix)
@@ -1931,6 +1955,33 @@ fn analyze_generated_body_shape_uncached(
                 return GeneratedBodyShape::Block {
                     inner: Box::new(inner_shape),
                 };
+            }
+        }
+
+        if statements.len() >= 2
+            && let Some(ast::Statement::BlockStatement(block)) = statements.first()
+        {
+            let inner_source = codegen_statements_with_flow_cast_restore(&block.body);
+            let inner_shape = analyze_generated_body_shape_impl_with_guard_aliases(
+                &inner_source,
+                true,
+                guard_aliases,
+            );
+            if !matches!(inner_shape, GeneratedBodyShape::Unknown) {
+                let suffix_source = codegen_statements_with_flow_cast_restore(&statements[1..]);
+                let suffix_shape = analyze_generated_body_shape_impl_with_guard_aliases(
+                    &suffix_source,
+                    true,
+                    guard_aliases,
+                );
+                if !matches!(suffix_shape, GeneratedBodyShape::Unknown) {
+                    return GeneratedBodyShape::Sequential {
+                        prefix: Box::new(GeneratedBodyShape::Block {
+                            inner: Box::new(inner_shape),
+                        }),
+                        inner: Box::new(suffix_shape),
+                    };
+                }
             }
         }
 
@@ -3908,31 +3959,37 @@ fn analyze_generated_body_shape_uncached(
                 let prefix_source =
                     codegen_statements_with_flow_cast_restore(&statements[..split_index]);
                 let prefix_shape = {
-                    let synthetic_shape =
-                        collect_candidate_return_identifiers(&statements[..split_index])
-                            .into_iter()
-                            .find_map(|candidate_name| {
-                                let synthetic_return =
-                                    format!("{prefix_source}\nreturn {candidate_name};");
-                                let synthetic_shape =
-                                    analyze_generated_body_shape_impl_with_guard_aliases(
-                                        &synthetic_return,
-                                        false,
-                                        guard_aliases,
-                                    );
-                                shape_returned_identifier(&synthetic_shape)
-                                    .is_some_and(|name| name == candidate_name)
-                                    .then_some(synthetic_shape)
-                            });
-                    synthetic_shape.or_else(|| {
-                        let direct_shape = analyze_generated_body_shape_impl_with_guard_aliases(
-                            &prefix_source,
-                            false,
-                            guard_aliases,
-                        );
+                    if split_index == 1 {
+                        let direct_shape = statement_shape(&statements[0], guard_aliases);
                         (!matches!(direct_shape, GeneratedBodyShape::Unknown))
                             .then_some(direct_shape)
-                    })
+                    } else {
+                        let synthetic_shape =
+                            collect_candidate_return_identifiers(&statements[..split_index])
+                                .into_iter()
+                                .find_map(|candidate_name| {
+                                    let synthetic_return =
+                                        format!("{prefix_source}\nreturn {candidate_name};");
+                                    let synthetic_shape =
+                                        analyze_generated_body_shape_impl_with_guard_aliases(
+                                            &synthetic_return,
+                                            false,
+                                            guard_aliases,
+                                        );
+                                    shape_returned_identifier(&synthetic_shape)
+                                        .is_some_and(|name| name == candidate_name)
+                                        .then_some(synthetic_shape)
+                                });
+                        synthetic_shape.or_else(|| {
+                            let direct_shape = analyze_generated_body_shape_impl_with_guard_aliases(
+                                &prefix_source,
+                                false,
+                                guard_aliases,
+                            );
+                            (!matches!(direct_shape, GeneratedBodyShape::Unknown))
+                                .then_some(direct_shape)
+                        })
+                    }
                 };
                 if let Some(prefix_shape) = prefix_shape {
                     return GeneratedBodyShape::Sequential {
@@ -31975,6 +32032,30 @@ mod tests {
     fn analyzes_multi_value_cached_return_body_shape() {
         let shape = super::analyze_generated_body_shape(
             "let obj = null;\nlet my_div = null;\nif ($[0] !== data.cond || $[1] !== data.cond1) {\n  bb0: if (data.cond) {\n    obj = makeObject_Primitives();\n    if (data.cond1) {\n      my_div = mutateAndReturn(obj);\n      break bb0;\n    }\n    mutate(obj);\n  }\n  $[0] = data.cond;\n  $[1] = data.cond1;\n  $[2] = obj;\n  $[3] = my_div;\n} else {\n  obj = $[2];\n  my_div = $[3];\n}\nreturn my_div;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_block_structural_check_then_tail_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "let t0;\n{\n  t0 = f(props.x);\n  let condition = $[0] !== props.x;\n  if (!condition) {\n    let old$t0 = $[1];\n    $structuralCheck(old$t0, t0, \"t0\", \"Component\", \"cached\", \"(9:9)\");\n  }\n  $[0] = props.x;\n  $[1] = t0;\n  if (condition) {\n    t0 = f(props.x);\n    $structuralCheck($[1], t0, \"t0\", \"Component\", \"recomputed\", \"(9:9)\");\n    t0 = $[1];\n  }\n}\nconst w = t0;\nconst z = useOther(w);\nconst [x] = useState(z);\nlet t1;\n{\n  t1 = <div>{x}</div>;\n  let condition = $[2] !== x;\n  if (!condition) {\n    let old$t1 = $[3];\n    $structuralCheck(old$t1, t1, \"t1\", \"Component\", \"cached\", \"(12:12)\");\n  }\n  $[2] = x;\n  $[3] = t1;\n  if (condition) {\n    t1 = <div>{x}</div>;\n    $structuralCheck($[3], t1, \"t1\", \"Component\", \"recomputed\", \"(12:12)\");\n    t1 = $[3];\n  }\n}\nreturn t1;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_block_structural_check_then_use_state_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "let t0;\nif ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {\n  t0 = f(props.x);\n  $[0] = t0;\n} else {\n  t0 = $[0];\n}\nconst [x] = useState(t0);\nlet t1;\n{\n  t1 = <div>{x}</div>;\n  let condition = $[1] !== x;\n  if (!condition) {\n    let old$t1 = $[2];\n    $structuralCheck(old$t1, t1, \"t1\", \"Component\", \"cached\", \"(7:7)\");\n  }\n  $[1] = x;\n  $[2] = t1;\n  if (condition) {\n    t1 = <div>{x}</div>;\n    $structuralCheck($[2], t1, \"t1\", \"Component\", \"recomputed\", \"(7:7)\");\n    t1 = $[2];\n  }\n}\nreturn t1;\n",
         );
 
         assert!(
