@@ -1213,6 +1213,17 @@ fn codegen_outlined_function(
                     *expression = replace_identifier_tokens(expression, from, to);
                 }
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedReturnPrefix {
+                test,
+                consequent,
+                inner,
+            } => {
+                *test = replace_identifier_tokens(test, from, to);
+                if let Some(consequent) = consequent {
+                    *consequent = replace_identifier_tokens(consequent, from, to);
+                }
+                rename_generated_body_shape(inner, from, to);
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedAssignments {
                 test,
                 assignments,

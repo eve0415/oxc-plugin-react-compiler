@@ -162,6 +162,11 @@ pub enum GeneratedBodyShape {
         test: String,
         expressions: Vec<String>,
     },
+    GuardedReturnPrefix {
+        test: String,
+        consequent: Option<String>,
+        inner: Box<GeneratedBodyShape>,
+    },
     GuardedAssignments {
         test: String,
         assignments: Vec<GeneratedAssignment>,
@@ -919,6 +924,7 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             GeneratedBodyShape::ExpressionStatements(_) => None,
             GeneratedBodyShape::AssignmentStatements(_) => None,
             GeneratedBodyShape::GuardedExpressionStatements { .. } => None,
+            GeneratedBodyShape::GuardedReturnPrefix { .. } => None,
             GeneratedBodyShape::GuardedAssignments { .. } => None,
             GeneratedBodyShape::ReturnIdentifier(name) => Some(name),
             GeneratedBodyShape::ReturnExpression(_) => None,
@@ -1124,6 +1130,20 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             .argument
             .as_ref()
             .is_some_and(|argument| expression_is_identifier(argument, identifier))
+    }
+
+    fn extract_return_argument<'a>(
+        statement: &'a ast::Statement<'a>,
+    ) -> Option<Option<&'a ast::Expression<'a>>> {
+        match statement {
+            ast::Statement::ReturnStatement(return_statement) => {
+                Some(return_statement.argument.as_ref())
+            }
+            ast::Statement::BlockStatement(block) if block.body.len() == 1 => {
+                extract_return_argument(&block.body[0])
+            }
+            _ => None,
+        }
     }
 
     fn cache_prologue_binding_name(statement: &ast::Statement<'_>) -> Option<String> {
@@ -1378,6 +1398,22 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
 
         if statements.is_empty() {
             return GeneratedBodyShape::ExpressionStatements(Vec::new());
+        }
+
+        if statements.len() >= 2
+            && let Some(ast::Statement::IfStatement(if_statement)) = statements.first()
+            && if_statement.alternate.is_none()
+            && let Some(consequent_argument) = extract_return_argument(&if_statement.consequent)
+        {
+            let suffix_source = codegen_statements_with_flow_cast_restore(&statements[1..]);
+            let inner_shape = analyze_generated_body_shape_impl(&suffix_source, true);
+            if !matches!(inner_shape, GeneratedBodyShape::Unknown) {
+                return GeneratedBodyShape::GuardedReturnPrefix {
+                    test: codegen_expression_with_flow_cast_restore(&if_statement.test),
+                    consequent: consequent_argument.map(codegen_expression_with_flow_cast_restore),
+                    inner: Box::new(inner_shape),
+                };
+            }
         }
 
         if statements.len() >= 2
@@ -23245,6 +23281,55 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 )),
             ))
         }
+        GeneratedBodyShape::GuardedReturnPrefix {
+            test,
+            consequent,
+            inner,
+        } => {
+            let test =
+                parse_expression_for_ast_codegen(allocator, SourceType::mjs().with_jsx(true), test)
+                    .ok()?;
+            let consequent = consequent
+                .as_deref()
+                .map(|expr| {
+                    parse_expression_for_ast_codegen(
+                        allocator,
+                        SourceType::mjs().with_jsx(true),
+                        expr,
+                    )
+                })
+                .transpose()
+                .ok()?;
+            let inner_spec = FunctionBodyRenderSpec {
+                params: spec.params,
+                param_names: spec.param_names,
+                body_source: spec.body_source,
+                body_shape: inner.as_ref(),
+                directives: spec.directives,
+                cache_prologue: spec.cache_prologue,
+                needs_function_hook_guard_wrapper: spec.needs_function_hook_guard_wrapper,
+                is_async: spec.is_async,
+                is_generator: spec.is_generator,
+            };
+            let mut body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder,
+                allocator,
+                &inner_spec,
+            )?;
+            body.statements.insert(
+                0,
+                builder.statement_if(
+                    SPAN,
+                    test,
+                    builder.statement_block(
+                        SPAN,
+                        builder.vec1(builder.statement_return(SPAN, consequent)),
+                    ),
+                    None,
+                ),
+            );
+            Some(body)
+        }
         GeneratedBodyShape::GuardedAssignments { test, assignments } => {
             let test =
                 parse_expression_for_ast_codegen(allocator, SourceType::mjs().with_jsx(true), test)
@@ -27504,6 +27589,42 @@ mod tests {
             super::GeneratedBodyShape::GuardedExpressionStatements {
                 test: "ref.current === null".to_string(),
                 expressions: vec!["update()".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn analyzes_guarded_return_prefix_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "if (!comments.length) {\n  return;\n}\nconsole.log(comments.length);\n",
+        );
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::GuardedReturnPrefix {
+                test: "!comments.length".to_string(),
+                consequent: None,
+                inner: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![
+                    "console.log(comments.length)".to_string()
+                ])),
+            }
+        );
+    }
+
+    #[test]
+    fn analyzes_guarded_return_prefix_with_return_tail_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "if (shouldReadA) {\n  return a.b.c;\n}\nreturn null;\n",
+        );
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::GuardedReturnPrefix {
+                test: "shouldReadA".to_string(),
+                consequent: Some("a.b.c".to_string()),
+                inner: Box::new(super::GeneratedBodyShape::ReturnExpression(
+                    "null".to_string()
+                )),
             }
         );
     }

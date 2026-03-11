@@ -3132,6 +3132,37 @@ fn try_build_function_body_from_shape<'a>(
                 None,
             )),
         )),
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedReturnPrefix {
+            test,
+            consequent,
+            inner,
+        } => {
+            let mut body = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                inner.as_ref(),
+                cache_prologue,
+            )?;
+            let consequent = consequent
+                .as_deref()
+                .map(|expr| parse_expression_source(allocator, source_type, expr))
+                .transpose()
+                .ok()?;
+            body.statements.insert(
+                0,
+                builder.statement_if(
+                    SPAN,
+                    parse_expression_source(allocator, source_type, test).ok()?,
+                    builder.statement_block(
+                        SPAN,
+                        builder.vec1(builder.statement_return(SPAN, consequent)),
+                    ),
+                    None,
+                ),
+            );
+            Some(body)
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedAssignments {
             test,
             assignments,
