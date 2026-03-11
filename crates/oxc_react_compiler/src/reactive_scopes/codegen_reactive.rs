@@ -1032,6 +1032,10 @@ fn try_build_generated_body_shape_from_reactive_block(
 ) -> Option<GeneratedBodyShape> {
     match block {
         [] => Some(GeneratedBodyShape::ExpressionStatements(vec![])),
+        [
+            ReactiveStatement::Scope(scope_block),
+            ReactiveStatement::Terminal(term_stmt),
+        ] => try_build_generated_body_shape_from_reactive_scope_return(cx, scope_block, term_stmt),
         [ReactiveStatement::Scope(scope_block)]
             if can_inline_direct_scope_shape(&scope_block.scope) =>
         {
@@ -1043,6 +1047,7 @@ fn try_build_generated_body_shape_from_reactive_block(
             try_build_generated_body_shape_from_reactive_block(cx, &scope_block.instructions)
         }
         [ReactiveStatement::Instruction(instr), rest @ ..] => {
+            apply_direct_prefix_codegen_state(cx, instr);
             let inner = try_build_generated_body_shape_from_reactive_block(cx, rest)?;
             try_wrap_generated_body_shape_with_instruction_prefix(cx, instr, inner)
         }
@@ -1062,6 +1067,207 @@ fn try_build_generated_body_shape_from_reactive_block(
         }
         _ => None,
     }
+}
+
+fn apply_direct_prefix_codegen_state(cx: &mut Context, instr: &ReactiveInstruction) {
+    match &instr.value {
+        InstructionValue::DeclareLocal { lvalue, .. }
+        | InstructionValue::DeclareContext { lvalue, .. } => {
+            if lvalue.place.identifier.name.is_some() {
+                cx.declare(&lvalue.place.identifier);
+                cx.mark_decl_runtime_emitted(lvalue.place.identifier.declaration_id);
+            }
+        }
+        InstructionValue::StoreLocal { lvalue, .. }
+        | InstructionValue::StoreContext { lvalue, .. }
+            if lvalue.kind != InstructionKind::Reassign
+                && lvalue.place.identifier.name.is_some() =>
+        {
+            cx.declare(&lvalue.place.identifier);
+            cx.mark_decl_runtime_emitted(lvalue.place.identifier.declaration_id);
+        }
+        _ => {}
+    }
+}
+
+#[derive(Default)]
+struct DirectMemoizedExistingReturnParts {
+    bindings: Vec<GeneratedBinding>,
+    assignments: Vec<GeneratedAssignment>,
+    expressions: Vec<String>,
+    setup_statements: Vec<String>,
+    memoized_expr: Option<String>,
+}
+
+fn try_build_generated_body_shape_from_reactive_scope_return(
+    cx: &mut Context,
+    scope_block: &ReactiveScopeBlock,
+    term_stmt: &ReactiveTerminalStatement,
+) -> Option<GeneratedBodyShape> {
+    if term_stmt.label.is_some()
+        || !scope_block.scope.declarations.is_empty()
+        || scope_block.scope.reassignments.len() != 1
+        || !scope_block
+            .instructions
+            .iter()
+            .all(|stmt| matches!(stmt, ReactiveStatement::Instruction(_)))
+    {
+        return None;
+    }
+    let ReactiveTerminal::Return { value, .. } = &term_stmt.terminal else {
+        return None;
+    };
+    let output_ident = &scope_block.scope.reassignments[0];
+    if value.identifier.declaration_id != output_ident.declaration_id {
+        return None;
+    }
+    let value_name = identifier_name_with_cx(cx, output_ident);
+    let computation_shape = try_build_generated_body_shape_from_instruction_prefixes(
+        cx,
+        &scope_block.instructions,
+        GeneratedBodyShape::ReturnIdentifier(value_name.clone()),
+    )?;
+    let parts =
+        try_decompose_direct_memoized_existing_return_shape(computation_shape, &value_name)?;
+    let dep_exprs =
+        collect_direct_scope_dependency_exprs(cx, &scope_block.scope, &scope_block.instructions)?;
+    if dep_exprs.is_empty() {
+        let value_slot = cx.alloc_cache_slot();
+        return Some(GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+            value_name,
+            value_slot,
+            memoized_bindings: parts.bindings,
+            memoized_assignments: parts.assignments,
+            memoized_expressions: parts.expressions,
+            memoized_setup_statements: parts.setup_statements,
+            memoized_expr: parts.memoized_expr,
+        });
+    }
+    if dep_exprs.len() == 1 {
+        let dep_slot = cx.alloc_cache_slot();
+        let value_slot = cx.alloc_cache_slot();
+        return Some(GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+            value_name,
+            dep_slot,
+            dep_expr: dep_exprs[0].clone(),
+            value_slot,
+            memoized_bindings: parts.bindings,
+            memoized_assignments: parts.assignments,
+            memoized_expressions: parts.expressions,
+            memoized_setup_statements: parts.setup_statements,
+            memoized_expr: parts.memoized_expr,
+        });
+    }
+    let mut deps = Vec::with_capacity(dep_exprs.len());
+    for dep_expr in dep_exprs {
+        deps.push((cx.alloc_cache_slot(), dep_expr));
+    }
+    let value_slot = cx.alloc_cache_slot();
+    Some(GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+        value_name,
+        deps,
+        value_slot,
+        memoized_bindings: parts.bindings,
+        memoized_assignments: parts.assignments,
+        memoized_expressions: parts.expressions,
+        memoized_setup_statements: parts.setup_statements,
+        memoized_expr: parts.memoized_expr,
+    })
+}
+
+fn try_build_generated_body_shape_from_instruction_prefixes(
+    cx: &mut Context,
+    block: &[ReactiveStatement],
+    inner: GeneratedBodyShape,
+) -> Option<GeneratedBodyShape> {
+    let mut shape = inner;
+    for stmt in block.iter().rev() {
+        let ReactiveStatement::Instruction(instr) = stmt else {
+            return None;
+        };
+        shape = try_wrap_generated_body_shape_with_instruction_prefix(cx, instr, shape)?;
+    }
+    Some(shape)
+}
+
+fn try_decompose_direct_memoized_existing_return_shape(
+    shape: GeneratedBodyShape,
+    value_name: &str,
+) -> Option<DirectMemoizedExistingReturnParts> {
+    match shape {
+        GeneratedBodyShape::ReturnIdentifier(name) if name == value_name => {
+            Some(DirectMemoizedExistingReturnParts::default())
+        }
+        GeneratedBodyShape::AssignedExpressionReturn {
+            value_name: assigned_name,
+            expression,
+            ..
+        } if assigned_name == value_name => Some(DirectMemoizedExistingReturnParts {
+            memoized_expr: Some(expression),
+            ..Default::default()
+        }),
+        GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
+            let mut parts =
+                try_decompose_direct_memoized_existing_return_shape(*inner, value_name)?;
+            let mut prefixed_bindings = bindings;
+            prefixed_bindings.extend(parts.bindings);
+            parts.bindings = prefixed_bindings;
+            Some(parts)
+        }
+        GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
+            let mut parts =
+                try_decompose_direct_memoized_existing_return_shape(*inner, value_name)?;
+            let mut prefixed_assignments = assignments;
+            prefixed_assignments.extend(parts.assignments);
+            parts.assignments = prefixed_assignments;
+            Some(parts)
+        }
+        GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
+            let mut parts =
+                try_decompose_direct_memoized_existing_return_shape(*inner, value_name)?;
+            let mut prefixed_expressions = expressions;
+            prefixed_expressions.extend(parts.expressions);
+            parts.expressions = prefixed_expressions;
+            Some(parts)
+        }
+        _ => None,
+    }
+}
+
+fn collect_direct_scope_dependency_exprs(
+    cx: &mut Context,
+    scope: &ReactiveScope,
+    block: &[ReactiveStatement],
+) -> Option<Vec<String>> {
+    if block.iter().any(|stmt| {
+        matches!(
+            stmt,
+            ReactiveStatement::Instruction(instr)
+                if matches!(
+                    instr.value,
+                    InstructionValue::FunctionExpression { .. }
+                        | InstructionValue::ObjectMethod { .. }
+                )
+        )
+    }) {
+        return None;
+    }
+    let sorted_deps: Vec<ReactiveScopeDependency> = scope
+        .dependencies
+        .iter()
+        .map(|dep| truncate_ref_current_dep(dep, &cx.stable_ref_decls))
+        .collect();
+    let mut dep_refs: Vec<&ReactiveScopeDependency> = sorted_deps.iter().collect();
+    sort_scope_dependency_refs_for_codegen(cx, &mut dep_refs);
+    let mut seen = HashSet::new();
+    let mut dep_exprs = Vec::new();
+    for dep in dep_refs {
+        let key = format_dependency_identity(dep);
+        if seen.insert(key) {
+            dep_exprs.push(codegen_dependency(cx, dep));
+        }
+    }
+    Some(dep_exprs)
 }
 
 fn can_inline_direct_scope_shape(scope: &ReactiveScope) -> bool {
@@ -29828,6 +30034,111 @@ mod tests {
                 )),
             }
         );
+    }
+
+    #[test]
+    fn directly_lowers_reassigning_scope_return_body_shape_from_reactive_block() {
+        let mut cx = test_context();
+        let items = named_place(0, 0, "items");
+        let props = named_place(1, 1, "props");
+        let block = vec![
+            ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                id: crate::hir::types::make_instruction_id(0),
+                lvalue: Some(items.clone()),
+                value: InstructionValue::DeclareLocal {
+                    lvalue: LValue {
+                        place: items.clone(),
+                        kind: InstructionKind::Let,
+                    },
+                    loc: SourceLocation::Generated,
+                },
+                loc: SourceLocation::Generated,
+            })),
+            ReactiveStatement::Scope(ReactiveScopeBlock {
+                scope: ReactiveScope {
+                    id: ScopeId::new(0),
+                    range: MutableRange::default(),
+                    dependencies: vec![ReactiveScopeDependency {
+                        identifier: props.identifier.clone(),
+                        path: vec![DependencyPathEntry {
+                            property: "a".to_string(),
+                            optional: false,
+                        }],
+                    }],
+                    declarations: Default::default(),
+                    reassignments: vec![items.identifier.clone()],
+                    merged_id: None,
+                    early_return_value: None,
+                },
+                instructions: vec![
+                    ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                        id: crate::hir::types::make_instruction_id(1),
+                        lvalue: Some(items.clone()),
+                        value: InstructionValue::ArrayExpression {
+                            elements: vec![],
+                            loc: SourceLocation::Generated,
+                        },
+                        loc: SourceLocation::Generated,
+                    })),
+                    ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                        id: crate::hir::types::make_instruction_id(2),
+                        lvalue: None,
+                        value: InstructionValue::MethodCall {
+                            receiver: items.clone(),
+                            property: named_place(3, 3, "push"),
+                            args: vec![Argument::Place(named_place(4, 4, "value"))],
+                            receiver_optional: false,
+                            call_optional: false,
+                            loc: SourceLocation::Generated,
+                        },
+                        loc: SourceLocation::Generated,
+                    })),
+                ],
+            }),
+            ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                terminal: ReactiveTerminal::Return {
+                    value: items.clone(),
+                    id: crate::hir::types::make_instruction_id(4),
+                    loc: SourceLocation::Generated,
+                },
+                label: None,
+            }),
+        ];
+
+        let shape = super::try_build_generated_body_shape_from_reactive_block(&mut cx, &block)
+            .expect("expected direct body shape");
+
+        let super::GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } = shape
+        else {
+            panic!("expected prefixed declarations shape");
+        };
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations[0].pattern, "items");
+        assert!(matches!(
+            inner.as_ref(),
+            super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+                value_name,
+                dep_slot,
+                dep_expr,
+                value_slot,
+                memoized_expressions,
+                memoized_setup_statements,
+                memoized_expr,
+                ..
+            } if value_name == "items"
+                && *dep_slot == 0
+                && dep_expr == "props.a"
+                && *value_slot == 1
+                && memoized_expressions == &vec![
+                    "items = []".to_string(),
+                    "items[push](value)".to_string(),
+                ]
+                && memoized_setup_statements.is_empty()
+                && memoized_expr.is_none()
+        ));
     }
 
     #[test]
