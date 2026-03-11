@@ -198,7 +198,133 @@ fn try_canonicalize_module(source_type: SourceType, code: &str) -> Option<String
     if parsed.panicked || !parsed.errors.is_empty() {
         return None;
     }
-    Some(codegen_program(&parsed.program))
+    let mut program = parsed.program;
+    canonicalize_transform_flag_program(&allocator, &mut program);
+    Some(super::shared::normalize_for_transform_flag(
+        &codegen_program(&program),
+    ))
+}
+
+fn canonicalize_transform_flag_program<'a>(
+    allocator: &'a Allocator,
+    program: &mut ast::Program<'a>,
+) {
+    let mut canonicalizer = TransformFlagCanonicalizer { allocator };
+    canonicalizer.visit_program(program);
+}
+
+fn canonicalize_initializer_expressions_in_statements<'a>(
+    allocator: &'a Allocator,
+    statements: &mut oxc_allocator::Vec<'a, ast::Statement<'a>>,
+) {
+    let mut canonicalizer = TransformFlagCanonicalizer { allocator };
+    for statement in statements.iter_mut() {
+        canonicalizer.visit_statement(statement);
+    }
+}
+
+struct TransformFlagCanonicalizer<'a> {
+    allocator: &'a Allocator,
+}
+
+impl<'a> VisitMut<'a> for TransformFlagCanonicalizer<'a> {
+    fn visit_function(
+        &mut self,
+        function: &mut ast::Function<'a>,
+        flags: oxc_syntax::scope::ScopeFlags,
+    ) {
+        walk_mut::walk_function(self, function, flags);
+        if function.r#type == ast::FunctionType::FunctionExpression
+            && let Some(body) = function.body.as_mut()
+        {
+            strip_trailing_void_return_from_function_body(body);
+        }
+    }
+
+    fn visit_arrow_function_expression(&mut self, arrow: &mut ast::ArrowFunctionExpression<'a>) {
+        walk_mut::walk_arrow_function_expression(self, arrow);
+        strip_trailing_void_return_from_function_body(&mut arrow.body);
+    }
+
+    fn visit_variable_declarator(&mut self, declarator: &mut ast::VariableDeclarator<'a>) {
+        walk_mut::walk_variable_declarator(self, declarator);
+        if let Some(init) = declarator.init.as_mut() {
+            canonicalize_initializer_expression(self.allocator, init);
+        }
+    }
+
+    fn visit_assignment_expression(&mut self, expression: &mut ast::AssignmentExpression<'a>) {
+        walk_mut::walk_assignment_expression(self, expression);
+        canonicalize_initializer_expression(self.allocator, &mut expression.right);
+    }
+}
+
+fn canonicalize_initializer_expression<'a>(
+    allocator: &'a Allocator,
+    expression: &mut ast::Expression<'a>,
+) {
+    strip_wrapped_function_initializer_parens_ast(allocator, expression);
+    strip_trailing_void_return_from_initializer_expression(expression);
+}
+
+fn strip_wrapped_function_initializer_parens_ast<'a>(
+    allocator: &'a Allocator,
+    expression: &mut ast::Expression<'a>,
+) -> bool {
+    let mut stripped = false;
+    while let ast::Expression::ParenthesizedExpression(parenthesized) = expression {
+        if !matches!(
+            parenthesized.expression.without_parentheses(),
+            ast::Expression::ArrowFunctionExpression(_) | ast::Expression::FunctionExpression(_)
+        ) {
+            break;
+        }
+        let ast::Expression::ParenthesizedExpression(parenthesized) =
+            std::mem::replace(expression, ast::Expression::dummy(allocator))
+        else {
+            unreachable!();
+        };
+        *expression = parenthesized.unbox().expression;
+        stripped = true;
+    }
+    stripped
+}
+
+fn strip_trailing_void_return_from_initializer_expression(expression: &mut ast::Expression<'_>) {
+    match expression {
+        ast::Expression::ParenthesizedExpression(parenthesized) => {
+            strip_trailing_void_return_from_initializer_expression(&mut parenthesized.expression);
+        }
+        ast::Expression::ArrowFunctionExpression(arrow) => {
+            strip_trailing_void_return_from_function_body(&mut arrow.body);
+        }
+        ast::Expression::FunctionExpression(function) => {
+            if let Some(body) = function.body.as_mut() {
+                strip_trailing_void_return_from_function_body(body);
+            }
+        }
+        ast::Expression::TSAsExpression(ts_as) => {
+            strip_trailing_void_return_from_initializer_expression(&mut ts_as.expression);
+        }
+        ast::Expression::TSSatisfiesExpression(ts_satisfies) => {
+            strip_trailing_void_return_from_initializer_expression(&mut ts_satisfies.expression);
+        }
+        ast::Expression::TSNonNullExpression(ts_non_null) => {
+            strip_trailing_void_return_from_initializer_expression(&mut ts_non_null.expression);
+        }
+        _ => {}
+    }
+}
+
+fn strip_trailing_void_return_from_function_body(body: &mut ast::FunctionBody<'_>) -> bool {
+    let Some(ast::Statement::ReturnStatement(return_statement)) = body.statements.last() else {
+        return false;
+    };
+    if return_statement.argument.is_some() {
+        return false;
+    }
+    body.statements.pop();
+    true
 }
 
 fn strip_leading_comments_for_transform_flag(code: &str) -> &str {
@@ -353,6 +479,8 @@ fn try_emit_module(
             span.start, span.end, args.filename
         ));
     }
+
+    canonicalize_initializer_expressions_in_statements(&allocator, &mut body);
 
     let program = builder.program(
         SPAN,
@@ -2906,6 +3034,7 @@ fn build_compiled_function_body<'a>(
     prepend_instrument_forget_statement(builder, allocator, &mut function_body, cf, state);
     align_runtime_identifier_references(builder, &mut function_body, cf, state);
     apply_emit_freeze_to_cache_stores_ast(builder, allocator, &mut function_body, cf, state);
+    strip_redundant_trailing_void_return_from_function_body(&mut function_body);
     Some(function_body)
 }
 
@@ -3068,11 +3197,12 @@ fn build_generated_statement_sources<'a>(
         attempts.push((ts_source_type, flow_cast_rewritten));
     }
     for (attempt_source_type, attempt_body) in attempts {
-        if let Ok(parsed) = parse_statements(
+        if let Ok(mut parsed) = parse_statements(
             allocator,
             attempt_source_type,
             allocator.alloc_str(&attempt_body),
         ) {
+            canonicalize_initializer_expressions_in_statements(allocator, &mut parsed);
             return Some(parsed);
         }
     }
@@ -3342,6 +3472,16 @@ fn replace_final_return_expression<'a>(
     };
     return_statement.argument = Some(expression);
     Some(())
+}
+
+fn strip_redundant_trailing_void_return_from_function_body(body: &mut ast::FunctionBody<'_>) {
+    if matches!(
+        body.statements.last(),
+        Some(ast::Statement::ReturnStatement(return_statement))
+            if return_statement.argument.is_none()
+    ) {
+        body.statements.pop();
+    }
 }
 
 fn try_build_function_body_from_shape<'a>(
@@ -5453,6 +5593,7 @@ fn build_rendered_outlined_function_statement<'a>(
         outlined.cache_prologue.as_ref(),
         state,
     );
+    strip_redundant_trailing_void_return_from_function_body(&mut body);
     let declaration = builder.declaration_function(
         SPAN,
         ast::FunctionType::FunctionDeclaration,
@@ -5522,6 +5663,7 @@ fn parse_expression_source<'a>(
                 _ => break,
             }
         }
+        strip_trailing_void_return_from_initializer_expression(&mut expression);
         return Ok(expression);
     }
     Err("failed to parse expression snippet".to_string())
@@ -8009,6 +8151,52 @@ export const FIXTURE_ENTRYPOINT = {
   const [x, setX] = useState(0);
   const foo = (() => {
     setX(1);
+  });
+  if (props.cond) {
+    setX(2);
+    foo();
+  }
+  return x;
+}
+export const FIXTURE_ENTRYPOINT = {
+  fn: Component,
+  params: ["TodoAdd"],
+  isComponent: "TodoAdd"
+};"#;
+        assert!(!compute_transform_state(
+            SourceType::mjs().with_jsx(true),
+            output,
+            source,
+        ));
+    }
+
+    #[test]
+    fn transform_state_ignores_conditional_set_state_bailout_fixture_explicit_void_return() {
+        let source = r#"function Component(props) {
+  const [x, setX] = useState(0);
+
+  const foo = () => {
+    setX(1);
+  };
+
+  if (props.cond) {
+    setX(2);
+    foo();
+  }
+
+  return x;
+}
+
+export const FIXTURE_ENTRYPOINT = {
+  fn: Component,
+  params: ['TodoAdd'],
+  isComponent: 'TodoAdd',
+};"#;
+        let output = r#"function Component(props) {
+  const [x, setX] = useState(0);
+  const foo = (() => {
+    setX(1);
+    return;
   });
   if (props.cond) {
     setX(2);
