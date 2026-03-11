@@ -326,6 +326,13 @@ pub enum GeneratedBodyShape {
         memoized_setup_statements: Vec<String>,
         memoized_expr: Option<String>,
     },
+    MemoizedComputedReturn {
+        value_name: String,
+        value_kind: Option<ast::VariableDeclarationKind>,
+        deps: Vec<(u32, String)>,
+        value_slot: u32,
+        computation: Box<GeneratedBodyShape>,
+    },
     WrappedReturnExpression {
         source_name: String,
         expression: String,
@@ -434,6 +441,78 @@ pub struct CodegenResult {
     pub cache_prologue: Option<CachePrologue>,
     /// Deferred codegen error (upstream invariant parity).
     pub error: Option<CompilerError>,
+}
+
+fn generated_body_shape_returned_identifier(shape: &GeneratedBodyShape) -> Option<&str> {
+    match shape {
+        GeneratedBodyShape::Unknown => None,
+        GeneratedBodyShape::Block { inner }
+        | GeneratedBodyShape::Labeled { inner, .. }
+        | GeneratedBodyShape::PrefixedDeclarations { inner, .. }
+        | GeneratedBodyShape::PrefixedBindings { inner, .. }
+        | GeneratedBodyShape::PrefixedExpressionStatements { inner, .. }
+        | GeneratedBodyShape::PrefixedAssignments { inner, .. }
+        | GeneratedBodyShape::Sequential { inner, .. } => {
+            generated_body_shape_returned_identifier(inner)
+        }
+        GeneratedBodyShape::Switch { cases, .. } => {
+            let mut case_returns = cases
+                .iter()
+                .map(|case| generated_body_shape_returned_identifier(&case.consequent));
+            let first = case_returns.next()??;
+            case_returns
+                .all(|candidate| candidate == Some(first))
+                .then_some(first)
+        }
+        GeneratedBodyShape::ConditionalBranches {
+            consequent,
+            alternate,
+            ..
+        }
+        | GeneratedBodyShape::TryCatch {
+            try_body: consequent,
+            catch_body: alternate,
+            ..
+        } => {
+            let consequent_return = generated_body_shape_returned_identifier(consequent)?;
+            let alternate_return = generated_body_shape_returned_identifier(alternate)?;
+            (consequent_return == alternate_return).then_some(consequent_return)
+        }
+        GeneratedBodyShape::DebuggerStatements(_)
+        | GeneratedBodyShape::ExpressionStatements(_)
+        | GeneratedBodyShape::AssignmentStatements(_)
+        | GeneratedBodyShape::GuardedBody { .. }
+        | GeneratedBodyShape::GuardedExpressionStatements { .. }
+        | GeneratedBodyShape::GuardedReturnPrefix { .. }
+        | GeneratedBodyShape::GuardedAssignments { .. }
+        | GeneratedBodyShape::WhileLoop { .. }
+        | GeneratedBodyShape::DoWhileLoop { .. }
+        | GeneratedBodyShape::ForLoop { .. }
+        | GeneratedBodyShape::ForInLoop { .. }
+        | GeneratedBodyShape::ForOfLoop { .. }
+        | GeneratedBodyShape::GuardedAssignmentExpressions { .. }
+        | GeneratedBodyShape::ZeroDependencyMemoizedCachedValues { .. }
+        | GeneratedBodyShape::MemoizedCachedValues { .. }
+        | GeneratedBodyShape::MemoizedEarlyReturnSentinel { .. }
+        | GeneratedBodyShape::Break(_)
+        | GeneratedBodyShape::Continue(_)
+        | GeneratedBodyShape::ReturnVoid => None,
+        GeneratedBodyShape::ReturnIdentifier(name) => Some(name),
+        GeneratedBodyShape::ReturnExpression(_) | GeneratedBodyShape::ThrowExpression(_) => None,
+        GeneratedBodyShape::BoundExpressionReturn { value_name, .. }
+        | GeneratedBodyShape::AssignedExpressionReturn { value_name, .. }
+        | GeneratedBodyShape::ZeroDependencyMemoizedReturn { value_name, .. }
+        | GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn { value_name, .. }
+        | GeneratedBodyShape::SingleDependencyMemoizedReturn { value_name, .. }
+        | GeneratedBodyShape::SingleDependencyMemoizedExistingReturn { value_name, .. }
+        | GeneratedBodyShape::MultiDependencyMemoizedReturn { value_name, .. }
+        | GeneratedBodyShape::MultiDependencyMemoizedExistingReturn { value_name, .. }
+        | GeneratedBodyShape::MemoizedComputedReturn { value_name, .. }
+        | GeneratedBodyShape::SingleSlotMemoizedReturn { value_name, .. } => Some(value_name),
+        GeneratedBodyShape::WrappedReturnExpression { .. } => None,
+        GeneratedBodyShape::AssignedAliasReturn { alias_name, .. }
+        | GeneratedBodyShape::AliasedReturn { alias_name, .. } => Some(alias_name),
+    }
 }
 
 /// Codegen context tracking temporaries, declarations, and cache slots.
@@ -1052,20 +1131,45 @@ fn try_build_generated_body_shape_from_reactive_block(
             try_wrap_generated_body_shape_with_instruction_prefix(cx, instr, inner)
         }
         [ReactiveStatement::Terminal(term_stmt)] => {
-            let shape =
-                try_build_generated_body_shape_from_reactive_terminal(cx, &term_stmt.terminal)?;
-            if let Some(label) = &term_stmt.label
-                && !label.implicit
-            {
-                Some(GeneratedBodyShape::Labeled {
-                    label: format!("bb{}", label.id.0),
-                    inner: Box::new(shape),
-                })
-            } else {
-                Some(shape)
+            try_build_generated_body_shape_from_terminal_statement(cx, term_stmt)
+        }
+        [ReactiveStatement::Terminal(term_stmt), rest @ ..] => {
+            let prefix = try_build_generated_body_shape_from_terminal_statement(cx, term_stmt)?;
+            if matches!(
+                prefix,
+                GeneratedBodyShape::ReturnVoid
+                    | GeneratedBodyShape::ReturnIdentifier(_)
+                    | GeneratedBodyShape::ReturnExpression(_)
+                    | GeneratedBodyShape::ThrowExpression(_)
+                    | GeneratedBodyShape::Break(_)
+                    | GeneratedBodyShape::Continue(_)
+            ) {
+                return None;
             }
+            let inner = try_build_generated_body_shape_from_reactive_block(cx, rest)?;
+            Some(GeneratedBodyShape::Sequential {
+                prefix: Box::new(prefix),
+                inner: Box::new(inner),
+            })
         }
         _ => None,
+    }
+}
+
+fn try_build_generated_body_shape_from_terminal_statement(
+    cx: &mut Context,
+    term_stmt: &ReactiveTerminalStatement,
+) -> Option<GeneratedBodyShape> {
+    let shape = try_build_generated_body_shape_from_reactive_terminal(cx, &term_stmt.terminal)?;
+    if let Some(label) = &term_stmt.label
+        && !label.implicit
+    {
+        Some(GeneratedBodyShape::Labeled {
+            label: format!("bb{}", label.id.0),
+            inner: Box::new(shape),
+        })
+    } else {
+        Some(shape)
     }
 }
 
@@ -1104,23 +1208,16 @@ fn try_build_generated_body_shape_from_reactive_scope_return(
     scope_block: &ReactiveScopeBlock,
     term_stmt: &ReactiveTerminalStatement,
 ) -> Option<GeneratedBodyShape> {
-    if term_stmt.label.is_some()
-        || !scope_block
-            .instructions
-            .iter()
-            .all(|stmt| matches!(stmt, ReactiveStatement::Instruction(_)))
-    {
+    if term_stmt.label.is_some() {
         return None;
     }
     let ReactiveTerminal::Return { value, .. } = &term_stmt.terminal else {
         return None;
     };
-    let return_name = identifier_name_with_cx(cx, &value.identifier);
-    let computation_shape = try_build_generated_body_shape_from_instruction_prefixes(
-        cx,
-        &scope_block.instructions,
-        GeneratedBodyShape::ReturnIdentifier(return_name),
-    )?;
+    let mut full_scope_body = scope_block.instructions.clone();
+    full_scope_body.push(ReactiveStatement::Terminal(term_stmt.clone()));
+    let computation_shape =
+        try_build_generated_body_shape_from_reactive_block(cx, &full_scope_body)?;
     let dep_exprs =
         collect_direct_scope_dependency_exprs(cx, &scope_block.scope, &scope_block.instructions)?;
     if scope_block.scope.reassignments.len() == 1 && scope_block.scope.declarations.is_empty() {
@@ -1129,9 +1226,23 @@ fn try_build_generated_body_shape_from_reactive_scope_return(
             return None;
         }
         let value_name = identifier_name_with_cx(cx, output_ident);
-        let parts =
-            try_decompose_direct_memoized_existing_return_shape(computation_shape, &value_name)?;
-        return build_direct_existing_memoized_return_shape(cx, value_name, dep_exprs, parts);
+        if let Some(parts) = try_decompose_direct_memoized_existing_return_shape(
+            computation_shape.clone(),
+            &value_name,
+        ) {
+            return build_direct_existing_memoized_return_shape(cx, value_name, dep_exprs, parts);
+        }
+        if generated_body_shape_returned_identifier(&computation_shape) == Some(value_name.as_str())
+        {
+            return build_direct_computed_memoized_return_shape(
+                cx,
+                value_name,
+                None,
+                dep_exprs,
+                computation_shape,
+            );
+        }
+        return None;
     }
     if scope_block.scope.declarations.len() == 1 && scope_block.scope.reassignments.is_empty() {
         let output_decl = scope_block.scope.declarations.values().next()?;
@@ -1139,26 +1250,25 @@ fn try_build_generated_body_shape_from_reactive_scope_return(
             return None;
         }
         let value_name = identifier_name_with_cx(cx, &output_decl.identifier);
-        let parts =
-            try_decompose_direct_memoized_declared_return_shape(computation_shape, &value_name)?;
-        return build_direct_declared_memoized_return_shape(cx, value_name, dep_exprs, parts);
+        if let Some(parts) = try_decompose_direct_memoized_declared_return_shape(
+            computation_shape.clone(),
+            &value_name,
+        ) {
+            return build_direct_declared_memoized_return_shape(cx, value_name, dep_exprs, parts);
+        }
+        if generated_body_shape_returned_identifier(&computation_shape) == Some(value_name.as_str())
+        {
+            return build_direct_computed_memoized_return_shape(
+                cx,
+                value_name,
+                Some(ast::VariableDeclarationKind::Let),
+                dep_exprs,
+                computation_shape,
+            );
+        }
+        return None;
     }
     None
-}
-
-fn try_build_generated_body_shape_from_instruction_prefixes(
-    cx: &mut Context,
-    block: &[ReactiveStatement],
-    inner: GeneratedBodyShape,
-) -> Option<GeneratedBodyShape> {
-    let mut shape = inner;
-    for stmt in block.iter().rev() {
-        let ReactiveStatement::Instruction(instr) = stmt else {
-            return None;
-        };
-        shape = try_wrap_generated_body_shape_with_instruction_prefix(cx, instr, shape)?;
-    }
-    Some(shape)
 }
 
 fn try_decompose_direct_memoized_existing_return_shape(
@@ -1342,6 +1452,27 @@ fn build_direct_declared_memoized_return_shape(
         memoized_expressions: parts.expressions,
         memoized_setup_statements: parts.setup_statements,
         memoized_expr: parts.memoized_expr,
+    })
+}
+
+fn build_direct_computed_memoized_return_shape(
+    cx: &mut Context,
+    value_name: String,
+    value_kind: Option<ast::VariableDeclarationKind>,
+    dep_exprs: Vec<String>,
+    computation: GeneratedBodyShape,
+) -> Option<GeneratedBodyShape> {
+    let mut deps = Vec::with_capacity(dep_exprs.len());
+    for dep_expr in dep_exprs {
+        deps.push((cx.alloc_cache_slot(), dep_expr));
+    }
+    let value_slot = cx.alloc_cache_slot();
+    Some(GeneratedBodyShape::MemoizedComputedReturn {
+        value_name,
+        value_kind,
+        deps,
+        value_slot,
+        computation: Box::new(computation),
     })
 }
 
@@ -1745,53 +1876,7 @@ fn analyze_generated_body_shape_uncached(
     guard_aliases: &HashMap<String, Vec<GeneratedDependencyGuard>>,
 ) -> GeneratedBodyShape {
     fn shape_returned_identifier(shape: &GeneratedBodyShape) -> Option<&str> {
-        match shape {
-            GeneratedBodyShape::Unknown => None,
-            GeneratedBodyShape::Block { inner } => shape_returned_identifier(inner),
-            GeneratedBodyShape::Labeled { inner, .. } => shape_returned_identifier(inner),
-            GeneratedBodyShape::Switch { .. } => None,
-            GeneratedBodyShape::DebuggerStatements(_) => None,
-            GeneratedBodyShape::ExpressionStatements(_) => None,
-            GeneratedBodyShape::AssignmentStatements(_) => None,
-            GeneratedBodyShape::GuardedBody { .. } => None,
-            GeneratedBodyShape::GuardedExpressionStatements { .. } => None,
-            GeneratedBodyShape::GuardedReturnPrefix { .. } => None,
-            GeneratedBodyShape::ConditionalBranches { .. } => None,
-            GeneratedBodyShape::GuardedAssignments { .. } => None,
-            GeneratedBodyShape::WhileLoop { .. } => None,
-            GeneratedBodyShape::DoWhileLoop { .. } => None,
-            GeneratedBodyShape::ForLoop { .. } => None,
-            GeneratedBodyShape::ForInLoop { .. } => None,
-            GeneratedBodyShape::ForOfLoop { .. } => None,
-            GeneratedBodyShape::GuardedAssignmentExpressions { .. } => None,
-            GeneratedBodyShape::ZeroDependencyMemoizedCachedValues { .. } => None,
-            GeneratedBodyShape::MemoizedCachedValues { .. } => None,
-            GeneratedBodyShape::MemoizedEarlyReturnSentinel { .. } => None,
-            GeneratedBodyShape::TryCatch { .. } => None,
-            GeneratedBodyShape::Break(_) => None,
-            GeneratedBodyShape::Continue(_) => None,
-            GeneratedBodyShape::ReturnVoid => None,
-            GeneratedBodyShape::ReturnIdentifier(name) => Some(name),
-            GeneratedBodyShape::ReturnExpression(_) => None,
-            GeneratedBodyShape::ThrowExpression(_) => None,
-            GeneratedBodyShape::BoundExpressionReturn { value_name, .. }
-            | GeneratedBodyShape::AssignedExpressionReturn { value_name, .. }
-            | GeneratedBodyShape::ZeroDependencyMemoizedReturn { value_name, .. }
-            | GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn { value_name, .. }
-            | GeneratedBodyShape::SingleDependencyMemoizedReturn { value_name, .. }
-            | GeneratedBodyShape::SingleDependencyMemoizedExistingReturn { value_name, .. }
-            | GeneratedBodyShape::MultiDependencyMemoizedReturn { value_name, .. }
-            | GeneratedBodyShape::MultiDependencyMemoizedExistingReturn { value_name, .. }
-            | GeneratedBodyShape::SingleSlotMemoizedReturn { value_name, .. } => Some(value_name),
-            GeneratedBodyShape::WrappedReturnExpression { .. } => None,
-            GeneratedBodyShape::AssignedAliasReturn { alias_name, .. } => Some(alias_name),
-            GeneratedBodyShape::AliasedReturn { alias_name, .. } => Some(alias_name),
-            GeneratedBodyShape::PrefixedDeclarations { inner, .. }
-            | GeneratedBodyShape::PrefixedBindings { inner, .. }
-            | GeneratedBodyShape::PrefixedExpressionStatements { inner, .. }
-            | GeneratedBodyShape::PrefixedAssignments { inner, .. }
-            | GeneratedBodyShape::Sequential { inner, .. } => shape_returned_identifier(inner),
-        }
+        generated_body_shape_returned_identifier(shape)
     }
 
     fn cached_values_prefix_contains_name(prefix_shape: &GeneratedBodyShape, name: &str) -> bool {
@@ -1886,6 +1971,7 @@ fn analyze_generated_body_shape_uncached(
             | GeneratedBodyShape::SingleDependencyMemoizedExistingReturn { .. }
             | GeneratedBodyShape::MultiDependencyMemoizedReturn { .. }
             | GeneratedBodyShape::MultiDependencyMemoizedExistingReturn { .. }
+            | GeneratedBodyShape::MemoizedComputedReturn { .. }
             | GeneratedBodyShape::SingleSlotMemoizedReturn { .. } => true,
             GeneratedBodyShape::MemoizedEarlyReturnSentinel { .. } => true,
             GeneratedBodyShape::BoundExpressionReturn { .. }
@@ -25925,6 +26011,232 @@ fn rewrite_guard_aliases_in_statement_ast<'a>(
     }
 }
 
+fn collect_used_labels_in_statement_ast(
+    statement: &ast::Statement<'_>,
+    labels: &mut HashSet<String>,
+) {
+    match statement {
+        ast::Statement::BlockStatement(block) => {
+            for statement in &block.body {
+                collect_used_labels_in_statement_ast(statement, labels);
+            }
+        }
+        ast::Statement::IfStatement(if_statement) => {
+            collect_used_labels_in_statement_ast(&if_statement.consequent, labels);
+            if let Some(alternate) = if_statement.alternate.as_ref() {
+                collect_used_labels_in_statement_ast(alternate, labels);
+            }
+        }
+        ast::Statement::LabeledStatement(labeled_statement) => {
+            labels.insert(labeled_statement.label.name.as_str().to_string());
+            collect_used_labels_in_statement_ast(&labeled_statement.body, labels);
+        }
+        ast::Statement::SwitchStatement(switch_statement) => {
+            for case in &switch_statement.cases {
+                for statement in &case.consequent {
+                    collect_used_labels_in_statement_ast(statement, labels);
+                }
+            }
+        }
+        ast::Statement::TryStatement(try_statement) => {
+            for statement in &try_statement.block.body {
+                collect_used_labels_in_statement_ast(statement, labels);
+            }
+            if let Some(handler) = try_statement.handler.as_ref() {
+                for statement in &handler.body.body {
+                    collect_used_labels_in_statement_ast(statement, labels);
+                }
+            }
+            if let Some(finalizer) = try_statement.finalizer.as_ref() {
+                for statement in &finalizer.body {
+                    collect_used_labels_in_statement_ast(statement, labels);
+                }
+            }
+        }
+        ast::Statement::WhileStatement(while_statement) => {
+            collect_used_labels_in_statement_ast(&while_statement.body, labels);
+        }
+        ast::Statement::DoWhileStatement(do_while_statement) => {
+            collect_used_labels_in_statement_ast(&do_while_statement.body, labels);
+        }
+        ast::Statement::ForStatement(for_statement) => {
+            collect_used_labels_in_statement_ast(&for_statement.body, labels);
+        }
+        ast::Statement::ForInStatement(for_in_statement) => {
+            collect_used_labels_in_statement_ast(&for_in_statement.body, labels);
+        }
+        ast::Statement::ForOfStatement(for_of_statement) => {
+            collect_used_labels_in_statement_ast(&for_of_statement.body, labels);
+        }
+        _ => {}
+    }
+}
+
+fn choose_fresh_memo_exit_label(statements: &[ast::Statement<'_>]) -> String {
+    let mut used = HashSet::new();
+    for statement in statements {
+        collect_used_labels_in_statement_ast(statement, &mut used);
+    }
+    let mut label = "__memo_exit".to_string();
+    let mut index = 0usize;
+    while used.contains(&label) {
+        index += 1;
+        label = format!("__memo_exit_{index}");
+    }
+    label
+}
+
+fn rewrite_return_identifier_to_break_statements<'a>(
+    builder: AstBuilder<'a>,
+    statements: &mut [ast::Statement<'a>],
+    return_name: &str,
+    break_label: &str,
+) -> Option<bool> {
+    let mut rewrote_any = false;
+    for statement in statements {
+        rewrote_any |= rewrite_return_identifier_to_break_statement(
+            builder,
+            statement,
+            return_name,
+            break_label,
+        )?;
+    }
+    Some(rewrote_any)
+}
+
+fn rewrite_return_identifier_to_break_statement<'a>(
+    builder: AstBuilder<'a>,
+    statement: &mut ast::Statement<'a>,
+    return_name: &str,
+    break_label: &str,
+) -> Option<bool> {
+    match statement {
+        ast::Statement::ReturnStatement(return_statement) => {
+            let argument = return_statement.argument.as_ref()?;
+            let ast::Expression::Identifier(identifier) = argument.without_parentheses() else {
+                return None;
+            };
+            if identifier.name.as_str() != return_name {
+                return None;
+            }
+            *statement = builder.statement_break(
+                SPAN,
+                Some(builder.label_identifier(SPAN, builder.atom(break_label))),
+            );
+            Some(true)
+        }
+        ast::Statement::BlockStatement(block) => rewrite_return_identifier_to_break_statements(
+            builder,
+            block.body.as_mut_slice(),
+            return_name,
+            break_label,
+        ),
+        ast::Statement::IfStatement(if_statement) => {
+            let mut rewrote = rewrite_return_identifier_to_break_statement(
+                builder,
+                &mut if_statement.consequent,
+                return_name,
+                break_label,
+            )?;
+            if let Some(alternate) = if_statement.alternate.as_mut() {
+                rewrote |= rewrite_return_identifier_to_break_statement(
+                    builder,
+                    alternate,
+                    return_name,
+                    break_label,
+                )?;
+            }
+            Some(rewrote)
+        }
+        ast::Statement::LabeledStatement(labeled_statement) => {
+            rewrite_return_identifier_to_break_statement(
+                builder,
+                &mut labeled_statement.body,
+                return_name,
+                break_label,
+            )
+        }
+        ast::Statement::SwitchStatement(switch_statement) => {
+            let mut rewrote = false;
+            for case in &mut switch_statement.cases {
+                rewrote |= rewrite_return_identifier_to_break_statements(
+                    builder,
+                    case.consequent.as_mut_slice(),
+                    return_name,
+                    break_label,
+                )?;
+            }
+            Some(rewrote)
+        }
+        ast::Statement::TryStatement(try_statement) => {
+            let mut rewrote = rewrite_return_identifier_to_break_statements(
+                builder,
+                try_statement.block.body.as_mut_slice(),
+                return_name,
+                break_label,
+            )?;
+            if let Some(handler) = try_statement.handler.as_mut() {
+                rewrote |= rewrite_return_identifier_to_break_statements(
+                    builder,
+                    handler.body.body.as_mut_slice(),
+                    return_name,
+                    break_label,
+                )?;
+            }
+            if let Some(finalizer) = try_statement.finalizer.as_mut() {
+                rewrote |= rewrite_return_identifier_to_break_statements(
+                    builder,
+                    finalizer.body.as_mut_slice(),
+                    return_name,
+                    break_label,
+                )?;
+            }
+            Some(rewrote)
+        }
+        ast::Statement::WhileStatement(while_statement) => {
+            rewrite_return_identifier_to_break_statement(
+                builder,
+                &mut while_statement.body,
+                return_name,
+                break_label,
+            )
+        }
+        ast::Statement::DoWhileStatement(do_while_statement) => {
+            rewrite_return_identifier_to_break_statement(
+                builder,
+                &mut do_while_statement.body,
+                return_name,
+                break_label,
+            )
+        }
+        ast::Statement::ForStatement(for_statement) => {
+            rewrite_return_identifier_to_break_statement(
+                builder,
+                &mut for_statement.body,
+                return_name,
+                break_label,
+            )
+        }
+        ast::Statement::ForInStatement(for_in_statement) => {
+            rewrite_return_identifier_to_break_statement(
+                builder,
+                &mut for_in_statement.body,
+                return_name,
+                break_label,
+            )
+        }
+        ast::Statement::ForOfStatement(for_of_statement) => {
+            rewrite_return_identifier_to_break_statement(
+                builder,
+                &mut for_of_statement.body,
+                return_name,
+                break_label,
+            )
+        }
+        _ => Some(false),
+    }
+}
+
 fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
@@ -27615,6 +27927,162 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                     ),
                 ]),
             ))
+        }
+        GeneratedBodyShape::MemoizedComputedReturn {
+            value_name,
+            value_kind,
+            deps,
+            value_slot,
+            computation,
+        } => {
+            let cache_binding_name = &spec.cache_prologue?.binding_name;
+            let mut dep_assignments = builder.vec();
+            let test = if deps.is_empty() {
+                builder.expression_binary(
+                    SPAN,
+                    build_computed_member_expression_ast(
+                        builder,
+                        cache_binding_name,
+                        builder.expression_numeric_literal(
+                            SPAN,
+                            *value_slot as f64,
+                            None,
+                            NumberBase::Decimal,
+                        ),
+                    ),
+                    AstBinaryOperator::StrictEquality,
+                    build_symbol_for_call_expression_ast(builder, MEMO_CACHE_SENTINEL),
+                )
+            } else {
+                let mut dep_guards = deps.iter().map(|(slot, dep_expr)| {
+                    let dep_expression = parse_expression_for_ast_codegen(
+                        allocator,
+                        SourceType::mjs().with_jsx(true),
+                        dep_expr,
+                    )
+                    .ok()?;
+                    dep_assignments.push(build_computed_member_assignment_statement_ast(
+                        builder,
+                        cache_binding_name,
+                        builder.expression_numeric_literal(
+                            SPAN,
+                            *slot as f64,
+                            None,
+                            NumberBase::Decimal,
+                        ),
+                        dep_expression.clone_in(allocator),
+                    ));
+                    Some(builder.expression_binary(
+                        SPAN,
+                        build_computed_member_expression_ast(
+                            builder,
+                            cache_binding_name,
+                            builder.expression_numeric_literal(
+                                SPAN,
+                                *slot as f64,
+                                None,
+                                NumberBase::Decimal,
+                            ),
+                        ),
+                        AstBinaryOperator::StrictInequality,
+                        dep_expression,
+                    ))
+                });
+                let mut test = dep_guards.next()??;
+                for guard in dep_guards {
+                    test = builder.expression_logical(SPAN, test, AstLogicalOperator::Or, guard?);
+                }
+                test
+            };
+            let computation_spec = FunctionBodyRenderSpec {
+                params: spec.params,
+                param_names: spec.param_names,
+                body_shape: computation.as_ref(),
+                directives: &[],
+                cache_prologue: spec.cache_prologue,
+                needs_function_hook_guard_wrapper: false,
+                is_async: spec.is_async,
+                is_generator: spec.is_generator,
+            };
+            let mut computation_body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder,
+                allocator,
+                &computation_spec,
+            )?;
+            let break_label = choose_fresh_memo_exit_label(&computation_body.statements);
+            rewrite_return_identifier_to_break_statements(
+                builder,
+                computation_body.statements.as_mut_slice(),
+                value_name,
+                &break_label,
+            )?;
+            let mut consequent = builder.vec1(ast::Statement::LabeledStatement(
+                builder.alloc_labeled_statement(
+                    SPAN,
+                    builder.label_identifier(SPAN, builder.atom(&break_label)),
+                    builder.statement_block(SPAN, computation_body.statements),
+                ),
+            ));
+            consequent.extend(dep_assignments);
+            consequent.push(build_computed_member_assignment_statement_ast(
+                builder,
+                cache_binding_name,
+                builder.expression_numeric_literal(
+                    SPAN,
+                    *value_slot as f64,
+                    None,
+                    NumberBase::Decimal,
+                ),
+                builder.expression_identifier(SPAN, builder.ident(value_name)),
+            ));
+            let mut statements = builder.vec();
+            if let Some(value_kind) = value_kind {
+                statements.push(ast::Statement::VariableDeclaration(
+                    builder.alloc_variable_declaration(
+                        SPAN,
+                        *value_kind,
+                        builder.vec1(builder.variable_declarator(
+                            SPAN,
+                            *value_kind,
+                            builder.binding_pattern_binding_identifier(
+                                SPAN,
+                                builder.ident(value_name),
+                            ),
+                            NONE,
+                            None,
+                            false,
+                        )),
+                        false,
+                    ),
+                ));
+            }
+            statements.push(builder.statement_if(
+                SPAN,
+                test,
+                builder.statement_block(SPAN, consequent),
+                Some(builder.statement_block(
+                    SPAN,
+                    builder.vec1(build_identifier_assignment_statement_ast_with_expression(
+                        builder,
+                        value_name,
+                        build_computed_member_expression_ast(
+                            builder,
+                            cache_binding_name,
+                            builder.expression_numeric_literal(
+                                SPAN,
+                                *value_slot as f64,
+                                None,
+                                NumberBase::Decimal,
+                            ),
+                        ),
+                    )),
+                )),
+            ));
+            statements.push(builder.statement_return(
+                SPAN,
+                Some(builder.expression_identifier(SPAN, builder.ident(value_name))),
+            ));
+            Some(builder.function_body(SPAN, builder.vec(), statements))
         }
         GeneratedBodyShape::WrappedReturnExpression {
             expression, inner, ..
@@ -30369,6 +30837,153 @@ mod tests {
     }
 
     #[test]
+    fn directly_lowers_declared_switch_scope_return_body_shape_from_reactive_block() {
+        let mut cx = test_context();
+        let value = named_place(0, 0, "value");
+        let props = named_place(1, 1, "props");
+        let left = named_place(2, 2, "left");
+        let right = named_place(3, 3, "right");
+        let owner_scope = ReactiveScope {
+            id: ScopeId::new(99),
+            range: MutableRange::default(),
+            dependencies: vec![],
+            declarations: Default::default(),
+            reassignments: vec![],
+            merged_id: None,
+            early_return_value: None,
+        };
+        let mut declarations = indexmap::IndexMap::new();
+        declarations.insert(
+            value.identifier.id,
+            crate::hir::types::ScopeDeclaration {
+                identifier: value.identifier.clone(),
+                scope: owner_scope,
+            },
+        );
+        let switch_target = crate::hir::types::make_block_id(7);
+        let block = vec![
+            ReactiveStatement::Scope(ReactiveScopeBlock {
+                scope: ReactiveScope {
+                    id: ScopeId::new(1),
+                    range: MutableRange::default(),
+                    dependencies: vec![ReactiveScopeDependency {
+                        identifier: props.identifier.clone(),
+                        path: vec![DependencyPathEntry {
+                            property: "kind".to_string(),
+                            optional: false,
+                        }],
+                    }],
+                    declarations,
+                    reassignments: vec![],
+                    merged_id: None,
+                    early_return_value: None,
+                },
+                instructions: vec![ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                    terminal: ReactiveTerminal::Switch {
+                        test: named_place(4, 4, "props.kind"),
+                        cases: vec![
+                            crate::hir::types::ReactiveSwitchCase {
+                                test: Some(named_place(5, 5, "zero")),
+                                block: Some(vec![
+                                    ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                                        id: crate::hir::types::make_instruction_id(0),
+                                        lvalue: Some(value.clone()),
+                                        value: InstructionValue::StoreLocal {
+                                            lvalue: LValue {
+                                                place: value.clone(),
+                                                kind: InstructionKind::Let,
+                                            },
+                                            value: left.clone(),
+                                            loc: SourceLocation::Generated,
+                                        },
+                                        loc: SourceLocation::Generated,
+                                    })),
+                                    ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                                        terminal: ReactiveTerminal::Break {
+                                            target: switch_target,
+                                            target_kind:
+                                                crate::hir::types::ReactiveTerminalTargetKind::Unlabeled,
+                                            id: crate::hir::types::make_instruction_id(1),
+                                            loc: SourceLocation::Generated,
+                                        },
+                                        label: None,
+                                    }),
+                                ]),
+                            },
+                            crate::hir::types::ReactiveSwitchCase {
+                                test: None,
+                                block: Some(vec![
+                                    ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                                        id: crate::hir::types::make_instruction_id(2),
+                                        lvalue: Some(value.clone()),
+                                        value: InstructionValue::StoreLocal {
+                                            lvalue: LValue {
+                                                place: value.clone(),
+                                                kind: InstructionKind::Let,
+                                            },
+                                            value: right.clone(),
+                                            loc: SourceLocation::Generated,
+                                        },
+                                        loc: SourceLocation::Generated,
+                                    })),
+                                    ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                                        terminal: ReactiveTerminal::Break {
+                                            target: switch_target,
+                                            target_kind:
+                                                crate::hir::types::ReactiveTerminalTargetKind::Unlabeled,
+                                            id: crate::hir::types::make_instruction_id(3),
+                                            loc: SourceLocation::Generated,
+                                        },
+                                        label: None,
+                                    }),
+                                ]),
+                            },
+                        ],
+                        id: crate::hir::types::make_instruction_id(4),
+                        loc: SourceLocation::Generated,
+                    },
+                    label: None,
+                })],
+            }),
+            ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                terminal: ReactiveTerminal::Return {
+                    value: value.clone(),
+                    id: crate::hir::types::make_instruction_id(5),
+                    loc: SourceLocation::Generated,
+                },
+                label: None,
+            }),
+        ];
+
+        let shape = super::try_build_generated_body_shape_from_reactive_block(&mut cx, &block)
+            .expect("expected direct body shape");
+
+        let super::GeneratedBodyShape::MemoizedComputedReturn {
+            value_name,
+            value_kind,
+            deps,
+            value_slot,
+            computation,
+        } = shape
+        else {
+            panic!("expected computed memoized return shape");
+        };
+        assert_eq!(value_name, "value");
+        assert_eq!(value_kind, Some(ast::VariableDeclarationKind::Let));
+        assert_eq!(deps, vec![(0, "props.kind".to_string())]);
+        assert_eq!(value_slot, 1);
+        assert!(matches!(
+            computation.as_ref(),
+            super::GeneratedBodyShape::Sequential { prefix, inner }
+                if matches!(prefix.as_ref(), super::GeneratedBodyShape::Switch { .. })
+                    && matches!(
+                        inner.as_ref(),
+                        super::GeneratedBodyShape::ReturnIdentifier(name) if name == "value"
+                    )
+        ));
+    }
+
+    #[test]
     fn renders_named_function_expression_via_ast() {
         let rendered = render_function_expression_ast(&FunctionExpressionRenderSpec {
             body: FunctionBodyRenderSpec {
@@ -30391,6 +31006,63 @@ mod tests {
         .expect("expected function expression");
 
         assert!(rendered.contains("function useFoo(value)"));
+        assert!(rendered.contains("return value;"));
+    }
+
+    #[test]
+    fn renders_computed_memoized_return_shape_via_ast() {
+        let rendered = render_function_expression_ast(&FunctionExpressionRenderSpec {
+            body: FunctionBodyRenderSpec {
+                params: &[Argument::Place(named_place(0, 0, "props"))],
+                param_names: &["props".to_string()],
+                body_shape: &super::GeneratedBodyShape::MemoizedComputedReturn {
+                    value_name: "value".to_string(),
+                    value_kind: Some(ast::VariableDeclarationKind::Let),
+                    deps: vec![(0, "props.kind".to_string())],
+                    value_slot: 1,
+                    computation: Box::new(super::GeneratedBodyShape::Sequential {
+                        prefix: Box::new(super::GeneratedBodyShape::Switch {
+                            discriminant: "props.kind".to_string(),
+                            cases: vec![
+                                super::GeneratedSwitchCase {
+                                    test: Some("0".to_string()),
+                                    consequent: super::GeneratedBodyShape::ReturnIdentifier(
+                                        "value".to_string(),
+                                    ),
+                                },
+                                super::GeneratedSwitchCase {
+                                    test: None,
+                                    consequent: super::GeneratedBodyShape::ReturnIdentifier(
+                                        "value".to_string(),
+                                    ),
+                                },
+                            ],
+                        }),
+                        inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                            "value".to_string(),
+                        )),
+                    }),
+                },
+                directives: &[],
+                cache_prologue: Some(&CachePrologue {
+                    binding_name: "$".to_string(),
+                    size: 2,
+                    fast_refresh: None,
+                }),
+                needs_function_hook_guard_wrapper: false,
+                is_async: false,
+                is_generator: false,
+            },
+            name: Some("useMemoizedSwitch"),
+            fn_type: &FunctionExpressionType::FunctionExpression,
+            anonymous_name_hint: None,
+        })
+        .expect("expected function expression");
+
+        assert!(rendered.contains("if ($[0] !== props.kind)"));
+        assert!(rendered.contains("switch (props.kind)"));
+        assert!(rendered.contains("break __memo_exit"));
+        assert!(rendered.contains("$[1] = value;"));
         assert!(rendered.contains("return value;"));
     }
 

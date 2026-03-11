@@ -3107,6 +3107,232 @@ fn build_generated_switch_cases<'a>(
     Some(rendered_cases)
 }
 
+fn collect_used_labels_in_statement_ast(
+    statement: &ast::Statement<'_>,
+    labels: &mut HashSet<String>,
+) {
+    match statement {
+        ast::Statement::BlockStatement(block) => {
+            for statement in &block.body {
+                collect_used_labels_in_statement_ast(statement, labels);
+            }
+        }
+        ast::Statement::IfStatement(if_statement) => {
+            collect_used_labels_in_statement_ast(&if_statement.consequent, labels);
+            if let Some(alternate) = if_statement.alternate.as_ref() {
+                collect_used_labels_in_statement_ast(alternate, labels);
+            }
+        }
+        ast::Statement::LabeledStatement(labeled_statement) => {
+            labels.insert(labeled_statement.label.name.as_str().to_string());
+            collect_used_labels_in_statement_ast(&labeled_statement.body, labels);
+        }
+        ast::Statement::SwitchStatement(switch_statement) => {
+            for case in &switch_statement.cases {
+                for statement in &case.consequent {
+                    collect_used_labels_in_statement_ast(statement, labels);
+                }
+            }
+        }
+        ast::Statement::TryStatement(try_statement) => {
+            for statement in &try_statement.block.body {
+                collect_used_labels_in_statement_ast(statement, labels);
+            }
+            if let Some(handler) = try_statement.handler.as_ref() {
+                for statement in &handler.body.body {
+                    collect_used_labels_in_statement_ast(statement, labels);
+                }
+            }
+            if let Some(finalizer) = try_statement.finalizer.as_ref() {
+                for statement in &finalizer.body {
+                    collect_used_labels_in_statement_ast(statement, labels);
+                }
+            }
+        }
+        ast::Statement::WhileStatement(while_statement) => {
+            collect_used_labels_in_statement_ast(&while_statement.body, labels);
+        }
+        ast::Statement::DoWhileStatement(do_while_statement) => {
+            collect_used_labels_in_statement_ast(&do_while_statement.body, labels);
+        }
+        ast::Statement::ForStatement(for_statement) => {
+            collect_used_labels_in_statement_ast(&for_statement.body, labels);
+        }
+        ast::Statement::ForInStatement(for_in_statement) => {
+            collect_used_labels_in_statement_ast(&for_in_statement.body, labels);
+        }
+        ast::Statement::ForOfStatement(for_of_statement) => {
+            collect_used_labels_in_statement_ast(&for_of_statement.body, labels);
+        }
+        _ => {}
+    }
+}
+
+fn choose_fresh_memo_exit_label(statements: &[ast::Statement<'_>]) -> String {
+    let mut used = HashSet::new();
+    for statement in statements {
+        collect_used_labels_in_statement_ast(statement, &mut used);
+    }
+    let mut label = "__memo_exit".to_string();
+    let mut index = 0usize;
+    while used.contains(&label) {
+        index += 1;
+        label = format!("__memo_exit_{index}");
+    }
+    label
+}
+
+fn rewrite_return_identifier_to_break_statements<'a>(
+    builder: AstBuilder<'a>,
+    statements: &mut [ast::Statement<'a>],
+    return_name: &str,
+    break_label: &str,
+) -> Option<bool> {
+    let mut rewrote_any = false;
+    for statement in statements {
+        rewrote_any |= rewrite_return_identifier_to_break_statement(
+            builder,
+            statement,
+            return_name,
+            break_label,
+        )?;
+    }
+    Some(rewrote_any)
+}
+
+fn rewrite_return_identifier_to_break_statement<'a>(
+    builder: AstBuilder<'a>,
+    statement: &mut ast::Statement<'a>,
+    return_name: &str,
+    break_label: &str,
+) -> Option<bool> {
+    match statement {
+        ast::Statement::ReturnStatement(return_statement) => {
+            let argument = return_statement.argument.as_ref()?;
+            let ast::Expression::Identifier(identifier) = argument.without_parentheses() else {
+                return None;
+            };
+            if identifier.name.as_str() != return_name {
+                return None;
+            }
+            *statement = builder.statement_break(
+                SPAN,
+                Some(builder.label_identifier(SPAN, builder.atom(break_label))),
+            );
+            Some(true)
+        }
+        ast::Statement::BlockStatement(block) => rewrite_return_identifier_to_break_statements(
+            builder,
+            block.body.as_mut_slice(),
+            return_name,
+            break_label,
+        ),
+        ast::Statement::IfStatement(if_statement) => {
+            let mut rewrote = rewrite_return_identifier_to_break_statement(
+                builder,
+                &mut if_statement.consequent,
+                return_name,
+                break_label,
+            )?;
+            if let Some(alternate) = if_statement.alternate.as_mut() {
+                rewrote |= rewrite_return_identifier_to_break_statement(
+                    builder,
+                    alternate,
+                    return_name,
+                    break_label,
+                )?;
+            }
+            Some(rewrote)
+        }
+        ast::Statement::LabeledStatement(labeled_statement) => {
+            rewrite_return_identifier_to_break_statement(
+                builder,
+                &mut labeled_statement.body,
+                return_name,
+                break_label,
+            )
+        }
+        ast::Statement::SwitchStatement(switch_statement) => {
+            let mut rewrote = false;
+            for case in &mut switch_statement.cases {
+                rewrote |= rewrite_return_identifier_to_break_statements(
+                    builder,
+                    case.consequent.as_mut_slice(),
+                    return_name,
+                    break_label,
+                )?;
+            }
+            Some(rewrote)
+        }
+        ast::Statement::TryStatement(try_statement) => {
+            let mut rewrote = rewrite_return_identifier_to_break_statements(
+                builder,
+                try_statement.block.body.as_mut_slice(),
+                return_name,
+                break_label,
+            )?;
+            if let Some(handler) = try_statement.handler.as_mut() {
+                rewrote |= rewrite_return_identifier_to_break_statements(
+                    builder,
+                    handler.body.body.as_mut_slice(),
+                    return_name,
+                    break_label,
+                )?;
+            }
+            if let Some(finalizer) = try_statement.finalizer.as_mut() {
+                rewrote |= rewrite_return_identifier_to_break_statements(
+                    builder,
+                    finalizer.body.as_mut_slice(),
+                    return_name,
+                    break_label,
+                )?;
+            }
+            Some(rewrote)
+        }
+        ast::Statement::WhileStatement(while_statement) => {
+            rewrite_return_identifier_to_break_statement(
+                builder,
+                &mut while_statement.body,
+                return_name,
+                break_label,
+            )
+        }
+        ast::Statement::DoWhileStatement(do_while_statement) => {
+            rewrite_return_identifier_to_break_statement(
+                builder,
+                &mut do_while_statement.body,
+                return_name,
+                break_label,
+            )
+        }
+        ast::Statement::ForStatement(for_statement) => {
+            rewrite_return_identifier_to_break_statement(
+                builder,
+                &mut for_statement.body,
+                return_name,
+                break_label,
+            )
+        }
+        ast::Statement::ForInStatement(for_in_statement) => {
+            rewrite_return_identifier_to_break_statement(
+                builder,
+                &mut for_in_statement.body,
+                return_name,
+                break_label,
+            )
+        }
+        ast::Statement::ForOfStatement(for_of_statement) => {
+            rewrite_return_identifier_to_break_statement(
+                builder,
+                &mut for_of_statement.body,
+                return_name,
+                break_label,
+            )
+        }
+        _ => Some(false),
+    }
+}
+
 fn replace_final_return_expression<'a>(
     body: &mut ast::FunctionBody<'a>,
     expression: ast::Expression<'a>,
@@ -4461,6 +4687,113 @@ fn try_build_function_body_from_shape<'a>(
                     ),
                 ]),
             ))
+        }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MemoizedComputedReturn {
+            value_name,
+            value_kind,
+            deps,
+            value_slot,
+            computation,
+        } => {
+            let cache_binding_name = &cache_prologue?.binding_name;
+            let mut dep_assignments = builder.vec();
+            let test = if deps.is_empty() {
+                builder.expression_binary(
+                    SPAN,
+                    cache_member_slot_expression(builder, cache_binding_name, *value_slot),
+                    BinaryOperator::StrictEquality,
+                    build_memo_cache_sentinel_expression(builder),
+                )
+            } else {
+                let mut dep_guards = deps.iter().map(|(slot, dep_expr)| {
+                    let dep_expression =
+                        parse_expression_source(allocator, source_type, dep_expr).ok()?;
+                    dep_assignments.push(build_cache_slot_assignment_statement(
+                        builder,
+                        cache_binding_name,
+                        *slot,
+                        dep_expression.clone_in(allocator),
+                    ));
+                    Some(builder.expression_binary(
+                        SPAN,
+                        cache_member_slot_expression(builder, cache_binding_name, *slot),
+                        BinaryOperator::StrictInequality,
+                        dep_expression,
+                    ))
+                });
+                let mut test = dep_guards.next()??;
+                for guard in dep_guards {
+                    test = builder.expression_logical(SPAN, test, LogicalOperator::Or, guard?);
+                }
+                test
+            };
+            let mut computation_body = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                computation.as_ref(),
+                cache_prologue,
+            )?;
+            let break_label = choose_fresh_memo_exit_label(&computation_body.statements);
+            rewrite_return_identifier_to_break_statements(
+                builder,
+                computation_body.statements.as_mut_slice(),
+                value_name,
+                &break_label,
+            )?;
+            let mut consequent = builder.vec1(ast::Statement::LabeledStatement(
+                builder.alloc_labeled_statement(
+                    SPAN,
+                    builder.label_identifier(SPAN, builder.atom(&break_label)),
+                    builder.statement_block(SPAN, computation_body.statements),
+                ),
+            ));
+            consequent.extend(dep_assignments);
+            consequent.push(build_cache_slot_assignment_statement(
+                builder,
+                cache_binding_name,
+                *value_slot,
+                builder.expression_identifier(SPAN, builder.ident(value_name)),
+            ));
+            let mut statements = builder.vec();
+            if let Some(value_kind) = value_kind {
+                statements.push(ast::Statement::VariableDeclaration(
+                    builder.alloc_variable_declaration(
+                        SPAN,
+                        *value_kind,
+                        builder.vec1(builder.variable_declarator(
+                            SPAN,
+                            *value_kind,
+                            builder.binding_pattern_binding_identifier(
+                                SPAN,
+                                builder.ident(value_name),
+                            ),
+                            NONE,
+                            None,
+                            false,
+                        )),
+                        false,
+                    ),
+                ));
+            }
+            statements.push(builder.statement_if(
+                SPAN,
+                test,
+                builder.statement_block(SPAN, consequent),
+                Some(builder.statement_block(
+                    SPAN,
+                    builder.vec1(build_identifier_assignment_statement(
+                        builder,
+                        value_name,
+                        cache_member_slot_expression(builder, cache_binding_name, *value_slot),
+                    )),
+                )),
+            ));
+            statements.push(builder.statement_return(
+                SPAN,
+                Some(builder.expression_identifier(SPAN, builder.ident(value_name))),
+            ));
+            Some(builder.function_body(SPAN, builder.vec(), statements))
         }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::WrappedReturnExpression {
             expression,

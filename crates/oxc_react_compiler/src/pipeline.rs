@@ -1654,6 +1654,21 @@ fn codegen_outlined_function(
                     *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
                 }
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MemoizedComputedReturn {
+                value_name,
+                value_kind: _,
+                deps,
+                computation,
+                ..
+            } => {
+                if value_name == from {
+                    *value_name = to.to_string();
+                }
+                for (_, dep_expr) in deps {
+                    *dep_expr = replace_identifier_tokens(dep_expr, from, to);
+                }
+                rename_generated_body_shape(computation.as_mut(), from, to);
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::WrappedReturnExpression {
                 source_name,
                 expression,
@@ -2027,6 +2042,7 @@ fn generated_body_shape_is_nonmemoized_hir_lowerable(
         | Shape::SingleDependencyMemoizedExistingReturn { .. }
         | Shape::MultiDependencyMemoizedReturn { .. }
         | Shape::MultiDependencyMemoizedExistingReturn { .. }
+        | Shape::MemoizedComputedReturn { .. }
         | Shape::SingleSlotMemoizedReturn { .. } => false,
     }
 }

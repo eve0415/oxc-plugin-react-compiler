@@ -1223,7 +1223,7 @@ pub struct ReactiveFunction {
 
 pub type ReactiveBlock = Vec<ReactiveStatement>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ReactiveStatement {
     Instruction(Box<ReactiveInstruction>),
     Terminal(ReactiveTerminalStatement),
@@ -1239,25 +1239,25 @@ pub struct ReactiveInstruction {
     pub loc: SourceLocation,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ReactiveTerminalStatement {
     pub terminal: ReactiveTerminal,
     pub label: Option<ReactiveLabel>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ReactiveLabel {
     pub id: BlockId,
     pub implicit: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ReactiveScopeBlock {
     pub scope: ReactiveScope,
     pub instructions: ReactiveBlock,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PrunedReactiveScopeBlock {
     pub scope: ReactiveScope,
     pub instructions: ReactiveBlock,
@@ -1273,7 +1273,7 @@ pub enum ReactiveTerminalTargetKind {
     Labeled,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ReactiveTerminal {
     Break {
         target: BlockId,
@@ -1357,7 +1357,7 @@ pub enum ReactiveTerminal {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ReactiveSwitchCase {
     pub test: Option<Place>,
     pub block: Option<ReactiveBlock>,
