@@ -1522,11 +1522,26 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             && matches!(statements.first(), Some(ast::Statement::IfStatement(_)))
             && matches!(
                 statements.get(1),
-                Some(ast::Statement::ExpressionStatement(_))
+                Some(ast::Statement::VariableDeclaration(_))
+                    | Some(ast::Statement::ExpressionStatement(_))
                     | Some(ast::Statement::ReturnStatement(_))
             )
         {
             candidates.push(1);
+        }
+        if binding_prefix_len + 1 < statements.len()
+            && matches!(
+                statements.get(binding_prefix_len),
+                Some(ast::Statement::IfStatement(_))
+            )
+            && matches!(
+                statements.get(binding_prefix_len + 1),
+                Some(ast::Statement::ExpressionStatement(_))
+                    | Some(ast::Statement::VariableDeclaration(_))
+                    | Some(ast::Statement::ReturnStatement(_))
+            )
+        {
+            candidates.push(binding_prefix_len + 1);
         }
         if binding_prefix_len + 2 < statements.len()
             && matches!(
@@ -1565,6 +1580,8 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
         ) {
             candidates.push(1);
         }
+        candidates.sort_unstable();
+        candidates.dedup();
         candidates
     }
 
@@ -29157,13 +29174,33 @@ mod tests {
             "let t0;\nif ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {\n  t0 = props.items.map(_temp);\n  $[0] = t0;\n} else {\n  t0 = $[0];\n}\nconst mapped = t0;\nlet t1;\nif ($[1] !== mapped) {\n  t1 = mapped.slice(0);\n  $[1] = mapped;\n  $[2] = t1;\n} else {\n  t1 = $[2];\n}\nreturn t1;\n",
         );
 
-        let super::GeneratedBodyShape::Sequential { prefix, inner } = shape else {
-            panic!("expected sequential body shape, got {:?}", shape);
+        let super::GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } = shape
+        else {
+            panic!("expected prefixed outer body shape, got {:?}", shape);
+        };
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations[0].pattern, "t0");
+        assert!(matches!(
+            inner.as_ref(),
+            super::GeneratedBodyShape::Sequential { .. }
+        ));
+        let super::GeneratedBodyShape::Sequential { prefix, inner } = inner.as_ref() else {
+            panic!("expected sequential body shape");
         };
         assert!(matches!(
             prefix.as_ref(),
-            super::GeneratedBodyShape::ZeroDependencyMemoizedReturn { value_name, value_slot, .. }
-                if value_name == "t0" && *value_slot == 0
+            super::GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+                sentinel_slot,
+                cached_values,
+                ..
+            } if *sentinel_slot == 0
+                && cached_values == &vec![super::GeneratedCachedValue {
+                    name: "t0".to_string(),
+                    slot: 0,
+                }]
         ));
         let super::GeneratedBodyShape::PrefixedBindings { bindings, inner } = inner.as_ref() else {
             panic!("expected prefixed inner body shape");
@@ -29205,30 +29242,39 @@ mod tests {
         };
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].pattern, "{ a }");
-        let super::GeneratedBodyShape::Sequential { prefix, inner } = inner.as_ref() else {
-            panic!("expected sequential inner body shape");
-        };
         let super::GeneratedBodyShape::PrefixedDeclarations {
             declarations,
-            inner: prefix_inner,
-        } = prefix.as_ref()
+            inner,
+        } = inner.as_ref()
         else {
             panic!("expected prefixed declarations around memoized prefix body");
         };
         assert_eq!(declarations.len(), 1);
         assert_eq!(declarations[0].pattern, "t1");
+        let super::GeneratedBodyShape::Sequential { prefix, inner } = inner.as_ref() else {
+            panic!("expected sequential inner body shape");
+        };
+        let super::GeneratedBodyShape::MemoizedCachedValues {
+            deps,
+            cached_values,
+            restored_values,
+            ..
+        } = prefix.as_ref()
+        else {
+            panic!("expected memoized cached values prefix body, got {prefix:?}");
+        };
         assert!(matches!(
-            prefix_inner.as_ref(),
-            super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
-                value_name,
-                dep_slot,
-                dep_expr,
-                value_slot,
-                ..
-            } if value_name == "t1"
-                && *dep_slot == 0
-                && dep_expr == "a"
-                && *value_slot == 1
+            (deps, cached_values, restored_values),
+            (
+                deps,
+                cached_values,
+                restored_values
+            ) if deps == &vec![(0, "a".to_string())]
+                && cached_values == &vec![super::GeneratedCachedValue {
+                    name: "t1".to_string(),
+                    slot: 1,
+                }]
+                && cached_values == restored_values
         ));
         let super::GeneratedBodyShape::PrefixedBindings {
             bindings,
@@ -29759,22 +29805,14 @@ mod tests {
         else {
             panic!("expected prefixed declarations shape, got {shape:?}");
         };
-        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations.len(), 2);
         assert_eq!(declarations[0].pattern, "a");
+        assert_eq!(declarations[1].pattern, "b");
         let super::GeneratedBodyShape::Sequential { prefix, inner } = inner.as_ref() else {
             panic!("expected sequential inner shape, got {inner:?}");
         };
-        let super::GeneratedBodyShape::PrefixedDeclarations {
-            declarations,
-            inner: prefix_inner,
-        } = prefix.as_ref()
-        else {
-            panic!("expected prefixed declarations around cached values prefix, got {prefix:?}");
-        };
-        assert_eq!(declarations.len(), 1);
-        assert_eq!(declarations[0].pattern, "b");
         assert!(matches!(
-            prefix_inner.as_ref(),
+            prefix.as_ref(),
             super::GeneratedBodyShape::MemoizedCachedValues {
                 deps,
                 cached_values,
