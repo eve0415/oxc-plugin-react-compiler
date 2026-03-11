@@ -3102,6 +3102,20 @@ fn try_build_function_body_from_shape<'a>(
 ) -> Option<ast::FunctionBody<'a>> {
     match body_shape {
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown => None,
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Block { inner } => {
+            let inner = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                inner.as_ref(),
+                cache_prologue,
+            )?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_block(SPAN, inner.statements)),
+            ))
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ExpressionStatements(
             expressions,
         ) => Some(builder.function_body(

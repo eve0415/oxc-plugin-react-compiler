@@ -156,6 +156,9 @@ pub struct CachePrologue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GeneratedBodyShape {
     Unknown,
+    Block {
+        inner: Box<GeneratedBodyShape>,
+    },
     ExpressionStatements(Vec<String>),
     AssignmentStatements(Vec<GeneratedAssignment>),
     GuardedBody {
@@ -1048,6 +1051,7 @@ fn analyze_generated_body_shape_uncached(
     fn shape_returned_identifier(shape: &GeneratedBodyShape) -> Option<&str> {
         match shape {
             GeneratedBodyShape::Unknown => None,
+            GeneratedBodyShape::Block { inner } => shape_returned_identifier(inner),
             GeneratedBodyShape::ExpressionStatements(_) => None,
             GeneratedBodyShape::AssignmentStatements(_) => None,
             GeneratedBodyShape::GuardedBody { .. } => None,
@@ -1767,6 +1771,20 @@ fn analyze_generated_body_shape_uncached(
 
         if statements.is_empty() {
             return GeneratedBodyShape::ExpressionStatements(Vec::new());
+        }
+
+        if let [ast::Statement::BlockStatement(block)] = statements.as_slice() {
+            let inner_source = codegen_statements_with_flow_cast_restore(&block.body);
+            let inner_shape = analyze_generated_body_shape_impl_with_guard_aliases(
+                &inner_source,
+                true,
+                guard_aliases,
+            );
+            if !matches!(inner_shape, GeneratedBodyShape::Unknown) {
+                return GeneratedBodyShape::Block {
+                    inner: Box::new(inner_shape),
+                };
+            }
         }
 
         if statements.len() >= 2
@@ -24874,6 +24892,28 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
 ) -> Option<ast::FunctionBody<'a>> {
     match spec.body_shape {
         GeneratedBodyShape::Unknown => None,
+        GeneratedBodyShape::Block { inner } => {
+            let inner_body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder,
+                allocator,
+                &FunctionBodyRenderSpec {
+                    params: spec.params,
+                    param_names: spec.param_names,
+                    body_source: spec.body_source,
+                    body_shape: inner.as_ref(),
+                    directives: &[],
+                    cache_prologue: spec.cache_prologue,
+                    needs_function_hook_guard_wrapper: false,
+                    is_async: spec.is_async,
+                    is_generator: spec.is_generator,
+                },
+            )?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_block(SPAN, inner_body.statements)),
+            ))
+        }
         GeneratedBodyShape::ExpressionStatements(expressions) => Some(builder.function_body(
             SPAN,
             builder.vec(),
@@ -31608,6 +31648,39 @@ mod tests {
                 ..
             } if test == "condition"
         ));
+    }
+
+    #[test]
+    fn analyzes_single_block_statement_body_shape() {
+        let shape =
+            super::analyze_generated_body_shape("{\n  x = [];\n  x.push(props.value);\n}\n");
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::Block {
+                inner: Box::new(super::GeneratedBodyShape::PrefixedAssignments {
+                    assignments: vec![super::GeneratedAssignment {
+                        target: "x".to_string(),
+                        value: "[]".to_string(),
+                    }],
+                    inner: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![
+                        "x.push(props.value)".to_string(),
+                    ])),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn analyzes_nested_block_structural_check_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "if (props.cond) {\n  {\n    x = [];\n    x.push(props.value);\n    let condition = $[0] !== props.value;\n    if (!condition) {\n      let old$x = $[1];\n      $structuralCheck(old$x, x, \"x\", \"Component\", \"cached\", \"(4:7)\");\n    }\n    $[0] = props.value;\n    $[1] = x;\n    if (condition) {\n      x = [];\n      x.push(props.value);\n      $structuralCheck($[1], x, \"x\", \"Component\", \"recomputed\", \"(4:7)\");\n      x = $[1];\n    }\n  }\n}\nreturn x;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
     }
 
     #[test]
