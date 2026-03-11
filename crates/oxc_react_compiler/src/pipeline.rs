@@ -1192,6 +1192,8 @@ fn codegen_outlined_function(
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Block { inner } => {
                 rename_generated_body_shape(inner, from, to);
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::DebuggerStatements(_) => {
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Switch {
                 discriminant,
                 cases,
@@ -1982,7 +1984,8 @@ fn generated_body_shape_is_nonmemoized_hir_lowerable(
         Shape::Switch { cases, .. } => cases
             .iter()
             .all(|case| generated_body_shape_is_nonmemoized_hir_lowerable(&case.consequent)),
-        Shape::ExpressionStatements(_)
+        Shape::DebuggerStatements(_)
+        | Shape::ExpressionStatements(_)
         | Shape::AssignmentStatements(_)
         | Shape::GuardedExpressionStatements { .. }
         | Shape::GuardedAssignments { .. }

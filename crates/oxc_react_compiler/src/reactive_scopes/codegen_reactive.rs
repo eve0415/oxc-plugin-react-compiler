@@ -167,6 +167,7 @@ pub enum GeneratedBodyShape {
         discriminant: String,
         cases: Vec<GeneratedSwitchCase>,
     },
+    DebuggerStatements(usize),
     ExpressionStatements(Vec<String>),
     AssignmentStatements(Vec<GeneratedAssignment>),
     GuardedBody {
@@ -1068,6 +1069,7 @@ fn analyze_generated_body_shape_uncached(
             GeneratedBodyShape::Block { inner } => shape_returned_identifier(inner),
             GeneratedBodyShape::Labeled { inner, .. } => shape_returned_identifier(inner),
             GeneratedBodyShape::Switch { .. } => None,
+            GeneratedBodyShape::DebuggerStatements(_) => None,
             GeneratedBodyShape::ExpressionStatements(_) => None,
             GeneratedBodyShape::AssignmentStatements(_) => None,
             GeneratedBodyShape::GuardedBody { .. } => None,
@@ -1135,6 +1137,7 @@ fn analyze_generated_body_shape_uncached(
             GeneratedBodyShape::Block { .. }
                 | GeneratedBodyShape::Labeled { .. }
                 | GeneratedBodyShape::Switch { .. }
+                | GeneratedBodyShape::DebuggerStatements(_)
                 | GeneratedBodyShape::GuardedBody { .. }
                 | GeneratedBodyShape::GuardedExpressionStatements { .. }
                 | GeneratedBodyShape::GuardedReturnPrefix { .. }
@@ -1190,6 +1193,7 @@ fn analyze_generated_body_shape_uncached(
             | GeneratedBodyShape::ThrowExpression(_)
             | GeneratedBodyShape::Break(_)
             | GeneratedBodyShape::Continue(_)
+            | GeneratedBodyShape::DebuggerStatements(_)
             | GeneratedBodyShape::ExpressionStatements(_)
             | GeneratedBodyShape::AssignmentStatements(_)
             | GeneratedBodyShape::GuardedExpressionStatements { .. }
@@ -1755,6 +1759,7 @@ fn analyze_generated_body_shape_uncached(
             statement,
             ast::Statement::VariableDeclaration(_)
                 | ast::Statement::ExpressionStatement(_)
+                | ast::Statement::DebuggerStatement(_)
                 | ast::Statement::ReturnStatement(_)
                 | ast::Statement::IfStatement(_)
                 | ast::Statement::TryStatement(_)
@@ -1778,6 +1783,7 @@ fn analyze_generated_body_shape_uncached(
                 ast::Statement::BlockStatement(_)
                     | ast::Statement::LabeledStatement(_)
                     | ast::Statement::SwitchStatement(_)
+                    | ast::Statement::DebuggerStatement(_)
             )
         };
         if statements.len() >= 2
@@ -1942,6 +1948,30 @@ fn analyze_generated_body_shape_uncached(
 
         if statements.is_empty() {
             return GeneratedBodyShape::ExpressionStatements(Vec::new());
+        }
+
+        if let [ast::Statement::DebuggerStatement(_)] = statements.as_slice() {
+            return GeneratedBodyShape::DebuggerStatements(1);
+        }
+
+        if statements.len() >= 2
+            && matches!(
+                statements.first(),
+                Some(ast::Statement::DebuggerStatement(_))
+            )
+        {
+            let suffix_source = codegen_statements_with_flow_cast_restore(&statements[1..]);
+            let suffix_shape = analyze_generated_body_shape_impl_with_guard_aliases(
+                &suffix_source,
+                true,
+                guard_aliases,
+            );
+            if !matches!(suffix_shape, GeneratedBodyShape::Unknown) {
+                return GeneratedBodyShape::Sequential {
+                    prefix: Box::new(GeneratedBodyShape::DebuggerStatements(1)),
+                    inner: Box::new(suffix_shape),
+                };
+            }
         }
 
         if let [ast::Statement::BlockStatement(block)] = statements.as_slice() {
@@ -3941,7 +3971,7 @@ fn analyze_generated_body_shape_uncached(
             }
         }
 
-        if allow_sequential && (2..=20).contains(&statements.len()) {
+        if allow_sequential && (2..=48).contains(&statements.len()) {
             for split_index in collect_sequential_split_indices(statements) {
                 let prefixed_guard_aliases =
                     collect_guard_alias_bindings(&statements[..split_index], guard_aliases);
@@ -25312,6 +25342,11 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 ),
             ),
         ),
+        GeneratedBodyShape::DebuggerStatements(count) => Some(builder.function_body(
+            SPAN,
+            builder.vec(),
+            builder.vec_from_iter((0..*count).map(|_| builder.statement_debugger(SPAN))),
+        )),
         GeneratedBodyShape::ExpressionStatements(expressions) => Some(builder.function_body(
             SPAN,
             builder.vec(),
@@ -32522,6 +32557,160 @@ mod tests {
     fn analyzes_try_catch_then_return_body_shape() {
         let shape = super::analyze_generated_body_shape(
             "try {\n  foo();\n} catch {\n  bar();\n}\nreturn baz;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_debugger_control_flow_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "debugger;\nif (props.cond) {\n  debugger;\n} else {\n  while (props.cond) {\n    debugger;\n  }\n}\ndebugger;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_large_memoized_callback_fragment_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            r#"let t0;
+if ($[0] !== props.named) {
+  t0 = (function named() {
+    const inner = { "Component[named > inner]": () => props.named }["Component[named > inner]"];
+    const innerIdentity = identity({ "Component[named > identity()]": () => props.named }["Component[named > identity()]"]);
+    return inner(innerIdentity());
+  });
+  $[0] = props.named;
+  $[1] = t0;
+} else {
+  t0 = $[1];
+}
+const named = t0;
+const callback = _temp;
+let t1;
+if ($[2] !== props.namedVariable) {
+  t1 = { "Component[namedVariable]": function() {
+    return props.namedVariable;
+  } }["Component[namedVariable]"];
+  $[2] = props.namedVariable;
+  $[3] = t1;
+} else {
+  t1 = $[3];
+}
+const namedVariable = t1;
+let t2;
+if ($[4] !== props.methodCall) {
+  t2 = { "Component[SharedRuntime.identity()]": () => props.methodCall }["Component[SharedRuntime.identity()]"];
+  $[4] = props.methodCall;
+  $[5] = t2;
+} else {
+  t2 = $[5];
+}
+const methodCall = SharedRuntime.identity(t2);
+let t3;
+if ($[6] !== props.call) {
+  t3 = { "Component[identity()]": () => props.call }["Component[identity()]"];
+  $[6] = props.call;
+  $[7] = t3;
+} else {
+  t3 = $[7];
+}
+const call = identity(t3);
+let t4;
+if ($[8] !== props.builtinElementAttr) {
+  t4 = <div onClick={{ "Component[<div>.onClick]": () => props.builtinElementAttr }["Component[<div>.onClick]"]} />;
+  $[8] = props.builtinElementAttr;
+  $[9] = t4;
+} else {
+  t4 = $[9];
+}
+const builtinElementAttr = t4;
+let t5;
+if ($[10] !== props.namedElementAttr) {
+  t5 = <Stringify onClick={{ "Component[<Stringify>.onClick]": () => props.namedElementAttr }["Component[<Stringify>.onClick]"]} />;
+  $[10] = props.namedElementAttr;
+  $[11] = t5;
+} else {
+  t5 = $[11];
+}
+const namedElementAttr = t5;
+let t6;
+if ($[12] !== props.hookArgument) {
+  t6 = { "Component[useIdentity()]": () => props.hookArgument }["Component[useIdentity()]"];
+  $[12] = props.hookArgument;
+  $[13] = t6;
+} else {
+  t6 = $[13];
+}
+const hookArgument = useIdentity(t6);
+let t7;
+let t8;
+if ($[14] !== props.useEffect) {
+  t7 = { "Component[useEffect()]": () => {
+    console.log(props.useEffect);
+    JSON.stringify(null, null, { "Component[useEffect() > JSON.stringify()]": () => props.useEffect }["Component[useEffect() > JSON.stringify()]"]);
+    const g = { "Component[useEffect() > g]": () => props.useEffect }["Component[useEffect() > g]"];
+    console.log(g());
+  } }["Component[useEffect()]"];
+  t8 = [props.useEffect];
+  $[14] = props.useEffect;
+  $[15] = t7;
+  $[16] = t8;
+} else {
+  t7 = $[15];
+  t8 = $[16];
+}
+useEffect(t7, t8);
+let t9;
+if ($[17] !== named) {
+  t9 = named();
+  $[17] = named;
+  $[18] = t9;
+} else {
+  t9 = $[18];
+}
+const t10 = callback();
+let t11;
+if ($[19] !== namedVariable) {
+  t11 = namedVariable();
+  $[19] = namedVariable;
+  $[20] = t11;
+} else {
+  t11 = $[20];
+}
+const t12 = methodCall();
+const t13 = call();
+let t14;
+if ($[21] !== hookArgument) {
+  t14 = hookArgument();
+  $[21] = hookArgument;
+  $[22] = t14;
+} else {
+  t14 = $[22];
+}
+let t15;
+if ($[23] !== builtinElementAttr || $[24] !== namedElementAttr || $[25] !== t11 || $[26] !== t12 || $[27] !== t13 || $[28] !== t14 || $[29] !== t9) {
+  t15 = <>{t9}{t10}{t11}{t12}{t13}{builtinElementAttr}{namedElementAttr}{t14}</>;
+  $[23] = builtinElementAttr;
+  $[24] = namedElementAttr;
+  $[25] = t11;
+  $[26] = t12;
+  $[27] = t13;
+  $[28] = t14;
+  $[29] = t9;
+  $[30] = t15;
+} else {
+  t15 = $[30];
+}
+return t15;
+"#,
         );
 
         assert!(

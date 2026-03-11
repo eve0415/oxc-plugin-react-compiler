@@ -3182,6 +3182,13 @@ fn try_build_function_body_from_shape<'a>(
                 )?,
             )),
         )),
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::DebuggerStatements(
+            count,
+        ) => Some(builder.function_body(
+            SPAN,
+            builder.vec(),
+            builder.vec_from_iter((0..*count).map(|_| builder.statement_debugger(SPAN))),
+        )),
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ExpressionStatements(
             expressions,
         ) => Some(builder.function_body(
