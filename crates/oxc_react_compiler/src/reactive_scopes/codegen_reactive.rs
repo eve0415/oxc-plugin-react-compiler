@@ -3895,12 +3895,14 @@ fn analyze_generated_body_shape_uncached(
 
         if allow_sequential && (2..=20).contains(&statements.len()) {
             for split_index in collect_sequential_split_indices(statements) {
+                let prefixed_guard_aliases =
+                    collect_guard_alias_bindings(&statements[..split_index], guard_aliases);
                 let suffix_source =
                     codegen_statements_with_flow_cast_restore(&statements[split_index..]);
                 let inner_shape = analyze_generated_body_shape_impl_with_guard_aliases(
                     &suffix_source,
                     true,
-                    guard_aliases,
+                    &prefixed_guard_aliases,
                 );
                 if matches!(inner_shape, GeneratedBodyShape::Unknown) {
                     continue;
@@ -32026,6 +32028,18 @@ mod tests {
     fn analyzes_multi_value_cached_return_body_shape() {
         let shape = super::analyze_generated_body_shape(
             "let obj = null;\nlet my_div = null;\nif ($[0] !== data.cond || $[1] !== data.cond1) {\n  bb0: if (data.cond) {\n    obj = makeObject_Primitives();\n    if (data.cond1) {\n      my_div = mutateAndReturn(obj);\n      break bb0;\n    }\n    mutate(obj);\n  }\n  $[0] = data.cond;\n  $[1] = data.cond1;\n  $[2] = obj;\n  $[3] = my_div;\n} else {\n  obj = $[2];\n  my_div = $[3];\n}\nreturn my_div;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_guard_alias_memoized_tail_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "const c_00 = $0[0] !== props.value;\nlet t1;\nif (c_00) {\n  t1 = identity(props.value);\n  $0[0] = props.value;\n  $0[1] = t1;\n} else {\n  t1 = $0[1];\n}\nconst results = t1;\nconsole.log(results);\nreturn results;\n",
         );
 
         assert!(
