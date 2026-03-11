@@ -1257,6 +1257,37 @@ fn codegen_outlined_function(
                     *expression = replace_identifier_tokens(expression, from, to);
                 }
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+                deps,
+                setup_statements,
+                cached_values,
+                restored_values,
+                sentinel_name,
+                final_return,
+            } => {
+                for (_, dep_expr) in deps {
+                    *dep_expr = replace_identifier_tokens(dep_expr, from, to);
+                }
+                for statement in setup_statements {
+                    *statement = replace_identifier_tokens(statement, from, to);
+                }
+                for value in cached_values {
+                    if value.name == from {
+                        value.name = to.to_string();
+                    }
+                }
+                for value in restored_values {
+                    if value.name == from {
+                        value.name = to.to_string();
+                    }
+                }
+                if sentinel_name == from {
+                    *sentinel_name = to.to_string();
+                }
+                if final_return.as_deref() == Some(from) {
+                    *final_return = Some(to.to_string());
+                }
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::TryCatch {
                 catch_param,
                 try_body,

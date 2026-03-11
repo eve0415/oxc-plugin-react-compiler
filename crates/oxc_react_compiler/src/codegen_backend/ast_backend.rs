@@ -3242,6 +3242,96 @@ fn try_build_function_body_from_shape<'a>(
                 )),
             ))
         }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+            deps,
+            setup_statements,
+            cached_values,
+            restored_values,
+            sentinel_name,
+            final_return,
+        } => {
+            let cache_binding_name = &cache_prologue?.binding_name;
+            let mut dep_assignments = builder.vec();
+            let mut dep_guards = deps.iter().map(|(slot, dep_expr)| {
+                let dep_expression = parse_expression_source(allocator, source_type, dep_expr).ok()?;
+                dep_assignments.push(build_cache_slot_assignment_statement(
+                    builder,
+                    cache_binding_name,
+                    *slot,
+                    dep_expression.clone_in(allocator),
+                ));
+                Some(builder.expression_binary(
+                    SPAN,
+                    cache_member_slot_expression(builder, cache_binding_name, *slot),
+                    BinaryOperator::StrictInequality,
+                    dep_expression,
+                ))
+            });
+            let mut test = dep_guards.next()??;
+            for guard in dep_guards {
+                test = builder.expression_logical(SPAN, test, LogicalOperator::Or, guard?);
+            }
+
+            let mut consequent = build_generated_statement_sources(
+                builder,
+                allocator,
+                source_type,
+                setup_statements,
+            )?;
+            consequent.extend(dep_assignments);
+            for value in cached_values {
+                consequent.push(build_cache_slot_assignment_statement(
+                    builder,
+                    cache_binding_name,
+                    value.slot,
+                    builder.expression_identifier(SPAN, builder.ident(&value.name)),
+                ));
+            }
+
+            let mut alternate = builder.vec();
+            for value in restored_values {
+                alternate.push(build_identifier_assignment_statement(
+                    builder,
+                    &value.name,
+                    cache_member_slot_expression(builder, cache_binding_name, value.slot),
+                ));
+            }
+
+            let mut body = builder.vec_from_iter([
+                builder.statement_if(
+                    SPAN,
+                    test,
+                    builder.statement_block(SPAN, consequent),
+                    Some(builder.statement_block(SPAN, alternate)),
+                ),
+                builder.statement_if(
+                    SPAN,
+                    builder.expression_binary(
+                        SPAN,
+                        builder.expression_identifier(SPAN, builder.ident(sentinel_name)),
+                        BinaryOperator::StrictInequality,
+                        build_early_return_sentinel_expression(builder),
+                    ),
+                    builder.statement_block(
+                        SPAN,
+                        builder.vec1(builder.statement_return(
+                            SPAN,
+                            Some(builder.expression_identifier(SPAN, builder.ident(sentinel_name))),
+                        )),
+                    ),
+                    None,
+                ),
+            ]);
+
+            if let Some(final_return) = final_return {
+                body.push(builder.statement_return(
+                    SPAN,
+                    Some(builder.expression_identifier(SPAN, builder.ident(final_return))),
+                ));
+            }
+
+            Some(builder.function_body(SPAN, builder.vec(), body))
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::TryCatch {
             catch_param,
             try_body,
@@ -5585,6 +5675,25 @@ fn build_memo_cache_sentinel_expression<'a>(builder: AstBuilder<'a>) -> ast::Exp
         builder.vec1(ast::Argument::from(builder.expression_string_literal(
             SPAN,
             builder.atom(crate::reactive_scopes::codegen_reactive::MEMO_CACHE_SENTINEL),
+            None,
+        ))),
+        false,
+    )
+}
+
+fn build_early_return_sentinel_expression<'a>(builder: AstBuilder<'a>) -> ast::Expression<'a> {
+    builder.expression_call(
+        SPAN,
+        ast::Expression::from(builder.member_expression_static(
+            SPAN,
+            builder.expression_identifier(SPAN, builder.ident("Symbol")),
+            builder.identifier_name(SPAN, "for"),
+            false,
+        )),
+        NONE,
+        builder.vec1(ast::Argument::from(builder.expression_string_literal(
+            SPAN,
+            builder.atom(crate::reactive_scopes::codegen_reactive::EARLY_RETURN_SENTINEL),
             None,
         ))),
         false,
