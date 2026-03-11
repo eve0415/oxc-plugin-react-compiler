@@ -188,6 +188,22 @@ pub enum GeneratedBodyShape {
         test: String,
         body: Box<GeneratedBodyShape>,
     },
+    ForLoop {
+        init: Option<String>,
+        test: Option<String>,
+        update: Option<String>,
+        body: Box<GeneratedBodyShape>,
+    },
+    ForInLoop {
+        left: String,
+        right: String,
+        body: Box<GeneratedBodyShape>,
+    },
+    ForOfLoop {
+        left: String,
+        right: String,
+        body: Box<GeneratedBodyShape>,
+    },
     GuardedAssignmentExpressions {
         test: String,
         assignments: Vec<GeneratedAssignment>,
@@ -1018,6 +1034,9 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             GeneratedBodyShape::GuardedAssignments { .. } => None,
             GeneratedBodyShape::WhileLoop { .. } => None,
             GeneratedBodyShape::DoWhileLoop { .. } => None,
+            GeneratedBodyShape::ForLoop { .. } => None,
+            GeneratedBodyShape::ForInLoop { .. } => None,
+            GeneratedBodyShape::ForOfLoop { .. } => None,
             GeneratedBodyShape::GuardedAssignmentExpressions { .. } => None,
             GeneratedBodyShape::ZeroDependencyMemoizedCachedValues { .. } => None,
             GeneratedBodyShape::MemoizedCachedValues { .. } => None,
@@ -1704,6 +1723,49 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             }
         }
 
+        if let [ast::Statement::ForStatement(for_statement)] = statements.as_slice() {
+            let body_shape = statement_shape(&for_statement.body);
+            if !matches!(body_shape, GeneratedBodyShape::Unknown) {
+                return GeneratedBodyShape::ForLoop {
+                    init: for_statement
+                        .init
+                        .as_ref()
+                        .map(codegen_for_statement_init_with_oxc),
+                    test: for_statement
+                        .test
+                        .as_ref()
+                        .map(codegen_expression_with_flow_cast_restore),
+                    update: for_statement
+                        .update
+                        .as_ref()
+                        .map(codegen_expression_with_flow_cast_restore),
+                    body: Box::new(body_shape),
+                };
+            }
+        }
+
+        if let [ast::Statement::ForInStatement(for_statement)] = statements.as_slice() {
+            let body_shape = statement_shape(&for_statement.body);
+            if !matches!(body_shape, GeneratedBodyShape::Unknown) {
+                return GeneratedBodyShape::ForInLoop {
+                    left: codegen_for_statement_left_with_oxc(&for_statement.left),
+                    right: codegen_expression_with_flow_cast_restore(&for_statement.right),
+                    body: Box::new(body_shape),
+                };
+            }
+        }
+
+        if let [ast::Statement::ForOfStatement(for_statement)] = statements.as_slice() {
+            let body_shape = statement_shape(&for_statement.body);
+            if !matches!(body_shape, GeneratedBodyShape::Unknown) {
+                return GeneratedBodyShape::ForOfLoop {
+                    left: codegen_for_statement_left_with_oxc(&for_statement.left),
+                    right: codegen_expression_with_flow_cast_restore(&for_statement.right),
+                    body: Box::new(body_shape),
+                };
+            }
+        }
+
         if statements.len() >= 2
             && let Some(ast::Statement::VariableDeclaration(alias_decl)) =
                 statements.get(statements.len() - 2)
@@ -2251,6 +2313,9 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                     | GeneratedBodyShape::GuardedAssignments { .. }
                     | GeneratedBodyShape::WhileLoop { .. }
                     | GeneratedBodyShape::DoWhileLoop { .. }
+                    | GeneratedBodyShape::ForLoop { .. }
+                    | GeneratedBodyShape::ForInLoop { .. }
+                    | GeneratedBodyShape::ForOfLoop { .. }
                     | GeneratedBodyShape::GuardedAssignmentExpressions { .. }
                     | GeneratedBodyShape::TryCatch { .. }
             );
@@ -24741,6 +24806,121 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 )),
             ))
         }
+        GeneratedBodyShape::ForLoop {
+            init,
+            test,
+            update,
+            body,
+        } => {
+            let init = match init.as_deref() {
+                Some(init) => parse_for_statement_init_ast(allocator, init)?,
+                None => None,
+            };
+            let test = test.as_deref().and_then(|test| {
+                parse_expression_for_ast_codegen(allocator, SourceType::mjs().with_jsx(true), test)
+                    .ok()
+            });
+            let update = update.as_deref().and_then(|update| {
+                parse_expression_for_ast_codegen(
+                    allocator,
+                    SourceType::mjs().with_jsx(true),
+                    update,
+                )
+                .ok()
+            });
+            let body_spec = FunctionBodyRenderSpec {
+                params: spec.params,
+                param_names: spec.param_names,
+                body_source: spec.body_source,
+                body_shape: body.as_ref(),
+                directives: &[],
+                cache_prologue: None,
+                needs_function_hook_guard_wrapper: false,
+                is_async: spec.is_async,
+                is_generator: spec.is_generator,
+            };
+            let body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder, allocator, &body_spec,
+            )?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_for(
+                    SPAN,
+                    init,
+                    test,
+                    update,
+                    builder.statement_block(SPAN, body.statements),
+                )),
+            ))
+        }
+        GeneratedBodyShape::ForInLoop { left, right, body } => {
+            let left = parse_for_statement_left_source_ast(allocator, left, false)?;
+            let right = parse_expression_for_ast_codegen(
+                allocator,
+                SourceType::mjs().with_jsx(true),
+                right,
+            )
+            .ok()?;
+            let body_spec = FunctionBodyRenderSpec {
+                params: spec.params,
+                param_names: spec.param_names,
+                body_source: spec.body_source,
+                body_shape: body.as_ref(),
+                directives: &[],
+                cache_prologue: None,
+                needs_function_hook_guard_wrapper: false,
+                is_async: spec.is_async,
+                is_generator: spec.is_generator,
+            };
+            let body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder, allocator, &body_spec,
+            )?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_for_in(
+                    SPAN,
+                    left,
+                    right,
+                    builder.statement_block(SPAN, body.statements),
+                )),
+            ))
+        }
+        GeneratedBodyShape::ForOfLoop { left, right, body } => {
+            let left = parse_for_statement_left_source_ast(allocator, left, true)?;
+            let right = parse_expression_for_ast_codegen(
+                allocator,
+                SourceType::mjs().with_jsx(true),
+                right,
+            )
+            .ok()?;
+            let body_spec = FunctionBodyRenderSpec {
+                params: spec.params,
+                param_names: spec.param_names,
+                body_source: spec.body_source,
+                body_shape: body.as_ref(),
+                directives: &[],
+                cache_prologue: None,
+                needs_function_hook_guard_wrapper: false,
+                is_async: spec.is_async,
+                is_generator: spec.is_generator,
+            };
+            let body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder, allocator, &body_spec,
+            )?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_for_of(
+                    SPAN,
+                    false,
+                    left,
+                    right,
+                    builder.statement_block(SPAN, body.statements),
+                )),
+            ))
+        }
         GeneratedBodyShape::GuardedAssignmentExpressions {
             test,
             assignments,
@@ -26697,6 +26877,26 @@ fn codegen_assignment_target_with_oxc(target: &ast::AssignmentTarget<'_>) -> Str
     codegen.into_source_text()
 }
 
+fn codegen_for_statement_init_with_oxc(init: &ast::ForStatementInit<'_>) -> String {
+    let mut codegen = Codegen::new().with_options(CodegenOptions {
+        indent_char: IndentChar::Space,
+        indent_width: 2,
+        ..CodegenOptions::default()
+    });
+    init.r#gen(&mut codegen, CodegenPrintContext::default());
+    codegen.into_source_text()
+}
+
+fn codegen_for_statement_left_with_oxc(left: &ast::ForStatementLeft<'_>) -> String {
+    let mut codegen = Codegen::new().with_options(CodegenOptions {
+        indent_char: IndentChar::Space,
+        indent_width: 2,
+        ..CodegenOptions::default()
+    });
+    left.r#gen(&mut codegen, CodegenPrintContext::default());
+    codegen.into_source_text()
+}
+
 fn codegen_statements_with_oxc(statements: &[ast::Statement<'_>]) -> String {
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
@@ -27567,7 +27767,7 @@ fn render_cached_inline_hook_callback_block_ast(
     ))
 }
 
-fn parse_for_statement_init_ast<'a>(
+pub(crate) fn parse_for_statement_init_ast<'a>(
     allocator: &'a Allocator,
     init: &str,
 ) -> Option<Option<ast::ForStatementInit<'a>>> {
@@ -27626,6 +27826,26 @@ fn parse_for_statement_left_ast<'a>(
                 builder.alloc(declaration),
             ))
         }
+        _ => None,
+    }
+}
+
+pub(crate) fn parse_for_statement_left_source_ast<'a>(
+    allocator: &'a Allocator,
+    left: &str,
+    is_for_of: bool,
+) -> Option<ast::ForStatementLeft<'a>> {
+    let keyword = if is_for_of { "of" } else { "in" };
+    let statement_source = format!("for ({left} {keyword} __codex_loop_right) {{}}");
+    let statement = parse_single_statement_for_ast_codegen(
+        allocator,
+        SourceType::mjs().with_jsx(true),
+        &statement_source,
+    )
+    .ok()?;
+    match statement {
+        ast::Statement::ForInStatement(for_statement) => Some(for_statement.unbox().left),
+        ast::Statement::ForOfStatement(for_statement) => Some(for_statement.unbox().left),
         _ => None,
     }
 }
@@ -30929,6 +31149,42 @@ mod tests {
     fn analyzes_do_while_then_return_body_shape() {
         let shape = super::analyze_generated_body_shape(
             "do {\n  x = x + 1;\n} while (x < limit);\nreturn x;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_for_then_return_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "let x = 1;\nfor (let i = 0; i < 10; i++) {\n  x = x + 1;\n}\nreturn x;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_for_in_then_return_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "let x;\nfor (const y in props.value) {}\nreturn x;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_for_of_then_return_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "let x;\nfor (const i of props.values) {\n  x = i;\n}\nreturn x;\n",
         );
 
         assert!(

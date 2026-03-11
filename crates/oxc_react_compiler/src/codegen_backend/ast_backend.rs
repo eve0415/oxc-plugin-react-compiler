@@ -3201,6 +3201,101 @@ fn try_build_function_body_from_shape<'a>(
                 )),
             ))
         }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ForLoop {
+            init,
+            test,
+            update,
+            body,
+        } => {
+            let body = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                body.as_ref(),
+                cache_prologue,
+            )?;
+            let init = match init.as_deref() {
+                Some(init) => crate::reactive_scopes::codegen_reactive::parse_for_statement_init_ast(
+                    allocator,
+                    init,
+                )?,
+                None => None,
+            };
+            let test = test
+                .as_deref()
+                .and_then(|test| parse_expression_source(allocator, source_type, test).ok());
+            let update = update
+                .as_deref()
+                .and_then(|update| parse_expression_source(allocator, source_type, update).ok());
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_for(
+                    SPAN,
+                    init,
+                    test,
+                    update,
+                    builder.statement_block(SPAN, body.statements),
+                )),
+            ))
+        }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ForInLoop {
+            left,
+            right,
+            body,
+        } => {
+            let body = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                body.as_ref(),
+                cache_prologue,
+            )?;
+            let left =
+                crate::reactive_scopes::codegen_reactive::parse_for_statement_left_source_ast(
+                    allocator, left, false,
+                )?;
+            let right = parse_expression_source(allocator, source_type, right).ok()?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_for_in(
+                    SPAN,
+                    left,
+                    right,
+                    builder.statement_block(SPAN, body.statements),
+                )),
+            ))
+        }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ForOfLoop {
+            left,
+            right,
+            body,
+        } => {
+            let body = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                body.as_ref(),
+                cache_prologue,
+            )?;
+            let left =
+                crate::reactive_scopes::codegen_reactive::parse_for_statement_left_source_ast(
+                    allocator, left, true,
+                )?;
+            let right = parse_expression_source(allocator, source_type, right).ok()?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_for_of(
+                    SPAN,
+                    false,
+                    left,
+                    right,
+                    builder.statement_block(SPAN, body.statements),
+                )),
+            ))
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedReturnPrefix {
             test,
             consequent,

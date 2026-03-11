@@ -1264,6 +1264,37 @@ fn codegen_outlined_function(
                 *test = replace_identifier_tokens(test, from, to);
                 rename_generated_body_shape(body, from, to);
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ForLoop {
+                init,
+                test,
+                update,
+                body,
+            } => {
+                if let Some(init) = init {
+                    *init = replace_identifier_tokens(init, from, to);
+                }
+                if let Some(test) = test {
+                    *test = replace_identifier_tokens(test, from, to);
+                }
+                if let Some(update) = update {
+                    *update = replace_identifier_tokens(update, from, to);
+                }
+                rename_generated_body_shape(body, from, to);
+            }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ForInLoop {
+                left,
+                right,
+                body,
+            }
+            | crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ForOfLoop {
+                left,
+                right,
+                body,
+            } => {
+                *left = replace_identifier_tokens(left, from, to);
+                *right = replace_identifier_tokens(right, from, to);
+                rename_generated_body_shape(body, from, to);
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedAssignmentExpressions {
                 test,
                 assignments,
@@ -1930,6 +1961,9 @@ fn generated_body_shape_is_nonmemoized_hir_lowerable(
         | Shape::GuardedAssignments { .. }
         | Shape::WhileLoop { .. }
         | Shape::DoWhileLoop { .. }
+        | Shape::ForLoop { .. }
+        | Shape::ForInLoop { .. }
+        | Shape::ForOfLoop { .. }
         | Shape::GuardedAssignmentExpressions { .. }
         | Shape::Break(_)
         | Shape::Continue(_)
