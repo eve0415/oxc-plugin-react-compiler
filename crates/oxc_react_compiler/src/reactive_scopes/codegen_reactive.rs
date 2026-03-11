@@ -174,7 +174,8 @@ pub enum GeneratedBodyShape {
         memoized_bindings: Vec<GeneratedBinding>,
         memoized_assignments: Vec<GeneratedAssignment>,
         memoized_expressions: Vec<String>,
-        memoized_expr: String,
+        memoized_setup_statements: Vec<String>,
+        memoized_expr: Option<String>,
     },
     SingleDependencyMemoizedReturn {
         value_name: String,
@@ -185,7 +186,8 @@ pub enum GeneratedBodyShape {
         memoized_bindings: Vec<GeneratedBinding>,
         memoized_assignments: Vec<GeneratedAssignment>,
         memoized_expressions: Vec<String>,
-        memoized_expr: String,
+        memoized_setup_statements: Vec<String>,
+        memoized_expr: Option<String>,
     },
     MultiDependencyMemoizedReturn {
         value_name: String,
@@ -195,7 +197,8 @@ pub enum GeneratedBodyShape {
         memoized_bindings: Vec<GeneratedBinding>,
         memoized_assignments: Vec<GeneratedAssignment>,
         memoized_expressions: Vec<String>,
-        memoized_expr: String,
+        memoized_setup_statements: Vec<String>,
+        memoized_expr: Option<String>,
     },
     WrappedReturnExpression {
         source_name: String,
@@ -1510,18 +1513,44 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
                         &consequent_block.body[binding_prefix_len + assignment_prefix_len..],
                     );
                 let setup_len = binding_prefix_len + assignment_prefix_len + expression_prefix_len;
-                if consequent_block.body.len() != setup_len + 2 {
-                    continue;
+                if consequent_block.body.len() == setup_len + 2 {
+                    let Some(memoized_expr) = statement_assigns_identifier_to_expression(
+                        &consequent_block.body[setup_len],
+                        &value_name,
+                    )
+                    .map(codegen_expression_with_flow_cast_restore) else {
+                        continue;
+                    };
+                    if !statement_assigns_cache_slot_from_identifier(
+                        &consequent_block.body[setup_len + 1],
+                        cache_var,
+                        value_slot,
+                        &value_name,
+                    ) || !statement_assigns_identifier_from_cache_slot(
+                        &alternate_block.body[0],
+                        &value_name,
+                        cache_var,
+                        value_slot,
+                    ) || !statement_returns_identifier(&statements[2], &value_name)
+                    {
+                        continue;
+                    }
+                    return GeneratedBodyShape::ZeroDependencyMemoizedReturn {
+                        value_name,
+                        value_kind: value_decl.kind,
+                        value_slot,
+                        memoized_bindings,
+                        memoized_assignments,
+                        memoized_expressions,
+                        memoized_setup_statements: vec![],
+                        memoized_expr: Some(memoized_expr),
+                    };
                 }
-                let Some(memoized_expr) = statement_assigns_identifier_to_expression(
-                    &consequent_block.body[setup_len],
-                    &value_name,
-                )
-                .map(codegen_expression_with_flow_cast_restore) else {
+                let Some(last_statement) = consequent_block.body.last() else {
                     continue;
                 };
                 if !statement_assigns_cache_slot_from_identifier(
-                    &consequent_block.body[setup_len + 1],
+                    last_statement,
                     cache_var,
                     value_slot,
                     &value_name,
@@ -1531,7 +1560,16 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
                     cache_var,
                     value_slot,
                 ) || !statement_returns_identifier(&statements[2], &value_name)
+                    || consequent_block.body.len() <= setup_len + 1
                 {
+                    continue;
+                }
+                let memoized_setup_statements = consequent_block.body
+                    [setup_len..consequent_block.body.len() - 1]
+                    .iter()
+                    .map(codegen_statement_with_flow_cast_restore)
+                    .collect::<Vec<_>>();
+                if memoized_setup_statements.is_empty() {
                     continue;
                 }
                 return GeneratedBodyShape::ZeroDependencyMemoizedReturn {
@@ -1541,7 +1579,8 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
                     memoized_bindings,
                     memoized_assignments,
                     memoized_expressions,
-                    memoized_expr,
+                    memoized_setup_statements,
+                    memoized_expr: None,
                 };
             }
             if let Some(dependency_guards) = collect_dependency_guards(&if_statement.test)
@@ -1559,26 +1598,87 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
                         &consequent_block.body[binding_prefix_len + assignment_prefix_len..],
                     );
                 let setup_len = binding_prefix_len + assignment_prefix_len + expression_prefix_len;
-                if consequent_block.body.len() != setup_len + dependency_guards.len() + 2 {
-                    continue;
-                }
-                let Some(memoized_expr) = statement_assigns_identifier_to_expression(
-                    &consequent_block.body[setup_len],
-                    &value_name,
-                )
-                .map(codegen_expression_with_flow_cast_restore) else {
-                    continue;
-                };
                 let Some((cache_var, _, _)) = dependency_guards.first() else {
                     continue;
                 };
+                if consequent_block.body.len() == setup_len + dependency_guards.len() + 2 {
+                    let Some(memoized_expr) = statement_assigns_identifier_to_expression(
+                        &consequent_block.body[setup_len],
+                        &value_name,
+                    )
+                    .map(codegen_expression_with_flow_cast_restore) else {
+                        continue;
+                    };
+                    let mut dep_pairs: Vec<(u32, String)> =
+                        Vec::with_capacity(dependency_guards.len());
+                    let mut guards_match = true;
+                    for (index, (expected_cache_var, dep_slot, dep_expr)) in
+                        dependency_guards.iter().enumerate()
+                    {
+                        let Some((dep_target, dep_value)) = assignment_statement_parts(
+                            &consequent_block.body[setup_len + index + 1],
+                        ) else {
+                            guards_match = false;
+                            break;
+                        };
+                        if assignment_target_cache_access(dep_target)
+                            != Some((expected_cache_var, *dep_slot))
+                            || codegen_expression_with_flow_cast_restore(dep_value) != *dep_expr
+                        {
+                            guards_match = false;
+                            break;
+                        }
+                        dep_pairs.push((*dep_slot, dep_expr.clone()));
+                    }
+                    if !guards_match {
+                        continue;
+                    }
+                    let Some((value_target, value_value)) = assignment_statement_parts(
+                        &consequent_block.body[setup_len + dependency_guards.len() + 1],
+                    ) else {
+                        continue;
+                    };
+                    let Some((assigned_cache_var, value_slot)) =
+                        assignment_target_cache_access(value_target)
+                    else {
+                        continue;
+                    };
+                    if assigned_cache_var != *cache_var
+                        || !expression_is_identifier(value_value, &value_name)
+                        || !statement_assigns_identifier_from_cache_slot(
+                            &alternate_block.body[0],
+                            &value_name,
+                            cache_var,
+                            value_slot,
+                        )
+                        || !statement_returns_identifier(&statements[2], &value_name)
+                    {
+                        continue;
+                    }
+                    return GeneratedBodyShape::MultiDependencyMemoizedReturn {
+                        value_name,
+                        value_kind: value_decl.kind,
+                        deps: dep_pairs,
+                        value_slot,
+                        memoized_bindings,
+                        memoized_assignments,
+                        memoized_expressions,
+                        memoized_setup_statements: vec![],
+                        memoized_expr: Some(memoized_expr),
+                    };
+                }
+
+                if consequent_block.body.len() <= setup_len + dependency_guards.len() + 1 {
+                    continue;
+                }
                 let mut dep_pairs: Vec<(u32, String)> = Vec::with_capacity(dependency_guards.len());
                 let mut guards_match = true;
+                let dep_base = consequent_block.body.len() - (dependency_guards.len() + 1);
                 for (index, (expected_cache_var, dep_slot, dep_expr)) in
                     dependency_guards.iter().enumerate()
                 {
                     let Some((dep_target, dep_value)) =
-                        assignment_statement_parts(&consequent_block.body[setup_len + index + 1])
+                        assignment_statement_parts(&consequent_block.body[dep_base + index])
                     else {
                         guards_match = false;
                         break;
@@ -1595,9 +1695,9 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
                 if !guards_match {
                     continue;
                 }
-                let Some((value_target, value_value)) = assignment_statement_parts(
-                    &consequent_block.body[setup_len + dependency_guards.len() + 1],
-                ) else {
+                let Some((value_target, value_value)) =
+                    assignment_statement_parts(consequent_block.body.last().unwrap())
+                else {
                     continue;
                 };
                 let Some((assigned_cache_var, value_slot)) =
@@ -1614,7 +1714,15 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
                         value_slot,
                     )
                     || !statement_returns_identifier(&statements[2], &value_name)
+                    || dep_base <= setup_len
                 {
+                    continue;
+                }
+                let memoized_setup_statements = consequent_block.body[setup_len..dep_base]
+                    .iter()
+                    .map(codegen_statement_with_flow_cast_restore)
+                    .collect::<Vec<_>>();
+                if memoized_setup_statements.is_empty() {
                     continue;
                 }
                 return GeneratedBodyShape::MultiDependencyMemoizedReturn {
@@ -1625,7 +1733,8 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
                     memoized_bindings,
                     memoized_assignments,
                     memoized_expressions,
-                    memoized_expr,
+                    memoized_setup_statements,
+                    memoized_expr: None,
                 };
             }
 
@@ -1644,22 +1753,72 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
                     &consequent_block.body[binding_prefix_len + assignment_prefix_len..],
                 );
             let setup_len = binding_prefix_len + assignment_prefix_len + expression_prefix_len;
-            if consequent_block.body.len() != setup_len + 3 {
-                continue;
-            }
             let Some((cache_var, dep_slot)) = expression_cache_access(&test.left) else {
                 continue;
             };
             let dep_expr = codegen_expression_with_flow_cast_restore(&test.right);
-            let Some(memoized_expr) = statement_assigns_identifier_to_expression(
-                &consequent_block.body[setup_len],
-                &value_name,
-            )
-            .map(codegen_expression_with_flow_cast_restore) else {
+            if consequent_block.body.len() == setup_len + 3 {
+                let Some(memoized_expr) = statement_assigns_identifier_to_expression(
+                    &consequent_block.body[setup_len],
+                    &value_name,
+                )
+                .map(codegen_expression_with_flow_cast_restore) else {
+                    continue;
+                };
+                let Some((dep_target, dep_value)) =
+                    assignment_statement_parts(&consequent_block.body[setup_len + 1])
+                else {
+                    continue;
+                };
+                if assignment_target_cache_access(dep_target) != Some((cache_var, dep_slot))
+                    || codegen_expression_with_flow_cast_restore(dep_value) != dep_expr
+                {
+                    continue;
+                }
+                let Some((value_target, value_value)) =
+                    assignment_statement_parts(&consequent_block.body[setup_len + 2])
+                else {
+                    continue;
+                };
+                let Some((assigned_cache_var, value_slot)) =
+                    assignment_target_cache_access(value_target)
+                else {
+                    continue;
+                };
+                if assigned_cache_var != cache_var
+                    || !expression_is_identifier(value_value, &value_name)
+                {
+                    continue;
+                }
+                if !statement_assigns_identifier_from_cache_slot(
+                    &alternate_block.body[0],
+                    &value_name,
+                    cache_var,
+                    value_slot,
+                ) || !statement_returns_identifier(&statements[2], &value_name)
+                {
+                    continue;
+                }
+                return GeneratedBodyShape::SingleDependencyMemoizedReturn {
+                    value_name,
+                    value_kind: value_decl.kind,
+                    dep_slot,
+                    dep_expr,
+                    value_slot,
+                    memoized_bindings,
+                    memoized_assignments,
+                    memoized_expressions,
+                    memoized_setup_statements: vec![],
+                    memoized_expr: Some(memoized_expr),
+                };
+            }
+
+            if consequent_block.body.len() <= setup_len + 2 {
                 continue;
-            };
+            }
+            let dep_base = consequent_block.body.len() - 2;
             let Some((dep_target, dep_value)) =
-                assignment_statement_parts(&consequent_block.body[setup_len + 1])
+                assignment_statement_parts(&consequent_block.body[dep_base])
             else {
                 continue;
             };
@@ -1668,8 +1827,10 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
             {
                 continue;
             }
-            let Some((value_target, value_value)) =
-                assignment_statement_parts(&consequent_block.body[setup_len + 2])
+            let Some((value_target, value_value)) = consequent_block
+                .body
+                .last()
+                .and_then(assignment_statement_parts)
             else {
                 continue;
             };
@@ -1680,16 +1841,22 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
             };
             if assigned_cache_var != cache_var
                 || !expression_is_identifier(value_value, &value_name)
+                || !statement_assigns_identifier_from_cache_slot(
+                    &alternate_block.body[0],
+                    &value_name,
+                    cache_var,
+                    value_slot,
+                )
+                || !statement_returns_identifier(&statements[2], &value_name)
+                || dep_base <= setup_len
             {
                 continue;
             }
-            if !statement_assigns_identifier_from_cache_slot(
-                &alternate_block.body[0],
-                &value_name,
-                cache_var,
-                value_slot,
-            ) || !statement_returns_identifier(&statements[2], &value_name)
-            {
+            let memoized_setup_statements = consequent_block.body[setup_len..dep_base]
+                .iter()
+                .map(codegen_statement_with_flow_cast_restore)
+                .collect::<Vec<_>>();
+            if memoized_setup_statements.is_empty() {
                 continue;
             }
             return GeneratedBodyShape::SingleDependencyMemoizedReturn {
@@ -1701,7 +1868,8 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
                 memoized_bindings,
                 memoized_assignments,
                 memoized_expressions,
-                memoized_expr,
+                memoized_setup_statements,
+                memoized_expr: None,
             };
         }
 
@@ -22731,6 +22899,39 @@ fn build_generated_expression_statements_ast<'a>(
     Some(statements)
 }
 
+fn build_generated_statement_sources_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    statements: &[String],
+) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
+    if statements.is_empty() {
+        return Some(builder.vec());
+    }
+    let joined = statements.join("\n");
+    let source_type = SourceType::mjs().with_jsx(true);
+    let ts_source_type = source_type.with_typescript(true);
+    let mut attempts = vec![
+        (source_type, joined.clone()),
+        (ts_source_type, joined.clone()),
+    ];
+    let flow_cast_normalized = normalize_flow_cast_marker_calls(&joined);
+    if flow_cast_normalized != joined {
+        attempts.push((ts_source_type, flow_cast_normalized.clone()));
+    }
+    let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(&joined);
+    if flow_cast_rewritten != joined && flow_cast_rewritten != flow_cast_normalized {
+        attempts.push((ts_source_type, flow_cast_rewritten));
+    }
+    for (attempt_source_type, attempt_body) in attempts {
+        if let Ok(parsed) =
+            parse_statement_list_for_ast_codegen(allocator, attempt_source_type, &attempt_body)
+        {
+            return Some(parsed);
+        }
+    }
+    None
+}
+
 fn replace_final_return_expression_ast<'a>(
     body: &mut ast::FunctionBody<'a>,
     expression: ast::Expression<'a>,
@@ -22880,15 +23081,10 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             memoized_bindings,
             memoized_assignments,
             memoized_expressions,
+            memoized_setup_statements,
             memoized_expr,
         } => {
             let cache_binding_name = &spec.cache_prologue?.binding_name;
-            let memoized_expr = parse_expression_for_ast_codegen(
-                allocator,
-                SourceType::mjs().with_jsx(true),
-                memoized_expr,
-            )
-            .ok()?;
             let mut consequent =
                 build_generated_binding_statements_ast(builder, allocator, memoized_bindings)?;
             consequent.extend(build_generated_assignment_statements_ast(
@@ -22901,11 +23097,24 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 allocator,
                 memoized_expressions,
             )?);
-            consequent.push(build_identifier_assignment_statement_ast_with_expression(
+            consequent.extend(build_generated_statement_sources_ast(
                 builder,
-                value_name,
-                memoized_expr,
-            ));
+                allocator,
+                memoized_setup_statements,
+            )?);
+            if let Some(memoized_expr) = memoized_expr {
+                let memoized_expr = parse_expression_for_ast_codegen(
+                    allocator,
+                    SourceType::mjs().with_jsx(true),
+                    memoized_expr,
+                )
+                .ok()?;
+                consequent.push(build_identifier_assignment_statement_ast_with_expression(
+                    builder,
+                    value_name,
+                    memoized_expr,
+                ));
+            }
             consequent.push(build_computed_member_assignment_statement_ast(
                 builder,
                 cache_binding_name,
@@ -22991,6 +23200,7 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             memoized_bindings,
             memoized_assignments,
             memoized_expressions,
+            memoized_setup_statements,
             memoized_expr,
         } => {
             let cache_binding_name = &spec.cache_prologue?.binding_name;
@@ -22998,12 +23208,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 allocator,
                 SourceType::mjs().with_jsx(true),
                 dep_expr,
-            )
-            .ok()?;
-            let memoized_expr = parse_expression_for_ast_codegen(
-                allocator,
-                SourceType::mjs().with_jsx(true),
-                memoized_expr,
             )
             .ok()?;
             let mut consequent =
@@ -23018,11 +23222,24 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 allocator,
                 memoized_expressions,
             )?);
-            consequent.push(build_identifier_assignment_statement_ast_with_expression(
+            consequent.extend(build_generated_statement_sources_ast(
                 builder,
-                value_name,
-                memoized_expr,
-            ));
+                allocator,
+                memoized_setup_statements,
+            )?);
+            if let Some(memoized_expr) = memoized_expr {
+                let memoized_expr = parse_expression_for_ast_codegen(
+                    allocator,
+                    SourceType::mjs().with_jsx(true),
+                    memoized_expr,
+                )
+                .ok()?;
+                consequent.push(build_identifier_assignment_statement_ast_with_expression(
+                    builder,
+                    value_name,
+                    memoized_expr,
+                ));
+            }
             consequent.push(build_computed_member_assignment_statement_ast(
                 builder,
                 cache_binding_name,
@@ -23118,15 +23335,10 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             memoized_bindings,
             memoized_assignments,
             memoized_expressions,
+            memoized_setup_statements,
             memoized_expr,
         } => {
             let cache_binding_name = &spec.cache_prologue?.binding_name;
-            let memoized_expr = parse_expression_for_ast_codegen(
-                allocator,
-                SourceType::mjs().with_jsx(true),
-                memoized_expr,
-            )
-            .ok()?;
             let mut dep_assignments = builder.vec();
             let mut dep_guards = deps.iter().map(|(slot, dep_expr)| {
                 let dep_expression = parse_expression_for_ast_codegen(
@@ -23178,11 +23390,24 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 allocator,
                 memoized_expressions,
             )?);
-            consequent.push(build_identifier_assignment_statement_ast_with_expression(
+            consequent.extend(build_generated_statement_sources_ast(
                 builder,
-                value_name,
-                memoized_expr,
-            ));
+                allocator,
+                memoized_setup_statements,
+            )?);
+            if let Some(memoized_expr) = memoized_expr {
+                let memoized_expr = parse_expression_for_ast_codegen(
+                    allocator,
+                    SourceType::mjs().with_jsx(true),
+                    memoized_expr,
+                )
+                .ok()?;
+                consequent.push(build_identifier_assignment_statement_ast_with_expression(
+                    builder,
+                    value_name,
+                    memoized_expr,
+                ));
+            }
             consequent.extend(dep_assignments);
             consequent.push(build_computed_member_assignment_statement_ast(
                 builder,
@@ -26890,7 +27115,32 @@ mod tests {
             } if value_name == "t1"
                 && value_slot == 1
                 && memoized_expressions == vec!["x.push(a)"]
-                && memoized_expr == "[x, a]"
+                && memoized_expr == Some("[x, a]".to_string())
+        ));
+    }
+
+    #[test]
+    fn analyzes_single_dependency_memoized_body_shape_with_statement_setup() {
+        let shape = super::analyze_generated_body_shape(
+            "let items;\nif ($[0] !== props.a) {\n  items = [];\n  items.push(props.a);\n  $[0] = props.a;\n  $[1] = items;\n} else {\n  items = $[1];\n}\nreturn items;\n",
+        );
+
+        assert!(matches!(
+            shape,
+            super::GeneratedBodyShape::SingleDependencyMemoizedReturn {
+                value_name,
+                dep_slot,
+                dep_expr,
+                value_slot,
+                memoized_setup_statements,
+                memoized_expr,
+                ..
+            } if value_name == "items"
+                && dep_slot == 0
+                && dep_expr == "props.a"
+                && value_slot == 1
+                && memoized_setup_statements == vec!["items = [];".to_string(), "items.push(props.a);".to_string()]
+                && memoized_expr.is_none()
         ));
     }
 }

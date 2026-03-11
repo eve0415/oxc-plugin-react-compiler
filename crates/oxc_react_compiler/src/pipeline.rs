@@ -1233,6 +1233,7 @@ fn codegen_outlined_function(
                 memoized_bindings,
                 memoized_assignments,
                 memoized_expressions,
+                memoized_setup_statements,
                 memoized_expr,
                 ..
             } => {
@@ -1250,7 +1251,12 @@ fn codegen_outlined_function(
                 for expression in memoized_expressions {
                     *expression = replace_identifier_tokens(expression, from, to);
                 }
-                *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
+                for statement in memoized_setup_statements {
+                    *statement = replace_identifier_tokens(statement, from, to);
+                }
+                if let Some(memoized_expr) = memoized_expr {
+                    *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
+                }
             }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleDependencyMemoizedReturn {
                 value_name,
@@ -1258,6 +1264,7 @@ fn codegen_outlined_function(
                 memoized_bindings,
                 memoized_assignments,
                 memoized_expressions,
+                memoized_setup_statements,
                 memoized_expr,
                 ..
             } => {
@@ -1276,7 +1283,12 @@ fn codegen_outlined_function(
                 for expression in memoized_expressions {
                     *expression = replace_identifier_tokens(expression, from, to);
                 }
-                *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
+                for statement in memoized_setup_statements {
+                    *statement = replace_identifier_tokens(statement, from, to);
+                }
+                if let Some(memoized_expr) = memoized_expr {
+                    *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
+                }
             }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MultiDependencyMemoizedReturn {
                 value_name,
@@ -1284,6 +1296,7 @@ fn codegen_outlined_function(
                 memoized_bindings,
                 memoized_assignments,
                 memoized_expressions,
+                memoized_setup_statements,
                 memoized_expr,
                 ..
             } => {
@@ -1304,7 +1317,12 @@ fn codegen_outlined_function(
                 for expression in memoized_expressions {
                     *expression = replace_identifier_tokens(expression, from, to);
                 }
-                *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
+                for statement in memoized_setup_statements {
+                    *statement = replace_identifier_tokens(statement, from, to);
+                }
+                if let Some(memoized_expr) = memoized_expr {
+                    *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
+                }
             }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::WrappedReturnExpression {
                 source_name,
