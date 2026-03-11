@@ -180,6 +180,10 @@ pub enum GeneratedBodyShape {
         test: String,
         assignments: Vec<GeneratedAssignment>,
     },
+    WhileLoop {
+        test: String,
+        body: Box<GeneratedBodyShape>,
+    },
     GuardedAssignmentExpressions {
         test: String,
         assignments: Vec<GeneratedAssignment>,
@@ -1006,6 +1010,7 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             GeneratedBodyShape::GuardedReturnPrefix { .. } => None,
             GeneratedBodyShape::ConditionalBranches { .. } => None,
             GeneratedBodyShape::GuardedAssignments { .. } => None,
+            GeneratedBodyShape::WhileLoop { .. } => None,
             GeneratedBodyShape::GuardedAssignmentExpressions { .. } => None,
             GeneratedBodyShape::ZeroDependencyMemoizedCachedValues { .. } => None,
             GeneratedBodyShape::MemoizedCachedValues { .. } => None,
@@ -1670,6 +1675,16 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             }
         }
 
+        if let [ast::Statement::WhileStatement(while_statement)] = statements.as_slice() {
+            let body_shape = statement_shape(&while_statement.body);
+            if !matches!(body_shape, GeneratedBodyShape::Unknown) {
+                return GeneratedBodyShape::WhileLoop {
+                    test: codegen_expression_with_flow_cast_restore(&while_statement.test),
+                    body: Box::new(body_shape),
+                };
+            }
+        }
+
         if statements.len() >= 2
             && let Some(ast::Statement::VariableDeclaration(alias_decl)) =
                 statements.get(statements.len() - 2)
@@ -2188,12 +2203,16 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             }
         }
 
-        if statements.len() == 2
-            && let Some(ast::Statement::IfStatement(if_statement)) = statements.first()
-            && if_statement.alternate.is_none()
-        {
+        if statements.len() == 2 {
             let prefix_shape = statement_shape(&statements[0]);
-            if !matches!(prefix_shape, GeneratedBodyShape::Unknown) {
+            let allow_prefix_sequence = !matches!(prefix_shape, GeneratedBodyShape::Unknown)
+                && (matches!(prefix_shape, GeneratedBodyShape::WhileLoop { .. })
+                    || matches!(
+                        statements.first(),
+                        Some(ast::Statement::IfStatement(if_statement))
+                            if if_statement.alternate.is_none()
+                    ));
+            if allow_prefix_sequence {
                 let suffix_source = codegen_statements_with_flow_cast_restore(&statements[1..]);
                 let inner_shape = analyze_generated_body_shape_impl(&suffix_source, true);
                 if !matches!(inner_shape, GeneratedBodyShape::Unknown) {
@@ -24624,6 +24643,34 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 )),
             ))
         }
+        GeneratedBodyShape::WhileLoop { test, body } => {
+            let test =
+                parse_expression_for_ast_codegen(allocator, SourceType::mjs().with_jsx(true), test)
+                    .ok()?;
+            let body_spec = FunctionBodyRenderSpec {
+                params: spec.params,
+                param_names: spec.param_names,
+                body_source: spec.body_source,
+                body_shape: body.as_ref(),
+                directives: &[],
+                cache_prologue: None,
+                needs_function_hook_guard_wrapper: false,
+                is_async: spec.is_async,
+                is_generator: spec.is_generator,
+            };
+            let body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder, allocator, &body_spec,
+            )?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_while(
+                    SPAN,
+                    test,
+                    builder.statement_block(SPAN, body.statements),
+                )),
+            ))
+        }
         GeneratedBodyShape::GuardedAssignmentExpressions {
             test,
             assignments,
@@ -30731,6 +30778,30 @@ mod tests {
     fn analyzes_set_state_selector_return_body_shape() {
         let shape = super::analyze_generated_body_shape(
             "const [, setState1] = useRef(\"initial value\");\nconst [, setState2] = useRef(\"initial value\");\nlet setState;\nif ($[0] !== props.foo) {\n  if (props.foo) {\n    setState = setState1;\n  } else {\n    setState = setState2;\n  }\n  $[0] = props.foo;\n  $[1] = setState;\n} else {\n  setState = $[1];\n}\nreturn setState;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_while_then_return_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "while (bar()) {\n  if (baz) {\n    bar();\n  }\n}\nreturn _temp;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_simple_while_increment_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "let y = 0;\nwhile (y < props.max) {\n  y++;\n}\nreturn y;\n",
         );
 
         assert!(
