@@ -3116,6 +3116,26 @@ fn try_build_function_body_from_shape<'a>(
                 builder.vec1(builder.statement_block(SPAN, inner.statements)),
             ))
         }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Labeled { label, inner } => {
+            let inner = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                inner.as_ref(),
+                cache_prologue,
+            )?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(ast::Statement::LabeledStatement(
+                    builder.alloc_labeled_statement(
+                        SPAN,
+                        builder.label_identifier(SPAN, builder.atom(label)),
+                        builder.statement_block(SPAN, inner.statements),
+                    ),
+                )),
+            ))
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ExpressionStatements(
             expressions,
         ) => Some(builder.function_body(

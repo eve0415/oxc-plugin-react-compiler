@@ -1192,6 +1192,13 @@ fn codegen_outlined_function(
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Block { inner } => {
                 rename_generated_body_shape(inner, from, to);
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Labeled {
+                label,
+                inner,
+            } => {
+                *label = replace_identifier_tokens(label, from, to);
+                rename_generated_body_shape(inner, from, to);
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ExpressionStatements(
                 expressions,
             ) => {
@@ -1959,6 +1966,7 @@ fn generated_body_shape_is_nonmemoized_hir_lowerable(
     match body_shape {
         Shape::Unknown => false,
         Shape::Block { inner } => generated_body_shape_is_nonmemoized_hir_lowerable(inner),
+        Shape::Labeled { inner, .. } => generated_body_shape_is_nonmemoized_hir_lowerable(inner),
         Shape::ExpressionStatements(_)
         | Shape::AssignmentStatements(_)
         | Shape::GuardedExpressionStatements { .. }

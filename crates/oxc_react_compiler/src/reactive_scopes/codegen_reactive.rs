@@ -159,6 +159,10 @@ pub enum GeneratedBodyShape {
     Block {
         inner: Box<GeneratedBodyShape>,
     },
+    Labeled {
+        label: String,
+        inner: Box<GeneratedBodyShape>,
+    },
     ExpressionStatements(Vec<String>),
     AssignmentStatements(Vec<GeneratedAssignment>),
     GuardedBody {
@@ -1052,6 +1056,7 @@ fn analyze_generated_body_shape_uncached(
         match shape {
             GeneratedBodyShape::Unknown => None,
             GeneratedBodyShape::Block { inner } => shape_returned_identifier(inner),
+            GeneratedBodyShape::Labeled { inner, .. } => shape_returned_identifier(inner),
             GeneratedBodyShape::ExpressionStatements(_) => None,
             GeneratedBodyShape::AssignmentStatements(_) => None,
             GeneratedBodyShape::GuardedBody { .. } => None,
@@ -1787,6 +1792,16 @@ fn analyze_generated_body_shape_uncached(
             }
         }
 
+        if let [ast::Statement::LabeledStatement(labeled)] = statements.as_slice() {
+            let inner_shape = statement_shape(&labeled.body, guard_aliases);
+            if !matches!(inner_shape, GeneratedBodyShape::Unknown) {
+                return GeneratedBodyShape::Labeled {
+                    label: labeled.label.name.to_string(),
+                    inner: Box::new(inner_shape),
+                };
+            }
+        }
+
         if statements.len() >= 2
             && let Some(ast::Statement::IfStatement(if_statement)) = statements.first()
             && if_statement.alternate.is_none()
@@ -2508,7 +2523,9 @@ fn analyze_generated_body_shape_uncached(
             let prefix_shape = statement_shape(&statements[0], guard_aliases);
             let allow_prefix_sequence = matches!(
                 prefix_shape,
-                GeneratedBodyShape::GuardedBody { .. }
+                GeneratedBodyShape::Block { .. }
+                    | GeneratedBodyShape::Labeled { .. }
+                    | GeneratedBodyShape::GuardedBody { .. }
                     | GeneratedBodyShape::GuardedExpressionStatements { .. }
                     | GeneratedBodyShape::GuardedReturnPrefix { .. }
                     | GeneratedBodyShape::ConditionalBranches { .. }
@@ -24914,6 +24931,34 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 builder.vec1(builder.statement_block(SPAN, inner_body.statements)),
             ))
         }
+        GeneratedBodyShape::Labeled { label, inner } => {
+            let inner_body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder,
+                allocator,
+                &FunctionBodyRenderSpec {
+                    params: spec.params,
+                    param_names: spec.param_names,
+                    body_source: spec.body_source,
+                    body_shape: inner.as_ref(),
+                    directives: &[],
+                    cache_prologue: spec.cache_prologue,
+                    needs_function_hook_guard_wrapper: false,
+                    is_async: spec.is_async,
+                    is_generator: spec.is_generator,
+                },
+            )?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(ast::Statement::LabeledStatement(
+                    builder.alloc_labeled_statement(
+                        SPAN,
+                        builder.label_identifier(SPAN, builder.atom(label)),
+                        builder.statement_block(SPAN, inner_body.statements),
+                    ),
+                )),
+            ))
+        }
         GeneratedBodyShape::ExpressionStatements(expressions) => Some(builder.function_body(
             SPAN,
             builder.vec(),
@@ -31680,6 +31725,33 @@ mod tests {
         assert!(
             !matches!(shape, super::GeneratedBodyShape::Unknown),
             "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_labeled_block_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "bb0: {\n  if (a) {\n    x = b;\n    break bb0;\n  }\n  x = c;\n}\nreturn x;\n",
+        );
+
+        let super::GeneratedBodyShape::Sequential {
+            prefix,
+            inner: tail,
+        } = shape
+        else {
+            panic!("expected sequential shape, got {shape:?}");
+        };
+        let super::GeneratedBodyShape::Labeled { label, inner } = prefix.as_ref() else {
+            panic!("expected labeled prefix shape, got {prefix:?}");
+        };
+        assert_eq!(label, "bb0");
+        assert!(
+            matches!(inner.as_ref(), super::GeneratedBodyShape::Sequential { .. }),
+            "expected structured labeled inner shape, got {inner:?}"
+        );
+        assert_eq!(
+            tail.as_ref(),
+            &super::GeneratedBodyShape::ReturnIdentifier("x".to_string())
         );
     }
 
