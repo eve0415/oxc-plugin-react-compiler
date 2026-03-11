@@ -1111,6 +1111,15 @@ fn analyze_generated_body_shape_uncached(
         }
     }
 
+    fn can_follow_cached_values_prefix(shape: &GeneratedBodyShape) -> bool {
+        matches!(
+            shape,
+            GeneratedBodyShape::ExpressionStatements(_)
+                | GeneratedBodyShape::GuardedExpressionStatements { .. }
+                | GeneratedBodyShape::PrefixedExpressionStatements { .. }
+        )
+    }
+
     fn binding_identifier_name(pattern: &ast::BindingPattern<'_>) -> Option<String> {
         match pattern {
             ast::BindingPattern::BindingIdentifier(identifier) => Some(identifier.name.to_string()),
@@ -2587,14 +2596,24 @@ fn analyze_generated_body_shape_uncached(
                     | GeneratedBodyShape::GuardedAssignmentExpressions { .. }
                     | GeneratedBodyShape::TryCatch { .. }
             );
-            if allow_prefix_sequence {
+            let allow_cached_values_prefix = matches!(
+                prefix_shape,
+                GeneratedBodyShape::ZeroDependencyMemoizedCachedValues { .. }
+                    | GeneratedBodyShape::MemoizedCachedValues { .. }
+            );
+            if allow_prefix_sequence || allow_cached_values_prefix {
                 let suffix_source = codegen_statements_with_flow_cast_restore(&statements[1..]);
                 let inner_shape = analyze_generated_body_shape_impl_with_guard_aliases(
                     &suffix_source,
                     true,
                     guard_aliases,
                 );
-                if !matches!(inner_shape, GeneratedBodyShape::Unknown) {
+                let can_sequence = if allow_cached_values_prefix {
+                    can_follow_cached_values_prefix(&inner_shape)
+                } else {
+                    true
+                };
+                if can_sequence && !matches!(inner_shape, GeneratedBodyShape::Unknown) {
                     return GeneratedBodyShape::Sequential {
                         prefix: Box::new(prefix_shape),
                         inner: Box::new(inner_shape),
@@ -31782,6 +31801,51 @@ mod tests {
         assert!(
             !matches!(shape, super::GeneratedBodyShape::Unknown),
             "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_memoized_cached_values_then_expression_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "let t0;\nlet t1;\nif ($[0] !== propVal) {\n  t0 = () => print(propVal);\n  t1 = [propVal];\n  $[0] = propVal;\n  $[1] = t0;\n  $[2] = t1;\n} else {\n  t0 = $[1];\n  t1 = $[2];\n}\nuseSpecialEffect(t0, t1, [propVal]);\n",
+        );
+
+        let super::GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } = shape
+        else {
+            panic!("expected prefixed declarations shape, got {shape:?}");
+        };
+        assert_eq!(declarations.len(), 2);
+        assert_eq!(declarations[0].pattern, "t0");
+        assert_eq!(declarations[1].pattern, "t1");
+
+        let super::GeneratedBodyShape::Sequential { prefix, inner } = inner.as_ref() else {
+            panic!("expected sequential inner shape, got {inner:?}");
+        };
+        assert!(matches!(
+            prefix.as_ref(),
+            super::GeneratedBodyShape::MemoizedCachedValues {
+                deps,
+                cached_values,
+                restored_values,
+                ..
+            } if deps == &vec![(0, "propVal".to_string())]
+                && cached_values == &vec![
+                    super::GeneratedCachedValue { name: "t0".to_string(), slot: 1 },
+                    super::GeneratedCachedValue { name: "t1".to_string(), slot: 2 },
+                ]
+                && restored_values == &vec![
+                    super::GeneratedCachedValue { name: "t0".to_string(), slot: 1 },
+                    super::GeneratedCachedValue { name: "t1".to_string(), slot: 2 },
+                ]
+        ));
+        assert_eq!(
+            inner.as_ref(),
+            &super::GeneratedBodyShape::ExpressionStatements(vec![
+                "useSpecialEffect(t0, t1, [propVal])".to_string(),
+            ])
         );
     }
 
