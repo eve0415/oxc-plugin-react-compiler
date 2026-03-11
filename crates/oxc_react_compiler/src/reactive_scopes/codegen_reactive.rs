@@ -670,6 +670,55 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     },
                 ))
             }
+            GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
+                let (value_name, inner) = build_existing_return_from_cached_prefix(*inner)?;
+                Some((
+                    value_name,
+                    GeneratedBodyShape::PrefixedBindings {
+                        bindings,
+                        inner: Box::new(inner),
+                    },
+                ))
+            }
+            GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
+                let (value_name, inner) = build_existing_return_from_cached_prefix(*inner)?;
+                Some((
+                    value_name,
+                    GeneratedBodyShape::PrefixedAssignments {
+                        assignments,
+                        inner: Box::new(inner),
+                    },
+                ))
+            }
+            GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
+                let (value_name, inner) = build_existing_return_from_cached_prefix(*inner)?;
+                Some((
+                    value_name,
+                    GeneratedBodyShape::PrefixedExpressionStatements {
+                        expressions,
+                        inner: Box::new(inner),
+                    },
+                ))
+            }
+            GeneratedBodyShape::Block { inner } => {
+                let (value_name, inner) = build_existing_return_from_cached_prefix(*inner)?;
+                Some((
+                    value_name,
+                    GeneratedBodyShape::Block {
+                        inner: Box::new(inner),
+                    },
+                ))
+            }
+            GeneratedBodyShape::Labeled { label, inner } => {
+                let (value_name, inner) = build_existing_return_from_cached_prefix(*inner)?;
+                Some((
+                    value_name,
+                    GeneratedBodyShape::Labeled {
+                        label,
+                        inner: Box::new(inner),
+                    },
+                ))
+            }
             _ => None,
         }
     }
@@ -2535,6 +2584,15 @@ fn try_decompose_direct_memoized_existing_return_shape(
             parts.expressions = prefixed_expressions;
             Some(parts)
         }
+        GeneratedBodyShape::Sequential { prefix, inner } => {
+            let mut parts =
+                try_decompose_direct_memoized_existing_return_shape(*inner, value_name)?;
+            let mut prefix_statements =
+                try_render_statement_sources_from_generated_body_shape(&prefix)?;
+            prefix_statements.extend(parts.setup_statements);
+            parts.setup_statements = prefix_statements;
+            Some(parts)
+        }
         _ => None,
     }
 }
@@ -2758,6 +2816,15 @@ fn try_decompose_direct_memoized_declared_return_shape(
             let mut prefixed_expressions = expressions;
             prefixed_expressions.extend(parts.expressions);
             parts.expressions = prefixed_expressions;
+            Some(parts)
+        }
+        GeneratedBodyShape::Sequential { prefix, inner } => {
+            let mut parts =
+                try_decompose_direct_memoized_declared_return_shape(*inner, value_name)?;
+            let mut prefix_statements =
+                try_render_statement_sources_from_generated_body_shape(&prefix)?;
+            prefix_statements.extend(parts.setup_statements);
+            parts.setup_statements = prefix_statements;
             Some(parts)
         }
         _ => None,
@@ -32377,29 +32444,27 @@ mod tests {
         let shape = super::try_build_generated_body_shape_from_reactive_block(&mut cx, &block)
             .expect("expected direct body shape");
 
-        let super::GeneratedBodyShape::MemoizedComputedReturn {
+        let super::GeneratedBodyShape::SingleDependencyMemoizedReturn {
             value_name,
             value_kind,
-            deps,
+            dep_slot,
+            dep_expr,
             value_slot,
-            computation,
+            memoized_setup_statements,
+            memoized_expr,
+            ..
         } = shape
         else {
-            panic!("expected computed memoized return shape");
+            panic!("expected direct single-dependency memoized return shape");
         };
         assert_eq!(value_name, "value");
-        assert_eq!(value_kind, Some(ast::VariableDeclarationKind::Let));
-        assert_eq!(deps, vec![(0, "props.kind".to_string())]);
+        assert_eq!(value_kind, ast::VariableDeclarationKind::Let);
+        assert_eq!(dep_slot, 0);
+        assert_eq!(dep_expr, "props.kind");
         assert_eq!(value_slot, 1);
-        assert!(matches!(
-            computation.as_ref(),
-            super::GeneratedBodyShape::Sequential { prefix, inner }
-                if matches!(prefix.as_ref(), super::GeneratedBodyShape::Switch { .. })
-                    && matches!(
-                        inner.as_ref(),
-                        super::GeneratedBodyShape::ReturnIdentifier(name) if name == "value"
-                    )
-        ));
+        assert_eq!(memoized_expr, None);
+        assert_eq!(memoized_setup_statements.len(), 1);
+        assert!(memoized_setup_statements[0].starts_with("switch (props.kind) {"));
     }
 
     #[test]
@@ -34100,6 +34165,141 @@ mod tests {
                 inner: Box::new(super::GeneratedBodyShape::ReturnExpression(
                     "null".to_string()
                 )),
+            }
+        );
+    }
+
+    #[test]
+    fn canonicalizes_prefixed_binding_cached_prefix_return_body_shape() {
+        let shape =
+            super::canonicalize_generated_body_shape(super::GeneratedBodyShape::Sequential {
+                prefix: Box::new(super::GeneratedBodyShape::PrefixedBindings {
+                    bindings: vec![super::GeneratedBinding {
+                        kind: ast::VariableDeclarationKind::Const,
+                        pattern: "dep".to_string(),
+                        expression: "props.value".to_string(),
+                    }],
+                    inner: Box::new(super::GeneratedBodyShape::MemoizedCachedValues {
+                        deps: vec![(0, "dep".to_string())],
+                        setup_statements: vec!["const t0 = foo(dep);".to_string()],
+                        cached_values: vec![super::GeneratedCachedValue {
+                            name: "t0".to_string(),
+                            slot: 1,
+                        }],
+                        restored_values: vec![super::GeneratedCachedValue {
+                            name: "t0".to_string(),
+                            slot: 1,
+                        }],
+                    }),
+                }),
+                inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                    "t0".to_string(),
+                )),
+            });
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::PrefixedBindings {
+                bindings: vec![super::GeneratedBinding {
+                    kind: ast::VariableDeclarationKind::Const,
+                    pattern: "dep".to_string(),
+                    expression: "props.value".to_string(),
+                }],
+                inner: Box::new(
+                    super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+                        value_name: "t0".to_string(),
+                        dep_slot: 0,
+                        dep_expr: "dep".to_string(),
+                        value_slot: 1,
+                        memoized_bindings: vec![],
+                        memoized_assignments: vec![],
+                        memoized_expressions: vec![],
+                        memoized_setup_statements: vec!["const t0 = foo(dep);".to_string()],
+                        memoized_expr: None,
+                    }
+                ),
+            }
+        );
+    }
+
+    #[test]
+    fn canonicalizes_sequential_existing_return_prefix_body_shape() {
+        let shape = super::canonicalize_generated_body_shape(
+            super::GeneratedBodyShape::MemoizedComputedReturn {
+                value_name: "value".to_string(),
+                value_kind: None,
+                deps: vec![(0, "dep".to_string())],
+                value_slot: 1,
+                computation: Box::new(super::GeneratedBodyShape::Sequential {
+                    prefix: Box::new(super::GeneratedBodyShape::WhileLoop {
+                        test: "cond".to_string(),
+                        body: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![
+                            "step()".to_string(),
+                        ])),
+                    }),
+                    inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                        "value".to_string(),
+                    )),
+                }),
+            },
+        );
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+                value_name: "value".to_string(),
+                dep_slot: 0,
+                dep_expr: "dep".to_string(),
+                value_slot: 1,
+                memoized_bindings: Vec::new(),
+                memoized_assignments: Vec::new(),
+                memoized_expressions: Vec::new(),
+                memoized_setup_statements: vec!["while (cond) {\n  step();\n}".to_string()],
+                memoized_expr: None,
+            }
+        );
+    }
+
+    #[test]
+    fn canonicalizes_sequential_declared_return_prefix_body_shape() {
+        let shape = super::canonicalize_generated_body_shape(
+            super::GeneratedBodyShape::MemoizedComputedReturn {
+                value_name: "value".to_string(),
+                value_kind: Some(ast::VariableDeclarationKind::Let),
+                deps: vec![(0, "dep".to_string())],
+                value_slot: 1,
+                computation: Box::new(super::GeneratedBodyShape::Sequential {
+                    prefix: Box::new(super::GeneratedBodyShape::GuardedExpressionStatements {
+                        test: "flag".to_string(),
+                        expressions: vec!["touch()".to_string()],
+                    }),
+                    inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                        "value".to_string(),
+                    )),
+                }),
+            },
+        );
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::PrefixedDeclarations {
+                declarations: vec![super::GeneratedDeclaration {
+                    kind: ast::VariableDeclarationKind::Let,
+                    pattern: "value".to_string(),
+                }],
+                inner: Box::new(
+                    super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+                        value_name: "value".to_string(),
+                        dep_slot: 0,
+                        dep_expr: "dep".to_string(),
+                        value_slot: 1,
+                        memoized_bindings: Vec::new(),
+                        memoized_assignments: Vec::new(),
+                        memoized_expressions: Vec::new(),
+                        memoized_setup_statements: vec!["if (flag) {\n  touch();\n}".to_string()],
+                        memoized_expr: None,
+                    }
+                ),
             }
         );
     }
