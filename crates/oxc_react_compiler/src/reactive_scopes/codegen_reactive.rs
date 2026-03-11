@@ -2227,13 +2227,17 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
 
         if statements.len() == 2 {
             let prefix_shape = statement_shape(&statements[0]);
-            let allow_prefix_sequence = !matches!(prefix_shape, GeneratedBodyShape::Unknown)
-                && (matches!(prefix_shape, GeneratedBodyShape::WhileLoop { .. })
-                    || matches!(
-                        statements.first(),
-                        Some(ast::Statement::IfStatement(if_statement))
-                            if if_statement.alternate.is_none()
-                    ));
+            let allow_prefix_sequence = matches!(
+                prefix_shape,
+                GeneratedBodyShape::GuardedBody { .. }
+                    | GeneratedBodyShape::GuardedExpressionStatements { .. }
+                    | GeneratedBodyShape::GuardedReturnPrefix { .. }
+                    | GeneratedBodyShape::ConditionalBranches { .. }
+                    | GeneratedBodyShape::GuardedAssignments { .. }
+                    | GeneratedBodyShape::WhileLoop { .. }
+                    | GeneratedBodyShape::GuardedAssignmentExpressions { .. }
+                    | GeneratedBodyShape::TryCatch { .. }
+            );
             if allow_prefix_sequence {
                 let suffix_source = codegen_statements_with_flow_cast_restore(&statements[1..]);
                 let inner_shape = analyze_generated_body_shape_impl(&suffix_source, true);
@@ -30636,32 +30640,31 @@ mod tests {
         let shape = super::analyze_generated_body_shape(
             "let t1;\nif (DEV) {\n  t1 = <div key=\"d\">{props.foo}</div>;\n} else {\n  t1 = {\n    $$typeof: Symbol.for(\"react.transitional.element\"),\n    type: \"div\",\n    ref: null,\n    key: \"d\",\n    props: { children: props.foo }\n  };\n}\nreturn t1;\n",
         );
+        let super::GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } = shape
+        else {
+            panic!("expected prefixed declarations body shape, got {shape:?}");
+        };
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations[0].pattern, "t1");
 
-        let super::GeneratedBodyShape::Sequential { prefix, inner } = shape else {
-            panic!("expected sequential body shape, got {shape:?}");
+        let super::GeneratedBodyShape::Sequential { prefix, inner } = inner.as_ref() else {
+            panic!("expected sequential inner shape, got {inner:?}");
         };
         assert_eq!(
             inner.as_ref(),
             &super::GeneratedBodyShape::ReturnIdentifier("t1".to_string())
         );
 
-        let super::GeneratedBodyShape::PrefixedDeclarations {
-            declarations,
-            inner,
-        } = prefix.as_ref()
-        else {
-            panic!("expected prefixed declarations before conditional branches, got {prefix:?}");
-        };
-        assert_eq!(declarations.len(), 1);
-        assert_eq!(declarations[0].pattern, "t1");
-
         let super::GeneratedBodyShape::ConditionalBranches {
             test,
             consequent,
             alternate,
-        } = inner.as_ref()
+        } = prefix.as_ref()
         else {
-            panic!("expected conditional branches inner shape, got {inner:?}");
+            panic!("expected conditional branches prefix shape, got {prefix:?}");
         };
         assert_eq!(test, "DEV");
         assert_eq!(
@@ -30720,15 +30723,8 @@ mod tests {
             "const newSelected = new Set(selected);\nif (newSelected.has(value)) {\n  newSelected.delete(value);\n} else {\n  newSelected.add(value);\n}\nsetSelected(newSelected);\n",
         );
 
-        let super::GeneratedBodyShape::Sequential { prefix, inner } = shape else {
-            panic!("expected sequential shape, got {shape:?}");
-        };
-        let super::GeneratedBodyShape::PrefixedBindings {
-            bindings,
-            inner: prefixed_inner,
-        } = prefix.as_ref()
-        else {
-            panic!("expected prefixed bindings prefix, got {prefix:?}");
+        let super::GeneratedBodyShape::PrefixedBindings { bindings, inner } = shape else {
+            panic!("expected prefixed bindings shape, got {shape:?}");
         };
         assert_eq!(
             bindings.as_slice(),
@@ -30739,8 +30735,11 @@ mod tests {
             }]
             .as_slice()
         );
+        let super::GeneratedBodyShape::Sequential { prefix, inner } = inner.as_ref() else {
+            panic!("expected sequential inner shape, got {inner:?}");
+        };
         assert_eq!(
-            prefixed_inner.as_ref(),
+            prefix.as_ref(),
             &super::GeneratedBodyShape::ConditionalBranches {
                 test: "newSelected.has(value)".to_string(),
                 consequent: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![
@@ -30875,6 +30874,29 @@ mod tests {
     #[test]
     fn analyzes_while_break_then_return_body_shape() {
         let shape = super::analyze_generated_body_shape("while (a) {\n  break;\n}\nreturn b;\n");
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_conditional_then_expression_tail_body_shape() {
+        let shape =
+            super::analyze_generated_body_shape("if (a) {\n  b();\n} else {\n  c();\n}\nd();\n");
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_try_catch_then_return_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "try {\n  foo();\n} catch {\n  bar();\n}\nreturn baz;\n",
+        );
 
         assert!(
             !matches!(shape, super::GeneratedBodyShape::Unknown),
