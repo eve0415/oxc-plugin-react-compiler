@@ -2335,14 +2335,13 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                 let Some((cache_var, _, _)) = dependency_guards.first() else {
                     continue;
                 };
-                if consequent_block.body.len() == setup_len + dependency_guards.len() + 2 {
-                    let Some(memoized_expr) = statement_assigns_identifier_to_expression(
+                if consequent_block.body.len() == setup_len + dependency_guards.len() + 2
+                    && let Some(memoized_expr) = statement_assigns_identifier_to_expression(
                         &consequent_block.body[setup_len],
                         &value_name,
                     )
-                    .map(codegen_expression_with_flow_cast_restore) else {
-                        continue;
-                    };
+                    .map(codegen_expression_with_flow_cast_restore)
+                {
                     let mut dep_pairs: Vec<(u32, String)> =
                         Vec::with_capacity(dependency_guards.len());
                     let mut guards_match = true;
@@ -2551,14 +2550,13 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                 continue;
             };
             let dep_expr = codegen_expression_with_flow_cast_restore(&test.right);
-            if consequent_block.body.len() == setup_len + 3 {
-                let Some(memoized_expr) = statement_assigns_identifier_to_expression(
+            if consequent_block.body.len() == setup_len + 3
+                && let Some(memoized_expr) = statement_assigns_identifier_to_expression(
                     &consequent_block.body[setup_len],
                     &value_name,
                 )
-                .map(codegen_expression_with_flow_cast_restore) else {
-                    continue;
-                };
+                .map(codegen_expression_with_flow_cast_restore)
+            {
                 let Some((dep_target, dep_value)) =
                     assignment_statement_parts(&consequent_block.body[setup_len + 1])
                 else {
@@ -2870,14 +2868,13 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                     let Some((cache_var, _, _)) = dependency_guards.first() else {
                         continue;
                     };
-                    if consequent_block.body.len() == setup_len + dependency_guards.len() + 2 {
-                        let Some(memoized_expr) = statement_assigns_identifier_to_expression(
+                    if consequent_block.body.len() == setup_len + dependency_guards.len() + 2
+                        && let Some(memoized_expr) = statement_assigns_identifier_to_expression(
                             &consequent_block.body[setup_len],
                             &value_name,
                         )
-                        .map(codegen_expression_with_flow_cast_restore) else {
-                            continue;
-                        };
+                        .map(codegen_expression_with_flow_cast_restore)
+                    {
                         let mut dep_pairs: Vec<(u32, String)> =
                             Vec::with_capacity(dependency_guards.len());
                         let mut guards_match = true;
@@ -3087,14 +3084,13 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                         continue;
                     };
                     let dep_expr = codegen_expression_with_flow_cast_restore(&test.right);
-                    if consequent_block.body.len() == setup_len + 3 {
-                        let Some(memoized_expr) = statement_assigns_identifier_to_expression(
+                    if consequent_block.body.len() == setup_len + 3
+                        && let Some(memoized_expr) = statement_assigns_identifier_to_expression(
                             &consequent_block.body[setup_len],
                             &value_name,
                         )
-                        .map(codegen_expression_with_flow_cast_restore) else {
-                            continue;
-                        };
+                        .map(codegen_expression_with_flow_cast_restore)
+                    {
                         let Some((dep_target, dep_value)) =
                             assignment_statement_parts(&consequent_block.body[setup_len + 1])
                         else {
@@ -30662,6 +30658,18 @@ mod tests {
         assert!(
             !matches!(inner.as_ref(), super::GeneratedBodyShape::Unknown),
             "expected structured inner shape, got {inner:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_try_catch_memoized_existing_return_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "let x;\nif ($[0] !== props.e || $[1] !== props.y) {\n  try {\n    const y = [];\n    y.push(props.y);\n    throwInput(y);\n  } catch (t0) {\n    const e = t0;\n    e.push(props.e);\n    x = e;\n  }\n  $[0] = props.e;\n  $[1] = props.y;\n  $[2] = x;\n} else {\n  x = $[2];\n}\nreturn x;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
         );
     }
 }
