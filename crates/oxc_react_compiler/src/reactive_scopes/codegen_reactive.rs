@@ -1033,6 +1033,16 @@ fn try_build_generated_body_shape_from_reactive_block(
 ) -> Option<GeneratedBodyShape> {
     match block {
         [] => Some(GeneratedBodyShape::ExpressionStatements(vec![])),
+        [ReactiveStatement::Scope(scope_block)]
+            if can_inline_direct_scope_shape(&scope_block.scope) =>
+        {
+            try_build_generated_body_shape_from_reactive_block(cx, &scope_block.instructions)
+        }
+        [ReactiveStatement::PrunedScope(scope_block)]
+            if can_inline_direct_scope_shape(&scope_block.scope) =>
+        {
+            try_build_generated_body_shape_from_reactive_block(cx, &scope_block.instructions)
+        }
         [ReactiveStatement::Instruction(instr), rest @ ..] => {
             let inner = try_build_generated_body_shape_from_reactive_block(cx, rest)?;
             try_wrap_generated_body_shape_with_instruction_prefix(cx, instr, inner)
@@ -1053,6 +1063,14 @@ fn try_build_generated_body_shape_from_reactive_block(
         }
         _ => None,
     }
+}
+
+fn can_inline_direct_scope_shape(scope: &ReactiveScope) -> bool {
+    scope.dependencies.is_empty()
+        && scope.declarations.is_empty()
+        && scope.reassignments.is_empty()
+        && scope.merged_id.is_none()
+        && scope.early_return_value.is_none()
 }
 
 fn try_wrap_generated_body_shape_with_instruction_prefix(
@@ -29458,9 +29476,9 @@ mod tests {
         Identifier, IdentifierId, IdentifierName, InstructionKind, InstructionValue, JsxAttribute,
         JsxTag, LValue, MutableRange, ObjectPattern, ObjectProperty, ObjectPropertyKey,
         ObjectPropertyOrSpread, ObjectPropertyType, Pattern, Place, PrimitiveValue,
-        PropertyLiteral, ReactiveInstruction, ReactiveScopeDependency, ReactiveStatement,
-        ReactiveTerminal, ReactiveTerminalStatement, SourceLocation, TemplateQuasi, Type,
-        TypeAnnotationKind,
+        PropertyLiteral, ReactiveInstruction, ReactiveScope, ReactiveScopeBlock,
+        ReactiveScopeDependency, ReactiveStatement, ReactiveTerminal, ReactiveTerminalStatement,
+        ScopeId, SourceLocation, TemplateQuasi, Type, TypeAnnotationKind,
     };
     use crate::reactive_scopes::codegen_reactive::CachePrologue;
     use oxc_allocator::Allocator;
@@ -29718,6 +29736,38 @@ mod tests {
                     "value".to_string()
                 )),
             }
+        );
+    }
+
+    #[test]
+    fn directly_inlines_empty_scope_body_shape_from_reactive_block() {
+        let mut cx = test_context();
+        let block = vec![ReactiveStatement::Scope(ReactiveScopeBlock {
+            scope: ReactiveScope {
+                id: ScopeId::new(0),
+                range: MutableRange::default(),
+                dependencies: vec![],
+                declarations: Default::default(),
+                reassignments: vec![],
+                merged_id: None,
+                early_return_value: None,
+            },
+            instructions: vec![ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                terminal: ReactiveTerminal::Return {
+                    value: named_place(0, 0, "value"),
+                    id: crate::hir::types::make_instruction_id(0),
+                    loc: SourceLocation::Generated,
+                },
+                label: None,
+            })],
+        })];
+
+        let shape = super::try_build_generated_body_shape_from_reactive_block(&mut cx, &block)
+            .expect("expected direct body shape");
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::ReturnIdentifier("value".to_string())
         );
     }
 
