@@ -3242,6 +3242,53 @@ fn try_build_function_body_from_shape<'a>(
                 )),
             ))
         }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+            sentinel_slot,
+            setup_statements,
+            cached_values,
+            restored_values,
+        } => {
+            let cache_binding_name = &cache_prologue?.binding_name;
+            let mut consequent = build_generated_statement_sources(
+                builder,
+                allocator,
+                source_type,
+                setup_statements,
+            )?;
+            for value in cached_values {
+                consequent.push(build_cache_slot_assignment_statement(
+                    builder,
+                    cache_binding_name,
+                    value.slot,
+                    builder.expression_identifier(SPAN, builder.ident(&value.name)),
+                ));
+            }
+
+            let mut alternate = builder.vec();
+            for value in restored_values {
+                alternate.push(build_identifier_assignment_statement(
+                    builder,
+                    &value.name,
+                    cache_member_slot_expression(builder, cache_binding_name, value.slot),
+                ));
+            }
+
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_if(
+                    SPAN,
+                    builder.expression_binary(
+                        SPAN,
+                        cache_member_slot_expression(builder, cache_binding_name, *sentinel_slot),
+                        BinaryOperator::StrictEquality,
+                        build_memo_cache_sentinel_expression(builder),
+                    ),
+                    builder.statement_block(SPAN, consequent),
+                    Some(builder.statement_block(SPAN, alternate)),
+                )),
+            ))
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MemoizedCachedValues {
             deps,
             setup_statements,
