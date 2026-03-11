@@ -1033,6 +1033,10 @@ fn try_build_generated_body_shape_from_reactive_block(
 ) -> Option<GeneratedBodyShape> {
     match block {
         [] => Some(GeneratedBodyShape::ExpressionStatements(vec![])),
+        [ReactiveStatement::Instruction(instr), rest @ ..] => {
+            let inner = try_build_generated_body_shape_from_reactive_block(cx, rest)?;
+            try_wrap_generated_body_shape_with_instruction_prefix(cx, instr, inner)
+        }
         [ReactiveStatement::Terminal(term_stmt)] => {
             let shape =
                 try_build_generated_body_shape_from_reactive_terminal(cx, &term_stmt.terminal)?;
@@ -1048,6 +1052,78 @@ fn try_build_generated_body_shape_from_reactive_block(
             }
         }
         _ => None,
+    }
+}
+
+fn try_wrap_generated_body_shape_with_instruction_prefix(
+    cx: &mut Context,
+    instr: &ReactiveInstruction,
+    inner: GeneratedBodyShape,
+) -> Option<GeneratedBodyShape> {
+    match &instr.value {
+        InstructionValue::DeclareLocal { lvalue, .. }
+        | InstructionValue::DeclareContext { lvalue, .. } => {
+            let pattern = identifier_name_with_cx(cx, &lvalue.place.identifier);
+            Some(GeneratedBodyShape::PrefixedDeclarations {
+                declarations: vec![GeneratedDeclaration {
+                    kind: variable_declaration_kind(lvalue.kind)?,
+                    pattern,
+                }],
+                inner: Box::new(inner),
+            })
+        }
+        InstructionValue::StoreLocal { lvalue, value, .. }
+        | InstructionValue::StoreContext { lvalue, value, .. } => match lvalue.kind {
+            InstructionKind::Const
+            | InstructionKind::Let
+            | InstructionKind::Catch
+            | InstructionKind::HoistedConst
+            | InstructionKind::HoistedLet => {
+                let pattern = identifier_name_with_cx(cx, &lvalue.place.identifier);
+                let expression = codegen_place_to_expression(cx, value);
+                Some(GeneratedBodyShape::PrefixedBindings {
+                    bindings: vec![GeneratedBinding {
+                        kind: variable_declaration_kind(lvalue.kind)?,
+                        pattern,
+                        expression,
+                    }],
+                    inner: Box::new(inner),
+                })
+            }
+            InstructionKind::Reassign => {
+                let target = identifier_name_with_cx(cx, &lvalue.place.identifier);
+                let value = codegen_place_to_expression(cx, value);
+                Some(GeneratedBodyShape::PrefixedAssignments {
+                    assignments: vec![GeneratedAssignment { target, value }],
+                    inner: Box::new(inner),
+                })
+            }
+            InstructionKind::Function | InstructionKind::HoistedFunction => None,
+        },
+        InstructionValue::Destructure { lvalue, value, .. } => {
+            Some(GeneratedBodyShape::PrefixedBindings {
+                bindings: vec![GeneratedBinding {
+                    kind: variable_declaration_kind(lvalue.kind)?,
+                    pattern: codegen_pattern(cx, &lvalue.pattern),
+                    expression: codegen_place_to_expression(cx, value),
+                }],
+                inner: Box::new(inner),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn variable_declaration_kind(kind: InstructionKind) -> Option<ast::VariableDeclarationKind> {
+    match kind {
+        InstructionKind::Const | InstructionKind::HoistedConst => {
+            Some(ast::VariableDeclarationKind::Const)
+        }
+        InstructionKind::Let | InstructionKind::Catch | InstructionKind::HoistedLet => {
+            Some(ast::VariableDeclarationKind::Let)
+        }
+        InstructionKind::Reassign => None,
+        InstructionKind::Function | InstructionKind::HoistedFunction => None,
     }
 }
 
@@ -29379,11 +29455,12 @@ mod tests {
     };
     use crate::hir::types::{
         Argument, ArrayElement, ArrayPattern, DeclarationId, DependencyPathEntry, Effect,
-        Identifier, IdentifierId, IdentifierName, JsxAttribute, JsxTag, MutableRange,
-        ObjectPattern, ObjectProperty, ObjectPropertyKey, ObjectPropertyOrSpread,
-        ObjectPropertyType, Pattern, Place, PrimitiveValue, PropertyLiteral,
-        ReactiveScopeDependency, ReactiveStatement, ReactiveTerminal, ReactiveTerminalStatement,
-        SourceLocation, TemplateQuasi, Type, TypeAnnotationKind,
+        Identifier, IdentifierId, IdentifierName, InstructionKind, InstructionValue, JsxAttribute,
+        JsxTag, LValue, MutableRange, ObjectPattern, ObjectProperty, ObjectPropertyKey,
+        ObjectPropertyOrSpread, ObjectPropertyType, Pattern, Place, PrimitiveValue,
+        PropertyLiteral, ReactiveInstruction, ReactiveScopeDependency, ReactiveStatement,
+        ReactiveTerminal, ReactiveTerminalStatement, SourceLocation, TemplateQuasi, Type,
+        TypeAnnotationKind,
     };
     use crate::reactive_scopes::codegen_reactive::CachePrologue;
     use oxc_allocator::Allocator;
@@ -29595,6 +29672,51 @@ mod tests {
                 test: Some("flag".to_string()),
                 update: None,
                 body: Box::new(super::GeneratedBodyShape::Continue(None)),
+            }
+        );
+    }
+
+    #[test]
+    fn directly_lowers_prefixed_binding_then_return_body_shape_from_reactive_block() {
+        let mut cx = test_context();
+        let block = vec![
+            ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                id: crate::hir::types::make_instruction_id(0),
+                lvalue: Some(named_place(0, 0, "value")),
+                value: InstructionValue::StoreLocal {
+                    lvalue: LValue {
+                        place: named_place(0, 0, "value"),
+                        kind: InstructionKind::Const,
+                    },
+                    value: named_place(1, 1, "props.value"),
+                    loc: SourceLocation::Generated,
+                },
+                loc: SourceLocation::Generated,
+            })),
+            ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                terminal: ReactiveTerminal::Return {
+                    value: named_place(0, 0, "value"),
+                    id: crate::hir::types::make_instruction_id(1),
+                    loc: SourceLocation::Generated,
+                },
+                label: None,
+            }),
+        ];
+
+        let shape = super::try_build_generated_body_shape_from_reactive_block(&mut cx, &block)
+            .expect("expected direct body shape");
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::PrefixedBindings {
+                bindings: vec![super::GeneratedBinding {
+                    kind: ast::VariableDeclarationKind::Const,
+                    pattern: "value".to_string(),
+                    expression: "props.value".to_string(),
+                }],
+                inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                    "value".to_string()
+                )),
             }
         );
     }
