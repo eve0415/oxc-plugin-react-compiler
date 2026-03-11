@@ -184,6 +184,10 @@ pub enum GeneratedBodyShape {
         test: String,
         body: Box<GeneratedBodyShape>,
     },
+    DoWhileLoop {
+        test: String,
+        body: Box<GeneratedBodyShape>,
+    },
     GuardedAssignmentExpressions {
         test: String,
         assignments: Vec<GeneratedAssignment>,
@@ -1013,6 +1017,7 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             GeneratedBodyShape::ConditionalBranches { .. } => None,
             GeneratedBodyShape::GuardedAssignments { .. } => None,
             GeneratedBodyShape::WhileLoop { .. } => None,
+            GeneratedBodyShape::DoWhileLoop { .. } => None,
             GeneratedBodyShape::GuardedAssignmentExpressions { .. } => None,
             GeneratedBodyShape::ZeroDependencyMemoizedCachedValues { .. } => None,
             GeneratedBodyShape::MemoizedCachedValues { .. } => None,
@@ -1689,6 +1694,16 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             }
         }
 
+        if let [ast::Statement::DoWhileStatement(do_while_statement)] = statements.as_slice() {
+            let body_shape = statement_shape(&do_while_statement.body);
+            if !matches!(body_shape, GeneratedBodyShape::Unknown) {
+                return GeneratedBodyShape::DoWhileLoop {
+                    test: codegen_expression_with_flow_cast_restore(&do_while_statement.test),
+                    body: Box::new(body_shape),
+                };
+            }
+        }
+
         if statements.len() >= 2
             && let Some(ast::Statement::VariableDeclaration(alias_decl)) =
                 statements.get(statements.len() - 2)
@@ -2235,6 +2250,7 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                     | GeneratedBodyShape::ConditionalBranches { .. }
                     | GeneratedBodyShape::GuardedAssignments { .. }
                     | GeneratedBodyShape::WhileLoop { .. }
+                    | GeneratedBodyShape::DoWhileLoop { .. }
                     | GeneratedBodyShape::GuardedAssignmentExpressions { .. }
                     | GeneratedBodyShape::TryCatch { .. }
             );
@@ -24697,6 +24713,34 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 )),
             ))
         }
+        GeneratedBodyShape::DoWhileLoop { test, body } => {
+            let test =
+                parse_expression_for_ast_codegen(allocator, SourceType::mjs().with_jsx(true), test)
+                    .ok()?;
+            let body_spec = FunctionBodyRenderSpec {
+                params: spec.params,
+                param_names: spec.param_names,
+                body_source: spec.body_source,
+                body_shape: body.as_ref(),
+                directives: &[],
+                cache_prologue: None,
+                needs_function_hook_guard_wrapper: false,
+                is_async: spec.is_async,
+                is_generator: spec.is_generator,
+            };
+            let body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder, allocator, &body_spec,
+            )?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_do_while(
+                    SPAN,
+                    builder.statement_block(SPAN, body.statements),
+                    test,
+                )),
+            ))
+        }
         GeneratedBodyShape::GuardedAssignmentExpressions {
             test,
             assignments,
@@ -30874,6 +30918,18 @@ mod tests {
     #[test]
     fn analyzes_while_break_then_return_body_shape() {
         let shape = super::analyze_generated_body_shape("while (a) {\n  break;\n}\nreturn b;\n");
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_do_while_then_return_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "do {\n  x = x + 1;\n} while (x < limit);\nreturn x;\n",
+        );
 
         assert!(
             !matches!(shape, super::GeneratedBodyShape::Unknown),

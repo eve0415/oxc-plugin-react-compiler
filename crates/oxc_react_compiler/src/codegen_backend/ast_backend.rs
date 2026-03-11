@@ -3180,6 +3180,27 @@ fn try_build_function_body_from_shape<'a>(
                 )),
             ))
         }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::DoWhileLoop {
+            test,
+            body,
+        } => {
+            let body = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                body.as_ref(),
+                cache_prologue,
+            )?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_do_while(
+                    SPAN,
+                    builder.statement_block(SPAN, body.statements),
+                    parse_expression_source(allocator, source_type, test).ok()?,
+                )),
+            ))
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedReturnPrefix {
             test,
             consequent,

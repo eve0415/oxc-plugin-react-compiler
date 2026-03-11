@@ -1257,6 +1257,13 @@ fn codegen_outlined_function(
                 *test = replace_identifier_tokens(test, from, to);
                 rename_generated_body_shape(body, from, to);
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::DoWhileLoop {
+                test,
+                body,
+            } => {
+                *test = replace_identifier_tokens(test, from, to);
+                rename_generated_body_shape(body, from, to);
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedAssignmentExpressions {
                 test,
                 assignments,
@@ -1922,6 +1929,7 @@ fn generated_body_shape_is_nonmemoized_hir_lowerable(
         | Shape::GuardedExpressionStatements { .. }
         | Shape::GuardedAssignments { .. }
         | Shape::WhileLoop { .. }
+        | Shape::DoWhileLoop { .. }
         | Shape::GuardedAssignmentExpressions { .. }
         | Shape::Break(_)
         | Shape::Continue(_)
