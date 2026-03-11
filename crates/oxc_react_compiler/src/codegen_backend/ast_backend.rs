@@ -2872,8 +2872,6 @@ fn build_compiled_function_body<'a>(
         try_build_compiled_function_body_from_shape(builder, allocator, source_type, cf)
     {
         function_body
-    } else if let Some(body_source) = cf.generated_body.as_ref() {
-        parse_compiled_function_body(allocator, source_type, cf, body_source).ok()?
     } else if let Some(default_cache) = cf.synthesized_default_param_cache.as_ref() {
         build_default_param_cache_seed_body(builder, default_cache)
     } else {
@@ -5010,21 +5008,6 @@ fn is_basic_block_label_open_brace(line: &str) -> bool {
     }
     let digits = &line[2..line.len() - 3];
     !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit())
-}
-
-fn parse_compiled_function_body<'a>(
-    allocator: &'a Allocator,
-    source_type: SourceType,
-    cf: &CompiledFunction,
-    body_source: &str,
-) -> Result<ast::FunctionBody<'a>, String> {
-    parse_rendered_function_body(
-        allocator,
-        source_type,
-        cf.is_async,
-        cf.is_generator,
-        body_source,
-    )
 }
 
 fn parse_rendered_function_body<'a>(
@@ -7498,11 +7481,12 @@ mod tests {
         CompiledInitializer, CompiledObjectPattern, CompiledParam, CompiledParamPrefixStatement,
         CompiledPropertyKey, codegen_statement_source, compute_transform_state,
         maybe_gate_entrypoint_source, normalize_compiled_body_for_hir_match,
-        normalize_generated_body_flow_cast_marker_calls, parse_statements,
-        restore_flow_cast_marker_calls, source_type_for_filename,
-        try_rewrite_compiled_statement_ast,
+        normalize_generated_body_flow_cast_marker_calls, normalize_use_fire_binding_temps_ast,
+        parse_rendered_function_body, parse_statements, restore_flow_cast_marker_calls,
+        source_type_for_filename, try_rewrite_compiled_statement_ast,
     };
     use crate::codegen_backend::CompiledObjectPatternProperty;
+    use crate::codegen_backend::ast_backend::apply_emit_freeze_to_cache_stores_ast;
 
     fn empty_test_state(source_type: oxc_span::SourceType) -> AstRenderState {
         AstRenderState {
@@ -7990,23 +7974,42 @@ export const FIXTURE_ENTRYPOINT = {
 
     #[test]
     fn normalizes_use_fire_binding_temp_names_as_ast() {
-        let source = r#"function Component() { return null; }"#;
-        let mut compiled_function = make_test_compiled_function(
-            "Component",
-            0,
-            source.len() as u32,
-            "let t1 = useFire(foo);\nlet t0 = useFire(bar);\nreturn [t1, t0];",
-            &[],
+        let allocator = Allocator::default();
+        let source_type = source_type_for_filename("fixture.jsx");
+        let mut body = parse_rendered_function_body(
+            &allocator,
+            source_type,
             false,
-        );
+            false,
+            "let t1 = useFire(foo);\nlet t0 = useFire(bar);\nreturn [t1, t0];",
+        )
+        .expect("expected function body");
+        let mut compiled_function =
+            make_test_compiled_function("Component", 0, 0, "return null;", &[], false);
         compiled_function.normalize_use_fire_binding_temps = true;
+        let builder = AstBuilder::new(&allocator);
+        normalize_use_fire_binding_temps_ast(builder, &mut body, &compiled_function);
 
-        let rewritten =
-            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+        let rewritten = body
+            .statements
+            .iter()
+            .map(|statement| {
+                codegen_statement_source(&allocator, source_type, statement)
+                    .trim_end_matches('\n')
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
 
-        assert!(rewritten.contains("let t0 = useFire(foo);"));
-        assert!(rewritten.contains("let t1 = useFire(bar);"));
-        assert!(rewritten.contains("return [t0, t1];"));
+        assert!(
+            rewritten.contains("let t0 = useFire(foo);"),
+            "rewritten={rewritten}"
+        );
+        assert!(
+            rewritten.contains("let t1 = useFire(bar);"),
+            "rewritten={rewritten}"
+        );
+        assert!(rewritten.contains("return [t0, t1];"), "rewritten={rewritten}");
     }
 
     #[test]
@@ -8047,14 +8050,21 @@ export const FIXTURE_ENTRYPOINT = {
 
     #[test]
     fn rewrites_emit_freeze_cache_store_as_ast() {
-        let source = r#"function useFoo(props) {
-  return null;
-}"#;
+        let allocator = Allocator::default();
+        let source_type = source_type_for_filename("fixture.jsx");
+        let mut body = parse_rendered_function_body(
+            &allocator,
+            source_type,
+            false,
+            false,
+            "let t0;\nif ($[0] !== props.value) {\n  t0 = props.value;\n  $[0] = props.value;\n  $[1] = t0;\n} else {\n  t0 = $[1];\n}\nreturn t0;",
+        )
+        .expect("expected function body");
         let mut compiled_function = make_test_compiled_function(
             "useFoo",
             0,
-            source.len() as u32,
-            "let t0;\nif ($[0] !== props.value) {\n  t0 = props.value;\n  $[0] = props.value;\n  $[1] = t0;\n} else {\n  t0 = $[1];\n}\nreturn t0;",
+            0,
+            "return null;",
             &["props"],
             false,
         );
@@ -8063,15 +8073,29 @@ export const FIXTURE_ENTRYPOINT = {
             make_read_only_ident: "makeReadOnly".to_string(),
             ..empty_test_state(source_type_for_filename("fixture.jsx"))
         };
-
-        let rewritten = rewrite_single_statement_for_test_with_state(
-            "fixture.jsx",
-            source,
+        let builder = AstBuilder::new(&allocator);
+        apply_emit_freeze_to_cache_stores_ast(
+            builder,
+            &allocator,
+            &mut body,
             &compiled_function,
-            state,
+            &state,
         );
+        let rewritten = body
+            .statements
+            .iter()
+            .map(|statement| {
+                codegen_statement_source(&allocator, source_type, statement)
+                    .trim_end_matches('\n')
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
 
-        assert!(rewritten.contains("$[1] = __DEV__ ? makeReadOnly(t0, \"useFoo\") : t0;"));
+        assert!(
+            rewritten.contains("$[1] = __DEV__ ? makeReadOnly(t0, \"useFoo\") : t0;"),
+            "rewritten={rewritten}"
+        );
     }
 
     fn make_test_compiled_function(
@@ -8082,13 +8106,15 @@ export const FIXTURE_ENTRYPOINT = {
         params: &[&str],
         _is_arrow: bool,
     ) -> CompiledFunction {
+        let generated_body_shape =
+            crate::reactive_scopes::codegen_reactive::analyze_generated_body_shape_for_tests(
+                generated_body,
+            );
         CompiledFunction {
             name: name.to_string(),
             start,
             end,
-            generated_body: Some(generated_body.to_string()),
-            generated_body_shape:
-                crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown,
+            generated_body_shape,
             body_payload: CompiledBodyPayload::GeneratedString,
             needs_cache_import: false,
             compiled_params: Some(
@@ -8102,8 +8128,6 @@ export const FIXTURE_ENTRYPOINT = {
             ),
             param_prefix_statements: vec![],
             synthesized_default_param_cache: None,
-            is_async: false,
-            is_generator: false,
             is_function_declaration: false,
             directives: vec![],
             hir_function: None,
@@ -8769,7 +8793,6 @@ export const FIXTURE_ENTRYPOINT = {
             temp_name: "t0".to_string(),
             value_expr: "props.value".to_string(),
         });
-        compiled_function.generated_body = None;
 
         let rewritten =
             rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
@@ -8801,7 +8824,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["props"],
             false,
         );
-        compiled_function.generated_body = None;
         compiled_function.generated_body_shape =
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(
                 "value".to_string(),
@@ -8833,7 +8855,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["props"],
             false,
         );
-        compiled_function.generated_body = None;
         compiled_function.generated_body_shape =
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ExpressionStatements(
                 vec!["useEffect(t2, [arr])".to_string()],
@@ -8864,7 +8885,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["props"],
             false,
         );
-        compiled_function.generated_body = None;
         compiled_function.generated_body_shape =
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnExpression(
                 "[props.left, props.right]".to_string(),
@@ -8896,7 +8916,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["props"],
             false,
         );
-        compiled_function.generated_body = None;
         compiled_function.generated_body_shape =
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::BoundExpressionReturn {
                 value_name: "value".to_string(),
@@ -8931,7 +8950,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["props"],
             false,
         );
-        compiled_function.generated_body = None;
         compiled_function.generated_body_shape =
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::AssignedExpressionReturn {
                 value_name: "value".to_string(),
@@ -8966,7 +8984,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["props"],
             false,
         );
-        compiled_function.generated_body = None;
         compiled_function.generated_body_shape =
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::WrappedReturnExpression {
                 source_name: "t0".to_string(),
@@ -9019,7 +9036,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["props"],
             false,
         );
-        compiled_function.generated_body = None;
         compiled_function.generated_body_shape =
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
                 value_name: "t0".to_string(),
@@ -9067,7 +9083,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["props"],
             false,
         );
-        compiled_function.generated_body = None;
         compiled_function.generated_body_shape =
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::AliasedReturn {
                 alias_name: "mapped".to_string(),
@@ -9122,7 +9137,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["props"],
             false,
         );
-        compiled_function.generated_body = None;
         compiled_function.generated_body_shape =
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedBindings {
                 bindings: vec![
@@ -9181,7 +9195,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["props"],
             false,
         );
-        compiled_function.generated_body = None;
         compiled_function.generated_body_shape =
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedBindings {
                 bindings: vec![
@@ -9250,7 +9263,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["props"],
             false,
         );
-        compiled_function.generated_body = None;
         compiled_function.generated_body_shape =
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Sequential {
                 prefix: Box::new(
@@ -9328,7 +9340,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["props"],
             false,
         );
-        compiled_function.generated_body = None;
         compiled_function.generated_body_shape =
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedBindings {
                 bindings: vec![crate::reactive_scopes::codegen_reactive::GeneratedBinding {
@@ -9380,7 +9391,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["props"],
             false,
         );
-        compiled_function.generated_body = None;
         compiled_function.generated_body_shape =
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedBindings {
                 bindings: vec![crate::reactive_scopes::codegen_reactive::GeneratedBinding {
@@ -9421,7 +9431,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["props"],
             false,
         );
-        compiled_function.generated_body = None;
         compiled_function.generated_body_shape =
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedExpressionStatements {
                 expressions: vec!["useRenamed()".to_string()],
@@ -9458,7 +9467,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["props"],
             false,
         );
-        compiled_function.generated_body = None;
         compiled_function.generated_body_shape =
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ZeroDependencyMemoizedReturn {
                 value_name: "value".to_string(),
@@ -9674,7 +9682,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["props"],
             false,
         );
-        compiled_function.generated_body = None;
         compiled_function.generated_body_shape =
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleDependencyMemoizedReturn {
                 value_name: "items".to_string(),
@@ -9726,7 +9733,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["props"],
             false,
         );
-        compiled_function.generated_body = None;
         compiled_function.generated_body_shape =
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MultiDependencyMemoizedReturn {
                 value_name: "value".to_string(),
@@ -9778,7 +9784,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["t0"],
             false,
         );
-        compiled_function.generated_body = None;
         compiled_function.generated_body_shape =
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
                 value_name: "value".to_string(),

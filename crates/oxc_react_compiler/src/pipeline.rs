@@ -6395,7 +6395,6 @@ fn try_compile_function<'a>(
 
     let codegen_result = pipeline_output.codegen_result;
     let PreparedGeneratedBody {
-        generated_body,
         synthesized_default_param_cache,
         synthesized_hir_outlined_functions,
         cache_prologue,
@@ -6480,10 +6479,7 @@ fn try_compile_function<'a>(
     let generated_body_shape = codegen_result.body_shape.clone();
     let body_payload = if !needs_cache_import
         && outlined_functions_are_hir_lowerable(&outlined)
-        && (generated_body.as_ref().is_some_and(|generated_body| {
-            compiled_function_body_matches_hir(generated_body, &pipeline_output.final_hir_snapshot)
-        }) || generated_body.is_none()
-            && generated_body_shape_is_nonmemoized_hir_lowerable(&generated_body_shape))
+        && generated_body_shape_is_nonmemoized_hir_lowerable(&generated_body_shape)
     {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
@@ -6494,24 +6490,12 @@ fn try_compile_function<'a>(
         name: name.to_string(),
         start: func.span.start,
         end: func.span.end,
-        generated_body: if body_payload == CompiledBodyPayload::GeneratedString {
-            match &generated_body_shape {
-                crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown => {
-                    generated_body
-                }
-                _ => None,
-            }
-        } else {
-            None
-        },
         generated_body_shape,
         body_payload,
         needs_cache_import,
         compiled_params,
         param_prefix_statements,
         synthesized_default_param_cache,
-        is_async: func.r#async,
-        is_generator: func.generator,
         is_function_declaration,
         directives: extract_emitted_directives(body),
         hir_function: Some(pipeline_output.final_hir_snapshot),
@@ -6618,7 +6602,6 @@ fn try_compile_function_with_name<'a>(
 
     let codegen_result = pipeline_output.codegen_result;
     let PreparedGeneratedBody {
-        generated_body,
         synthesized_default_param_cache,
         synthesized_hir_outlined_functions,
         cache_prologue,
@@ -6703,10 +6686,7 @@ fn try_compile_function_with_name<'a>(
     let generated_body_shape = codegen_result.body_shape.clone();
     let body_payload = if !needs_cache_import
         && outlined_functions_are_hir_lowerable(&outlined)
-        && (generated_body.as_ref().is_some_and(|generated_body| {
-            compiled_function_body_matches_hir(generated_body, &pipeline_output.final_hir_snapshot)
-        }) || generated_body.is_none()
-            && generated_body_shape_is_nonmemoized_hir_lowerable(&generated_body_shape))
+        && generated_body_shape_is_nonmemoized_hir_lowerable(&generated_body_shape)
     {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
@@ -6717,24 +6697,12 @@ fn try_compile_function_with_name<'a>(
         name: name.to_string(),
         start: func.span.start,
         end: func.span.end,
-        generated_body: if body_payload == CompiledBodyPayload::GeneratedString {
-            match &generated_body_shape {
-                crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown => {
-                    generated_body
-                }
-                _ => None,
-            }
-        } else {
-            None
-        },
         generated_body_shape,
         body_payload,
         needs_cache_import,
         compiled_params,
         param_prefix_statements,
         synthesized_default_param_cache,
-        is_async: func.r#async,
-        is_generator: func.generator,
         is_function_declaration: false,
         directives: extract_emitted_directives(body),
         hir_function: Some(pipeline_output.final_hir_snapshot),
@@ -6849,7 +6817,6 @@ fn try_compile_arrow<'a>(
 
     let codegen_result = pipeline_output.codegen_result;
     let PreparedGeneratedBody {
-        generated_body,
         synthesized_default_param_cache,
         synthesized_hir_outlined_functions,
         cache_prologue,
@@ -6934,10 +6901,7 @@ fn try_compile_arrow<'a>(
     let generated_body_shape = codegen_result.body_shape.clone();
     let body_payload = if !needs_cache_import
         && outlined_functions_are_hir_lowerable(&outlined)
-        && (generated_body.as_ref().is_some_and(|generated_body| {
-            compiled_function_body_matches_hir(generated_body, &pipeline_output.final_hir_snapshot)
-        }) || generated_body.is_none()
-            && generated_body_shape_is_nonmemoized_hir_lowerable(&generated_body_shape))
+        && generated_body_shape_is_nonmemoized_hir_lowerable(&generated_body_shape)
     {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
@@ -6948,24 +6912,12 @@ fn try_compile_arrow<'a>(
         name: name.to_string(),
         start: arrow.span.start,
         end: arrow.span.end,
-        generated_body: if body_payload == CompiledBodyPayload::GeneratedString {
-            match &generated_body_shape {
-                crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown => {
-                    generated_body
-                }
-                _ => None,
-            }
-        } else {
-            None
-        },
         generated_body_shape,
         body_payload,
         needs_cache_import,
         compiled_params,
         param_prefix_statements,
         synthesized_default_param_cache,
-        is_async: arrow.r#async,
-        is_generator: false,
         is_function_declaration: false,
         directives: extract_emitted_directives(&arrow.body),
         hir_function: Some(pipeline_output.final_hir_snapshot),
@@ -7138,7 +7090,6 @@ fn codegen_expression_source(expression: &ast::Expression<'_>) -> String {
 type DefaultParamCacheSynthesis = (SynthesizedDefaultParamCache, Vec<(String, HIRFunction)>);
 
 struct PreparedGeneratedBody {
-    generated_body: Option<String>,
     synthesized_default_param_cache: Option<SynthesizedDefaultParamCache>,
     synthesized_hir_outlined_functions: Vec<(String, HIRFunction)>,
     cache_prologue: Option<crate::reactive_scopes::codegen_reactive::CachePrologue>,
@@ -7148,13 +7099,11 @@ fn prepare_generated_body(
     codegen_result: &codegen_reactive::CodegenResult,
     prefix_statements: &[CompiledParamPrefixStatement],
 ) -> PreparedGeneratedBody {
-    let mut generated_body = codegen_result.body_without_cache_prologue.clone();
     let mut synthesized_default_param_cache = None;
     let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
     if let Some((synthesized_cache_plan, synthesized_hir_outlined)) =
         synthesize_default_param_cache_body(&codegen_result.body_shape, prefix_statements)
     {
-        generated_body = None;
         synthesized_default_param_cache = Some(synthesized_cache_plan);
         synthesized_hir_outlined_functions = synthesized_hir_outlined;
     }
@@ -7169,7 +7118,6 @@ fn prepare_generated_body(
     };
 
     PreparedGeneratedBody {
-        generated_body,
         synthesized_default_param_cache,
         synthesized_hir_outlined_functions,
         cache_prologue,

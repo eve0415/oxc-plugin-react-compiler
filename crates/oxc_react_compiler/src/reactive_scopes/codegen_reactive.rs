@@ -1031,6 +1031,11 @@ fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
     analyze_generated_body_shape_impl(body, true)
 }
 
+#[cfg(test)]
+pub(crate) fn analyze_generated_body_shape_for_tests(body: &str) -> GeneratedBodyShape {
+    analyze_generated_body_shape(body)
+}
+
 fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> GeneratedBodyShape {
     let cache_key = (allow_sequential, body.to_string());
     if let Some(shape) =
