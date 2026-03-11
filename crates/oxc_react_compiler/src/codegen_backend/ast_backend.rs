@@ -3043,6 +3043,17 @@ fn build_generated_expression_statements<'a>(
     Some(statements)
 }
 
+fn replace_final_return_expression<'a>(
+    body: &mut ast::FunctionBody<'a>,
+    expression: ast::Expression<'a>,
+) -> Option<()> {
+    let ast::Statement::ReturnStatement(return_statement) = body.statements.last_mut()? else {
+        return None;
+    };
+    return_statement.argument = Some(expression);
+    Some(())
+}
+
 fn try_build_function_body_from_shape<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
@@ -3407,6 +3418,22 @@ fn try_build_function_body_from_shape<'a>(
                     ),
                 ]),
             ))
+        }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::WrappedReturnExpression {
+            expression,
+            inner,
+            ..
+        } => {
+            let mut body = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                inner.as_ref(),
+                cache_prologue,
+            )?;
+            let expression = parse_expression_source(allocator, source_type, expression).ok()?;
+            replace_final_return_expression(&mut body, expression)?;
+            Some(body)
         }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::AliasedReturn {
             alias_name,
@@ -7530,6 +7557,57 @@ function Component(props) {
         assert!(rewritten.contains("let value;"));
         assert!(rewritten.contains("value = [props.left, props.right];"));
         assert!(rewritten.contains("return value;"));
+    }
+
+    #[test]
+    fn builds_wrapped_return_expression_body_from_shape_without_generated_source() {
+        let source = "function Foo(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "let t0; if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) { t0 = { click: _temp }; $[0] = t0; } else { t0 = $[0]; } return useRef(t0);",
+            &["props"],
+            false,
+        );
+        compiled_function.generated_body = None;
+        compiled_function.generated_body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::WrappedReturnExpression {
+                source_name: "t0".to_string(),
+                expression: "useRef(t0)".to_string(),
+                inner: Box::new(
+                    crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ZeroDependencyMemoizedReturn {
+                        value_name: "t0".to_string(),
+                        value_kind: ast::VariableDeclarationKind::Let,
+                        value_slot: 0,
+                        memoized_bindings: vec![],
+                        memoized_assignments: vec![],
+                        memoized_expr: "{ click: _temp }".to_string(),
+                    },
+                ),
+            };
+        compiled_function.needs_cache_import = true;
+        compiled_function.cache_prologue =
+            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+                binding_name: "$".to_string(),
+                size: 1,
+                fast_refresh: None,
+            });
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {"));
+        assert!(rewritten.contains("$[0] = t0;"));
+        assert!(rewritten.contains("return useRef(t0);"));
     }
 
     #[test]

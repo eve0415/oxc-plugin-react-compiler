@@ -193,6 +193,11 @@ pub enum GeneratedBodyShape {
         memoized_assignments: Vec<GeneratedAssignment>,
         memoized_expr: String,
     },
+    WrappedReturnExpression {
+        source_name: String,
+        expression: String,
+        inner: Box<GeneratedBodyShape>,
+    },
     AliasedReturn {
         alias_name: String,
         alias_kind: ast::VariableDeclarationKind,
@@ -869,6 +874,7 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
             | GeneratedBodyShape::SingleDependencyMemoizedReturn { value_name, .. }
             | GeneratedBodyShape::MultiDependencyMemoizedReturn { value_name, .. }
             | GeneratedBodyShape::SingleSlotMemoizedReturn { value_name, .. } => Some(value_name),
+            GeneratedBodyShape::WrappedReturnExpression { .. } => None,
             GeneratedBodyShape::AliasedReturn { alias_name, .. } => Some(alias_name),
             GeneratedBodyShape::PrefixedBindings { inner, .. }
             | GeneratedBodyShape::PrefixedExpressionStatements { inner, .. }
@@ -1319,6 +1325,37 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
                     codegen_expression_with_flow_cast_restore(argument),
                 ),
             };
+        }
+
+        if statements.len() >= 2
+            && let Some(ast::Statement::ReturnStatement(return_stmt)) = statements.last()
+            && let Some(argument) = return_stmt.argument.as_ref()
+            && !matches!(
+                argument.without_parentheses(),
+                ast::Expression::Identifier(_)
+            )
+        {
+            let wrapped_expression = codegen_expression_with_flow_cast_restore(argument);
+            let prefix_source =
+                codegen_statements_with_flow_cast_restore(&statements[..statements.len() - 1]);
+            for candidate_name in
+                collect_candidate_return_identifiers(&statements[..statements.len() - 1])
+            {
+                if !contains_identifier_token(&wrapped_expression, &candidate_name) {
+                    continue;
+                }
+                let synthetic_return = format!("{prefix_source}\nreturn {candidate_name};");
+                let inner_shape = analyze_generated_body_shape_impl(&synthetic_return, true);
+                if shape_returned_identifier(&inner_shape)
+                    .is_some_and(|name| name == candidate_name)
+                {
+                    return GeneratedBodyShape::WrappedReturnExpression {
+                        source_name: candidate_name,
+                        expression: wrapped_expression,
+                        inner: Box::new(inner_shape),
+                    };
+                }
+            }
         }
 
         let (prefixed_bindings, prefix_len) = collect_leading_initialized_bindings(statements);
@@ -22663,6 +22700,17 @@ fn build_generated_expression_statements_ast<'a>(
     Some(statements)
 }
 
+fn replace_final_return_expression_ast<'a>(
+    body: &mut ast::FunctionBody<'a>,
+    expression: ast::Expression<'a>,
+) -> Option<()> {
+    let ast::Statement::ReturnStatement(return_statement) = body.statements.last_mut()? else {
+        return None;
+    };
+    return_statement.argument = Some(expression);
+    Some(())
+}
+
 struct FunctionBodyRenderSpec<'a> {
     params: &'a [Argument],
     param_names: &'a [String],
@@ -23143,6 +23191,34 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                     ),
                 ]),
             ))
+        }
+        GeneratedBodyShape::WrappedReturnExpression {
+            expression, inner, ..
+        } => {
+            let inner_spec = FunctionBodyRenderSpec {
+                params: spec.params,
+                param_names: spec.param_names,
+                body_source: spec.body_source,
+                body_shape: inner.as_ref(),
+                directives: spec.directives,
+                cache_prologue: spec.cache_prologue,
+                needs_function_hook_guard_wrapper: spec.needs_function_hook_guard_wrapper,
+                is_async: spec.is_async,
+                is_generator: spec.is_generator,
+            };
+            let mut body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder,
+                allocator,
+                &inner_spec,
+            )?;
+            let expression = parse_expression_for_ast_codegen(
+                allocator,
+                SourceType::mjs().with_jsx(true),
+                expression,
+            )
+            .ok()?;
+            replace_final_return_expression_ast(&mut body, expression)?;
+            Some(body)
         }
         GeneratedBodyShape::AliasedReturn {
             alias_name,
@@ -26699,6 +26775,29 @@ mod tests {
             inner.as_ref(),
             super::GeneratedBodyShape::ZeroDependencyMemoizedReturn { value_name, value_slot, .. }
                 if value_name == "value" && *value_slot == 0
+        ));
+    }
+
+    #[test]
+    fn analyzes_wrapped_return_expression_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "let t0;\nif ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {\n  t0 = { click: _temp };\n  $[0] = t0;\n} else {\n  t0 = $[0];\n}\nreturn useRef(t0);\n",
+        );
+
+        let super::GeneratedBodyShape::WrappedReturnExpression {
+            source_name,
+            expression,
+            inner,
+        } = shape
+        else {
+            panic!("expected wrapped return expression shape");
+        };
+        assert_eq!(source_name, "t0");
+        assert_eq!(expression, "useRef(t0)");
+        assert!(matches!(
+            inner.as_ref(),
+            super::GeneratedBodyShape::ZeroDependencyMemoizedReturn { value_name, value_slot, .. }
+                if value_name == "t0" && *value_slot == 0
         ));
     }
 }
