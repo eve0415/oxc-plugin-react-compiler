@@ -1771,6 +1771,13 @@ fn analyze_generated_body_shape_uncached(
         {
             candidates.push(1);
         }
+        if statements.len() >= 3
+            && matches!(statements.first(), Some(ast::Statement::IfStatement(_)))
+            && matches!(statements.get(1), Some(ast::Statement::IfStatement(_)))
+            && statements.get(2).is_some_and(can_start_sequential_suffix)
+        {
+            candidates.push(2);
+        }
         if binding_prefix_len + 1 < statements.len()
             && matches!(
                 statements.get(binding_prefix_len),
@@ -1781,6 +1788,21 @@ fn analyze_generated_body_shape_uncached(
                 .is_some_and(can_start_sequential_suffix)
         {
             candidates.push(binding_prefix_len + 1);
+        }
+        if binding_prefix_len + 2 < statements.len()
+            && matches!(
+                statements.get(binding_prefix_len),
+                Some(ast::Statement::IfStatement(_))
+            )
+            && matches!(
+                statements.get(binding_prefix_len + 1),
+                Some(ast::Statement::IfStatement(_))
+            )
+            && statements
+                .get(binding_prefix_len + 2)
+                .is_some_and(can_start_sequential_suffix)
+        {
+            candidates.push(binding_prefix_len + 2);
         }
         if statements.len() >= 2
             && matches!(
@@ -31970,6 +31992,18 @@ mod tests {
     fn analyzes_chained_cached_values_with_effect_then_return_body_shape() {
         let shape = super::analyze_generated_body_shape(
             "let t0;\nif ($[0] !== a) {\n  t0 = foo(a);\n  $[0] = a;\n  $[1] = t0;\n} else {\n  t0 = $[1];\n}\nconst first = t0;\nlet t1;\nif ($[2] !== b) {\n  t1 = bar(b);\n  $[2] = b;\n  $[3] = t1;\n} else {\n  t1 = $[3];\n}\nuseEffect(t1, [b]);\nlet t2;\nif ($[4] !== first || $[5] !== t1) {\n  t2 = baz(first, t1);\n  $[4] = first;\n  $[5] = t1;\n  $[6] = t2;\n} else {\n  t2 = $[6];\n}\nreturn t2;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_early_return_sentinel_then_memoized_return_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "let t0;\nif ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {\n  t0 = Symbol.for(\"react.early_return_sentinel\");\n  bb0: {\n    const x = [];\n    if (ENABLE_FEATURE) {\n      x.push(42);\n      t0 = x;\n      break bb0;\n    } else {\n      console.log(\"fallthrough\");\n    }\n  }\n  $[0] = t0;\n} else {\n  t0 = $[0];\n}\nif (t0 !== Symbol.for(\"react.early_return_sentinel\")) {\n  return t0;\n}\nlet t1;\nif ($[1] !== props.a) {\n  t1 = makeArray(props.a);\n  $[1] = props.a;\n  $[2] = t1;\n} else {\n  t1 = $[2];\n}\nreturn t1;\n",
         );
 
         assert!(
