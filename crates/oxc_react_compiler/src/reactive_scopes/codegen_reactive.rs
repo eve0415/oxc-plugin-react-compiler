@@ -1597,16 +1597,17 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
                 inner: Box::new(inner),
             })
         }
-        _ => Some(GeneratedBodyShape::PrefixedExpressionStatements {
-            expressions: vec![rendered_single_expression_statement(
-                codegen_instruction_nullable(cx, instr)?.as_str(),
-            )?],
-            inner: Box::new(inner),
-        }),
+        _ => rendered_single_statement_prefix(
+            codegen_instruction_nullable(cx, instr)?.as_str(),
+            inner,
+        ),
     }
 }
 
-fn rendered_single_expression_statement(rendered: &str) -> Option<String> {
+fn rendered_single_statement_prefix(
+    rendered: &str,
+    inner: GeneratedBodyShape,
+) -> Option<GeneratedBodyShape> {
     let allocator = Allocator::default();
     let statements = parse_statement_list_for_ast_codegen(
         &allocator,
@@ -1614,12 +1615,59 @@ fn rendered_single_expression_statement(rendered: &str) -> Option<String> {
         rendered,
     )
     .ok()?;
-    let [ast::Statement::ExpressionStatement(expr_stmt)] = statements.as_slice() else {
+    let [statement] = statements.as_slice() else {
         return None;
     };
-    Some(codegen_expression_with_flow_cast_restore(
-        &expr_stmt.expression,
-    ))
+    match statement {
+        ast::Statement::VariableDeclaration(declaration) => {
+            if declaration.declarations.len() != 1 {
+                return None;
+            }
+            let declarator = &declaration.declarations[0];
+            let pattern = codegen_binding_pattern_with_flow_cast_restore(&declarator.id);
+            if let Some(init) = declarator.init.as_ref() {
+                Some(GeneratedBodyShape::PrefixedBindings {
+                    bindings: vec![GeneratedBinding {
+                        kind: declaration.kind,
+                        pattern,
+                        expression: strip_top_level_parenthesized_expression(
+                            codegen_expression_with_flow_cast_restore(init),
+                        ),
+                    }],
+                    inner: Box::new(inner),
+                })
+            } else {
+                Some(GeneratedBodyShape::PrefixedDeclarations {
+                    declarations: vec![GeneratedDeclaration {
+                        kind: declaration.kind,
+                        pattern,
+                    }],
+                    inner: Box::new(inner),
+                })
+            }
+        }
+        ast::Statement::ExpressionStatement(expr_stmt) => {
+            if let ast::Expression::AssignmentExpression(assignment) =
+                expr_stmt.expression.without_parentheses()
+                && assignment.operator == AssignmentOperator::Assign
+            {
+                return Some(GeneratedBodyShape::PrefixedAssignments {
+                    assignments: vec![GeneratedAssignment {
+                        target: codegen_assignment_target_with_flow_cast_restore(&assignment.left),
+                        value: codegen_expression_with_flow_cast_restore(&assignment.right),
+                    }],
+                    inner: Box::new(inner),
+                });
+            }
+            Some(GeneratedBodyShape::PrefixedExpressionStatements {
+                expressions: vec![codegen_expression_with_flow_cast_restore(
+                    &expr_stmt.expression,
+                )],
+                inner: Box::new(inner),
+            })
+        }
+        _ => None,
+    }
 }
 
 fn variable_declaration_kind(kind: InstructionKind) -> Option<ast::VariableDeclarationKind> {
@@ -30567,6 +30615,49 @@ mod tests {
     }
 
     #[test]
+    fn directly_lowers_generic_prefixed_binding_then_return_body_shape_from_reactive_block() {
+        let mut cx = test_context();
+        let block = vec![
+            ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                id: crate::hir::types::make_instruction_id(0),
+                lvalue: Some(named_place(0, 0, "value")),
+                value: InstructionValue::PropertyLoad {
+                    object: named_place(1, 1, "props"),
+                    property: PropertyLiteral::String("value".into()),
+                    optional: false,
+                    loc: SourceLocation::Generated,
+                },
+                loc: SourceLocation::Generated,
+            })),
+            ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                terminal: ReactiveTerminal::Return {
+                    value: named_place(0, 0, "value"),
+                    id: crate::hir::types::make_instruction_id(1),
+                    loc: SourceLocation::Generated,
+                },
+                label: None,
+            }),
+        ];
+
+        let shape = super::try_build_generated_body_shape_from_reactive_block(&mut cx, &block)
+            .expect("expected direct body shape");
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::PrefixedBindings {
+                bindings: vec![super::GeneratedBinding {
+                    kind: ast::VariableDeclarationKind::Const,
+                    pattern: "value".to_string(),
+                    expression: "props.value".to_string(),
+                }],
+                inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                    "value".to_string()
+                )),
+            }
+        );
+    }
+
+    #[test]
     fn directly_inlines_empty_scope_body_shape_from_reactive_block() {
         let mut cx = test_context();
         let block = vec![ReactiveStatement::Scope(ReactiveScopeBlock {
@@ -30725,6 +30816,7 @@ mod tests {
                 dep_slot,
                 dep_expr,
                 value_slot,
+                memoized_assignments,
                 memoized_expressions,
                 memoized_setup_statements,
                 memoized_expr,
@@ -30733,8 +30825,11 @@ mod tests {
                 && *dep_slot == 0
                 && dep_expr == "props.a"
                 && *value_slot == 1
+                && memoized_assignments == &vec![super::GeneratedAssignment {
+                    target: "items".to_string(),
+                    value: "[]".to_string(),
+                }]
                 && memoized_expressions == &vec![
-                    "items = []".to_string(),
                     "items[push](value)".to_string(),
                 ]
                 && memoized_setup_statements.is_empty()
