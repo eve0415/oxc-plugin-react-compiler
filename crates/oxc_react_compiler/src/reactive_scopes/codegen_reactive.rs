@@ -1111,13 +1111,106 @@ fn analyze_generated_body_shape_uncached(
         }
     }
 
-    fn can_follow_cached_values_prefix(shape: &GeneratedBodyShape) -> bool {
+    fn cached_values_prefix_contains_name(prefix_shape: &GeneratedBodyShape, name: &str) -> bool {
+        match prefix_shape {
+            GeneratedBodyShape::ZeroDependencyMemoizedCachedValues { cached_values, .. }
+            | GeneratedBodyShape::MemoizedCachedValues { cached_values, .. } => cached_values
+                .iter()
+                .any(|cached_value| cached_value.name == name),
+            _ => false,
+        }
+    }
+
+    fn can_follow_cached_values_intermediate_prefix(shape: &GeneratedBodyShape) -> bool {
         matches!(
             shape,
-            GeneratedBodyShape::ExpressionStatements(_)
+            GeneratedBodyShape::Block { .. }
+                | GeneratedBodyShape::Labeled { .. }
+                | GeneratedBodyShape::Switch { .. }
+                | GeneratedBodyShape::GuardedBody { .. }
                 | GeneratedBodyShape::GuardedExpressionStatements { .. }
-                | GeneratedBodyShape::PrefixedExpressionStatements { .. }
+                | GeneratedBodyShape::GuardedReturnPrefix { .. }
+                | GeneratedBodyShape::ConditionalBranches { .. }
+                | GeneratedBodyShape::GuardedAssignments { .. }
+                | GeneratedBodyShape::WhileLoop { .. }
+                | GeneratedBodyShape::DoWhileLoop { .. }
+                | GeneratedBodyShape::ForLoop { .. }
+                | GeneratedBodyShape::ForInLoop { .. }
+                | GeneratedBodyShape::ForOfLoop { .. }
+                | GeneratedBodyShape::GuardedAssignmentExpressions { .. }
+                | GeneratedBodyShape::ZeroDependencyMemoizedCachedValues { .. }
+                | GeneratedBodyShape::MemoizedCachedValues { .. }
+                | GeneratedBodyShape::MemoizedEarlyReturnSentinel { .. }
+                | GeneratedBodyShape::TryCatch { .. }
         )
+    }
+
+    fn can_follow_cached_values_prefix(
+        prefix_shape: &GeneratedBodyShape,
+        shape: &GeneratedBodyShape,
+    ) -> bool {
+        match shape {
+            GeneratedBodyShape::Unknown => false,
+            GeneratedBodyShape::Block { inner }
+            | GeneratedBodyShape::Labeled { inner, .. }
+            | GeneratedBodyShape::GuardedReturnPrefix { inner, .. }
+            | GeneratedBodyShape::PrefixedDeclarations { inner, .. }
+            | GeneratedBodyShape::PrefixedBindings { inner, .. }
+            | GeneratedBodyShape::PrefixedExpressionStatements { inner, .. }
+            | GeneratedBodyShape::PrefixedAssignments { inner, .. }
+            | GeneratedBodyShape::GuardedBody { inner, .. } => {
+                can_follow_cached_values_prefix(prefix_shape, inner)
+            }
+            GeneratedBodyShape::ConditionalBranches {
+                consequent,
+                alternate,
+                ..
+            } => {
+                can_follow_cached_values_prefix(prefix_shape, consequent)
+                    && can_follow_cached_values_prefix(prefix_shape, alternate)
+            }
+            GeneratedBodyShape::Sequential { prefix, inner } => {
+                can_follow_cached_values_intermediate_prefix(prefix)
+                    && can_follow_cached_values_prefix(prefix_shape, inner)
+            }
+            GeneratedBodyShape::ReturnIdentifier(name) => {
+                !cached_values_prefix_contains_name(prefix_shape, name)
+            }
+            GeneratedBodyShape::ReturnVoid
+            | GeneratedBodyShape::ReturnExpression(_)
+            | GeneratedBodyShape::ThrowExpression(_)
+            | GeneratedBodyShape::Break(_)
+            | GeneratedBodyShape::Continue(_)
+            | GeneratedBodyShape::ExpressionStatements(_)
+            | GeneratedBodyShape::AssignmentStatements(_)
+            | GeneratedBodyShape::GuardedExpressionStatements { .. }
+            | GeneratedBodyShape::GuardedAssignments { .. }
+            | GeneratedBodyShape::GuardedAssignmentExpressions { .. } => true,
+            GeneratedBodyShape::ZeroDependencyMemoizedReturn { value_name, .. }
+            | GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn { value_name, .. }
+            | GeneratedBodyShape::SingleDependencyMemoizedReturn { value_name, .. }
+            | GeneratedBodyShape::SingleDependencyMemoizedExistingReturn { value_name, .. }
+            | GeneratedBodyShape::MultiDependencyMemoizedReturn { value_name, .. }
+            | GeneratedBodyShape::MultiDependencyMemoizedExistingReturn { value_name, .. }
+            | GeneratedBodyShape::SingleSlotMemoizedReturn { value_name, .. } => {
+                !cached_values_prefix_contains_name(prefix_shape, value_name)
+            }
+            GeneratedBodyShape::MemoizedEarlyReturnSentinel { .. } => true,
+            GeneratedBodyShape::BoundExpressionReturn { .. }
+            | GeneratedBodyShape::AssignedExpressionReturn { .. }
+            | GeneratedBodyShape::WrappedReturnExpression { .. }
+            | GeneratedBodyShape::AssignedAliasReturn { .. }
+            | GeneratedBodyShape::AliasedReturn { .. } => false,
+            GeneratedBodyShape::WhileLoop { .. }
+            | GeneratedBodyShape::DoWhileLoop { .. }
+            | GeneratedBodyShape::ForLoop { .. }
+            | GeneratedBodyShape::ForInLoop { .. }
+            | GeneratedBodyShape::ForOfLoop { .. }
+            | GeneratedBodyShape::ZeroDependencyMemoizedCachedValues { .. }
+            | GeneratedBodyShape::MemoizedCachedValues { .. }
+            | GeneratedBodyShape::Switch { .. }
+            | GeneratedBodyShape::TryCatch { .. } => true,
+        }
     }
 
     fn binding_identifier_name(pattern: &ast::BindingPattern<'_>) -> Option<String> {
@@ -2609,7 +2702,7 @@ fn analyze_generated_body_shape_uncached(
                     guard_aliases,
                 );
                 let can_sequence = if allow_cached_values_prefix {
-                    can_follow_cached_values_prefix(&inner_shape)
+                    can_follow_cached_values_prefix(&prefix_shape, &inner_shape)
                 } else {
                     true
                 };
@@ -31846,6 +31939,42 @@ mod tests {
             &super::GeneratedBodyShape::ExpressionStatements(vec![
                 "useSpecialEffect(t0, t1, [propVal])".to_string(),
             ])
+        );
+    }
+
+    #[test]
+    fn analyzes_memoized_cached_values_then_destructured_return_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "if ($[0] !== t0) {\n  t1 = t0 === undefined ? [\"default\"] : t0;\n  $[0] = t0;\n  $[1] = t1;\n} else {\n  t1 = $[1];\n}\nconst [x] = t1;\nreturn x;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_memoized_cached_values_then_destructured_assignment_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "if ($[0] !== t0) {\n  t1 = t0 === undefined ? [\"default\"] : t0;\n  $[0] = t0;\n  $[1] = t1;\n} else {\n  t1 = $[1];\n}\n[x] = t1;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_chained_cached_values_with_effect_then_return_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "let t0;\nif ($[0] !== a) {\n  t0 = foo(a);\n  $[0] = a;\n  $[1] = t0;\n} else {\n  t0 = $[1];\n}\nconst first = t0;\nlet t1;\nif ($[2] !== b) {\n  t1 = bar(b);\n  $[2] = b;\n  $[3] = t1;\n} else {\n  t1 = $[3];\n}\nuseEffect(t1, [b]);\nlet t2;\nif ($[4] !== first || $[5] !== t1) {\n  t2 = baz(first, t1);\n  $[4] = first;\n  $[5] = t1;\n  $[6] = t2;\n} else {\n  t2 = $[6];\n}\nreturn t2;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
         );
     }
 
