@@ -95,6 +95,11 @@ fn compute_transform_state(
     if output.normalized == source.normalized {
         return false;
     }
+    if let (Some(output_canonical), Some(source_canonical)) = (&output.canonical, &source.canonical)
+        && output_canonical == source_canonical
+    {
+        return false;
+    }
     match (output.canonical, source.canonical) {
         (Some(output_canonical), Some(source_canonical)) => output_canonical != source_canonical,
         _ => true,
@@ -7179,6 +7184,76 @@ function Component(props) {
   const b = props.a ? props.b && props.c ? props.d : props.e : props.f;
   return a ? b : null;
 }"#;
+        assert!(!compute_transform_state(
+            SourceType::mjs().with_jsx(true),
+            output,
+            source,
+        ));
+    }
+
+    #[test]
+    fn transform_state_keeps_cache_instrumentation_semantic() {
+        let source = r#"function Component(props) {
+  const value = props.value;
+  return value;
+}"#;
+        let output = r#"import { c as _c } from "react/compiler-runtime";
+function Component(props) {
+  const $ = _c(1);
+  let value;
+  if ($[0] !== props.value) {
+    value = props.value;
+    $[0] = props.value;
+  } else {
+    value = $[0];
+  }
+  return value;
+}"#;
+        assert!(compute_transform_state(
+            SourceType::mjs().with_jsx(true),
+            output,
+            source,
+        ));
+    }
+
+    #[test]
+    fn transform_state_ignores_conditional_set_state_bailout_fixture_delta() {
+        let source = r#"function Component(props) {
+  const [x, setX] = useState(0);
+
+  const foo = () => {
+    setX(1);
+  };
+
+  if (props.cond) {
+    setX(2);
+    foo();
+  }
+
+  return x;
+}
+
+export const FIXTURE_ENTRYPOINT = {
+  fn: Component,
+  params: ['TodoAdd'],
+  isComponent: 'TodoAdd',
+};"#;
+        let output = r#"function Component(props) {
+  const [x, setX] = useState(0);
+  const foo = (() => {
+    setX(1);
+  });
+  if (props.cond) {
+    setX(2);
+    foo();
+  }
+  return x;
+}
+export const FIXTURE_ENTRYPOINT = {
+  fn: Component,
+  params: ["TodoAdd"],
+  isComponent: "TodoAdd"
+};"#;
         assert!(!compute_transform_state(
             SourceType::mjs().with_jsx(true),
             output,
