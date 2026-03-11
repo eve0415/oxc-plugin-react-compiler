@@ -2,11 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use oxc_allocator::{Allocator, CloneIn};
 use oxc_ast::{AstBuilder, NONE, ast};
-#[cfg(test)]
-use oxc_codegen::{Codegen, CodegenOptions, IndentChar};
 use oxc_span::SPAN;
-#[cfg(test)]
-use oxc_span::SourceType;
 use oxc_syntax::{
     identifier::is_identifier_name,
     number::NumberBase,
@@ -66,28 +62,6 @@ pub(crate) fn try_lower_function_body_ast<'a>(
     let body =
         state.lower_block_sequence(hir_function.body.entry, None, &mut HashSet::new(), None)?;
     Some(strip_trailing_empty_return(body))
-}
-
-#[cfg(test)]
-pub(crate) fn try_lower_function_body(hir_function: &HIRFunction) -> Option<String> {
-    let allocator = Allocator::default();
-    let builder = AstBuilder::new(&allocator);
-    let body = try_lower_function_body_ast(builder, hir_function)?;
-    let program = builder.program(
-        SPAN,
-        SourceType::mjs(),
-        "",
-        builder.vec(),
-        None,
-        builder.vec(),
-        body,
-    );
-    let options = CodegenOptions {
-        indent_char: IndentChar::Space,
-        indent_width: 2,
-        ..CodegenOptions::default()
-    };
-    Some(Codegen::new().with_options(options).build(&program).code)
 }
 
 pub(crate) fn try_lower_function_declaration_ast<'a>(
@@ -2478,7 +2452,28 @@ mod tests {
         options::EnvironmentConfig,
     };
 
-    use super::{try_lower_function_body, try_lower_function_declaration_ast};
+    use super::{try_lower_function_body_ast, try_lower_function_declaration_ast};
+
+    fn try_lower_function_body(hir_function: &HIRFunction) -> Option<String> {
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        let body = try_lower_function_body_ast(builder, hir_function)?;
+        let program = builder.program(
+            SPAN,
+            SourceType::mjs(),
+            "",
+            builder.vec(),
+            None,
+            builder.vec(),
+            body,
+        );
+        let options = CodegenOptions {
+            indent_char: IndentChar::Space,
+            indent_width: 2,
+            ..CodegenOptions::default()
+        };
+        Some(Codegen::new().with_options(options).build(&program).code)
+    }
 
     #[test]
     fn lowers_straight_line_temp_return() {

@@ -1022,14 +1022,9 @@ fn codegen_reactive_function_with_primitives(
     }
 }
 
-fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
+pub(crate) fn analyze_generated_body_shape(body: &str) -> GeneratedBodyShape {
     GENERATED_BODY_SHAPE_CACHE.with(|cache| cache.borrow_mut().clear());
     analyze_generated_body_shape_impl(body, true)
-}
-
-#[cfg(test)]
-pub(crate) fn analyze_generated_body_shape_for_tests(body: &str) -> GeneratedBodyShape {
-    analyze_generated_body_shape(body)
 }
 
 fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> GeneratedBodyShape {

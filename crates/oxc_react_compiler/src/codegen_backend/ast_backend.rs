@@ -8103,9 +8103,7 @@ export const FIXTURE_ENTRYPOINT = {
         _is_arrow: bool,
     ) -> CompiledFunction {
         let generated_body_shape =
-            crate::reactive_scopes::codegen_reactive::analyze_generated_body_shape_for_tests(
-                body_source,
-            );
+            crate::reactive_scopes::codegen_reactive::analyze_generated_body_shape(body_source);
         CompiledFunction {
             name: name.to_string(),
             start,
