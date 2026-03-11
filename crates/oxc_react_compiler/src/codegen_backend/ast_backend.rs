@@ -3585,6 +3585,97 @@ fn try_build_function_body_from_shape<'a>(
                 ]),
             ))
         }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+            value_name,
+            dep_slot,
+            dep_expr,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => {
+            let cache_binding_name = &cache_prologue?.binding_name;
+            let dep_expr = parse_expression_source(allocator, source_type, dep_expr).ok()?;
+            let mut consequent = build_generated_binding_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_bindings,
+            )?;
+            consequent.extend(build_generated_assignment_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_assignments,
+            )?);
+            consequent.extend(build_generated_expression_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_expressions,
+            )?);
+            consequent.extend(build_generated_statement_sources(
+                builder,
+                allocator,
+                source_type,
+                memoized_setup_statements,
+            )?);
+            if let Some(memoized_expr) = memoized_expr {
+                let memoized_expr =
+                    parse_expression_source(allocator, source_type, memoized_expr).ok()?;
+                consequent.push(build_identifier_assignment_statement(
+                    builder,
+                    value_name,
+                    memoized_expr,
+                ));
+            }
+            consequent.push(build_cache_slot_assignment_statement(
+                builder,
+                cache_binding_name,
+                *dep_slot,
+                dep_expr.clone_in(allocator),
+            ));
+            consequent.push(build_cache_slot_assignment_statement(
+                builder,
+                cache_binding_name,
+                *value_slot,
+                builder.expression_identifier(SPAN, builder.ident(value_name)),
+            ));
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec_from_iter([
+                    builder.statement_if(
+                        SPAN,
+                        builder.expression_binary(
+                            SPAN,
+                            cache_member_slot_expression(builder, cache_binding_name, *dep_slot),
+                            BinaryOperator::StrictInequality,
+                            dep_expr.clone_in(allocator),
+                        ),
+                        builder.statement_block(SPAN, consequent),
+                        Some(builder.statement_block(
+                            SPAN,
+                            builder.vec1(build_identifier_assignment_statement(
+                                builder,
+                                value_name,
+                                cache_member_slot_expression(
+                                    builder,
+                                    cache_binding_name,
+                                    *value_slot,
+                                ),
+                            )),
+                        )),
+                    ),
+                    builder.statement_return(
+                        SPAN,
+                        Some(builder.expression_identifier(SPAN, builder.ident(value_name))),
+                    ),
+                ]),
+            ))
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MultiDependencyMemoizedReturn {
             value_name,
             value_kind,
@@ -3687,6 +3778,105 @@ fn try_build_function_body_from_shape<'a>(
                                 builder,
                                 value_name,
                                 cache_member_slot_expression(builder, cache_binding_name, *value_slot),
+                            )),
+                        )),
+                    ),
+                    builder.statement_return(
+                        SPAN,
+                        Some(builder.expression_identifier(SPAN, builder.ident(value_name))),
+                    ),
+                ]),
+            ))
+        }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+            value_name,
+            deps,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => {
+            let cache_binding_name = &cache_prologue?.binding_name;
+            let mut dep_assignments = builder.vec();
+            let mut dep_guards = deps.iter().map(|(slot, dep_expr)| {
+                let dep_expression = parse_expression_source(allocator, source_type, dep_expr).ok()?;
+                dep_assignments.push(build_cache_slot_assignment_statement(
+                    builder,
+                    cache_binding_name,
+                    *slot,
+                    dep_expression.clone_in(allocator),
+                ));
+                Some(builder.expression_binary(
+                    SPAN,
+                    cache_member_slot_expression(builder, cache_binding_name, *slot),
+                    BinaryOperator::StrictInequality,
+                    dep_expression,
+                ))
+            });
+            let mut test = dep_guards.next()??;
+            for guard in dep_guards {
+                test = builder.expression_logical(SPAN, test, LogicalOperator::Or, guard?);
+            }
+            let mut consequent = build_generated_binding_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_bindings,
+            )?;
+            consequent.extend(build_generated_assignment_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_assignments,
+            )?);
+            consequent.extend(build_generated_expression_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_expressions,
+            )?);
+            consequent.extend(build_generated_statement_sources(
+                builder,
+                allocator,
+                source_type,
+                memoized_setup_statements,
+            )?);
+            if let Some(memoized_expr) = memoized_expr {
+                let memoized_expr =
+                    parse_expression_source(allocator, source_type, memoized_expr).ok()?;
+                consequent.push(build_identifier_assignment_statement(
+                    builder,
+                    value_name,
+                    memoized_expr,
+                ));
+            }
+            consequent.extend(dep_assignments);
+            consequent.push(build_cache_slot_assignment_statement(
+                builder,
+                cache_binding_name,
+                *value_slot,
+                builder.expression_identifier(SPAN, builder.ident(value_name)),
+            ));
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec_from_iter([
+                    builder.statement_if(
+                        SPAN,
+                        test,
+                        builder.statement_block(SPAN, consequent),
+                        Some(builder.statement_block(
+                            SPAN,
+                            builder.vec1(build_identifier_assignment_statement(
+                                builder,
+                                value_name,
+                                cache_member_slot_expression(
+                                    builder,
+                                    cache_binding_name,
+                                    *value_slot,
+                                ),
                             )),
                         )),
                     ),

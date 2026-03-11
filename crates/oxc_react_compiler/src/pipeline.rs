@@ -1363,7 +1363,73 @@ fn codegen_outlined_function(
                     *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
                 }
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+                value_name,
+                dep_expr,
+                memoized_bindings,
+                memoized_assignments,
+                memoized_expressions,
+                memoized_setup_statements,
+                memoized_expr,
+                ..
+            } => {
+                if value_name == from {
+                    *value_name = to.to_string();
+                }
+                *dep_expr = replace_identifier_tokens(dep_expr, from, to);
+                for binding in memoized_bindings {
+                    binding.pattern = replace_identifier_tokens(&binding.pattern, from, to);
+                    binding.expression = replace_identifier_tokens(&binding.expression, from, to);
+                }
+                for assignment in memoized_assignments {
+                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
+                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
+                }
+                for expression in memoized_expressions {
+                    *expression = replace_identifier_tokens(expression, from, to);
+                }
+                for statement in memoized_setup_statements {
+                    *statement = replace_identifier_tokens(statement, from, to);
+                }
+                if let Some(memoized_expr) = memoized_expr {
+                    *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
+                }
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MultiDependencyMemoizedReturn {
+                value_name,
+                deps,
+                memoized_bindings,
+                memoized_assignments,
+                memoized_expressions,
+                memoized_setup_statements,
+                memoized_expr,
+                ..
+            } => {
+                if value_name == from {
+                    *value_name = to.to_string();
+                }
+                for (_, dep_expr) in deps {
+                    *dep_expr = replace_identifier_tokens(dep_expr, from, to);
+                }
+                for binding in memoized_bindings {
+                    binding.pattern = replace_identifier_tokens(&binding.pattern, from, to);
+                    binding.expression = replace_identifier_tokens(&binding.expression, from, to);
+                }
+                for assignment in memoized_assignments {
+                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
+                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
+                }
+                for expression in memoized_expressions {
+                    *expression = replace_identifier_tokens(expression, from, to);
+                }
+                for statement in memoized_setup_statements {
+                    *statement = replace_identifier_tokens(statement, from, to);
+                }
+                if let Some(memoized_expr) = memoized_expr {
+                    *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
+                }
+            }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
                 value_name,
                 deps,
                 memoized_bindings,
