@@ -181,6 +181,12 @@ pub enum GeneratedBodyShape {
         assignments: Vec<GeneratedAssignment>,
         expressions: Vec<String>,
     },
+    MemoizedCachedValues {
+        deps: Vec<(u32, String)>,
+        setup_statements: Vec<String>,
+        cached_values: Vec<GeneratedCachedValue>,
+        restored_values: Vec<GeneratedCachedValue>,
+    },
     MemoizedEarlyReturnSentinel {
         deps: Vec<(u32, String)>,
         setup_statements: Vec<String>,
@@ -979,6 +985,7 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             GeneratedBodyShape::ConditionalBranches { .. } => None,
             GeneratedBodyShape::GuardedAssignments { .. } => None,
             GeneratedBodyShape::GuardedAssignmentExpressions { .. } => None,
+            GeneratedBodyShape::MemoizedCachedValues { .. } => None,
             GeneratedBodyShape::MemoizedEarlyReturnSentinel { .. } => None,
             GeneratedBodyShape::TryCatch { .. } => None,
             GeneratedBodyShape::ReturnVoid => None,
@@ -1590,18 +1597,16 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             && let Some(alternate) = if_statement.alternate.as_ref()
         {
             let consequent_shape = statement_shape(&if_statement.consequent);
-            if matches!(consequent_shape, GeneratedBodyShape::Unknown) {
-                continue;
+            if !matches!(consequent_shape, GeneratedBodyShape::Unknown) {
+                let alternate_shape = statement_shape(alternate);
+                if !matches!(alternate_shape, GeneratedBodyShape::Unknown) {
+                    return GeneratedBodyShape::ConditionalBranches {
+                        test: codegen_expression_with_flow_cast_restore(&if_statement.test),
+                        consequent: Box::new(consequent_shape),
+                        alternate: Box::new(alternate_shape),
+                    };
+                }
             }
-            let alternate_shape = statement_shape(alternate);
-            if matches!(alternate_shape, GeneratedBodyShape::Unknown) {
-                continue;
-            }
-            return GeneratedBodyShape::ConditionalBranches {
-                test: codegen_expression_with_flow_cast_restore(&if_statement.test),
-                consequent: Box::new(consequent_shape),
-                alternate: Box::new(alternate_shape),
-            };
         }
 
         if statements.len() >= 2
@@ -1769,6 +1774,73 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                 restored_values,
                 sentinel_name,
                 final_return,
+            };
+        }
+
+        if let [ast::Statement::IfStatement(if_statement)] = statements.as_slice()
+            && let Some(alternate) = if_statement.alternate.as_ref()
+            && let ast::Statement::BlockStatement(consequent_block) = &if_statement.consequent
+            && let ast::Statement::BlockStatement(alternate_block) = alternate
+        {
+            let Some(dependency_guards) = collect_dependency_guards(&if_statement.test) else {
+                continue;
+            };
+            let Some(restored_values) = collect_cached_value_restores(&alternate_block.body) else {
+                continue;
+            };
+            if restored_values.is_empty() {
+                continue;
+            }
+            let dep_len = dependency_guards.len();
+            let cache_len = restored_values.len();
+            if consequent_block.body.len() <= dep_len + cache_len {
+                continue;
+            }
+            let dep_base = consequent_block.body.len() - (dep_len + cache_len);
+            let cache_base = consequent_block.body.len() - cache_len;
+            let Some(cached_values) =
+                collect_cached_value_stores(&consequent_block.body[cache_base..])
+            else {
+                continue;
+            };
+            if !cached_value_sets_match(&cached_values, &restored_values) {
+                continue;
+            }
+            let mut deps = Vec::with_capacity(dependency_guards.len());
+            let mut guards_match = true;
+            for (index, (expected_cache_var, dep_slot, dep_expr)) in
+                dependency_guards.iter().enumerate()
+            {
+                let Some((dep_target, dep_value)) =
+                    assignment_statement_parts(&consequent_block.body[dep_base + index])
+                else {
+                    guards_match = false;
+                    break;
+                };
+                if assignment_target_cache_access(dep_target)
+                    != Some((expected_cache_var, *dep_slot))
+                    || codegen_expression_with_flow_cast_restore(dep_value) != *dep_expr
+                {
+                    guards_match = false;
+                    break;
+                }
+                deps.push((*dep_slot, dep_expr.clone()));
+            }
+            if !guards_match {
+                continue;
+            }
+            let setup_statements = consequent_block.body[..dep_base]
+                .iter()
+                .map(codegen_statement_with_flow_cast_restore)
+                .collect::<Vec<_>>();
+            if setup_statements.is_empty() {
+                continue;
+            }
+            return GeneratedBodyShape::MemoizedCachedValues {
+                deps,
+                setup_statements,
+                cached_values,
+                restored_values,
             };
         }
 
@@ -2955,16 +3027,25 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
 
                 let prefix_source =
                     codegen_statements_with_flow_cast_restore(&statements[..split_index]);
-                let prefix_shape = collect_candidate_return_identifiers(&statements[..split_index])
-                    .into_iter()
-                    .find_map(|candidate_name| {
-                        let synthetic_return = format!("{prefix_source}\nreturn {candidate_name};");
-                        let synthetic_shape =
-                            analyze_generated_body_shape_impl(&synthetic_return, false);
-                        shape_returned_identifier(&synthetic_shape)
-                            .is_some_and(|name| name == candidate_name)
-                            .then_some(synthetic_shape)
-                    });
+                let prefix_shape = {
+                    collect_candidate_return_identifiers(&statements[..split_index])
+                        .into_iter()
+                        .find_map(|candidate_name| {
+                            let synthetic_return =
+                                format!("{prefix_source}\nreturn {candidate_name};");
+                            let synthetic_shape =
+                                analyze_generated_body_shape_impl(&synthetic_return, false);
+                            shape_returned_identifier(&synthetic_shape)
+                                .is_some_and(|name| name == candidate_name)
+                                .then_some(synthetic_shape)
+                        })
+                        .or_else(|| {
+                            let direct_shape =
+                                analyze_generated_body_shape_impl(&prefix_source, false);
+                            (!matches!(direct_shape, GeneratedBodyShape::Unknown))
+                                .then_some(direct_shape)
+                        })
+                };
                 if let Some(prefix_shape) = prefix_shape {
                     return GeneratedBodyShape::Sequential {
                         prefix: Box::new(prefix_shape),
@@ -24270,6 +24351,99 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 )),
             ))
         }
+        GeneratedBodyShape::MemoizedCachedValues {
+            deps,
+            setup_statements,
+            cached_values,
+            restored_values,
+        } => {
+            let cache_binding_name = spec.cache_prologue.as_ref()?.binding_name.as_str();
+            let mut dep_assignments = builder.vec();
+            let mut dep_guards = deps.iter().map(|(slot, dep_expr)| {
+                let dep_expression = parse_expression_for_ast_codegen(
+                    allocator,
+                    SourceType::mjs().with_jsx(true),
+                    dep_expr,
+                )
+                .ok()?;
+                dep_assignments.push(build_computed_member_assignment_statement_ast(
+                    builder,
+                    cache_binding_name,
+                    builder.expression_numeric_literal(
+                        SPAN,
+                        *slot as f64,
+                        None,
+                        NumberBase::Decimal,
+                    ),
+                    dep_expression.clone_in(allocator),
+                ));
+                Some(builder.expression_binary(
+                    SPAN,
+                    build_computed_member_expression_ast(
+                        builder,
+                        cache_binding_name,
+                        builder.expression_numeric_literal(
+                            SPAN,
+                            *slot as f64,
+                            None,
+                            NumberBase::Decimal,
+                        ),
+                    ),
+                    AstBinaryOperator::StrictInequality,
+                    dep_expression,
+                ))
+            });
+            let mut test = dep_guards.next()??;
+            for guard in dep_guards {
+                test = builder.expression_logical(SPAN, test, AstLogicalOperator::Or, guard?);
+            }
+
+            let mut consequent =
+                build_generated_statement_sources_ast(builder, allocator, setup_statements)?;
+            consequent.extend(dep_assignments);
+            for value in cached_values {
+                consequent.push(build_computed_member_assignment_statement_ast(
+                    builder,
+                    cache_binding_name,
+                    builder.expression_numeric_literal(
+                        SPAN,
+                        value.slot as f64,
+                        None,
+                        NumberBase::Decimal,
+                    ),
+                    builder.expression_identifier(SPAN, builder.ident(&value.name)),
+                ));
+            }
+
+            let mut alternate = builder.vec();
+            for value in restored_values {
+                alternate.push(build_identifier_assignment_statement_ast_with_expression(
+                    builder,
+                    &value.name,
+                    build_computed_member_expression_ast(
+                        builder,
+                        cache_binding_name,
+                        builder.expression_numeric_literal(
+                            SPAN,
+                            value.slot as f64,
+                            None,
+                            NumberBase::Decimal,
+                        ),
+                    ),
+                ));
+            }
+
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_if(
+                    SPAN,
+                    test,
+                    builder.statement_block(SPAN, consequent),
+                    Some(builder.statement_block(SPAN, alternate)),
+                )),
+            ))
+        }
         GeneratedBodyShape::MemoizedEarlyReturnSentinel {
             deps,
             setup_statements,
@@ -25430,9 +25604,12 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 allocator,
                 &prefix_spec,
             )?;
-            let Some(ast::Statement::ReturnStatement(_)) = prefix_body.statements.pop() else {
-                return None;
-            };
+            if matches!(
+                prefix_body.statements.last(),
+                Some(ast::Statement::ReturnStatement(_))
+            ) {
+                prefix_body.statements.pop();
+            }
             let inner_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
@@ -29229,6 +29406,132 @@ mod tests {
                 && memoized_expressions
                     == &vec!["props.cond ? ([x] = [[]], x.push(props.foo)) : null".to_string()]
                 && memoized_expr.is_none()
+        ));
+    }
+
+    #[test]
+    fn analyzes_memoized_cached_values_body_shape() {
+        let body = "let a;\nlet b;\nif ($[0] !== props.a || $[1] !== props.b) {\n  a = compute(props.a);\n  b = compute(props.b);\n  foo(a, b);\n  $[0] = props.a;\n  $[1] = props.b;\n  $[2] = a;\n  $[3] = b;\n} else {\n  a = $[2];\n  b = $[3];\n}\n";
+        let shape = super::analyze_generated_body_shape(body);
+        let suffix_shape = super::analyze_generated_body_shape(
+            "if ($[0] !== props.a || $[1] !== props.b) {\n  a = compute(props.a);\n  b = compute(props.b);\n  foo(a, b);\n  $[0] = props.a;\n  $[1] = props.b;\n  $[2] = a;\n  $[3] = b;\n} else {\n  a = $[2];\n  b = $[3];\n}\n",
+        );
+
+        let super::GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } = shape
+        else {
+            panic!(
+                "expected prefixed declarations shape, got {shape:?}; suffix_shape={suffix_shape:?}"
+            );
+        };
+        assert_eq!(declarations.len(), 2);
+        assert_eq!(declarations[0].pattern, "a");
+        assert_eq!(declarations[1].pattern, "b");
+        let super::GeneratedBodyShape::MemoizedCachedValues {
+            deps,
+            setup_statements,
+            cached_values,
+            restored_values,
+        } = inner.as_ref()
+        else {
+            panic!("expected memoized cached values shape, got {inner:?}");
+        };
+        assert_eq!(
+            deps,
+            &vec![(0, "props.a".to_string()), (1, "props.b".to_string())]
+        );
+        assert_eq!(
+            setup_statements,
+            &vec![
+                "a = compute(props.a);".to_string(),
+                "b = compute(props.b);".to_string(),
+                "foo(a, b);".to_string(),
+            ]
+        );
+        assert_eq!(
+            cached_values,
+            &vec![
+                super::GeneratedCachedValue {
+                    name: "a".to_string(),
+                    slot: 2,
+                },
+                super::GeneratedCachedValue {
+                    name: "b".to_string(),
+                    slot: 3,
+                },
+            ]
+        );
+        assert_eq!(cached_values, restored_values);
+    }
+
+    #[test]
+    fn analyzes_sequential_memoized_cached_values_then_return_body_shape() {
+        let body = "let a;\nlet b;\nif ($[0] !== props.a || $[1] !== props.b) {\n  a = compute(props.a);\n  b = compute(props.b);\n  foo(a, b);\n  $[0] = props.a;\n  $[1] = props.b;\n  $[2] = a;\n  $[3] = b;\n} else {\n  a = $[2];\n  b = $[3];\n}\nlet t0;\nif ($[4] !== a || $[5] !== b) {\n  t0 = <Foo a={a} b={b} />;\n  $[4] = a;\n  $[5] = b;\n  $[6] = t0;\n} else {\n  t0 = $[6];\n}\nreturn t0;\n";
+        let shape = super::analyze_generated_body_shape(body);
+
+        let super::GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } = shape
+        else {
+            panic!("expected prefixed declarations shape, got {shape:?}");
+        };
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations[0].pattern, "a");
+        let super::GeneratedBodyShape::Sequential { prefix, inner } = inner.as_ref() else {
+            panic!("expected sequential inner shape, got {inner:?}");
+        };
+        let super::GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner: prefix_inner,
+        } = prefix.as_ref()
+        else {
+            panic!("expected prefixed declarations around cached values prefix, got {prefix:?}");
+        };
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations[0].pattern, "b");
+        assert!(matches!(
+            prefix_inner.as_ref(),
+            super::GeneratedBodyShape::MemoizedCachedValues {
+                deps,
+                cached_values,
+                ..
+            } if deps == &vec![(0, "props.a".to_string()), (1, "props.b".to_string())]
+                && cached_values
+                    == &vec![
+                        super::GeneratedCachedValue {
+                            name: "a".to_string(),
+                            slot: 2,
+                        },
+                        super::GeneratedCachedValue {
+                            name: "b".to_string(),
+                            slot: 3,
+                        },
+                    ]
+        ));
+        let super::GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } = inner.as_ref()
+        else {
+            panic!("expected prefixed declarations around memoized return, got {inner:?}");
+        };
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations[0].pattern, "t0");
+        assert!(matches!(
+            inner.as_ref(),
+            super::GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+                value_name,
+                deps,
+                value_slot,
+                memoized_expr,
+                ..
+            } if value_name == "t0"
+                && deps == &vec![(4, "a".to_string()), (5, "b".to_string())]
+                && *value_slot == 6
+                && memoized_expr.as_deref() == Some("<Foo a={a} b={b} />")
         ));
     }
 
