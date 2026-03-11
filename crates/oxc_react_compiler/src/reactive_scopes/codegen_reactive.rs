@@ -1371,6 +1371,10 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
         };
         let statements = &function_body.statements;
 
+        if statements.is_empty() {
+            return GeneratedBodyShape::ExpressionStatements(Vec::new());
+        }
+
         if statements.len() >= 2
             && let Some(ast::Statement::VariableDeclaration(alias_decl)) =
                 statements.get(statements.len() - 2)
@@ -27575,6 +27579,15 @@ mod tests {
         assert_eq!(
             inner.as_ref(),
             &super::GeneratedBodyShape::ReturnIdentifier("y".to_string())
+        );
+    }
+
+    #[test]
+    fn analyzes_empty_body_shape() {
+        let shape = super::analyze_generated_body_shape("");
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::ExpressionStatements(Vec::new())
         );
     }
 
