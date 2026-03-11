@@ -1614,17 +1614,31 @@ fn analyze_generated_body_shape_uncached(
         prefix_len
     }
 
+    fn can_start_sequential_suffix(statement: &ast::Statement<'_>) -> bool {
+        matches!(
+            statement,
+            ast::Statement::VariableDeclaration(_)
+                | ast::Statement::ExpressionStatement(_)
+                | ast::Statement::ReturnStatement(_)
+                | ast::Statement::IfStatement(_)
+                | ast::Statement::TryStatement(_)
+                | ast::Statement::WhileStatement(_)
+                | ast::Statement::DoWhileStatement(_)
+                | ast::Statement::ForStatement(_)
+                | ast::Statement::ForInStatement(_)
+                | ast::Statement::ForOfStatement(_)
+                | ast::Statement::ThrowStatement(_)
+                | ast::Statement::BreakStatement(_)
+                | ast::Statement::ContinueStatement(_)
+        )
+    }
+
     fn collect_sequential_split_indices(statements: &[ast::Statement<'_>]) -> Vec<usize> {
         let binding_prefix_len = count_leading_initialized_bindings(statements);
         let mut candidates = Vec::new();
         if statements.len() >= 2
             && matches!(statements.first(), Some(ast::Statement::IfStatement(_)))
-            && matches!(
-                statements.get(1),
-                Some(ast::Statement::VariableDeclaration(_))
-                    | Some(ast::Statement::ExpressionStatement(_))
-                    | Some(ast::Statement::ReturnStatement(_))
-            )
+            && statements.get(1).is_some_and(can_start_sequential_suffix)
         {
             candidates.push(1);
         }
@@ -1633,12 +1647,29 @@ fn analyze_generated_body_shape_uncached(
                 statements.get(binding_prefix_len),
                 Some(ast::Statement::IfStatement(_))
             )
+            && statements
+                .get(binding_prefix_len + 1)
+                .is_some_and(can_start_sequential_suffix)
+        {
+            candidates.push(binding_prefix_len + 1);
+        }
+        if statements.len() >= 2
             && matches!(
-                statements.get(binding_prefix_len + 1),
+                statements.first(),
                 Some(ast::Statement::ExpressionStatement(_))
-                    | Some(ast::Statement::VariableDeclaration(_))
-                    | Some(ast::Statement::ReturnStatement(_))
             )
+            && statements.get(1).is_some_and(can_start_sequential_suffix)
+        {
+            candidates.push(1);
+        }
+        if binding_prefix_len + 1 < statements.len()
+            && matches!(
+                statements.get(binding_prefix_len),
+                Some(ast::Statement::ExpressionStatement(_))
+            )
+            && statements
+                .get(binding_prefix_len + 1)
+                .is_some_and(can_start_sequential_suffix)
         {
             candidates.push(binding_prefix_len + 1);
         }
@@ -31424,6 +31455,85 @@ mod tests {
         assert!(
             !matches!(shape, super::GeneratedBodyShape::Unknown),
             "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_sequential_if_prefix_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "if (props.a) {\n  value = foo;\n}\nif (props.b) {\n  log(value);\n}\nreturn value;\n",
+        );
+
+        let super::GeneratedBodyShape::Sequential { prefix, inner } = shape else {
+            panic!("expected sequential shape, got {shape:?}");
+        };
+        assert_eq!(
+            prefix.as_ref(),
+            &super::GeneratedBodyShape::GuardedAssignments {
+                test: "props.a".to_string(),
+                assignments: vec![super::GeneratedAssignment {
+                    target: "value".to_string(),
+                    value: "foo".to_string(),
+                }],
+            }
+        );
+        let super::GeneratedBodyShape::Sequential { prefix, inner } = inner.as_ref() else {
+            panic!("expected nested sequential inner shape, got {inner:?}");
+        };
+        assert_eq!(
+            prefix.as_ref(),
+            &super::GeneratedBodyShape::GuardedExpressionStatements {
+                test: "props.b".to_string(),
+                expressions: vec!["log(value)".to_string()],
+            }
+        );
+        assert_eq!(
+            inner.as_ref(),
+            &super::GeneratedBodyShape::ReturnIdentifier("value".to_string())
+        );
+    }
+
+    #[test]
+    fn analyzes_structural_check_guard_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "if (condition) {\n  t1 = <div>{x}</div>;\n  $structuralCheck($[2], t1, \"t1\", \"Component\", \"recomputed\", \"(7:7)\");\n  t1 = $[2];\n}\n",
+        );
+
+        let super::GeneratedBodyShape::GuardedBody { test, inner } = shape else {
+            panic!("expected guarded body shape, got {shape:?}");
+        };
+        assert_eq!(test, "condition");
+        let super::GeneratedBodyShape::PrefixedAssignments { assignments, inner } = inner.as_ref()
+        else {
+            panic!("expected prefixed assignments in guarded inner shape, got {inner:?}");
+        };
+        assert_eq!(
+            assignments.as_slice(),
+            vec![super::GeneratedAssignment {
+                target: "t1".to_string(),
+                value: "<div>{x}</div>".to_string(),
+            }]
+            .as_slice()
+        );
+        let super::GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } =
+            inner.as_ref()
+        else {
+            panic!("expected prefixed expression statements in guarded inner shape, got {inner:?}");
+        };
+        assert_eq!(
+            expressions.as_slice(),
+            vec![
+                "$structuralCheck($[2], t1, \"t1\", \"Component\", \"recomputed\", \"(7:7)\")"
+                    .to_string()
+            ]
+            .as_slice()
+        );
+        assert_eq!(
+            inner.as_ref(),
+            &super::GeneratedBodyShape::AssignmentStatements(vec![super::GeneratedAssignment {
+                target: "t1".to_string(),
+                value: "$[2]".to_string(),
+            }])
         );
     }
 
