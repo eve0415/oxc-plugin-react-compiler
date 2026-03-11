@@ -2560,6 +2560,20 @@ fn try_decompose_direct_memoized_existing_return_shape(
             memoized_expr: Some(expression),
             ..Default::default()
         }),
+        GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } => {
+            let mut parts =
+                try_decompose_direct_memoized_existing_return_shape(*inner, value_name)?;
+            let mut prefix_statements = declarations
+                .into_iter()
+                .map(|declaration| render_generated_declaration_statement(&declaration))
+                .collect::<Option<Vec<_>>>()?;
+            prefix_statements.extend(parts.setup_statements);
+            parts.setup_statements = prefix_statements;
+            Some(parts)
+        }
         GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_existing_return_shape(*inner, value_name)?;
@@ -2758,6 +2772,31 @@ fn build_direct_computed_memoized_return_shape(
     })
 }
 
+fn render_generated_declaration_statement(declaration: &GeneratedDeclaration) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let pattern = parse_binding_pattern_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        &declaration.pattern,
+    )
+    .ok()?;
+    let statement = ast::Statement::VariableDeclaration(builder.alloc_variable_declaration(
+        SPAN,
+        declaration.kind,
+        builder.vec1(builder.variable_declarator(
+            SPAN,
+            declaration.kind,
+            pattern,
+            NONE,
+            None,
+            false,
+        )),
+        false,
+    ));
+    Some(codegen_statement_with_flow_cast_restore(&statement))
+}
+
 fn try_decompose_direct_memoized_declared_return_shape(
     shape: GeneratedBodyShape,
     value_name: &str,
@@ -2774,6 +2813,23 @@ fn try_decompose_direct_memoized_declared_return_shape(
             memoized_expr: Some(expression),
             ..Default::default()
         }),
+        GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } => {
+            let mut parts =
+                try_decompose_direct_memoized_declared_return_shape(*inner, value_name)?;
+            let mut prefix_statements = Vec::new();
+            for declaration in declarations {
+                if declaration.pattern == value_name {
+                    continue;
+                }
+                prefix_statements.push(render_generated_declaration_statement(&declaration)?);
+            }
+            prefix_statements.extend(parts.setup_statements);
+            parts.setup_statements = prefix_statements;
+            Some(parts)
+        }
         GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_declared_return_shape(*inner, value_name)?;
@@ -34297,6 +34353,50 @@ mod tests {
                         memoized_assignments: Vec::new(),
                         memoized_expressions: Vec::new(),
                         memoized_setup_statements: vec!["if (flag) {\n  touch();\n}".to_string()],
+                        memoized_expr: None,
+                    }
+                ),
+            }
+        );
+    }
+
+    #[test]
+    fn canonicalizes_prefixed_declaration_declared_return_body_shape() {
+        let shape = super::canonicalize_generated_body_shape(
+            super::GeneratedBodyShape::MemoizedComputedReturn {
+                value_name: "value".to_string(),
+                value_kind: Some(ast::VariableDeclarationKind::Let),
+                deps: vec![(0, "dep".to_string())],
+                value_slot: 1,
+                computation: Box::new(super::GeneratedBodyShape::PrefixedDeclarations {
+                    declarations: vec![super::GeneratedDeclaration {
+                        kind: ast::VariableDeclarationKind::Let,
+                        pattern: "scratch".to_string(),
+                    }],
+                    inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                        "value".to_string(),
+                    )),
+                }),
+            },
+        );
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::PrefixedDeclarations {
+                declarations: vec![super::GeneratedDeclaration {
+                    kind: ast::VariableDeclarationKind::Let,
+                    pattern: "value".to_string(),
+                }],
+                inner: Box::new(
+                    super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+                        value_name: "value".to_string(),
+                        dep_slot: 0,
+                        dep_expr: "dep".to_string(),
+                        value_slot: 1,
+                        memoized_bindings: Vec::new(),
+                        memoized_assignments: Vec::new(),
+                        memoized_expressions: Vec::new(),
+                        memoized_setup_statements: vec!["let scratch;".to_string()],
                         memoized_expr: None,
                     }
                 ),
