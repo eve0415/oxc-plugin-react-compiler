@@ -3727,6 +3727,87 @@ fn try_build_function_body_from_shape<'a>(
                 ]),
             ))
         }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+            value_name,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => {
+            let cache_binding_name = &cache_prologue?.binding_name;
+            let mut consequent = build_generated_binding_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_bindings,
+            )?;
+            consequent.extend(build_generated_assignment_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_assignments,
+            )?);
+            consequent.extend(build_generated_expression_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_expressions,
+            )?);
+            consequent.extend(build_generated_statement_sources(
+                builder,
+                allocator,
+                source_type,
+                memoized_setup_statements,
+            )?);
+            if let Some(memoized_expr) = memoized_expr {
+                let memoized_expr =
+                    parse_expression_source(allocator, source_type, memoized_expr).ok()?;
+                consequent.push(build_identifier_assignment_statement(
+                    builder,
+                    value_name,
+                    memoized_expr,
+                ));
+            }
+            consequent.push(build_cache_slot_assignment_statement(
+                builder,
+                cache_binding_name,
+                *value_slot,
+                builder.expression_identifier(SPAN, builder.ident(value_name)),
+            ));
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec_from_iter([
+                    builder.statement_if(
+                        SPAN,
+                        builder.expression_binary(
+                            SPAN,
+                            cache_member_slot_expression(builder, cache_binding_name, *value_slot),
+                            BinaryOperator::StrictEquality,
+                            build_memo_cache_sentinel_expression(builder),
+                        ),
+                        builder.statement_block(
+                            SPAN,
+                            consequent,
+                        ),
+                        Some(builder.statement_block(
+                            SPAN,
+                            builder.vec1(build_identifier_assignment_statement(
+                                builder,
+                                value_name,
+                                cache_member_slot_expression(builder, cache_binding_name, *value_slot),
+                            )),
+                        )),
+                    ),
+                    builder.statement_return(
+                        SPAN,
+                        Some(builder.expression_identifier(SPAN, builder.ident(value_name))),
+                    ),
+                ]),
+            ))
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleDependencyMemoizedReturn {
             value_name,
             value_kind,
@@ -8547,6 +8628,54 @@ export const FIXTURE_ENTRYPOINT = {
         assert!(rewritten.contains("if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {"));
         assert!(rewritten.contains("$[0] = t0;"));
         assert!(rewritten.contains("return useRef(t0);"));
+    }
+
+    #[test]
+    fn builds_zero_dependency_existing_return_body_from_shape_without_generated_source() {
+        let source = "function Foo(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) { t0 = { click: _temp }; $[0] = t0; } else { t0 = $[0]; } return t0;",
+            &["props"],
+            false,
+        );
+        compiled_function.generated_body = None;
+        compiled_function.generated_body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+                value_name: "t0".to_string(),
+                value_slot: 0,
+                memoized_bindings: vec![],
+                memoized_assignments: vec![],
+                memoized_expressions: vec![],
+                memoized_setup_statements: vec![],
+                memoized_expr: Some("{ click: _temp }".to_string()),
+            };
+        compiled_function.needs_cache_import = true;
+        compiled_function.cache_prologue =
+            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+                binding_name: "$".to_string(),
+                size: 1,
+                fast_refresh: None,
+            });
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(!rewritten.contains("let t0;"));
+        assert!(rewritten.contains("if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {"));
+        assert!(rewritten.contains("t0 = { click: _temp };"));
+        assert!(rewritten.contains("$[0] = t0;"));
+        assert!(rewritten.contains("return t0;"));
     }
 
     #[test]
