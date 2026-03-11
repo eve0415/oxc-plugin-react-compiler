@@ -1204,6 +1204,15 @@ fn codegen_outlined_function(
                     assignment.value = replace_identifier_tokens(&assignment.value, from, to);
                 }
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedExpressionStatements {
+                test,
+                expressions,
+            } => {
+                *test = replace_identifier_tokens(test, from, to);
+                for expression in expressions {
+                    *expression = replace_identifier_tokens(expression, from, to);
+                }
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedAssignments {
                 test,
                 assignments,

@@ -158,6 +158,10 @@ pub enum GeneratedBodyShape {
     Unknown,
     ExpressionStatements(Vec<String>),
     AssignmentStatements(Vec<GeneratedAssignment>),
+    GuardedExpressionStatements {
+        test: String,
+        expressions: Vec<String>,
+    },
     GuardedAssignments {
         test: String,
         assignments: Vec<GeneratedAssignment>,
@@ -914,6 +918,7 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             GeneratedBodyShape::Unknown => None,
             GeneratedBodyShape::ExpressionStatements(_) => None,
             GeneratedBodyShape::AssignmentStatements(_) => None,
+            GeneratedBodyShape::GuardedExpressionStatements { .. } => None,
             GeneratedBodyShape::GuardedAssignments { .. } => None,
             GeneratedBodyShape::ReturnIdentifier(name) => Some(name),
             GeneratedBodyShape::ReturnExpression(_) => None,
@@ -1474,6 +1479,14 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             && if_statement.alternate.is_none()
             && let ast::Statement::BlockStatement(consequent_block) = &if_statement.consequent
         {
+            let (expressions, expression_len) =
+                collect_leading_expression_statements(&consequent_block.body);
+            if expression_len == consequent_block.body.len() && !expressions.is_empty() {
+                return GeneratedBodyShape::GuardedExpressionStatements {
+                    test: codegen_expression_with_flow_cast_restore(&if_statement.test),
+                    expressions,
+                };
+            }
             let (assignments, assignment_len) =
                 collect_non_cache_assignments(&consequent_block.body);
             if assignment_len == consequent_block.body.len() && !assignments.is_empty() {
@@ -23214,6 +23227,24 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             builder.vec(),
             build_generated_assignment_statements_ast(builder, allocator, assignments)?,
         )),
+        GeneratedBodyShape::GuardedExpressionStatements { test, expressions } => {
+            let test =
+                parse_expression_for_ast_codegen(allocator, SourceType::mjs().with_jsx(true), test)
+                    .ok()?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_if(
+                    SPAN,
+                    test,
+                    builder.statement_block(
+                        SPAN,
+                        build_generated_expression_statements_ast(builder, allocator, expressions)?,
+                    ),
+                    None,
+                )),
+            ))
+        }
         GeneratedBodyShape::GuardedAssignments { test, assignments } => {
             let test =
                 parse_expression_for_ast_codegen(allocator, SourceType::mjs().with_jsx(true), test)
@@ -27459,6 +27490,20 @@ mod tests {
                     target: "ref.current".to_string(),
                     value: "(\"\")".to_string(),
                 }],
+            }
+        );
+    }
+
+    #[test]
+    fn analyzes_guarded_expression_statements_body_shape() {
+        let shape =
+            super::analyze_generated_body_shape("if (ref.current === null) {\n  update();\n}\n");
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::GuardedExpressionStatements {
+                test: "ref.current === null".to_string(),
+                expressions: vec!["update()".to_string()],
             }
         );
     }
