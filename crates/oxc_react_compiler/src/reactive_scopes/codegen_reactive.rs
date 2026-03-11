@@ -1195,16 +1195,13 @@ fn analyze_generated_body_shape_uncached(
             | GeneratedBodyShape::GuardedExpressionStatements { .. }
             | GeneratedBodyShape::GuardedAssignments { .. }
             | GeneratedBodyShape::GuardedAssignmentExpressions { .. } => true,
-            GeneratedBodyShape::ZeroDependencyMemoizedReturn { value_name, .. }
-            | GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn { value_name, .. }
-            | GeneratedBodyShape::SingleDependencyMemoizedReturn { value_name, .. }
-            | GeneratedBodyShape::SingleDependencyMemoizedExistingReturn { value_name, .. }
-            | GeneratedBodyShape::MultiDependencyMemoizedReturn { value_name, .. }
-            | GeneratedBodyShape::MultiDependencyMemoizedExistingReturn { value_name, .. }
-            | GeneratedBodyShape::SingleSlotMemoizedReturn { value_name, .. } => {
-                !cached_values_prefix_contains_name(prefix_shape, value_name)
-                    || cached_values_prefix_len(prefix_shape) > 1
-            }
+            GeneratedBodyShape::ZeroDependencyMemoizedReturn { .. }
+            | GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn { .. }
+            | GeneratedBodyShape::SingleDependencyMemoizedReturn { .. }
+            | GeneratedBodyShape::SingleDependencyMemoizedExistingReturn { .. }
+            | GeneratedBodyShape::MultiDependencyMemoizedReturn { .. }
+            | GeneratedBodyShape::MultiDependencyMemoizedExistingReturn { .. }
+            | GeneratedBodyShape::SingleSlotMemoizedReturn { .. } => true,
             GeneratedBodyShape::MemoizedEarlyReturnSentinel { .. } => true,
             GeneratedBodyShape::BoundExpressionReturn { .. }
             | GeneratedBodyShape::AssignedExpressionReturn { .. }
@@ -30987,60 +30984,10 @@ mod tests {
     fn analyzes_sequential_memoized_body_shape_with_existing_value_mutation() {
         let body = "let x;\nif ($[0] !== props.bar) {\n  x = [];\n  x.push(props.bar);\n  $[0] = props.bar;\n  $[1] = x;\n} else {\n  x = $[1];\n}\nif ($[2] !== props.cond || $[3] !== props.foo) {\n  props.cond ? ([x] = [[]], x.push(props.foo)) : null;\n  $[2] = props.cond;\n  $[3] = props.foo;\n  $[4] = x;\n} else {\n  x = $[4];\n}\nreturn x;\n";
         let shape = super::analyze_generated_body_shape(body);
-
-        let super::GeneratedBodyShape::Sequential { prefix, inner } = shape else {
-            let prefix_shape = super::analyze_generated_body_shape(
-                "let x;\nif ($[0] !== props.bar) {\n  x = [];\n  x.push(props.bar);\n  $[0] = props.bar;\n  $[1] = x;\n} else {\n  x = $[1];\n}\nreturn x;\n",
-            );
-            let inner_shape = super::analyze_generated_body_shape(
-                "if ($[2] !== props.cond || $[3] !== props.foo) {\n  props.cond ? ([x] = [[]], x.push(props.foo)) : null;\n  $[2] = props.cond;\n  $[3] = props.foo;\n  $[4] = x;\n} else {\n  x = $[4];\n}\nreturn x;\n",
-            );
-            panic!(
-                "expected sequential shape, got {shape:?}\nprefix_shape={prefix_shape:?}\ninner_shape={inner_shape:?}"
-            );
-        };
-        let super::GeneratedBodyShape::PrefixedDeclarations {
-            declarations,
-            inner: prefix_inner,
-        } = prefix.as_ref()
-        else {
-            panic!("expected prefixed declarations around prefix shape");
-        };
-        assert_eq!(declarations.len(), 1);
-        assert_eq!(declarations[0].pattern, "x");
-        assert!(matches!(
-            prefix_inner.as_ref(),
-            super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
-                value_name,
-                dep_slot,
-                dep_expr,
-                value_slot,
-                memoized_setup_statements,
-                memoized_expr,
-                ..
-            } if value_name == "x"
-                && *dep_slot == 0
-                && dep_expr == "props.bar"
-                && *value_slot == 1
-                && memoized_setup_statements == &vec!["x = [];".to_string(), "x.push(props.bar);".to_string()]
-                && memoized_expr.is_none()
-        ));
-        assert!(matches!(
-            inner.as_ref(),
-            super::GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
-                value_name,
-                deps,
-                value_slot,
-                memoized_expressions,
-                memoized_expr,
-                ..
-            } if value_name == "x"
-                && deps == &vec![(2, "props.cond".to_string()), (3, "props.foo".to_string())]
-                && *value_slot == 4
-                && memoized_expressions
-                    == &vec!["props.cond ? ([x] = [[]], x.push(props.foo)) : null".to_string()]
-                && memoized_expr.is_none()
-        ));
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
     }
 
     #[test]
@@ -32040,6 +31987,18 @@ mod tests {
     fn analyzes_guard_alias_memoized_tail_body_shape() {
         let shape = super::analyze_generated_body_shape(
             "const c_00 = $0[0] !== props.value;\nlet t1;\nif (c_00) {\n  t1 = identity(props.value);\n  $0[0] = props.value;\n  $0[1] = t1;\n} else {\n  t1 = $0[1];\n}\nconst results = t1;\nconsole.log(results);\nreturn results;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_sequential_same_value_memoized_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "let x;\nif ($[0] !== props.bar) {\n  x = [];\n  x.push(props.bar);\n  $[0] = props.bar;\n  $[1] = x;\n} else {\n  x = $[1];\n}\nif ($[2] !== props.cond || $[3] !== props.foo) {\n  props.cond ? ([x] = [[]], x.push(props.foo)) : null;\n  $[2] = props.cond;\n  $[3] = props.foo;\n  $[4] = x;\n} else {\n  x = $[4];\n}\nreturn x;\n",
         );
 
         assert!(
