@@ -1158,6 +1158,79 @@ fn try_build_generated_body_shape_from_reactive_terminal(
                 cx, loop_block,
             )?),
         }),
+        ReactiveTerminal::For {
+            init,
+            test,
+            update,
+            loop_block,
+            ..
+        } => {
+            let mut init_code = codegen_for_init(cx, init);
+            let test_expr = codegen_place_to_expression(cx, test);
+            let update_code = update
+                .as_ref()
+                .map(|block| codegen_for_update(cx, block))
+                .unwrap_or_default();
+            if let Some(filled_init) =
+                maybe_fill_for_header_initializer_from_update(&init_code, &update_code)
+            {
+                init_code = filled_init;
+            }
+            Some(GeneratedBodyShape::ForLoop {
+                init: (!init_code.is_empty()).then_some(init_code),
+                test: Some(test_expr),
+                update: (!update_code.is_empty()).then_some(update_code),
+                body: Box::new(try_build_generated_body_shape_from_reactive_block(
+                    cx, loop_block,
+                )?),
+            })
+        }
+        ReactiveTerminal::ForOf {
+            init,
+            test,
+            loop_block,
+            ..
+        } => {
+            let init_out = codegen_block_no_reset(cx, init);
+            let (kind, lval, collection_place) = extract_for_in_of_header_from_init(cx, init);
+            let collection_expr = if let Some(place) = collection_place {
+                codegen_place_to_expression(cx, &place)
+            } else if test.identifier.id.0 == 0 {
+                let rendered_init = init_out.trim().trim_end_matches(';').to_string();
+                if rendered_init.is_empty() {
+                    codegen_place_to_expression(cx, test)
+                } else {
+                    rendered_init
+                }
+            } else {
+                codegen_place_to_expression(cx, test)
+            };
+            Some(GeneratedBodyShape::ForOfLoop {
+                left: format!("{kind} {lval}"),
+                right: collection_expr,
+                body: Box::new(try_build_generated_body_shape_from_reactive_block(
+                    cx, loop_block,
+                )?),
+            })
+        }
+        ReactiveTerminal::ForIn {
+            init, loop_block, ..
+        } => {
+            let init_out = codegen_block_no_reset(cx, init);
+            let (kind, lval, collection_place) = extract_for_in_of_header_from_init(cx, init);
+            let collection_expr = if let Some(place) = collection_place {
+                codegen_place_to_expression(cx, &place)
+            } else {
+                init_out.trim().trim_end_matches(';').to_string()
+            };
+            Some(GeneratedBodyShape::ForInLoop {
+                left: format!("{kind} {lval}"),
+                right: collection_expr,
+                body: Box::new(try_build_generated_body_shape_from_reactive_block(
+                    cx, loop_block,
+                )?),
+            })
+        }
         ReactiveTerminal::Try {
             block,
             handler_binding,
@@ -1177,9 +1250,6 @@ fn try_build_generated_body_shape_from_reactive_terminal(
         ReactiveTerminal::Label { block, .. } => {
             try_build_generated_body_shape_from_reactive_block(cx, block)
         }
-        ReactiveTerminal::For { .. }
-        | ReactiveTerminal::ForOf { .. }
-        | ReactiveTerminal::ForIn { .. } => None,
     }
 }
 
@@ -29487,6 +29557,43 @@ mod tests {
                 alternate: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
                     "right".to_string()
                 )),
+            }
+        );
+    }
+
+    #[test]
+    fn directly_lowers_terminal_for_body_shape_from_reactive_block() {
+        let mut cx = test_context();
+        let block = vec![ReactiveStatement::Terminal(ReactiveTerminalStatement {
+            terminal: ReactiveTerminal::For {
+                init: vec![],
+                test: named_place(0, 0, "flag"),
+                update: None,
+                loop_block: vec![ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                    terminal: ReactiveTerminal::Continue {
+                        target: crate::hir::types::BlockId(1),
+                        target_kind: crate::hir::types::ReactiveTerminalTargetKind::Unlabeled,
+                        id: crate::hir::types::make_instruction_id(1),
+                        loc: SourceLocation::Generated,
+                    },
+                    label: None,
+                })],
+                id: crate::hir::types::make_instruction_id(2),
+                loc: SourceLocation::Generated,
+            },
+            label: None,
+        })];
+
+        let shape = super::try_build_generated_body_shape_from_reactive_block(&mut cx, &block)
+            .expect("expected direct body shape");
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::ForLoop {
+                init: None,
+                test: Some("flag".to_string()),
+                update: None,
+                body: Box::new(super::GeneratedBodyShape::Continue(None)),
             }
         );
     }
