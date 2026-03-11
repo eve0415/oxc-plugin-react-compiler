@@ -1006,7 +1006,11 @@ fn codegen_reactive_function_with_primitives(
         );
     }
 
-    let body_shape = analyze_generated_body_shape(&body);
+    let body_shape = {
+        let mut shape_cx = cx.clone();
+        try_build_generated_body_shape_from_reactive_block(&mut shape_cx, &func.body)
+            .unwrap_or_else(|| analyze_generated_body_shape(&body))
+    };
     CodegenResult {
         body_shape,
         cache_size,
@@ -1019,6 +1023,163 @@ fn codegen_reactive_function_with_primitives(
         needs_structural_check_import: cx.needs_structural_check_import,
         cache_prologue,
         error: cx.codegen_error,
+    }
+}
+
+fn try_build_generated_body_shape_from_reactive_block(
+    cx: &mut Context,
+    block: &[ReactiveStatement],
+) -> Option<GeneratedBodyShape> {
+    match block {
+        [] => Some(GeneratedBodyShape::ExpressionStatements(vec![])),
+        [ReactiveStatement::Terminal(term_stmt)] => {
+            let shape =
+                try_build_generated_body_shape_from_reactive_terminal(cx, &term_stmt.terminal)?;
+            if let Some(label) = &term_stmt.label
+                && !label.implicit
+            {
+                Some(GeneratedBodyShape::Labeled {
+                    label: format!("bb{}", label.id.0),
+                    inner: Box::new(shape),
+                })
+            } else {
+                Some(shape)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn try_build_generated_body_shape_from_reactive_terminal(
+    cx: &mut Context,
+    terminal: &ReactiveTerminal,
+) -> Option<GeneratedBodyShape> {
+    match terminal {
+        ReactiveTerminal::Break {
+            target,
+            target_kind,
+            ..
+        } => match target_kind {
+            ReactiveTerminalTargetKind::Implicit => {
+                Some(GeneratedBodyShape::ExpressionStatements(vec![]))
+            }
+            ReactiveTerminalTargetKind::Unlabeled => Some(GeneratedBodyShape::Break(None)),
+            ReactiveTerminalTargetKind::Labeled => {
+                Some(GeneratedBodyShape::Break(Some(format!("bb{}", target.0))))
+            }
+        },
+        ReactiveTerminal::Continue {
+            target,
+            target_kind,
+            ..
+        } => match target_kind {
+            ReactiveTerminalTargetKind::Implicit => {
+                Some(GeneratedBodyShape::ExpressionStatements(vec![]))
+            }
+            ReactiveTerminalTargetKind::Unlabeled => Some(GeneratedBodyShape::Continue(None)),
+            ReactiveTerminalTargetKind::Labeled => Some(GeneratedBodyShape::Continue(Some(
+                format!("bb{}", target.0),
+            ))),
+        },
+        ReactiveTerminal::Return { value, .. } => {
+            let expr = codegen_place_to_expression(cx, value);
+            if expr == "undefined" {
+                Some(GeneratedBodyShape::ReturnVoid)
+            } else if is_simple_generated_identifier(&expr) {
+                Some(GeneratedBodyShape::ReturnIdentifier(expr))
+            } else {
+                Some(GeneratedBodyShape::ReturnExpression(expr))
+            }
+        }
+        ReactiveTerminal::Throw { value, .. } => {
+            let expr = codegen_place_to_expression(cx, value);
+            Some(GeneratedBodyShape::ThrowExpression(expr))
+        }
+        ReactiveTerminal::If {
+            test,
+            consequent,
+            alternate,
+            ..
+        } => {
+            let test = codegen_place_to_expression(cx, test);
+            let consequent = Box::new(try_build_generated_body_shape_from_reactive_block(
+                cx, consequent,
+            )?);
+            if let Some(alternate) = alternate {
+                let alternate = Box::new(try_build_generated_body_shape_from_reactive_block(
+                    cx, alternate,
+                )?);
+                Some(GeneratedBodyShape::ConditionalBranches {
+                    test,
+                    consequent,
+                    alternate,
+                })
+            } else {
+                Some(GeneratedBodyShape::GuardedBody {
+                    test,
+                    inner: consequent,
+                })
+            }
+        }
+        ReactiveTerminal::Switch { test, cases, .. } => {
+            let discriminant = codegen_place_to_expression(cx, test);
+            let mut generated_cases = Vec::with_capacity(cases.len());
+            for case in cases {
+                let consequent = match &case.block {
+                    Some(block) => try_build_generated_body_shape_from_reactive_block(cx, block)?,
+                    None => GeneratedBodyShape::ExpressionStatements(vec![]),
+                };
+                generated_cases.push(GeneratedSwitchCase {
+                    test: case
+                        .test
+                        .as_ref()
+                        .map(|test| codegen_place_to_expression(cx, test)),
+                    consequent,
+                });
+            }
+            Some(GeneratedBodyShape::Switch {
+                discriminant,
+                cases: generated_cases,
+            })
+        }
+        ReactiveTerminal::DoWhile {
+            loop_block, test, ..
+        } => Some(GeneratedBodyShape::DoWhileLoop {
+            test: codegen_place_to_expression(cx, test),
+            body: Box::new(try_build_generated_body_shape_from_reactive_block(
+                cx, loop_block,
+            )?),
+        }),
+        ReactiveTerminal::While {
+            test, loop_block, ..
+        } => Some(GeneratedBodyShape::WhileLoop {
+            test: codegen_place_to_expression(cx, test),
+            body: Box::new(try_build_generated_body_shape_from_reactive_block(
+                cx, loop_block,
+            )?),
+        }),
+        ReactiveTerminal::Try {
+            block,
+            handler_binding,
+            handler,
+            ..
+        } => Some(GeneratedBodyShape::TryCatch {
+            catch_param: handler_binding
+                .as_ref()
+                .map(|binding| identifier_name_with_cx(cx, &binding.identifier)),
+            try_body: Box::new(try_build_generated_body_shape_from_reactive_block(
+                cx, block,
+            )?),
+            catch_body: Box::new(try_build_generated_body_shape_from_reactive_block(
+                cx, handler,
+            )?),
+        }),
+        ReactiveTerminal::Label { block, .. } => {
+            try_build_generated_body_shape_from_reactive_block(cx, block)
+        }
+        ReactiveTerminal::For { .. }
+        | ReactiveTerminal::ForOf { .. }
+        | ReactiveTerminal::ForIn { .. } => None,
     }
 }
 
@@ -4464,10 +4625,7 @@ fn is_simple_identifier_char(ch: char) -> bool {
     ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()
 }
 
-fn build_hook_guard_call_expression_ast<'a>(
-    builder: AstBuilder<'a>,
-    mode: u8,
-) -> ast::Expression<'a> {
+fn build_hook_guard_call_expression_ast(builder: AstBuilder, mode: u8) -> ast::Expression {
     builder.expression_call(
         SPAN,
         builder.expression_identifier(SPAN, builder.ident(HOOK_GUARD_IDENT)),
@@ -4482,10 +4640,7 @@ fn build_hook_guard_call_expression_ast<'a>(
     )
 }
 
-fn build_hook_guard_call_statement_ast<'a>(
-    builder: AstBuilder<'a>,
-    mode: u8,
-) -> ast::Statement<'a> {
+fn build_hook_guard_call_statement_ast(builder: AstBuilder, mode: u8) -> ast::Statement {
     builder.statement_expression(SPAN, build_hook_guard_call_expression_ast(builder, mode))
 }
 
@@ -5941,7 +6096,7 @@ fn codegen_block_no_reset_with_options(
         let allocator = Allocator::default();
         let statement = match parse_single_statement_for_ast_codegen(
             &allocator,
-            oxc_span::SourceType::mjs().with_jsx(true),
+            SourceType::mjs().with_jsx(true),
             trimmed,
         ) {
             Ok(statement) => statement,
@@ -6002,7 +6157,7 @@ fn codegen_block_no_reset_with_options(
         let allocator = Allocator::default();
         let statement = parse_single_statement_for_ast_codegen(
             &allocator,
-            oxc_span::SourceType::mjs().with_jsx(true),
+            SourceType::mjs().with_jsx(true),
             stmt.trim(),
         )
         .ok()?;
@@ -11236,7 +11391,7 @@ fn maybe_codegen_fused_temp_load_into_following_stmt(
     // scanning until the first emitted statement instead of bailing out after
     // an arbitrary short window.
     for idx in (start + 1)..block.len() {
-        match block.get(idx)? {
+        return match block.get(idx)? {
             ReactiveStatement::Instruction(instr) => {
                 let Some(stmt) = codegen_instruction_nullable(&mut probe_cx, instr) else {
                     continue;
@@ -11279,7 +11434,7 @@ fn maybe_codegen_fused_temp_load_into_following_stmt(
                 );
                 output.push_str(&stmt);
                 *cx = probe_cx;
-                return Some(idx - start + 1);
+                Some(idx - start + 1)
             }
             ReactiveStatement::Terminal(term_stmt) => {
                 let stmt = codegen_terminal(&mut probe_cx, &term_stmt.terminal)?;
@@ -11314,10 +11469,10 @@ fn maybe_codegen_fused_temp_load_into_following_stmt(
                     output.push('\n');
                 }
                 *cx = probe_cx;
-                return Some(idx - start + 1);
+                Some(idx - start + 1)
             }
-            ReactiveStatement::Scope(_) | ReactiveStatement::PrunedScope(_) => return None,
-        }
+            ReactiveStatement::Scope(_) | ReactiveStatement::PrunedScope(_) => None,
+        };
     }
 
     None
@@ -11356,7 +11511,7 @@ fn maybe_codegen_fused_reassign_stmt_into_following_logical(
     let mut bridge_exprs: Vec<String> = Vec::new();
 
     for idx in (start + 1)..block.len() {
-        match block.get(idx)? {
+        return match block.get(idx)? {
             ReactiveStatement::Instruction(instr) => {
                 let Some(stmt) = codegen_instruction_nullable(&mut probe_cx, instr) else {
                     continue;
@@ -11440,11 +11595,11 @@ fn maybe_codegen_fused_reassign_stmt_into_following_logical(
                         .expect("fused logical reassign should stay on AST path"),
                 );
                 *cx = probe_cx;
-                return Some(idx - start + 1);
+                Some(idx - start + 1)
             }
-            ReactiveStatement::Terminal(_) => return None,
-            ReactiveStatement::Scope(_) | ReactiveStatement::PrunedScope(_) => return None,
-        }
+            ReactiveStatement::Terminal(_) => None,
+            ReactiveStatement::Scope(_) | ReactiveStatement::PrunedScope(_) => None,
+        };
     }
 
     None
@@ -12075,10 +12230,7 @@ fn maybe_codegen_fused_method_call_eval_order(
             final_idx,
             receiver_prefix_indices.len(),
             property_prefix_indices.len(),
-            arg_prefix_indices
-                .iter()
-                .map(std::vec::Vec::len)
-                .collect::<Vec<_>>(),
+            arg_prefix_indices.iter().map(Vec::len).collect::<Vec<_>>(),
             consumed_top_level
         ),
     );
@@ -12094,10 +12246,10 @@ struct EvalOrderFusionParticipant<'a> {
     top_level_idx: usize,
 }
 
-fn collect_eval_order_fusion_participants<'a>(
-    block: &'a [ReactiveStatement],
+fn collect_eval_order_fusion_participants(
+    block: &'_ [ReactiveStatement],
     start: usize,
-) -> Option<Vec<EvalOrderFusionParticipant<'a>>> {
+) -> Option<Vec<EvalOrderFusionParticipant<'_>>> {
     let mut participants = Vec::new();
     let mut top_level_idx = start;
     while top_level_idx < block.len() {
@@ -20107,7 +20259,7 @@ fn codegen_reactive_sequence_expression_ev(
     let mut prefix_exprs = Vec::new();
     let uses_decl = |value: &InstructionValue, decl_id: DeclarationId| {
         let mut used = false;
-        crate::hir::visitors::for_each_instruction_value_operand(value, |place| {
+        visitors::for_each_instruction_value_operand(value, |place| {
             if place.identifier.declaration_id == decl_id {
                 used = true;
             }
@@ -20789,7 +20941,7 @@ fn build_property_access_expression_ast<'a>(
     }
 }
 
-fn chain_element_to_expression_ast<'a>(chain: ast::ChainElement<'a>) -> ast::Expression<'a> {
+fn chain_element_to_expression_ast(chain: ast::ChainElement) -> ast::Expression {
     match chain {
         ast::ChainElement::CallExpression(call) => ast::Expression::CallExpression(call),
         ast::ChainElement::ComputedMemberExpression(member) => {
@@ -21700,7 +21852,7 @@ fn render_dependency_expression_ast(
                         SPAN,
                         path_entry.property.parse::<f64>().ok()?,
                         None,
-                        oxc_syntax::number::NumberBase::Decimal,
+                        NumberBase::Decimal,
                     ),
                     path_entry.optional,
                 )
@@ -24197,14 +24349,14 @@ fn collect_inherited_decl_name_overrides_for_lowered_function(
     }
     for (_, block) in &lowered_func.func.body.blocks {
         for instr in &block.instructions {
-            crate::hir::visitors::for_each_instruction_lvalue(instr, |place| {
+            visitors::for_each_instruction_lvalue(instr, |place| {
                 maybe_add(cx, &mut inherited, place);
             });
-            crate::hir::visitors::for_each_instruction_operand(instr, |place| {
+            visitors::for_each_instruction_operand(instr, |place| {
                 maybe_add(cx, &mut inherited, place);
             });
         }
-        crate::hir::visitors::for_each_terminal_operand(&block.terminal, |place| {
+        visitors::for_each_terminal_operand(&block.terminal, |place| {
             maybe_add(cx, &mut inherited, place);
         });
     }
@@ -24641,7 +24793,7 @@ fn make_object_property_key_ast<'a>(
                 SPAN,
                 *value,
                 None,
-                oxc_syntax::number::NumberBase::Decimal,
+                NumberBase::Decimal,
             )),
             false,
         )),
@@ -24949,31 +25101,29 @@ fn skip_quoted(source: &str, start_idx: usize) -> Option<usize> {
     None
 }
 
-fn codegen_expression_with_flow_cast_restore<'a>(expression: &ast::Expression<'a>) -> String {
+fn codegen_expression_with_flow_cast_restore(expression: &ast::Expression) -> String {
     restore_flow_cast_marker_calls(&codegen_expression_with_oxc(expression))
 }
 
-fn codegen_statement_with_flow_cast_restore<'a>(statement: &ast::Statement<'a>) -> String {
+fn codegen_statement_with_flow_cast_restore(statement: &ast::Statement) -> String {
     restore_flow_cast_marker_calls(&codegen_statement_with_oxc(statement))
 }
 
-fn codegen_assignment_target_with_flow_cast_restore<'a>(
-    target: &ast::AssignmentTarget<'a>,
-) -> String {
+fn codegen_assignment_target_with_flow_cast_restore(target: &ast::AssignmentTarget) -> String {
     restore_flow_cast_marker_calls(&codegen_assignment_target_with_oxc(target))
 }
 
-fn codegen_binding_pattern_with_flow_cast_restore<'a>(pattern: &ast::BindingPattern<'a>) -> String {
+fn codegen_binding_pattern_with_flow_cast_restore(pattern: &ast::BindingPattern) -> String {
     restore_flow_cast_marker_calls(&codegen_binding_pattern_with_oxc(pattern))
 }
 
-fn codegen_array_expression_element_with_flow_cast_restore<'a>(
-    element: &ast::ArrayExpressionElement<'a>,
+fn codegen_array_expression_element_with_flow_cast_restore(
+    element: &ast::ArrayExpressionElement,
 ) -> String {
     restore_flow_cast_marker_calls(&codegen_array_expression_element_with_oxc(element))
 }
 
-fn codegen_statements_with_flow_cast_restore<'a>(statements: &[ast::Statement<'a>]) -> String {
+fn codegen_statements_with_flow_cast_restore(statements: &[ast::Statement]) -> String {
     restore_flow_cast_marker_calls(&codegen_statements_with_oxc(statements))
 }
 
@@ -28234,10 +28384,7 @@ fn build_symbol_for_call_expression_ast<'a>(
     )
 }
 
-fn build_runtime_cache_call_expression_ast<'a>(
-    builder: AstBuilder<'a>,
-    size: u32,
-) -> ast::Expression<'a> {
+fn build_runtime_cache_call_expression_ast(builder: AstBuilder, size: u32) -> ast::Expression {
     builder.expression_call(
         SPAN,
         builder.expression_identifier(SPAN, builder.ident("_c")),
@@ -29164,7 +29311,8 @@ mod tests {
         Identifier, IdentifierId, IdentifierName, JsxAttribute, JsxTag, MutableRange,
         ObjectPattern, ObjectProperty, ObjectPropertyKey, ObjectPropertyOrSpread,
         ObjectPropertyType, Pattern, Place, PrimitiveValue, PropertyLiteral,
-        ReactiveScopeDependency, SourceLocation, TemplateQuasi, Type, TypeAnnotationKind,
+        ReactiveScopeDependency, ReactiveStatement, ReactiveTerminal, ReactiveTerminalStatement,
+        SourceLocation, TemplateQuasi, Type, TypeAnnotationKind,
     };
     use crate::reactive_scopes::codegen_reactive::CachePrologue;
     use oxc_allocator::Allocator;
@@ -29273,6 +29421,74 @@ mod tests {
             reactive: false,
             loc: SourceLocation::Generated,
         }
+    }
+
+    #[test]
+    fn directly_lowers_terminal_return_body_shape_from_reactive_block() {
+        let mut cx = test_context();
+        let block = vec![ReactiveStatement::Terminal(ReactiveTerminalStatement {
+            terminal: ReactiveTerminal::Return {
+                value: named_place(0, 0, "value"),
+                id: crate::hir::types::make_instruction_id(0),
+                loc: SourceLocation::Generated,
+            },
+            label: None,
+        })];
+
+        let shape = super::try_build_generated_body_shape_from_reactive_block(&mut cx, &block)
+            .expect("expected direct body shape");
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::ReturnIdentifier("value".to_string())
+        );
+    }
+
+    #[test]
+    fn directly_lowers_terminal_if_body_shape_from_reactive_block() {
+        let mut cx = test_context();
+        let block = vec![ReactiveStatement::Terminal(ReactiveTerminalStatement {
+            terminal: ReactiveTerminal::If {
+                test: named_place(0, 0, "flag"),
+                consequent: vec![ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                    terminal: ReactiveTerminal::Return {
+                        value: named_place(1, 1, "left"),
+                        id: crate::hir::types::make_instruction_id(1),
+                        loc: SourceLocation::Generated,
+                    },
+                    label: None,
+                })],
+                alternate: Some(vec![ReactiveStatement::Terminal(
+                    ReactiveTerminalStatement {
+                        terminal: ReactiveTerminal::Return {
+                            value: named_place(2, 2, "right"),
+                            id: crate::hir::types::make_instruction_id(2),
+                            loc: SourceLocation::Generated,
+                        },
+                        label: None,
+                    },
+                )]),
+                id: crate::hir::types::make_instruction_id(3),
+                loc: SourceLocation::Generated,
+            },
+            label: None,
+        })];
+
+        let shape = super::try_build_generated_body_shape_from_reactive_block(&mut cx, &block)
+            .expect("expected direct body shape");
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::ConditionalBranches {
+                test: "flag".to_string(),
+                consequent: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                    "left".to_string()
+                )),
+                alternate: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                    "right".to_string()
+                )),
+            }
+        );
     }
 
     #[test]
@@ -31527,7 +31743,7 @@ mod tests {
             "let c = $0[0] !== props.value;\nlet results;\nif (c) {\n  results = identity(props.value);\n  $0[0] = props.value;\n  $0[1] = results;\n} else {\n  results = $0[1];\n}\nreturn results;\n",
         );
 
-        let cache_prologue = super::CachePrologue {
+        let cache_prologue = CachePrologue {
             binding_name: "$0".to_string(),
             size: 2,
             fast_refresh: None,
