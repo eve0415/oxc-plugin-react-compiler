@@ -519,11 +519,161 @@ fn generated_body_shape_is_empty(shape: &GeneratedBodyShape) -> bool {
     matches!(shape, GeneratedBodyShape::ExpressionStatements(expressions) if expressions.is_empty())
 }
 
+fn strip_top_level_trailing_return_void(shape: GeneratedBodyShape) -> GeneratedBodyShape {
+    match shape {
+        GeneratedBodyShape::ReturnVoid => GeneratedBodyShape::ExpressionStatements(Vec::new()),
+        GeneratedBodyShape::Block { inner } => GeneratedBodyShape::Block {
+            inner: Box::new(strip_top_level_trailing_return_void(*inner)),
+        },
+        GeneratedBodyShape::Labeled { label, inner } => GeneratedBodyShape::Labeled {
+            label,
+            inner: Box::new(strip_top_level_trailing_return_void(*inner)),
+        },
+        GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } => GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner: Box::new(strip_top_level_trailing_return_void(*inner)),
+        },
+        GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
+            GeneratedBodyShape::PrefixedBindings {
+                bindings,
+                inner: Box::new(strip_top_level_trailing_return_void(*inner)),
+            }
+        }
+        GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
+            GeneratedBodyShape::PrefixedExpressionStatements {
+                expressions,
+                inner: Box::new(strip_top_level_trailing_return_void(*inner)),
+            }
+        }
+        GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
+            GeneratedBodyShape::PrefixedAssignments {
+                assignments,
+                inner: Box::new(strip_top_level_trailing_return_void(*inner)),
+            }
+        }
+        GeneratedBodyShape::Sequential { prefix, inner } => {
+            let prefix = strip_top_level_trailing_return_void(*prefix);
+            let inner = strip_top_level_trailing_return_void(*inner);
+            if generated_body_shape_is_empty(&inner) {
+                prefix
+            } else {
+                GeneratedBodyShape::Sequential {
+                    prefix: Box::new(prefix),
+                    inner: Box::new(inner),
+                }
+            }
+        }
+        other => other,
+    }
+}
+
 fn canonicalize_generated_expression(expr: String) -> String {
-    strip_top_level_parenthesized_expression(expr)
+    let allocator = Allocator::default();
+    if let Some(parsed) = parse_rendered_expression_ast(&allocator, &expr) {
+        codegen_expression_with_flow_cast_restore(&parsed)
+    } else {
+        strip_top_level_parenthesized_expression(expr)
+    }
 }
 
 fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBodyShape {
+    fn build_existing_return_from_cached_prefix(
+        prefix: GeneratedBodyShape,
+    ) -> Option<(String, GeneratedBodyShape)> {
+        match prefix {
+            GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+                sentinel_slot,
+                setup_statements,
+                cached_values,
+                restored_values,
+            } => {
+                let [cached_value] = cached_values.as_slice() else {
+                    return None;
+                };
+                let [restored_value] = restored_values.as_slice() else {
+                    return None;
+                };
+                if cached_value != restored_value || cached_value.slot != sentinel_slot {
+                    return None;
+                }
+                let value_name = cached_value.name.clone();
+                Some((
+                    value_name.clone(),
+                    GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+                        value_name,
+                        value_slot: sentinel_slot,
+                        memoized_bindings: vec![],
+                        memoized_assignments: vec![],
+                        memoized_expressions: vec![],
+                        memoized_setup_statements: setup_statements,
+                        memoized_expr: None,
+                    },
+                ))
+            }
+            GeneratedBodyShape::MemoizedCachedValues {
+                deps,
+                setup_statements,
+                cached_values,
+                restored_values,
+            } => {
+                let [cached_value] = cached_values.as_slice() else {
+                    return None;
+                };
+                let [restored_value] = restored_values.as_slice() else {
+                    return None;
+                };
+                if cached_value != restored_value {
+                    return None;
+                }
+                let value_name = cached_value.name.clone();
+                let value_slot = cached_value.slot;
+                let shape = if deps.len() == 1 {
+                    let (dep_slot, dep_expr) = deps.into_iter().next()?;
+                    GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+                        value_name: value_name.clone(),
+                        dep_slot,
+                        dep_expr,
+                        value_slot,
+                        memoized_bindings: vec![],
+                        memoized_assignments: vec![],
+                        memoized_expressions: vec![],
+                        memoized_setup_statements: setup_statements,
+                        memoized_expr: None,
+                    }
+                } else {
+                    GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+                        value_name: value_name.clone(),
+                        deps,
+                        value_slot,
+                        memoized_bindings: vec![],
+                        memoized_assignments: vec![],
+                        memoized_expressions: vec![],
+                        memoized_setup_statements: setup_statements,
+                        memoized_expr: None,
+                    }
+                };
+                Some((value_name, shape))
+            }
+            GeneratedBodyShape::PrefixedDeclarations {
+                declarations,
+                inner,
+            } => {
+                let (value_name, inner) = build_existing_return_from_cached_prefix(*inner)?;
+                Some((
+                    value_name,
+                    GeneratedBodyShape::PrefixedDeclarations {
+                        declarations,
+                        inner: Box::new(inner),
+                    },
+                ))
+            }
+            _ => None,
+        }
+    }
+
     fn canonicalize_memoized_return(
         value_name: String,
         value_kind: ast::VariableDeclarationKind,
@@ -542,10 +692,79 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
         }
     }
 
+    fn canonicalize_single_target_setup_statement(
+        value_name: &str,
+        setup_statements: Vec<String>,
+        memoized_expr: Option<String>,
+    ) -> (Vec<String>, Option<String>) {
+        if memoized_expr.is_some() || setup_statements.len() != 1 {
+            return (setup_statements, memoized_expr);
+        }
+        let setup_statement = &setup_statements[0];
+        let allocator = Allocator::default();
+        let Ok(statement) = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            setup_statement,
+        ) else {
+            return (setup_statements, memoized_expr);
+        };
+        match statement {
+            ast::Statement::VariableDeclaration(declaration)
+                if declaration.declarations.len() == 1 =>
+            {
+                let declarator = declaration.declarations.first().expect("len checked");
+                let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id else {
+                    return (setup_statements, memoized_expr);
+                };
+                if identifier.name != value_name {
+                    return (setup_statements, memoized_expr);
+                }
+                let Some(init) = declarator.init.as_ref() else {
+                    return (setup_statements, memoized_expr);
+                };
+                (
+                    Vec::new(),
+                    Some(codegen_expression_with_flow_cast_restore(init)),
+                )
+            }
+            ast::Statement::ExpressionStatement(expression_statement) => {
+                let ast::Expression::AssignmentExpression(assignment) =
+                    expression_statement.expression.without_parentheses()
+                else {
+                    return (setup_statements, memoized_expr);
+                };
+                if assignment.operator != AssignmentOperator::Assign {
+                    return (setup_statements, memoized_expr);
+                }
+                let ast::AssignmentTarget::AssignmentTargetIdentifier(identifier) =
+                    &assignment.left
+                else {
+                    return (setup_statements, memoized_expr);
+                };
+                if identifier.name != value_name {
+                    return (setup_statements, memoized_expr);
+                }
+                (
+                    Vec::new(),
+                    Some(codegen_expression_with_flow_cast_restore(&assignment.right)),
+                )
+            }
+            _ => (setup_statements, memoized_expr),
+        }
+    }
+
     match shape {
         GeneratedBodyShape::Unknown => GeneratedBodyShape::Unknown,
-        GeneratedBodyShape::ReturnIdentifier(name) if !is_valid_js_identifier_name(&name) => {
-            GeneratedBodyShape::ReturnExpression(canonicalize_generated_expression(name))
+        GeneratedBodyShape::ReturnIdentifier(name) => {
+            let name = canonicalize_generated_expression(name);
+            if !is_valid_js_identifier_name(&name)
+                || matches!(name.as_str(), "null" | "true" | "false")
+            {
+                GeneratedBodyShape::ReturnExpression(name)
+            } else {
+                GeneratedBodyShape::ReturnIdentifier(name)
+            }
         }
         GeneratedBodyShape::Block { inner } => GeneratedBodyShape::Block {
             inner: Box::new(canonicalize_generated_body_shape(*inner)),
@@ -795,13 +1014,69 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
         GeneratedBodyShape::Sequential { prefix, inner } => {
             let prefix = canonicalize_generated_body_shape(*prefix);
             let inner = canonicalize_generated_body_shape(*inner);
-            if generated_body_shape_is_empty(&inner) {
-                prefix
-            } else {
-                GeneratedBodyShape::Sequential {
+            match (prefix, inner) {
+                (prefix, GeneratedBodyShape::ReturnIdentifier(name))
+                    if build_existing_return_from_cached_prefix(prefix.clone())
+                        .is_some_and(|(value_name, _)| value_name == name) =>
+                {
+                    let (_, shape) = build_existing_return_from_cached_prefix(prefix)
+                        .expect("cached prefix should still decompose");
+                    shape
+                }
+                (prefix, GeneratedBodyShape::ReturnExpression(expression))
+                    if build_existing_return_from_cached_prefix(prefix.clone()).is_some_and(
+                        |(value_name, _)| contains_identifier_token(&expression, &value_name),
+                    ) =>
+                {
+                    let (source_name, inner) = build_existing_return_from_cached_prefix(prefix)
+                        .expect("cached prefix should still decompose");
+                    GeneratedBodyShape::WrappedReturnExpression {
+                        source_name,
+                        expression,
+                        inner: Box::new(inner),
+                    }
+                }
+                (
+                    GeneratedBodyShape::GuardedBody {
+                        test,
+                        inner: consequent_inner,
+                    },
+                    inner,
+                ) => {
+                    let consequent = match consequent_inner.as_ref() {
+                        GeneratedBodyShape::ReturnVoid => Some(None),
+                        GeneratedBodyShape::ReturnIdentifier(name) => Some(Some(name.clone())),
+                        GeneratedBodyShape::ReturnExpression(expression) => {
+                            Some(Some(expression.clone()))
+                        }
+                        _ => None,
+                    };
+                    if let Some(consequent) = consequent {
+                        GeneratedBodyShape::GuardedReturnPrefix {
+                            test,
+                            consequent,
+                            inner: Box::new(inner),
+                        }
+                    } else if generated_body_shape_is_empty(&inner) {
+                        GeneratedBodyShape::GuardedBody {
+                            test,
+                            inner: consequent_inner,
+                        }
+                    } else {
+                        GeneratedBodyShape::Sequential {
+                            prefix: Box::new(GeneratedBodyShape::GuardedBody {
+                                test,
+                                inner: consequent_inner,
+                            }),
+                            inner: Box::new(inner),
+                        }
+                    }
+                }
+                (prefix, inner) if generated_body_shape_is_empty(&inner) => prefix,
+                (prefix, inner) => GeneratedBodyShape::Sequential {
                     prefix: Box::new(prefix),
                     inner: Box::new(inner),
-                }
+                },
             }
         }
         GeneratedBodyShape::ZeroDependencyMemoizedReturn {
@@ -884,31 +1159,39 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             memoized_expressions,
             memoized_setup_statements,
             memoized_expr,
-        } => GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
-            value_name,
-            value_slot,
-            memoized_bindings: memoized_bindings
-                .into_iter()
-                .map(|binding| GeneratedBinding {
-                    kind: binding.kind,
-                    pattern: binding.pattern,
-                    expression: canonicalize_generated_expression(binding.expression),
-                })
-                .collect(),
-            memoized_assignments: memoized_assignments
-                .into_iter()
-                .map(|assignment| GeneratedAssignment {
-                    target: assignment.target,
-                    value: canonicalize_generated_expression(assignment.value),
-                })
-                .collect(),
-            memoized_expressions: memoized_expressions
-                .into_iter()
-                .map(canonicalize_generated_expression)
-                .collect(),
-            memoized_setup_statements,
-            memoized_expr: memoized_expr.map(canonicalize_generated_expression),
-        },
+        } => {
+            let (memoized_setup_statements, memoized_expr) =
+                canonicalize_single_target_setup_statement(
+                    &value_name,
+                    memoized_setup_statements,
+                    memoized_expr,
+                );
+            GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+                value_name,
+                value_slot,
+                memoized_bindings: memoized_bindings
+                    .into_iter()
+                    .map(|binding| GeneratedBinding {
+                        kind: binding.kind,
+                        pattern: binding.pattern,
+                        expression: canonicalize_generated_expression(binding.expression),
+                    })
+                    .collect(),
+                memoized_assignments: memoized_assignments
+                    .into_iter()
+                    .map(|assignment| GeneratedAssignment {
+                        target: assignment.target,
+                        value: canonicalize_generated_expression(assignment.value),
+                    })
+                    .collect(),
+                memoized_expressions: memoized_expressions
+                    .into_iter()
+                    .map(canonicalize_generated_expression)
+                    .collect(),
+                memoized_setup_statements,
+                memoized_expr: memoized_expr.map(canonicalize_generated_expression),
+            }
+        }
         GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
             value_name,
             dep_slot,
@@ -919,33 +1202,41 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             memoized_expressions,
             memoized_setup_statements,
             memoized_expr,
-        } => GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
-            value_name,
-            dep_slot,
-            dep_expr: canonicalize_generated_expression(dep_expr),
-            value_slot,
-            memoized_bindings: memoized_bindings
-                .into_iter()
-                .map(|binding| GeneratedBinding {
-                    kind: binding.kind,
-                    pattern: binding.pattern,
-                    expression: canonicalize_generated_expression(binding.expression),
-                })
-                .collect(),
-            memoized_assignments: memoized_assignments
-                .into_iter()
-                .map(|assignment| GeneratedAssignment {
-                    target: assignment.target,
-                    value: canonicalize_generated_expression(assignment.value),
-                })
-                .collect(),
-            memoized_expressions: memoized_expressions
-                .into_iter()
-                .map(canonicalize_generated_expression)
-                .collect(),
-            memoized_setup_statements,
-            memoized_expr: memoized_expr.map(canonicalize_generated_expression),
-        },
+        } => {
+            let (memoized_setup_statements, memoized_expr) =
+                canonicalize_single_target_setup_statement(
+                    &value_name,
+                    memoized_setup_statements,
+                    memoized_expr,
+                );
+            GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+                value_name,
+                dep_slot,
+                dep_expr: canonicalize_generated_expression(dep_expr),
+                value_slot,
+                memoized_bindings: memoized_bindings
+                    .into_iter()
+                    .map(|binding| GeneratedBinding {
+                        kind: binding.kind,
+                        pattern: binding.pattern,
+                        expression: canonicalize_generated_expression(binding.expression),
+                    })
+                    .collect(),
+                memoized_assignments: memoized_assignments
+                    .into_iter()
+                    .map(|assignment| GeneratedAssignment {
+                        target: assignment.target,
+                        value: canonicalize_generated_expression(assignment.value),
+                    })
+                    .collect(),
+                memoized_expressions: memoized_expressions
+                    .into_iter()
+                    .map(canonicalize_generated_expression)
+                    .collect(),
+                memoized_setup_statements,
+                memoized_expr: memoized_expr.map(canonicalize_generated_expression),
+            }
+        }
         GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
             value_name,
             deps,
@@ -955,35 +1246,43 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             memoized_expressions,
             memoized_setup_statements,
             memoized_expr,
-        } => GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
-            value_name,
-            deps: deps
-                .into_iter()
-                .map(|(slot, expr)| (slot, canonicalize_generated_expression(expr)))
-                .collect(),
-            value_slot,
-            memoized_bindings: memoized_bindings
-                .into_iter()
-                .map(|binding| GeneratedBinding {
-                    kind: binding.kind,
-                    pattern: binding.pattern,
-                    expression: canonicalize_generated_expression(binding.expression),
-                })
-                .collect(),
-            memoized_assignments: memoized_assignments
-                .into_iter()
-                .map(|assignment| GeneratedAssignment {
-                    target: assignment.target,
-                    value: canonicalize_generated_expression(assignment.value),
-                })
-                .collect(),
-            memoized_expressions: memoized_expressions
-                .into_iter()
-                .map(canonicalize_generated_expression)
-                .collect(),
-            memoized_setup_statements,
-            memoized_expr: memoized_expr.map(canonicalize_generated_expression),
-        },
+        } => {
+            let (memoized_setup_statements, memoized_expr) =
+                canonicalize_single_target_setup_statement(
+                    &value_name,
+                    memoized_setup_statements,
+                    memoized_expr,
+                );
+            GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+                value_name,
+                deps: deps
+                    .into_iter()
+                    .map(|(slot, expr)| (slot, canonicalize_generated_expression(expr)))
+                    .collect(),
+                value_slot,
+                memoized_bindings: memoized_bindings
+                    .into_iter()
+                    .map(|binding| GeneratedBinding {
+                        kind: binding.kind,
+                        pattern: binding.pattern,
+                        expression: canonicalize_generated_expression(binding.expression),
+                    })
+                    .collect(),
+                memoized_assignments: memoized_assignments
+                    .into_iter()
+                    .map(|assignment| GeneratedAssignment {
+                        target: assignment.target,
+                        value: canonicalize_generated_expression(assignment.value),
+                    })
+                    .collect(),
+                memoized_expressions: memoized_expressions
+                    .into_iter()
+                    .map(canonicalize_generated_expression)
+                    .collect(),
+                memoized_setup_statements,
+                memoized_expr: memoized_expr.map(canonicalize_generated_expression),
+            }
+        }
         GeneratedBodyShape::MemoizedComputedReturn {
             value_name,
             value_kind,
@@ -1752,7 +2051,9 @@ fn codegen_reactive_function_with_primitives(
     };
     let body_shape = match direct_body_shape {
         Some(direct_body_shape) => {
-            let direct_body_shape = canonicalize_generated_body_shape(direct_body_shape);
+            let direct_body_shape = canonicalize_generated_body_shape(
+                strip_top_level_trailing_return_void(direct_body_shape),
+            );
             if !matches!(analyzed_body_shape, GeneratedBodyShape::Unknown)
                 && direct_body_shape != analyzed_body_shape
             {
@@ -1784,19 +2085,47 @@ fn try_build_generated_body_shape_from_reactive_block(
 ) -> Option<GeneratedBodyShape> {
     match block {
         [] => Some(GeneratedBodyShape::ExpressionStatements(vec![])),
-        [
-            ReactiveStatement::Scope(scope_block),
-            ReactiveStatement::Terminal(term_stmt),
-        ] => try_build_generated_body_shape_from_reactive_scope_return(cx, scope_block, term_stmt),
-        [ReactiveStatement::Scope(scope_block)]
-            if can_inline_direct_scope_shape(&scope_block.scope) =>
-        {
-            try_build_generated_body_shape_from_reactive_block(cx, &scope_block.instructions)
+        [ReactiveStatement::Scope(scope_block), rest @ ..] => {
+            if let [ReactiveStatement::Terminal(term_stmt)] = rest
+                && let Some(shape) = try_build_generated_body_shape_from_reactive_scope_return(
+                    cx,
+                    scope_block,
+                    term_stmt,
+                )
+            {
+                return Some(shape);
+            }
+            if can_inline_direct_scope_shape(&scope_block.scope) {
+                return try_build_generated_body_shape_from_reactive_block(
+                    cx,
+                    &scope_block.instructions,
+                );
+            }
+            let prefix =
+                try_build_generated_body_shape_from_reactive_scope_statement(cx, scope_block)?;
+            let inner = try_build_generated_body_shape_from_reactive_block(cx, rest)?;
+            Some(GeneratedBodyShape::Sequential {
+                prefix: Box::new(prefix),
+                inner: Box::new(inner),
+            })
         }
-        [ReactiveStatement::PrunedScope(scope_block)]
-            if can_inline_direct_scope_shape(&scope_block.scope) =>
-        {
-            try_build_generated_body_shape_from_reactive_block(cx, &scope_block.instructions)
+        [ReactiveStatement::PrunedScope(scope_block), rest @ ..] => {
+            if can_inline_direct_scope_shape(&scope_block.scope) {
+                return try_build_generated_body_shape_from_reactive_block(
+                    cx,
+                    &scope_block.instructions,
+                );
+            }
+            let prefix = try_build_generated_body_shape_from_scope_statement_parts(
+                cx,
+                &scope_block.scope,
+                &scope_block.instructions,
+            )?;
+            let inner = try_build_generated_body_shape_from_reactive_block(cx, rest)?;
+            Some(GeneratedBodyShape::Sequential {
+                prefix: Box::new(prefix),
+                inner: Box::new(inner),
+            })
         }
         [ReactiveStatement::Instruction(instr), rest @ ..] => {
             let should_wrap = apply_direct_prefix_codegen_state(cx, instr);
@@ -1829,8 +2158,117 @@ fn try_build_generated_body_shape_from_reactive_block(
                 inner: Box::new(inner),
             })
         }
-        _ => None,
     }
+}
+
+fn try_render_statement_sources_from_generated_body_shape(
+    shape: &GeneratedBodyShape,
+) -> Option<Vec<String>> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let body = build_function_body_from_generated_shape_for_ast_codegen(
+        builder,
+        &allocator,
+        &FunctionBodyRenderSpec {
+            params: &[],
+            param_names: &[],
+            body_shape: shape,
+            directives: &[],
+            cache_prologue: None,
+            needs_function_hook_guard_wrapper: false,
+            is_async: false,
+            is_generator: false,
+        },
+    )?;
+    Some(
+        body.statements
+            .iter()
+            .map(codegen_statement_with_flow_cast_restore)
+            .collect(),
+    )
+}
+
+fn try_build_generated_body_shape_from_scope_statement_parts(
+    cx: &mut Context,
+    scope: &ReactiveScope,
+    instructions: &ReactiveBlock,
+) -> Option<GeneratedBodyShape> {
+    if scope.merged_id.is_some() || scope.early_return_value.is_some() {
+        return None;
+    }
+    let dep_exprs = collect_direct_scope_dependency_exprs(cx, scope, instructions)?;
+    let computation_shape = try_build_generated_body_shape_from_reactive_block(cx, instructions)?;
+    let setup_statements =
+        try_render_statement_sources_from_generated_body_shape(&computation_shape)?;
+    if setup_statements.is_empty() {
+        return None;
+    }
+
+    let mut declarations = Vec::new();
+    let output_name = if scope.declarations.len() == 1 && scope.reassignments.is_empty() {
+        let output_decl = scope.declarations.values().next()?;
+        let value_name = identifier_name_with_cx(cx, &output_decl.identifier);
+        declarations.push(GeneratedDeclaration {
+            kind: ast::VariableDeclarationKind::Let,
+            pattern: value_name.clone(),
+        });
+        Some(value_name)
+    } else if scope.declarations.is_empty() && scope.reassignments.len() == 1 {
+        let reassignment = &scope.reassignments[0];
+        Some(identifier_name_with_cx(cx, reassignment))
+    } else {
+        None
+    }?;
+    let inner = if dep_exprs.is_empty() {
+        let value_slot = cx.alloc_cache_slot();
+        let cached_values = vec![GeneratedCachedValue {
+            name: output_name.clone(),
+            slot: value_slot,
+        }];
+        let restored_values = cached_values.clone();
+        GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+            sentinel_slot: value_slot,
+            setup_statements,
+            cached_values,
+            restored_values,
+        }
+    } else {
+        let mut deps = Vec::with_capacity(dep_exprs.len());
+        for dep_expr in dep_exprs {
+            deps.push((cx.alloc_cache_slot(), dep_expr));
+        }
+        let value_slot = cx.alloc_cache_slot();
+        let cached_values = vec![GeneratedCachedValue {
+            name: output_name.clone(),
+            slot: value_slot,
+        }];
+        let restored_values = cached_values.clone();
+        GeneratedBodyShape::MemoizedCachedValues {
+            deps,
+            setup_statements,
+            cached_values,
+            restored_values,
+        }
+    };
+    if declarations.is_empty() {
+        Some(inner)
+    } else {
+        Some(GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner: Box::new(inner),
+        })
+    }
+}
+
+fn try_build_generated_body_shape_from_reactive_scope_statement(
+    cx: &mut Context,
+    scope_block: &ReactiveScopeBlock,
+) -> Option<GeneratedBodyShape> {
+    try_build_generated_body_shape_from_scope_statement_parts(
+        cx,
+        &scope_block.scope,
+        &scope_block.instructions,
+    )
 }
 
 fn try_build_generated_body_shape_from_terminal_statement(
@@ -1892,6 +2330,9 @@ fn try_build_generated_body_shape_from_reactive_scope_return(
     scope_block: &ReactiveScopeBlock,
     term_stmt: &ReactiveTerminalStatement,
 ) -> Option<GeneratedBodyShape> {
+    if let Some(shape) = try_build_generated_early_return_scope_return(cx, scope_block, term_stmt) {
+        return Some(shape);
+    }
     if term_stmt.label.is_some() {
         return None;
     }
@@ -1953,6 +2394,105 @@ fn try_build_generated_body_shape_from_reactive_scope_return(
         return None;
     }
     None
+}
+
+fn try_build_generated_early_return_scope_return(
+    cx: &mut Context,
+    scope_block: &ReactiveScopeBlock,
+    term_stmt: &ReactiveTerminalStatement,
+) -> Option<GeneratedBodyShape> {
+    if term_stmt.label.is_some() {
+        return None;
+    }
+    let ReactiveTerminal::Return { value, .. } = &term_stmt.terminal else {
+        return None;
+    };
+    let early_return = scope_block.scope.early_return_value.as_ref()?;
+    let dep_exprs =
+        collect_direct_scope_dependency_exprs(cx, &scope_block.scope, &scope_block.instructions)?;
+    let computation_shape =
+        try_build_generated_body_shape_from_reactive_block(cx, &scope_block.instructions)?;
+    let setup_statements =
+        try_render_statement_sources_from_generated_body_shape(&computation_shape)?;
+    if setup_statements.is_empty() {
+        return None;
+    }
+
+    let mut sorted_decls: Vec<&ScopeDeclaration> =
+        scope_block.scope.declarations.values().collect();
+    sorted_decls.sort_by(|a, b| {
+        identifier_name_static(&a.identifier)
+            .cmp(&identifier_name_static(&b.identifier))
+            .then_with(|| {
+                a.identifier
+                    .declaration_id
+                    .0
+                    .cmp(&b.identifier.declaration_id.0)
+            })
+    });
+    let mut declarations = Vec::with_capacity(sorted_decls.len());
+    let mut cached_values =
+        Vec::with_capacity(sorted_decls.len() + scope_block.scope.reassignments.len());
+    for decl in sorted_decls {
+        let name = identifier_name_with_cx(cx, &decl.identifier);
+        declarations.push(GeneratedDeclaration {
+            kind: ast::VariableDeclarationKind::Let,
+            pattern: name.clone(),
+        });
+        cached_values.push(GeneratedCachedValue { name, slot: 0 });
+    }
+    for reassignment in &scope_block.scope.reassignments {
+        cached_values.push(GeneratedCachedValue {
+            name: identifier_name_with_cx(cx, reassignment),
+            slot: 0,
+        });
+    }
+
+    if cached_values.is_empty() {
+        return None;
+    }
+
+    let mut deps = Vec::with_capacity(dep_exprs.len());
+    for dep_expr in dep_exprs {
+        deps.push((cx.alloc_cache_slot(), dep_expr));
+    }
+    for cached_value in &mut cached_values {
+        cached_value.slot = cx.alloc_cache_slot();
+    }
+    let restored_values = cached_values.clone();
+    let sentinel_name = identifier_name_with_cx(cx, &early_return.value);
+    if !cached_values
+        .iter()
+        .any(|value| value.name == sentinel_name)
+    {
+        return None;
+    }
+    let final_return = if value.identifier.declaration_id == early_return.value.declaration_id {
+        None
+    } else {
+        let final_return = identifier_name_with_cx(cx, &value.identifier);
+        cached_values
+            .iter()
+            .any(|cached_value| cached_value.name == final_return)
+            .then_some(final_return)
+    };
+    let inner = GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+        deps,
+        setup_statements,
+        cached_values,
+        restored_values,
+        sentinel_name,
+        final_return,
+        fallback_body: None,
+    };
+    if declarations.is_empty() {
+        Some(inner)
+    } else {
+        Some(GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner: Box::new(inner),
+        })
+    }
 }
 
 fn try_decompose_direct_memoized_existing_return_shape(
@@ -33534,6 +34074,49 @@ mod tests {
                 consequent: Some("gift".to_string()),
                 inner: Box::new(super::GeneratedBodyShape::ExpressionStatements(Vec::new())),
             }
+        );
+    }
+
+    #[test]
+    fn canonicalizes_guarded_return_prefix_sequence_body_shape() {
+        let shape =
+            super::canonicalize_generated_body_shape(super::GeneratedBodyShape::Sequential {
+                prefix: Box::new(super::GeneratedBodyShape::GuardedBody {
+                    test: "shouldReadA".to_string(),
+                    inner: Box::new(super::GeneratedBodyShape::ReturnExpression(
+                        "a.b.c".to_string(),
+                    )),
+                }),
+                inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                    "null".to_string(),
+                )),
+            });
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::GuardedReturnPrefix {
+                test: "shouldReadA".to_string(),
+                consequent: Some("a.b.c".to_string()),
+                inner: Box::new(super::GeneratedBodyShape::ReturnExpression(
+                    "null".to_string()
+                )),
+            }
+        );
+    }
+
+    #[test]
+    fn strips_top_level_trailing_return_void_from_direct_shape() {
+        let shape =
+            super::strip_top_level_trailing_return_void(super::GeneratedBodyShape::Sequential {
+                prefix: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![
+                    "t0(props)".to_string(),
+                ])),
+                inner: Box::new(super::GeneratedBodyShape::ReturnVoid),
+            });
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::ExpressionStatements(vec!["t0(props)".to_string()])
         );
     }
 
