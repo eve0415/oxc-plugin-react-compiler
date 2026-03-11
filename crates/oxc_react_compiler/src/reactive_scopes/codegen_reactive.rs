@@ -2225,7 +2225,7 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             }
         }
 
-        if statements.len() == 2 {
+        if statements.len() >= 2 {
             let prefix_shape = statement_shape(&statements[0]);
             let allow_prefix_sequence = matches!(
                 prefix_shape,
