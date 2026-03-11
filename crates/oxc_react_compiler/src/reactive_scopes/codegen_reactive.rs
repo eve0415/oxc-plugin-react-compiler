@@ -2719,77 +2719,106 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             let Some(value_name) = binding_identifier_name(&value_decl.id) else {
                 continue;
             };
-            if let Some(init) = value_decl.init.as_ref() {
-                if statement_returns_identifier(&statements[2], &value_name)
-                    && let Some(assigned_expr) =
-                        statement_assigns_identifier_to_expression(&statements[1], &value_name)
-                    && codegen_expression_with_flow_cast_restore(assigned_expr)
-                        == codegen_expression_with_flow_cast_restore(init)
-                {
-                    return GeneratedBodyShape::BoundExpressionReturn {
-                        value_name,
-                        value_kind: value_decl.kind,
-                        expression: codegen_expression_with_flow_cast_restore(init),
-                    };
-                }
-                continue;
-            }
-            if let Some(assigned_expr) =
-                statement_assigns_identifier_to_expression(&statements[1], &value_name)
+            if let Some(init) = value_decl.init.as_ref()
                 && statement_returns_identifier(&statements[2], &value_name)
+                && let Some(assigned_expr) =
+                    statement_assigns_identifier_to_expression(&statements[1], &value_name)
+                && codegen_expression_with_flow_cast_restore(assigned_expr)
+                    == codegen_expression_with_flow_cast_restore(init)
             {
-                return GeneratedBodyShape::AssignedExpressionReturn {
+                return GeneratedBodyShape::BoundExpressionReturn {
                     value_name,
                     value_kind: value_decl.kind,
-                    expression: codegen_expression_with_flow_cast_restore(assigned_expr),
+                    expression: codegen_expression_with_flow_cast_restore(init),
                 };
             }
-            let Some(ast::Statement::IfStatement(if_statement)) = statements.get(1) else {
-                continue;
-            };
-            let Some(alternate) = if_statement.alternate.as_ref() else {
-                continue;
-            };
-            let ast::Statement::BlockStatement(consequent_block) = &if_statement.consequent else {
-                continue;
-            };
-            let ast::Statement::BlockStatement(alternate_block) = alternate else {
-                continue;
-            };
-            if alternate_block.body.len() != 1 {
-                continue;
-            }
-            let binary_test = match if_statement.test.without_parentheses() {
-                ast::Expression::BinaryExpression(test) => Some(test),
-                _ => None,
-            };
-            if let Some(test) = binary_test
-                && test.operator == AstBinaryOperator::StrictEquality
-                && let Some((cache_var, value_slot)) = expression_cache_access(&test.left)
-                && expression_is_symbol_for(&test.right, MEMO_CACHE_SENTINEL)
-            {
-                let (memoized_bindings, binding_prefix_len) =
-                    collect_leading_initialized_bindings(&consequent_block.body);
-                let (memoized_assignments, assignment_prefix_len) =
-                    collect_leading_side_effect_assignments(
-                        &consequent_block.body[binding_prefix_len..],
-                        &value_name,
-                    );
-                let (memoized_expressions, expression_prefix_len) =
-                    collect_leading_expression_statements(
-                        &consequent_block.body[binding_prefix_len + assignment_prefix_len..],
-                    );
-                let setup_len = binding_prefix_len + assignment_prefix_len + expression_prefix_len;
-                if consequent_block.body.len() == setup_len + 2 {
-                    let Some(memoized_expr) = statement_assigns_identifier_to_expression(
-                        &consequent_block.body[setup_len],
-                        &value_name,
-                    )
-                    .map(codegen_expression_with_flow_cast_restore) else {
+            if value_decl.init.is_none() {
+                if let Some(assigned_expr) =
+                    statement_assigns_identifier_to_expression(&statements[1], &value_name)
+                    && statement_returns_identifier(&statements[2], &value_name)
+                {
+                    return GeneratedBodyShape::AssignedExpressionReturn {
+                        value_name,
+                        value_kind: value_decl.kind,
+                        expression: codegen_expression_with_flow_cast_restore(assigned_expr),
+                    };
+                }
+                let Some(ast::Statement::IfStatement(if_statement)) = statements.get(1) else {
+                    continue;
+                };
+                let Some(alternate) = if_statement.alternate.as_ref() else {
+                    continue;
+                };
+                let ast::Statement::BlockStatement(consequent_block) = &if_statement.consequent
+                else {
+                    continue;
+                };
+                let ast::Statement::BlockStatement(alternate_block) = alternate else {
+                    continue;
+                };
+                if alternate_block.body.len() != 1 {
+                    continue;
+                }
+                let binary_test = match if_statement.test.without_parentheses() {
+                    ast::Expression::BinaryExpression(test) => Some(test),
+                    _ => None,
+                };
+                if let Some(test) = binary_test
+                    && test.operator == AstBinaryOperator::StrictEquality
+                    && let Some((cache_var, value_slot)) = expression_cache_access(&test.left)
+                    && expression_is_symbol_for(&test.right, MEMO_CACHE_SENTINEL)
+                {
+                    let (memoized_bindings, binding_prefix_len) =
+                        collect_leading_initialized_bindings(&consequent_block.body);
+                    let (memoized_assignments, assignment_prefix_len) =
+                        collect_leading_side_effect_assignments(
+                            &consequent_block.body[binding_prefix_len..],
+                            &value_name,
+                        );
+                    let (memoized_expressions, expression_prefix_len) =
+                        collect_leading_expression_statements(
+                            &consequent_block.body[binding_prefix_len + assignment_prefix_len..],
+                        );
+                    let setup_len =
+                        binding_prefix_len + assignment_prefix_len + expression_prefix_len;
+                    if consequent_block.body.len() == setup_len + 2 {
+                        let Some(memoized_expr) = statement_assigns_identifier_to_expression(
+                            &consequent_block.body[setup_len],
+                            &value_name,
+                        )
+                        .map(codegen_expression_with_flow_cast_restore) else {
+                            continue;
+                        };
+                        if !statement_assigns_cache_slot_from_identifier(
+                            &consequent_block.body[setup_len + 1],
+                            cache_var,
+                            value_slot,
+                            &value_name,
+                        ) || !statement_assigns_identifier_from_cache_slot(
+                            &alternate_block.body[0],
+                            &value_name,
+                            cache_var,
+                            value_slot,
+                        ) || !statement_returns_identifier(&statements[2], &value_name)
+                        {
+                            continue;
+                        }
+                        return GeneratedBodyShape::ZeroDependencyMemoizedReturn {
+                            value_name,
+                            value_kind: value_decl.kind,
+                            value_slot,
+                            memoized_bindings,
+                            memoized_assignments,
+                            memoized_expressions,
+                            memoized_setup_statements: vec![],
+                            memoized_expr: Some(memoized_expr),
+                        };
+                    }
+                    let Some(last_statement) = consequent_block.body.last() else {
                         continue;
                     };
                     if !statement_assigns_cache_slot_from_identifier(
-                        &consequent_block.body[setup_len + 1],
+                        last_statement,
                         cache_var,
                         value_slot,
                         &value_name,
@@ -2799,7 +2828,16 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                         cache_var,
                         value_slot,
                     ) || !statement_returns_identifier(&statements[2], &value_name)
+                        || consequent_block.body.len() <= setup_len + 1
                     {
+                        continue;
+                    }
+                    let memoized_setup_statements = consequent_block.body
+                        [setup_len..consequent_block.body.len() - 1]
+                        .iter()
+                        .map(codegen_statement_with_flow_cast_restore)
+                        .collect::<Vec<_>>();
+                    if memoized_setup_statements.is_empty() {
                         continue;
                     }
                     return GeneratedBodyShape::ZeroDependencyMemoizedReturn {
@@ -2809,140 +2847,167 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                         memoized_bindings,
                         memoized_assignments,
                         memoized_expressions,
-                        memoized_setup_statements: vec![],
-                        memoized_expr: Some(memoized_expr),
+                        memoized_setup_statements,
+                        memoized_expr: None,
                     };
                 }
-                let Some(last_statement) = consequent_block.body.last() else {
-                    continue;
-                };
-                if !statement_assigns_cache_slot_from_identifier(
-                    last_statement,
-                    cache_var,
-                    value_slot,
-                    &value_name,
-                ) || !statement_assigns_identifier_from_cache_slot(
-                    &alternate_block.body[0],
-                    &value_name,
-                    cache_var,
-                    value_slot,
-                ) || !statement_returns_identifier(&statements[2], &value_name)
-                    || consequent_block.body.len() <= setup_len + 1
+                if let Some(dependency_guards) = collect_dependency_guards(&if_statement.test)
+                    && dependency_guards.len() >= 2
                 {
-                    continue;
-                }
-                let memoized_setup_statements = consequent_block.body
-                    [setup_len..consequent_block.body.len() - 1]
-                    .iter()
-                    .map(codegen_statement_with_flow_cast_restore)
-                    .collect::<Vec<_>>();
-                if memoized_setup_statements.is_empty() {
-                    continue;
-                }
-                return GeneratedBodyShape::ZeroDependencyMemoizedReturn {
-                    value_name,
-                    value_kind: value_decl.kind,
-                    value_slot,
-                    memoized_bindings,
-                    memoized_assignments,
-                    memoized_expressions,
-                    memoized_setup_statements,
-                    memoized_expr: None,
-                };
-            }
-            if let Some(dependency_guards) = collect_dependency_guards(&if_statement.test)
-                && dependency_guards.len() >= 2
-            {
-                let (memoized_bindings, binding_prefix_len) =
-                    collect_leading_initialized_bindings(&consequent_block.body);
-                let (memoized_assignments, assignment_prefix_len) =
-                    collect_leading_side_effect_assignments(
-                        &consequent_block.body[binding_prefix_len..],
-                        &value_name,
-                    );
-                let (memoized_expressions, expression_prefix_len) =
-                    collect_leading_expression_statements(
-                        &consequent_block.body[binding_prefix_len + assignment_prefix_len..],
-                    );
-                let setup_len = binding_prefix_len + assignment_prefix_len + expression_prefix_len;
-                let Some((cache_var, _, _)) = dependency_guards.first() else {
-                    continue;
-                };
-                if consequent_block.body.len() == setup_len + dependency_guards.len() + 2 {
-                    let Some(memoized_expr) = statement_assigns_identifier_to_expression(
-                        &consequent_block.body[setup_len],
-                        &value_name,
-                    )
-                    .map(codegen_expression_with_flow_cast_restore) else {
-                        continue;
-                    };
-                    let mut dep_pairs: Vec<(u32, String)> =
-                        Vec::with_capacity(dependency_guards.len());
-                    let mut guards_match = true;
-                    for (index, (expected_cache_var, dep_slot, dep_expr)) in
-                        dependency_guards.iter().enumerate()
-                    {
-                        let Some((dep_target, dep_value)) = assignment_statement_parts(
-                            &consequent_block.body[setup_len + index + 1],
-                        ) else {
-                            guards_match = false;
-                            break;
-                        };
-                        if assignment_target_cache_access(dep_target)
-                            != Some((expected_cache_var, *dep_slot))
-                            || codegen_expression_with_flow_cast_restore(dep_value) != *dep_expr
-                        {
-                            guards_match = false;
-                            break;
-                        }
-                        dep_pairs.push((*dep_slot, dep_expr.clone()));
-                    }
-                    if !guards_match {
-                        continue;
-                    }
-                    let Some((value_target, value_value)) = assignment_statement_parts(
-                        &consequent_block.body[setup_len + dependency_guards.len() + 1],
-                    ) else {
-                        continue;
-                    };
-                    let Some((assigned_cache_var, value_slot)) =
-                        assignment_target_cache_access(value_target)
-                    else {
-                        continue;
-                    };
-                    if assigned_cache_var != *cache_var
-                        || !expression_is_identifier(value_value, &value_name)
-                        || !statement_assigns_identifier_from_cache_slot(
-                            &alternate_block.body[0],
+                    let (memoized_bindings, binding_prefix_len) =
+                        collect_leading_initialized_bindings(&consequent_block.body);
+                    let (memoized_assignments, assignment_prefix_len) =
+                        collect_leading_side_effect_assignments(
+                            &consequent_block.body[binding_prefix_len..],
                             &value_name,
-                            cache_var,
-                            value_slot,
+                        );
+                    let (memoized_expressions, expression_prefix_len) =
+                        collect_leading_expression_statements(
+                            &consequent_block.body[binding_prefix_len + assignment_prefix_len..],
+                        );
+                    let setup_len =
+                        binding_prefix_len + assignment_prefix_len + expression_prefix_len;
+                    let Some((cache_var, _, _)) = dependency_guards.first() else {
+                        continue;
+                    };
+                    if consequent_block.body.len() == setup_len + dependency_guards.len() + 2 {
+                        let Some(memoized_expr) = statement_assigns_identifier_to_expression(
+                            &consequent_block.body[setup_len],
+                            &value_name,
                         )
-                        || !statement_returns_identifier(&statements[2], &value_name)
-                    {
+                        .map(codegen_expression_with_flow_cast_restore) else {
+                            continue;
+                        };
+                        let mut dep_pairs: Vec<(u32, String)> =
+                            Vec::with_capacity(dependency_guards.len());
+                        let mut guards_match = true;
+                        for (index, (expected_cache_var, dep_slot, dep_expr)) in
+                            dependency_guards.iter().enumerate()
+                        {
+                            let Some((dep_target, dep_value)) = assignment_statement_parts(
+                                &consequent_block.body[setup_len + index + 1],
+                            ) else {
+                                guards_match = false;
+                                break;
+                            };
+                            if assignment_target_cache_access(dep_target)
+                                != Some((expected_cache_var, *dep_slot))
+                                || codegen_expression_with_flow_cast_restore(dep_value) != *dep_expr
+                            {
+                                guards_match = false;
+                                break;
+                            }
+                            dep_pairs.push((*dep_slot, dep_expr.clone()));
+                        }
+                        if !guards_match {
+                            continue;
+                        }
+                        let Some((value_target, value_value)) = assignment_statement_parts(
+                            &consequent_block.body[setup_len + dependency_guards.len() + 1],
+                        ) else {
+                            continue;
+                        };
+                        let Some((assigned_cache_var, value_slot)) =
+                            assignment_target_cache_access(value_target)
+                        else {
+                            continue;
+                        };
+                        if assigned_cache_var != *cache_var
+                            || !expression_is_identifier(value_value, &value_name)
+                            || !statement_assigns_identifier_from_cache_slot(
+                                &alternate_block.body[0],
+                                &value_name,
+                                cache_var,
+                                value_slot,
+                            )
+                            || !statement_returns_identifier(&statements[2], &value_name)
+                        {
+                            continue;
+                        }
+                        return GeneratedBodyShape::MultiDependencyMemoizedReturn {
+                            value_name,
+                            value_kind: value_decl.kind,
+                            deps: dep_pairs,
+                            value_slot,
+                            memoized_bindings,
+                            memoized_assignments,
+                            memoized_expressions,
+                            memoized_setup_statements: vec![],
+                            memoized_expr: Some(memoized_expr),
+                        };
+                    }
+                    if consequent_block.body.len() == setup_len + dependency_guards.len() + 1 {
+                        let mut dep_pairs: Vec<(u32, String)> =
+                            Vec::with_capacity(dependency_guards.len());
+                        let mut guards_match = true;
+                        for (index, (expected_cache_var, dep_slot, dep_expr)) in
+                            dependency_guards.iter().enumerate()
+                        {
+                            let Some((dep_target, dep_value)) = assignment_statement_parts(
+                                &consequent_block.body[setup_len + index],
+                            ) else {
+                                guards_match = false;
+                                break;
+                            };
+                            if assignment_target_cache_access(dep_target)
+                                != Some((expected_cache_var, *dep_slot))
+                                || codegen_expression_with_flow_cast_restore(dep_value) != *dep_expr
+                            {
+                                guards_match = false;
+                                break;
+                            }
+                            dep_pairs.push((*dep_slot, dep_expr.clone()));
+                        }
+                        if !guards_match {
+                            continue;
+                        }
+                        let Some((value_target, value_value)) = assignment_statement_parts(
+                            &consequent_block.body[setup_len + dependency_guards.len()],
+                        ) else {
+                            continue;
+                        };
+                        let Some((assigned_cache_var, value_slot)) =
+                            assignment_target_cache_access(value_target)
+                        else {
+                            continue;
+                        };
+                        if assigned_cache_var != *cache_var
+                            || !expression_is_identifier(value_value, &value_name)
+                            || !statement_assigns_identifier_from_cache_slot(
+                                &alternate_block.body[0],
+                                &value_name,
+                                cache_var,
+                                value_slot,
+                            )
+                            || !statement_returns_identifier(&statements[2], &value_name)
+                        {
+                            continue;
+                        }
+                        return GeneratedBodyShape::MultiDependencyMemoizedReturn {
+                            value_name,
+                            value_kind: value_decl.kind,
+                            deps: dep_pairs,
+                            value_slot,
+                            memoized_bindings,
+                            memoized_assignments,
+                            memoized_expressions,
+                            memoized_setup_statements: vec![],
+                            memoized_expr: None,
+                        };
+                    }
+
+                    if consequent_block.body.len() <= setup_len + dependency_guards.len() + 1 {
                         continue;
                     }
-                    return GeneratedBodyShape::MultiDependencyMemoizedReturn {
-                        value_name,
-                        value_kind: value_decl.kind,
-                        deps: dep_pairs,
-                        value_slot,
-                        memoized_bindings,
-                        memoized_assignments,
-                        memoized_expressions,
-                        memoized_setup_statements: vec![],
-                        memoized_expr: Some(memoized_expr),
-                    };
-                }
-                if consequent_block.body.len() == setup_len + dependency_guards.len() + 1 {
                     let mut dep_pairs: Vec<(u32, String)> =
                         Vec::with_capacity(dependency_guards.len());
                     let mut guards_match = true;
+                    let dep_base = consequent_block.body.len() - (dependency_guards.len() + 1);
                     for (index, (expected_cache_var, dep_slot, dep_expr)) in
                         dependency_guards.iter().enumerate()
                     {
                         let Some((dep_target, dep_value)) =
-                            assignment_statement_parts(&consequent_block.body[setup_len + index])
+                            assignment_statement_parts(&consequent_block.body[dep_base + index])
                         else {
                             guards_match = false;
                             break;
@@ -2959,9 +3024,9 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                     if !guards_match {
                         continue;
                     }
-                    let Some((value_target, value_value)) = assignment_statement_parts(
-                        &consequent_block.body[setup_len + dependency_guards.len()],
-                    ) else {
+                    let Some((value_target, value_value)) =
+                        assignment_statement_parts(consequent_block.body.last().unwrap())
+                    else {
                         continue;
                     };
                     let Some((assigned_cache_var, value_slot)) =
@@ -2978,7 +3043,15 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                             value_slot,
                         )
                         || !statement_returns_identifier(&statements[2], &value_name)
+                        || dep_base <= setup_len
                     {
+                        continue;
+                    }
+                    let memoized_setup_statements = consequent_block.body[setup_len..dep_base]
+                        .iter()
+                        .map(codegen_statement_with_flow_cast_restore)
+                        .collect::<Vec<_>>();
+                    if memoized_setup_statements.is_empty() {
                         continue;
                     }
                     return GeneratedBodyShape::MultiDependencyMemoizedReturn {
@@ -2989,110 +3062,139 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                         memoized_bindings,
                         memoized_assignments,
                         memoized_expressions,
-                        memoized_setup_statements: vec![],
+                        memoized_setup_statements,
                         memoized_expr: None,
                     };
                 }
 
-                if consequent_block.body.len() <= setup_len + dependency_guards.len() + 1 {
-                    continue;
-                }
-                let mut dep_pairs: Vec<(u32, String)> = Vec::with_capacity(dependency_guards.len());
-                let mut guards_match = true;
-                let dep_base = consequent_block.body.len() - (dependency_guards.len() + 1);
-                for (index, (expected_cache_var, dep_slot, dep_expr)) in
-                    dependency_guards.iter().enumerate()
+                if let Some(test) = binary_test
+                    && test.operator == AstBinaryOperator::StrictInequality
                 {
-                    let Some((dep_target, dep_value)) =
-                        assignment_statement_parts(&consequent_block.body[dep_base + index])
-                    else {
-                        guards_match = false;
-                        break;
+                    let (memoized_bindings, binding_prefix_len) =
+                        collect_leading_initialized_bindings(&consequent_block.body);
+                    let (memoized_assignments, assignment_prefix_len) =
+                        collect_leading_side_effect_assignments(
+                            &consequent_block.body[binding_prefix_len..],
+                            &value_name,
+                        );
+                    let (memoized_expressions, expression_prefix_len) =
+                        collect_leading_expression_statements(
+                            &consequent_block.body[binding_prefix_len + assignment_prefix_len..],
+                        );
+                    let setup_len =
+                        binding_prefix_len + assignment_prefix_len + expression_prefix_len;
+                    let Some((cache_var, dep_slot)) = expression_cache_access(&test.left) else {
+                        continue;
                     };
-                    if assignment_target_cache_access(dep_target)
-                        != Some((expected_cache_var, *dep_slot))
-                        || codegen_expression_with_flow_cast_restore(dep_value) != *dep_expr
-                    {
-                        guards_match = false;
-                        break;
+                    let dep_expr = codegen_expression_with_flow_cast_restore(&test.right);
+                    if consequent_block.body.len() == setup_len + 3 {
+                        let Some(memoized_expr) = statement_assigns_identifier_to_expression(
+                            &consequent_block.body[setup_len],
+                            &value_name,
+                        )
+                        .map(codegen_expression_with_flow_cast_restore) else {
+                            continue;
+                        };
+                        let Some((dep_target, dep_value)) =
+                            assignment_statement_parts(&consequent_block.body[setup_len + 1])
+                        else {
+                            continue;
+                        };
+                        if assignment_target_cache_access(dep_target) != Some((cache_var, dep_slot))
+                            || codegen_expression_with_flow_cast_restore(dep_value) != dep_expr
+                        {
+                            continue;
+                        }
+                        let Some((value_target, value_value)) =
+                            assignment_statement_parts(&consequent_block.body[setup_len + 2])
+                        else {
+                            continue;
+                        };
+                        let Some((assigned_cache_var, value_slot)) =
+                            assignment_target_cache_access(value_target)
+                        else {
+                            continue;
+                        };
+                        if assigned_cache_var != cache_var
+                            || !expression_is_identifier(value_value, &value_name)
+                        {
+                            continue;
+                        }
+                        if !statement_assigns_identifier_from_cache_slot(
+                            &alternate_block.body[0],
+                            &value_name,
+                            cache_var,
+                            value_slot,
+                        ) || !statement_returns_identifier(&statements[2], &value_name)
+                        {
+                            continue;
+                        }
+                        return GeneratedBodyShape::SingleDependencyMemoizedReturn {
+                            value_name,
+                            value_kind: value_decl.kind,
+                            dep_slot,
+                            dep_expr,
+                            value_slot,
+                            memoized_bindings,
+                            memoized_assignments,
+                            memoized_expressions,
+                            memoized_setup_statements: vec![],
+                            memoized_expr: Some(memoized_expr),
+                        };
                     }
-                    dep_pairs.push((*dep_slot, dep_expr.clone()));
-                }
-                if !guards_match {
-                    continue;
-                }
-                let Some((value_target, value_value)) =
-                    assignment_statement_parts(consequent_block.body.last().unwrap())
-                else {
-                    continue;
-                };
-                let Some((assigned_cache_var, value_slot)) =
-                    assignment_target_cache_access(value_target)
-                else {
-                    continue;
-                };
-                if assigned_cache_var != *cache_var
-                    || !expression_is_identifier(value_value, &value_name)
-                    || !statement_assigns_identifier_from_cache_slot(
-                        &alternate_block.body[0],
-                        &value_name,
-                        cache_var,
-                        value_slot,
-                    )
-                    || !statement_returns_identifier(&statements[2], &value_name)
-                    || dep_base <= setup_len
-                {
-                    continue;
-                }
-                let memoized_setup_statements = consequent_block.body[setup_len..dep_base]
-                    .iter()
-                    .map(codegen_statement_with_flow_cast_restore)
-                    .collect::<Vec<_>>();
-                if memoized_setup_statements.is_empty() {
-                    continue;
-                }
-                return GeneratedBodyShape::MultiDependencyMemoizedReturn {
-                    value_name,
-                    value_kind: value_decl.kind,
-                    deps: dep_pairs,
-                    value_slot,
-                    memoized_bindings,
-                    memoized_assignments,
-                    memoized_expressions,
-                    memoized_setup_statements,
-                    memoized_expr: None,
-                };
-            }
+                    if consequent_block.body.len() == setup_len + 2 {
+                        let Some((dep_target, dep_value)) =
+                            assignment_statement_parts(&consequent_block.body[setup_len])
+                        else {
+                            continue;
+                        };
+                        if assignment_target_cache_access(dep_target) != Some((cache_var, dep_slot))
+                            || codegen_expression_with_flow_cast_restore(dep_value) != dep_expr
+                        {
+                            continue;
+                        }
+                        let Some((value_target, value_value)) =
+                            assignment_statement_parts(&consequent_block.body[setup_len + 1])
+                        else {
+                            continue;
+                        };
+                        let Some((assigned_cache_var, value_slot)) =
+                            assignment_target_cache_access(value_target)
+                        else {
+                            continue;
+                        };
+                        if assigned_cache_var != cache_var
+                            || !expression_is_identifier(value_value, &value_name)
+                            || !statement_assigns_identifier_from_cache_slot(
+                                &alternate_block.body[0],
+                                &value_name,
+                                cache_var,
+                                value_slot,
+                            )
+                            || !statement_returns_identifier(&statements[2], &value_name)
+                        {
+                            continue;
+                        }
+                        return GeneratedBodyShape::SingleDependencyMemoizedReturn {
+                            value_name,
+                            value_kind: value_decl.kind,
+                            dep_slot,
+                            dep_expr,
+                            value_slot,
+                            memoized_bindings,
+                            memoized_assignments,
+                            memoized_expressions,
+                            memoized_setup_statements: vec![],
+                            memoized_expr: None,
+                        };
+                    }
 
-            if let Some(test) = binary_test
-                && test.operator == AstBinaryOperator::StrictInequality
-            {
-                let (memoized_bindings, binding_prefix_len) =
-                    collect_leading_initialized_bindings(&consequent_block.body);
-                let (memoized_assignments, assignment_prefix_len) =
-                    collect_leading_side_effect_assignments(
-                        &consequent_block.body[binding_prefix_len..],
-                        &value_name,
-                    );
-                let (memoized_expressions, expression_prefix_len) =
-                    collect_leading_expression_statements(
-                        &consequent_block.body[binding_prefix_len + assignment_prefix_len..],
-                    );
-                let setup_len = binding_prefix_len + assignment_prefix_len + expression_prefix_len;
-                let Some((cache_var, dep_slot)) = expression_cache_access(&test.left) else {
-                    continue;
-                };
-                let dep_expr = codegen_expression_with_flow_cast_restore(&test.right);
-                if consequent_block.body.len() == setup_len + 3 {
-                    let Some(memoized_expr) = statement_assigns_identifier_to_expression(
-                        &consequent_block.body[setup_len],
-                        &value_name,
-                    )
-                    .map(codegen_expression_with_flow_cast_restore) else {
+                    if consequent_block.body.len() <= setup_len + 2 {
                         continue;
-                    };
+                    }
+                    let dep_base = consequent_block.body.len() - 2;
                     let Some((dep_target, dep_value)) =
-                        assignment_statement_parts(&consequent_block.body[setup_len + 1])
+                        assignment_statement_parts(&consequent_block.body[dep_base])
                     else {
                         continue;
                     };
@@ -3101,56 +3203,10 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                     {
                         continue;
                     }
-                    let Some((value_target, value_value)) =
-                        assignment_statement_parts(&consequent_block.body[setup_len + 2])
-                    else {
-                        continue;
-                    };
-                    let Some((assigned_cache_var, value_slot)) =
-                        assignment_target_cache_access(value_target)
-                    else {
-                        continue;
-                    };
-                    if assigned_cache_var != cache_var
-                        || !expression_is_identifier(value_value, &value_name)
-                    {
-                        continue;
-                    }
-                    if !statement_assigns_identifier_from_cache_slot(
-                        &alternate_block.body[0],
-                        &value_name,
-                        cache_var,
-                        value_slot,
-                    ) || !statement_returns_identifier(&statements[2], &value_name)
-                    {
-                        continue;
-                    }
-                    return GeneratedBodyShape::SingleDependencyMemoizedReturn {
-                        value_name,
-                        value_kind: value_decl.kind,
-                        dep_slot,
-                        dep_expr,
-                        value_slot,
-                        memoized_bindings,
-                        memoized_assignments,
-                        memoized_expressions,
-                        memoized_setup_statements: vec![],
-                        memoized_expr: Some(memoized_expr),
-                    };
-                }
-                if consequent_block.body.len() == setup_len + 2 {
-                    let Some((dep_target, dep_value)) =
-                        assignment_statement_parts(&consequent_block.body[setup_len])
-                    else {
-                        continue;
-                    };
-                    if assignment_target_cache_access(dep_target) != Some((cache_var, dep_slot))
-                        || codegen_expression_with_flow_cast_restore(dep_value) != dep_expr
-                    {
-                        continue;
-                    }
-                    let Some((value_target, value_value)) =
-                        assignment_statement_parts(&consequent_block.body[setup_len + 1])
+                    let Some((value_target, value_value)) = consequent_block
+                        .body
+                        .last()
+                        .and_then(assignment_statement_parts)
                     else {
                         continue;
                     };
@@ -3168,7 +3224,15 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                             value_slot,
                         )
                         || !statement_returns_identifier(&statements[2], &value_name)
+                        || dep_base <= setup_len
                     {
+                        continue;
+                    }
+                    let memoized_setup_statements = consequent_block.body[setup_len..dep_base]
+                        .iter()
+                        .map(codegen_statement_with_flow_cast_restore)
+                        .collect::<Vec<_>>();
+                    if memoized_setup_statements.is_empty() {
                         continue;
                     }
                     return GeneratedBodyShape::SingleDependencyMemoizedReturn {
@@ -3180,69 +3244,10 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                         memoized_bindings,
                         memoized_assignments,
                         memoized_expressions,
-                        memoized_setup_statements: vec![],
+                        memoized_setup_statements,
                         memoized_expr: None,
                     };
                 }
-
-                if consequent_block.body.len() <= setup_len + 2 {
-                    continue;
-                }
-                let dep_base = consequent_block.body.len() - 2;
-                let Some((dep_target, dep_value)) =
-                    assignment_statement_parts(&consequent_block.body[dep_base])
-                else {
-                    continue;
-                };
-                if assignment_target_cache_access(dep_target) != Some((cache_var, dep_slot))
-                    || codegen_expression_with_flow_cast_restore(dep_value) != dep_expr
-                {
-                    continue;
-                }
-                let Some((value_target, value_value)) = consequent_block
-                    .body
-                    .last()
-                    .and_then(assignment_statement_parts)
-                else {
-                    continue;
-                };
-                let Some((assigned_cache_var, value_slot)) =
-                    assignment_target_cache_access(value_target)
-                else {
-                    continue;
-                };
-                if assigned_cache_var != cache_var
-                    || !expression_is_identifier(value_value, &value_name)
-                    || !statement_assigns_identifier_from_cache_slot(
-                        &alternate_block.body[0],
-                        &value_name,
-                        cache_var,
-                        value_slot,
-                    )
-                    || !statement_returns_identifier(&statements[2], &value_name)
-                    || dep_base <= setup_len
-                {
-                    continue;
-                }
-                let memoized_setup_statements = consequent_block.body[setup_len..dep_base]
-                    .iter()
-                    .map(codegen_statement_with_flow_cast_restore)
-                    .collect::<Vec<_>>();
-                if memoized_setup_statements.is_empty() {
-                    continue;
-                }
-                return GeneratedBodyShape::SingleDependencyMemoizedReturn {
-                    value_name,
-                    value_kind: value_decl.kind,
-                    dep_slot,
-                    dep_expr,
-                    value_slot,
-                    memoized_bindings,
-                    memoized_assignments,
-                    memoized_expressions,
-                    memoized_setup_statements,
-                    memoized_expr: None,
-                };
             }
         }
 
@@ -30596,5 +30601,50 @@ mod tests {
                 && memoized_setup_statements == &vec!["items = [];".to_string(), "items.push(props.a);".to_string()]
                 && memoized_expr.is_none()
         ));
+    }
+
+    #[test]
+    fn analyzes_initialized_decl_then_if_then_expression_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "const newSelected = new Set(selected);\nif (newSelected.has(value)) {\n  newSelected.delete(value);\n} else {\n  newSelected.add(value);\n}\nsetSelected(newSelected);\n",
+        );
+
+        let super::GeneratedBodyShape::Sequential { prefix, inner } = shape else {
+            panic!("expected sequential shape, got {shape:?}");
+        };
+        let super::GeneratedBodyShape::PrefixedBindings {
+            bindings,
+            inner: prefixed_inner,
+        } = prefix.as_ref()
+        else {
+            panic!("expected prefixed bindings prefix, got {prefix:?}");
+        };
+        assert_eq!(
+            bindings.as_slice(),
+            vec![super::GeneratedBinding {
+                kind: ast::VariableDeclarationKind::Const,
+                pattern: "newSelected".to_string(),
+                expression: "new Set(selected)".to_string(),
+            }]
+            .as_slice()
+        );
+        assert_eq!(
+            prefixed_inner.as_ref(),
+            &super::GeneratedBodyShape::ConditionalBranches {
+                test: "newSelected.has(value)".to_string(),
+                consequent: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![
+                    "newSelected.delete(value)".to_string(),
+                ])),
+                alternate: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![
+                    "newSelected.add(value)".to_string(),
+                ])),
+            }
+        );
+        assert_eq!(
+            inner.as_ref(),
+            &super::GeneratedBodyShape::ExpressionStatements(vec![
+                "setSelected(newSelected)".to_string(),
+            ])
+        );
     }
 }
