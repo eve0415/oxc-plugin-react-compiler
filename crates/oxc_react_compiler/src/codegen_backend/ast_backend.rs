@@ -3111,6 +3111,28 @@ fn try_build_function_body_from_shape<'a>(
             builder.vec(),
             build_generated_assignment_statements(builder, allocator, source_type, assignments)?,
         )),
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedBody {
+            test,
+            inner,
+        } => {
+            let inner = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                inner.as_ref(),
+                cache_prologue,
+            )?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_if(
+                    SPAN,
+                    parse_expression_source(allocator, source_type, test).ok()?,
+                    builder.statement_block(SPAN, inner.statements),
+                    None,
+                )),
+            ))
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedExpressionStatements {
             test,
             expressions,
@@ -3360,6 +3382,7 @@ fn try_build_function_body_from_shape<'a>(
             restored_values,
             sentinel_name,
             final_return,
+            fallback_body,
         } => {
             let cache_binding_name = &cache_prologue?.binding_name;
             let mut dep_assignments = builder.vec();
@@ -3439,6 +3462,15 @@ fn try_build_function_body_from_shape<'a>(
                     SPAN,
                     Some(builder.expression_identifier(SPAN, builder.ident(final_return))),
                 ));
+            } else if let Some(fallback_body) = fallback_body {
+                let fallback_body = try_build_function_body_from_shape(
+                    builder,
+                    allocator,
+                    source_type,
+                    fallback_body.as_ref(),
+                    cache_prologue,
+                )?;
+                body.extend(fallback_body.statements);
             }
 
             Some(builder.function_body(SPAN, builder.vec(), body))

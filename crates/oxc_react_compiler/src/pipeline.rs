@@ -1204,6 +1204,13 @@ fn codegen_outlined_function(
                     assignment.value = replace_identifier_tokens(&assignment.value, from, to);
                 }
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedBody {
+                test,
+                inner,
+            } => {
+                *test = replace_identifier_tokens(test, from, to);
+                rename_generated_body_shape(inner, from, to);
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedExpressionStatements {
                 test,
                 expressions,
@@ -1307,6 +1314,7 @@ fn codegen_outlined_function(
                 restored_values,
                 sentinel_name,
                 final_return,
+                fallback_body,
             } => {
                 for (_, dep_expr) in deps {
                     *dep_expr = replace_identifier_tokens(dep_expr, from, to);
@@ -1329,6 +1337,9 @@ fn codegen_outlined_function(
                 }
                 if final_return.as_deref() == Some(from) {
                     *final_return = Some(to.to_string());
+                }
+                if let Some(fallback_body) = fallback_body {
+                    rename_generated_body_shape(fallback_body, from, to);
                 }
             }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::TryCatch {
@@ -1853,6 +1864,66 @@ fn outlined_function_needs_backend_render(
         .is_some_and(|rendered_body| {
             !compiled_function_body_matches_hir(rendered_body, hir_function)
         })
+}
+
+fn generated_body_shape_is_nonmemoized_hir_lowerable(
+    body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
+) -> bool {
+    use crate::reactive_scopes::codegen_reactive::GeneratedBodyShape as Shape;
+
+    match body_shape {
+        Shape::Unknown => false,
+        Shape::ExpressionStatements(_)
+        | Shape::AssignmentStatements(_)
+        | Shape::GuardedExpressionStatements { .. }
+        | Shape::GuardedAssignments { .. }
+        | Shape::GuardedAssignmentExpressions { .. }
+        | Shape::ReturnVoid
+        | Shape::ReturnIdentifier(_)
+        | Shape::ReturnExpression(_)
+        | Shape::BoundExpressionReturn { .. }
+        | Shape::AssignedExpressionReturn { .. } => true,
+        Shape::GuardedBody { inner, .. }
+        | Shape::GuardedReturnPrefix { inner, .. }
+        | Shape::WrappedReturnExpression { inner, .. }
+        | Shape::AssignedAliasReturn { inner, .. }
+        | Shape::AliasedReturn { inner, .. }
+        | Shape::PrefixedDeclarations { inner, .. }
+        | Shape::PrefixedBindings { inner, .. }
+        | Shape::PrefixedExpressionStatements { inner, .. }
+        | Shape::PrefixedAssignments { inner, .. } => {
+            generated_body_shape_is_nonmemoized_hir_lowerable(inner)
+        }
+        Shape::ConditionalBranches {
+            consequent,
+            alternate,
+            ..
+        } => {
+            generated_body_shape_is_nonmemoized_hir_lowerable(consequent)
+                && generated_body_shape_is_nonmemoized_hir_lowerable(alternate)
+        }
+        Shape::TryCatch {
+            try_body,
+            catch_body,
+            ..
+        } => {
+            generated_body_shape_is_nonmemoized_hir_lowerable(try_body)
+                && generated_body_shape_is_nonmemoized_hir_lowerable(catch_body)
+        }
+        Shape::Sequential { prefix, inner } => {
+            generated_body_shape_is_nonmemoized_hir_lowerable(prefix)
+                && generated_body_shape_is_nonmemoized_hir_lowerable(inner)
+        }
+        Shape::ZeroDependencyMemoizedCachedValues { .. }
+        | Shape::MemoizedCachedValues { .. }
+        | Shape::MemoizedEarlyReturnSentinel { .. }
+        | Shape::ZeroDependencyMemoizedReturn { .. }
+        | Shape::SingleDependencyMemoizedReturn { .. }
+        | Shape::SingleDependencyMemoizedExistingReturn { .. }
+        | Shape::MultiDependencyMemoizedReturn { .. }
+        | Shape::MultiDependencyMemoizedExistingReturn { .. }
+        | Shape::SingleSlotMemoizedReturn { .. } => false,
+    }
 }
 
 fn compiled_function_body_matches_hir(generated_body: &str, hir_function: &HIRFunction) -> bool {
@@ -6285,16 +6356,18 @@ fn try_compile_function<'a>(
 
     let needs_cache_import =
         codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
+    let generated_body_shape = codegen_result.body_shape.clone();
     let body_payload = if !needs_cache_import
         && outlined_functions_are_hir_lowerable(&outlined)
-        && generated_body.as_ref().is_some_and(|generated_body| {
+        && (generated_body.as_ref().is_some_and(|generated_body| {
             compiled_function_body_matches_hir(generated_body, &pipeline_output.final_hir_snapshot)
-        }) {
+        }) || generated_body.is_none()
+            && generated_body_shape_is_nonmemoized_hir_lowerable(&generated_body_shape))
+    {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
         CompiledBodyPayload::GeneratedString
     };
-    let generated_body_shape = codegen_result.body_shape.clone();
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -6506,16 +6579,18 @@ fn try_compile_function_with_name<'a>(
 
     let needs_cache_import =
         codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
+    let generated_body_shape = codegen_result.body_shape.clone();
     let body_payload = if !needs_cache_import
         && outlined_functions_are_hir_lowerable(&outlined)
-        && generated_body.as_ref().is_some_and(|generated_body| {
+        && (generated_body.as_ref().is_some_and(|generated_body| {
             compiled_function_body_matches_hir(generated_body, &pipeline_output.final_hir_snapshot)
-        }) {
+        }) || generated_body.is_none()
+            && generated_body_shape_is_nonmemoized_hir_lowerable(&generated_body_shape))
+    {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
         CompiledBodyPayload::GeneratedString
     };
-    let generated_body_shape = codegen_result.body_shape.clone();
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -6735,16 +6810,18 @@ fn try_compile_arrow<'a>(
 
     let needs_cache_import =
         codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
+    let generated_body_shape = codegen_result.body_shape.clone();
     let body_payload = if !needs_cache_import
         && outlined_functions_are_hir_lowerable(&outlined)
-        && generated_body.as_ref().is_some_and(|generated_body| {
+        && (generated_body.as_ref().is_some_and(|generated_body| {
             compiled_function_body_matches_hir(generated_body, &pipeline_output.final_hir_snapshot)
-        }) {
+        }) || generated_body.is_none()
+            && generated_body_shape_is_nonmemoized_hir_lowerable(&generated_body_shape))
+    {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
         CompiledBodyPayload::GeneratedString
     };
-    let generated_body_shape = codegen_result.body_shape.clone();
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -8257,7 +8334,8 @@ mod tests {
     use crate::options::PluginOptions;
 
     use super::{
-        extract_emitted_directives, params_to_result, rewrite_inline_empty_arrow_callback,
+        extract_emitted_directives, generated_body_shape_is_nonmemoized_hir_lowerable,
+        params_to_result, rewrite_inline_empty_arrow_callback,
     };
 
     #[test]
@@ -8332,5 +8410,43 @@ mod tests {
 
         assert_eq!(rewritten, source);
         assert!(outlined.is_empty());
+    }
+
+    #[test]
+    fn nonmemoized_hir_lowerable_shape_accepts_guarded_sequential_bodies() {
+        let shape = crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Sequential {
+            prefix: Box::new(
+                crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedExpressionStatements {
+                    test: "props.cond".to_string(),
+                    expressions: vec!["foo()".to_string()],
+                },
+            ),
+            inner: Box::new(
+                crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(
+                    "x".to_string(),
+                ),
+            ),
+        };
+
+        assert!(generated_body_shape_is_nonmemoized_hir_lowerable(&shape));
+    }
+
+    #[test]
+    fn nonmemoized_hir_lowerable_shape_rejects_memoized_bodies() {
+        let shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleDependencyMemoizedReturn {
+                value_name: "x".to_string(),
+                value_kind: ast::VariableDeclarationKind::Let,
+                dep_slot: 0,
+                dep_expr: "props.value".to_string(),
+                value_slot: 1,
+                memoized_bindings: vec![],
+                memoized_assignments: vec![],
+                memoized_expressions: vec![],
+                memoized_setup_statements: vec![],
+                memoized_expr: Some("props.value".to_string()),
+            };
+
+        assert!(!generated_body_shape_is_nonmemoized_hir_lowerable(&shape));
     }
 }

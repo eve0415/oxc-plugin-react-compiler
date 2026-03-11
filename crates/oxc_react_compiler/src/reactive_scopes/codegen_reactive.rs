@@ -158,6 +158,10 @@ pub enum GeneratedBodyShape {
     Unknown,
     ExpressionStatements(Vec<String>),
     AssignmentStatements(Vec<GeneratedAssignment>),
+    GuardedBody {
+        test: String,
+        inner: Box<GeneratedBodyShape>,
+    },
     GuardedExpressionStatements {
         test: String,
         expressions: Vec<String>,
@@ -200,6 +204,7 @@ pub enum GeneratedBodyShape {
         restored_values: Vec<GeneratedCachedValue>,
         sentinel_name: String,
         final_return: Option<String>,
+        fallback_body: Option<Box<GeneratedBodyShape>>,
     },
     TryCatch {
         catch_param: Option<String>,
@@ -986,6 +991,7 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             GeneratedBodyShape::Unknown => None,
             GeneratedBodyShape::ExpressionStatements(_) => None,
             GeneratedBodyShape::AssignmentStatements(_) => None,
+            GeneratedBodyShape::GuardedBody { .. } => None,
             GeneratedBodyShape::GuardedExpressionStatements { .. } => None,
             GeneratedBodyShape::GuardedReturnPrefix { .. } => None,
             GeneratedBodyShape::ConditionalBranches { .. } => None,
@@ -1517,6 +1523,7 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             && matches!(
                 statements.get(1),
                 Some(ast::Statement::ExpressionStatement(_))
+                    | Some(ast::Statement::ReturnStatement(_))
             )
         {
             candidates.push(1);
@@ -1719,21 +1726,34 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             };
         }
 
-        if (statements.len() == 2 || statements.len() == 3)
+        if statements.len() >= 2
             && let Some(ast::Statement::IfStatement(if_statement)) = statements.first()
             && let Some(alternate) = if_statement.alternate.as_ref()
             && let ast::Statement::BlockStatement(consequent_block) = &if_statement.consequent
             && let ast::Statement::BlockStatement(alternate_block) = alternate
             && let Some(sentinel_name) = sentinel_guard_return_name(&statements[1])
         {
-            let final_return = match statements.get(2) {
-                Some(statement) => statement_returns_identifier_name(statement),
-                None => Some(String::new()),
+            let (final_return, fallback_body) = if statements.len() == 2 {
+                (None, None)
+            } else if statements.len() == 3 {
+                if let Some(final_return) = statement_returns_identifier_name(&statements[2]) {
+                    (Some(final_return), None)
+                } else {
+                    let tail_source = codegen_statements_with_flow_cast_restore(&statements[2..]);
+                    let tail_shape = analyze_generated_body_shape_impl(&tail_source, true);
+                    if matches!(tail_shape, GeneratedBodyShape::Unknown) {
+                        continue;
+                    }
+                    (None, Some(Box::new(tail_shape)))
+                }
+            } else {
+                let tail_source = codegen_statements_with_flow_cast_restore(&statements[2..]);
+                let tail_shape = analyze_generated_body_shape_impl(&tail_source, true);
+                if matches!(tail_shape, GeneratedBodyShape::Unknown) {
+                    continue;
+                }
+                (None, Some(Box::new(tail_shape)))
             };
-            let Some(final_return) = final_return else {
-                continue;
-            };
-            let final_return = (!final_return.is_empty()).then_some(final_return);
             let Some(dependency_guards) = collect_dependency_guards(&if_statement.test) else {
                 continue;
             };
@@ -1799,6 +1819,7 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                 restored_values,
                 sentinel_name,
                 final_return,
+                fallback_body,
             };
         }
 
@@ -1984,6 +2005,27 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             }
         }
 
+        if let [ast::Statement::IfStatement(if_statement)] = statements.as_slice()
+            && if_statement.alternate.is_none()
+        {
+            let ast::Statement::BlockStatement(consequent_block) = &if_statement.consequent else {
+                continue;
+            };
+            let consequent_shape = if consequent_block.body.is_empty() {
+                GeneratedBodyShape::ExpressionStatements(Vec::new())
+            } else {
+                let consequent_source =
+                    codegen_statements_with_flow_cast_restore(&consequent_block.body);
+                analyze_generated_body_shape_impl(&consequent_source, true)
+            };
+            if !matches!(consequent_shape, GeneratedBodyShape::Unknown) {
+                return GeneratedBodyShape::GuardedBody {
+                    test: codegen_expression_with_flow_cast_restore(&if_statement.test),
+                    inner: Box::new(consequent_shape),
+                };
+            }
+        }
+
         if statements.len() >= 2
             && let Some(ast::Statement::ReturnStatement(return_stmt)) = statements.last()
             && let Some(argument) = return_stmt.argument.as_ref()
@@ -2108,6 +2150,23 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                     value_kind: declaration.kind,
                     expression: codegen_expression_with_flow_cast_restore(init),
                 };
+            }
+        }
+
+        if statements.len() == 2
+            && let Some(ast::Statement::IfStatement(if_statement)) = statements.first()
+            && if_statement.alternate.is_none()
+        {
+            let prefix_shape = statement_shape(&statements[0]);
+            if !matches!(prefix_shape, GeneratedBodyShape::Unknown) {
+                let suffix_source = codegen_statements_with_flow_cast_restore(&statements[1..]);
+                let inner_shape = analyze_generated_body_shape_impl(&suffix_source, true);
+                if !matches!(inner_shape, GeneratedBodyShape::Unknown) {
+                    return GeneratedBodyShape::Sequential {
+                        prefix: Box::new(prefix_shape),
+                        inner: Box::new(inner_shape),
+                    };
+                }
             }
         }
 
@@ -24257,6 +24316,37 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             builder.vec(),
             build_generated_assignment_statements_ast(builder, allocator, assignments)?,
         )),
+        GeneratedBodyShape::GuardedBody { test, inner } => {
+            let test =
+                parse_expression_for_ast_codegen(allocator, SourceType::mjs().with_jsx(true), test)
+                    .ok()?;
+            let inner_spec = FunctionBodyRenderSpec {
+                params: spec.params,
+                param_names: spec.param_names,
+                body_source: spec.body_source,
+                body_shape: inner.as_ref(),
+                directives: &[],
+                cache_prologue: spec.cache_prologue,
+                needs_function_hook_guard_wrapper: false,
+                is_async: spec.is_async,
+                is_generator: spec.is_generator,
+            };
+            let inner_body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder,
+                allocator,
+                &inner_spec,
+            )?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_if(
+                    SPAN,
+                    test,
+                    builder.statement_block(SPAN, inner_body.statements),
+                    None,
+                )),
+            ))
+        }
         GeneratedBodyShape::GuardedExpressionStatements { test, expressions } => {
             let test =
                 parse_expression_for_ast_codegen(allocator, SourceType::mjs().with_jsx(true), test)
@@ -24585,6 +24675,7 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             restored_values,
             sentinel_name,
             final_return,
+            fallback_body,
         } => {
             let cache_binding_name = spec.cache_prologue.as_ref()?.binding_name.as_str();
             let mut dep_assignments = builder.vec();
@@ -24692,6 +24783,24 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                     SPAN,
                     Some(builder.expression_identifier(SPAN, builder.ident(final_return))),
                 ));
+            } else if let Some(fallback_body) = fallback_body {
+                let fallback_spec = FunctionBodyRenderSpec {
+                    params: spec.params,
+                    param_names: spec.param_names,
+                    body_source: spec.body_source,
+                    body_shape: fallback_body.as_ref(),
+                    directives: &[],
+                    cache_prologue: spec.cache_prologue,
+                    needs_function_hook_guard_wrapper: false,
+                    is_async: spec.is_async,
+                    is_generator: spec.is_generator,
+                };
+                let fallback_body = build_function_body_from_generated_shape_for_ast_codegen(
+                    builder,
+                    allocator,
+                    &fallback_spec,
+                )?;
+                statements.extend(fallback_body.statements);
             }
             Some(builder.function_body(SPAN, builder.vec(), statements))
         }
@@ -29732,9 +29841,11 @@ mod tests {
                 restored_values,
                 sentinel_name,
                 final_return,
+                fallback_body,
             } if deps == &vec![(0, "cond".to_string())]
                 && sentinel_name == "t0"
                 && final_return.as_deref() == Some("s")
+                && fallback_body.is_none()
                 && setup_statements == &vec![
                     "t0 = Symbol.for(\"react.early_return_sentinel\");".to_string(),
                     "bb0: {\n  if (cond) {\n    s = {};\n  } else {\n    t0 = null;\n    break bb0;\n  }\n  mutate(s);\n}".to_string(),
@@ -29771,12 +29882,14 @@ mod tests {
                 deps,
                 sentinel_name,
                 final_return,
+                fallback_body,
                 cached_values,
                 restored_values,
                 ..
             } if deps == &vec![(0, "props.cond".to_string()), (1, "props.value".to_string())]
                 && sentinel_name == "t0"
                 && final_return.is_none()
+                && fallback_body.is_none()
                 && cached_values == &vec![
                     super::GeneratedCachedValue { name: "t0".to_string(), slot: 2 },
                 ]
@@ -29784,6 +29897,69 @@ mod tests {
                     super::GeneratedCachedValue { name: "t0".to_string(), slot: 2 },
                 ]
         ));
+    }
+
+    #[test]
+    fn analyzes_guarded_body_shape_before_return_tail() {
+        let shape = super::analyze_generated_body_shape(
+            "if (props.cond) {\n  useHook();\n}\nreturn <div>Hello World!</div>;\n",
+        );
+
+        let super::GeneratedBodyShape::Sequential { prefix, inner } = shape else {
+            panic!("expected sequential guarded body shape, got {shape:?}");
+        };
+        assert_eq!(
+            prefix.as_ref(),
+            &super::GeneratedBodyShape::GuardedExpressionStatements {
+                test: "props.cond".to_string(),
+                expressions: vec!["useHook()".to_string()],
+            }
+        );
+        assert_eq!(
+            inner.as_ref(),
+            &super::GeneratedBodyShape::ReturnExpression("<div>Hello World!</div>".to_string())
+        );
+    }
+
+    #[test]
+    fn analyzes_memoized_early_return_sentinel_with_fallback_body() {
+        let shape = super::analyze_generated_body_shape(
+            "let t0;\nlet value;\nif ($[0] !== cond) {\n  t0 = Symbol.for(\"react.early_return_sentinel\");\n  bb0: {\n    if (cond) {\n      t0 = foo;\n      break bb0;\n    }\n    value = bar;\n  }\n  $[0] = cond;\n  $[1] = t0;\n  $[2] = value;\n} else {\n  t0 = $[1];\n  value = $[2];\n}\nif (t0 !== Symbol.for(\"react.early_return_sentinel\")) {\n  return t0;\n}\nif (extra) {\n  return baz;\n}\nreturn value;\n",
+        );
+
+        let super::GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } = shape
+        else {
+            panic!("expected prefixed declarations shape, got {shape:?}");
+        };
+        assert_eq!(declarations.len(), 2);
+        assert_eq!(declarations[0].pattern, "t0");
+        assert_eq!(declarations[1].pattern, "value");
+        let super::GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+            deps,
+            sentinel_name,
+            final_return,
+            fallback_body,
+            ..
+        } = inner.as_ref()
+        else {
+            panic!("expected early return sentinel shape, got {inner:?}");
+        };
+        assert_eq!(deps, &vec![(0, "cond".to_string())]);
+        assert_eq!(sentinel_name, "t0");
+        assert!(final_return.is_none());
+        assert_eq!(
+            fallback_body.as_deref(),
+            Some(&super::GeneratedBodyShape::GuardedReturnPrefix {
+                test: "extra".to_string(),
+                consequent: Some("baz".to_string()),
+                inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                    "value".to_string()
+                )),
+            })
+        );
     }
 
     #[test]
