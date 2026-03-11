@@ -2679,6 +2679,31 @@ fn analyze_generated_body_shape_uncached(
                         memoized_expr: Some(memoized_expr),
                     };
                 }
+                if consequent_block.body.len() == setup_len + 1 {
+                    if !statement_assigns_cache_slot_from_identifier(
+                        &consequent_block.body[setup_len],
+                        cache_var,
+                        value_slot,
+                        &value_name,
+                    ) || !statement_assigns_identifier_from_cache_slot(
+                        &alternate_block.body[0],
+                        &value_name,
+                        cache_var,
+                        value_slot,
+                    ) || !statement_returns_identifier(&statements[1], &value_name)
+                    {
+                        continue;
+                    }
+                    return GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+                        value_name,
+                        value_slot,
+                        memoized_bindings,
+                        memoized_assignments,
+                        memoized_expressions,
+                        memoized_setup_statements: vec![],
+                        memoized_expr: None,
+                    };
+                }
                 let Some(last_statement) = consequent_block.body.last() else {
                     continue;
                 };
@@ -3908,7 +3933,6 @@ fn analyze_generated_body_shape_uncached(
             memoized_expr,
         };
     }
-
     GeneratedBodyShape::Unknown
 }
 
@@ -24033,8 +24057,6 @@ fn parse_function_body_for_ast_codegen_with_offset<'a>(
         }
     }
 
-    let async_prefix = if is_async { "async " } else { "" };
-    let generator_prefix = if is_generator { "*" } else { "" };
     let flow_cast_normalized = normalize_flow_cast_marker_calls(body_source);
     let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(body_source);
     let mut attempts = Vec::new();
@@ -24056,24 +24078,39 @@ fn parse_function_body_for_ast_codegen_with_offset<'a>(
     );
     push_attempt(&mut attempts, source_type, &flow_cast_rewritten);
 
+    let mut function_modes = vec![(is_async, is_generator)];
+    if !is_async {
+        function_modes.push((true, is_generator));
+    }
+    if !is_generator {
+        function_modes.push((is_async, true));
+    }
+    if !is_async && !is_generator {
+        function_modes.push((true, true));
+    }
+
     for (attempt_source_type, attempt_body) in attempts {
-        let wrapper_prefix = format!(
-            "{}function {}__codex_codegen_body() {{\n",
-            async_prefix, generator_prefix
-        );
-        let wrapper = format!("{wrapper_prefix}{}\n}}", attempt_body);
-        let wrapper = allocator.alloc_str(&wrapper);
-        let parsed = Parser::new(allocator, wrapper, attempt_source_type).parse();
-        if parsed.panicked || !parsed.errors.is_empty() {
-            continue;
-        }
-        let Some(ast::Statement::FunctionDeclaration(function)) =
-            parsed.program.body.into_iter().next()
-        else {
-            continue;
-        };
-        if let Some(body) = function.unbox().body {
-            return Ok((wrapper_prefix.len(), body.unbox()));
+        for (attempt_async, attempt_generator) in &function_modes {
+            let async_prefix = if *attempt_async { "async " } else { "" };
+            let generator_prefix = if *attempt_generator { "*" } else { "" };
+            let wrapper_prefix = format!(
+                "{}function {}__codex_codegen_body() {{\n",
+                async_prefix, generator_prefix
+            );
+            let wrapper = format!("{wrapper_prefix}{}\n}}", attempt_body);
+            let wrapper = allocator.alloc_str(&wrapper);
+            let parsed = Parser::new(allocator, wrapper, attempt_source_type).parse();
+            if parsed.panicked || !parsed.errors.is_empty() {
+                continue;
+            }
+            let Some(ast::Statement::FunctionDeclaration(function)) =
+                parsed.program.body.into_iter().next()
+            else {
+                continue;
+            };
+            if let Some(body) = function.unbox().body {
+                return Ok((wrapper_prefix.len(), body.unbox()));
+            }
         }
     }
 
@@ -31537,6 +31574,54 @@ mod tests {
     }
 
     #[test]
+    fn analyzes_zero_dependency_memoized_existing_return_shape_with_expression_only_setup() {
+        let shape = super::analyze_generated_body_shape(
+            "if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {\n  true ? x = [] : x = {};\n  $[0] = x;\n} else {\n  x = $[0];\n}\nreturn x;\n",
+        );
+
+        assert!(matches!(
+            shape,
+            super::GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+                value_name,
+                value_slot,
+                memoized_expressions,
+                memoized_expr,
+                ..
+            } if value_name == "x"
+                && value_slot == 0
+                && memoized_expressions == vec!["true ? x = [] : x = {}".to_string()]
+                && memoized_expr.is_none()
+        ));
+    }
+
+    #[test]
+    fn analyzes_zero_dependency_memoized_existing_return_shape_with_binding_and_call_setup() {
+        let shape = super::analyze_generated_body_shape(
+            "if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {\n  const foo = () => {\n    x = {};\n  };\n  foo();\n  $[0] = x;\n} else {\n  x = $[0];\n}\nreturn x;\n",
+        );
+
+        assert!(matches!(
+            shape,
+            super::GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+                value_name,
+                value_slot,
+                memoized_bindings,
+                memoized_expressions,
+                memoized_expr,
+                ..
+            } if value_name == "x"
+                && value_slot == 0
+                && memoized_bindings == vec![super::GeneratedBinding {
+                    kind: ast::VariableDeclarationKind::Const,
+                    pattern: "foo".to_string(),
+                    expression: "() => {\n  x = {};\n}".to_string(),
+                }]
+                && memoized_expressions == vec!["foo()".to_string()]
+                && memoized_expr.is_none()
+        ));
+    }
+
+    #[test]
     fn analyzes_prefixed_conditional_return_body_shape() {
         let shape = super::analyze_generated_body_shape(
             "let t1;\nif (DEV) {\n  t1 = <div key=\"d\">{props.foo}</div>;\n} else {\n  t1 = {\n    $$typeof: Symbol.for(\"react.transitional.element\"),\n    type: \"div\",\n    ref: null,\n    key: \"d\",\n    props: { children: props.foo }\n  };\n}\nreturn t1;\n",
@@ -31698,6 +31783,42 @@ mod tests {
             !matches!(shape, super::GeneratedBodyShape::Unknown),
             "expected structured shape, got {shape:?}"
         );
+    }
+
+    #[test]
+    fn analyzes_async_single_dependency_memoized_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "let x;\nif ($[0] !== props.id) {\n  x = [];\n  await populateData(props.id, x);\n  $[0] = props.id;\n  $[1] = x;\n} else {\n  x = $[1];\n}\nreturn x;\n",
+        );
+
+        assert!(matches!(
+            shape,
+            super::GeneratedBodyShape::PrefixedDeclarations { ref declarations, ref inner }
+                if declarations.len() == 1
+                    && declarations[0].pattern == "x"
+                    && matches!(
+                        inner.as_ref(),
+                        super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+                            value_name,
+                            dep_slot,
+                            dep_expr,
+                            value_slot,
+                            memoized_setup_statements,
+                            memoized_expr,
+                            ..
+                        }
+                            if value_name == "x"
+                                && *dep_slot == 0
+                                && dep_expr == "props.id"
+                                && *value_slot == 1
+                                && memoized_setup_statements
+                                    == &vec![
+                                        "x = [];".to_string(),
+                                        "await populateData(props.id, x);".to_string(),
+                                    ]
+                                && memoized_expr.is_none()
+                    )
+        ));
     }
 
     #[test]
