@@ -1224,6 +1224,15 @@ fn codegen_outlined_function(
                 }
                 rename_generated_body_shape(inner, from, to);
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ConditionalBranches {
+                test,
+                consequent,
+                alternate,
+            } => {
+                *test = replace_identifier_tokens(test, from, to);
+                rename_generated_body_shape(consequent, from, to);
+                rename_generated_body_shape(alternate, from, to);
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedAssignments {
                 test,
                 assignments,

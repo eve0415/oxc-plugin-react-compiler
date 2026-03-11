@@ -167,6 +167,11 @@ pub enum GeneratedBodyShape {
         consequent: Option<String>,
         inner: Box<GeneratedBodyShape>,
     },
+    ConditionalBranches {
+        test: String,
+        consequent: Box<GeneratedBodyShape>,
+        alternate: Box<GeneratedBodyShape>,
+    },
     GuardedAssignments {
         test: String,
         assignments: Vec<GeneratedAssignment>,
@@ -936,6 +941,7 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             GeneratedBodyShape::AssignmentStatements(_) => None,
             GeneratedBodyShape::GuardedExpressionStatements { .. } => None,
             GeneratedBodyShape::GuardedReturnPrefix { .. } => None,
+            GeneratedBodyShape::ConditionalBranches { .. } => None,
             GeneratedBodyShape::GuardedAssignments { .. } => None,
             GeneratedBodyShape::GuardedAssignmentExpressions { .. } => None,
             GeneratedBodyShape::TryCatch { .. } => None,
@@ -1397,6 +1403,19 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
         candidates
     }
 
+    fn statement_shape(statement: &ast::Statement<'_>) -> GeneratedBodyShape {
+        match statement {
+            ast::Statement::BlockStatement(block) => {
+                let source = codegen_statements_with_flow_cast_restore(&block.body);
+                analyze_generated_body_shape_impl(&source, true)
+            }
+            _ => {
+                let source = codegen_statement_with_flow_cast_restore(statement);
+                analyze_generated_body_shape_impl(&source, true)
+            }
+        }
+    }
+
     for source_type in [
         SourceType::mjs().with_jsx(true),
         SourceType::ts().with_jsx(true),
@@ -1428,6 +1447,35 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                     inner: Box::new(inner_shape),
                 };
             }
+        }
+
+        if let [ast::Statement::IfStatement(if_statement)] = statements.as_slice()
+            && if_statement.alternate.is_none()
+            && let Some(consequent_argument) = extract_return_argument(&if_statement.consequent)
+        {
+            return GeneratedBodyShape::GuardedReturnPrefix {
+                test: codegen_expression_with_flow_cast_restore(&if_statement.test),
+                consequent: consequent_argument.map(codegen_expression_with_flow_cast_restore),
+                inner: Box::new(GeneratedBodyShape::ExpressionStatements(Vec::new())),
+            };
+        }
+
+        if let [ast::Statement::IfStatement(if_statement)] = statements.as_slice()
+            && let Some(alternate) = if_statement.alternate.as_ref()
+        {
+            let consequent_shape = statement_shape(&if_statement.consequent);
+            if matches!(consequent_shape, GeneratedBodyShape::Unknown) {
+                continue;
+            }
+            let alternate_shape = statement_shape(alternate);
+            if matches!(alternate_shape, GeneratedBodyShape::Unknown) {
+                continue;
+            }
+            return GeneratedBodyShape::ConditionalBranches {
+                test: codegen_expression_with_flow_cast_restore(&if_statement.test),
+                consequent: Box::new(consequent_shape),
+                alternate: Box::new(alternate_shape),
+            };
         }
 
         if statements.len() >= 2
@@ -23401,6 +23449,57 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             );
             Some(body)
         }
+        GeneratedBodyShape::ConditionalBranches {
+            test,
+            consequent,
+            alternate,
+        } => {
+            let test =
+                parse_expression_for_ast_codegen(allocator, SourceType::mjs().with_jsx(true), test)
+                    .ok()?;
+            let consequent_spec = FunctionBodyRenderSpec {
+                params: spec.params,
+                param_names: spec.param_names,
+                body_source: spec.body_source,
+                body_shape: consequent.as_ref(),
+                directives: &[],
+                cache_prologue: spec.cache_prologue,
+                needs_function_hook_guard_wrapper: false,
+                is_async: spec.is_async,
+                is_generator: spec.is_generator,
+            };
+            let consequent_body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder,
+                allocator,
+                &consequent_spec,
+            )?;
+            let alternate_spec = FunctionBodyRenderSpec {
+                params: spec.params,
+                param_names: spec.param_names,
+                body_source: spec.body_source,
+                body_shape: alternate.as_ref(),
+                directives: &[],
+                cache_prologue: spec.cache_prologue,
+                needs_function_hook_guard_wrapper: false,
+                is_async: spec.is_async,
+                is_generator: spec.is_generator,
+            };
+            let alternate_body = build_function_body_from_generated_shape_for_ast_codegen(
+                builder,
+                allocator,
+                &alternate_spec,
+            )?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_if(
+                    SPAN,
+                    test,
+                    builder.statement_block(SPAN, consequent_body.statements),
+                    Some(builder.statement_block(SPAN, alternate_body.statements)),
+                )),
+            ))
+        }
         GeneratedBodyShape::GuardedAssignments { test, assignments } => {
             let test =
                 parse_expression_for_ast_codegen(allocator, SourceType::mjs().with_jsx(true), test)
@@ -27831,6 +27930,48 @@ mod tests {
                 inner: Box::new(super::GeneratedBodyShape::ReturnExpression(
                     "null".to_string()
                 )),
+            }
+        );
+    }
+
+    #[test]
+    fn analyzes_single_guarded_return_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "if (!iconOnly && !showPrice) {\n  return gift;\n}\n",
+        );
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::GuardedReturnPrefix {
+                test: "!iconOnly && !showPrice".to_string(),
+                consequent: Some("gift".to_string()),
+                inner: Box::new(super::GeneratedBodyShape::ExpressionStatements(Vec::new())),
+            }
+        );
+    }
+
+    #[test]
+    fn analyzes_conditional_branches_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "if (!someCondition) {\n  return foo;\n} else {\n  if (showPrice) {\n    return bar;\n  } else {\n    return baz;\n  }\n}\n",
+        );
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::ConditionalBranches {
+                test: "!someCondition".to_string(),
+                consequent: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                    "foo".to_string()
+                )),
+                alternate: Box::new(super::GeneratedBodyShape::ConditionalBranches {
+                    test: "showPrice".to_string(),
+                    consequent: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                        "bar".to_string()
+                    )),
+                    alternate: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                        "baz".to_string()
+                    )),
+                }),
             }
         );
     }

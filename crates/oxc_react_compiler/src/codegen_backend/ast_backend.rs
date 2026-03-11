@@ -3163,6 +3163,36 @@ fn try_build_function_body_from_shape<'a>(
             );
             Some(body)
         }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ConditionalBranches {
+            test,
+            consequent,
+            alternate,
+        } => {
+            let consequent = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                consequent.as_ref(),
+                cache_prologue,
+            )?;
+            let alternate = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                alternate.as_ref(),
+                cache_prologue,
+            )?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_if(
+                    SPAN,
+                    parse_expression_source(allocator, source_type, test).ok()?,
+                    builder.statement_block(SPAN, consequent.statements),
+                    Some(builder.statement_block(SPAN, alternate.statements)),
+                )),
+            ))
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedAssignments {
             test,
             assignments,
