@@ -9076,6 +9076,75 @@ export const FIXTURE_ENTRYPOINT = {
     }
 
     #[test]
+    fn preserves_guard_alias_bindings_in_prefixed_memo_body() {
+        let source = "function Foo(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "let c = $0[0] !== props.value; let results; if (c) { results = identity(props.value); $0[0] = props.value; $0[1] = results; } else { results = $0[1]; } return results;",
+            &["props"],
+            false,
+        );
+        compiled_function.generated_body = None;
+        compiled_function.generated_body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedBindings {
+                bindings: vec![
+                    crate::reactive_scopes::codegen_reactive::GeneratedBinding {
+                        kind: ast::VariableDeclarationKind::Let,
+                        pattern: "c".to_string(),
+                        expression: "$0[0] !== props.value".to_string(),
+                    },
+                ],
+                inner: Box::new(
+                    crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedDeclarations {
+                        declarations: vec![
+                            crate::reactive_scopes::codegen_reactive::GeneratedDeclaration {
+                                kind: ast::VariableDeclarationKind::Let,
+                                pattern: "results".to_string(),
+                            },
+                        ],
+                        inner: Box::new(
+                            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+                                value_name: "results".to_string(),
+                                dep_slot: 0,
+                                dep_expr: "props.value".to_string(),
+                                value_slot: 1,
+                                memoized_bindings: vec![],
+                                memoized_assignments: vec![],
+                                memoized_expressions: vec![],
+                                memoized_setup_statements: vec![],
+                                memoized_expr: Some("identity(props.value)".to_string()),
+                            },
+                        ),
+                    },
+                ),
+            };
+        compiled_function.needs_cache_import = true;
+        compiled_function.cache_prologue =
+            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+                binding_name: "$0".to_string(),
+                size: 2,
+                fast_refresh: None,
+            });
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("let c = $0[0] !== props.value;"));
+        assert!(rewritten.contains("if (c) {"));
+        assert!(!rewritten.contains("if ($0[0] !== props.value) {"));
+    }
+
+    #[test]
     fn builds_sequential_body_from_shape_without_generated_source() {
         let source = "function Foo(props) { return null; }";
         let allocator = Allocator::default();
