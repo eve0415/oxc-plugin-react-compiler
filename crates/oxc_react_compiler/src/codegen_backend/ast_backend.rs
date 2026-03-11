@@ -3184,6 +3184,82 @@ fn try_build_function_body_from_shape<'a>(
                 None,
             )),
         )),
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedAssignmentExpressions {
+            test,
+            assignments,
+            expressions,
+        } => {
+            let mut guarded = build_generated_assignment_statements(
+                builder,
+                allocator,
+                source_type,
+                assignments,
+            )?;
+            guarded.extend(build_generated_expression_statements(
+                builder,
+                allocator,
+                source_type,
+                expressions,
+            )?);
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_if(
+                    SPAN,
+                    parse_expression_source(allocator, source_type, test).ok()?,
+                    builder.statement_block(SPAN, guarded),
+                    None,
+                )),
+            ))
+        }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::TryCatch {
+            catch_param,
+            try_body,
+            catch_body,
+        } => {
+            let try_body = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                try_body.as_ref(),
+                cache_prologue,
+            )?;
+            let catch_body = try_build_function_body_from_shape(
+                builder,
+                allocator,
+                source_type,
+                catch_body.as_ref(),
+                cache_prologue,
+            )?;
+            let catch_param = catch_param.as_ref().map(|name| {
+                builder.catch_parameter(
+                    SPAN,
+                    builder.binding_pattern_binding_identifier(SPAN, builder.ident(name)),
+                    NONE,
+                )
+            });
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_try(
+                    SPAN,
+                    builder.block_statement(SPAN, try_body.statements),
+                    Some(builder.alloc_catch_clause(
+                        SPAN,
+                        catch_param,
+                        builder.block_statement(SPAN, catch_body.statements),
+                    )),
+                    Option::<oxc_allocator::Box<'_, ast::BlockStatement<'_>>>::None,
+                )),
+            ))
+        }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnVoid => {
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_return(SPAN, None)),
+            ))
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(name) => {
             Some(builder.function_body(
                 SPAN,

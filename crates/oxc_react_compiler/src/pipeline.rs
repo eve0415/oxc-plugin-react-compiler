@@ -1234,6 +1234,32 @@ fn codegen_outlined_function(
                     assignment.value = replace_identifier_tokens(&assignment.value, from, to);
                 }
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedAssignmentExpressions {
+                test,
+                assignments,
+                expressions,
+            } => {
+                *test = replace_identifier_tokens(test, from, to);
+                for assignment in assignments {
+                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
+                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
+                }
+                for expression in expressions {
+                    *expression = replace_identifier_tokens(expression, from, to);
+                }
+            }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::TryCatch {
+                catch_param,
+                try_body,
+                catch_body,
+            } => {
+                if catch_param.as_deref() == Some(from) {
+                    *catch_param = Some(to.to_string());
+                }
+                rename_generated_body_shape(try_body, from, to);
+                rename_generated_body_shape(catch_body, from, to);
+            }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnVoid => {}
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(
                 name,
             ) => {
