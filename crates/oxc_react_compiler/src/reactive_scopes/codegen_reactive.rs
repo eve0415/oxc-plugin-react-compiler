@@ -3270,7 +3270,7 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             }
         }
 
-        if allow_sequential && (2..=12).contains(&statements.len()) {
+        if allow_sequential && (2..=20).contains(&statements.len()) {
             for split_index in collect_sequential_split_indices(statements) {
                 let suffix_source =
                     codegen_statements_with_flow_cast_restore(&statements[split_index..]);
@@ -30645,6 +30645,23 @@ mod tests {
             &super::GeneratedBodyShape::ExpressionStatements(vec![
                 "setSelected(newSelected)".to_string(),
             ])
+        );
+    }
+
+    #[test]
+    fn analyzes_callback_memo_ladder_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "const { arr1, arr2 } = t0;\nlet t1;\nif ($[0] !== arr1[0]) {\n  t1 = (e) => arr1[0].value + e.value;\n  $[0] = arr1[0];\n  $[1] = t1;\n} else {\n  t1 = $[1];\n}\nconst cb1 = t1;\nlet t2;\nif ($[2] !== arr1 || $[3] !== cb1) {\n  t2 = () => arr1.map(cb1);\n  $[2] = arr1;\n  $[3] = cb1;\n  $[4] = t2;\n} else {\n  t2 = $[4];\n}\nconst getArrMap1 = t2;\nlet t3;\nif ($[5] !== arr2) {\n  t3 = (e_0) => arr2[0].value + e_0.value;\n  $[5] = arr2;\n  $[6] = t3;\n} else {\n  t3 = $[6];\n}\nconst cb2 = t3;\nlet t4;\nif ($[7] !== arr1 || $[8] !== cb2) {\n  t4 = () => arr1.map(cb2);\n  $[7] = arr1;\n  $[8] = cb2;\n  $[9] = t4;\n} else {\n  t4 = $[9];\n}\nconst getArrMap2 = t4;\nlet t5;\nif ($[10] !== getArrMap1 || $[11] !== getArrMap2) {\n  t5 = <Stringify getArrMap1={getArrMap1} getArrMap2={getArrMap2} shouldInvokeFns={true} />;\n  $[10] = getArrMap1;\n  $[11] = getArrMap2;\n  $[12] = t5;\n} else {\n  t5 = $[12];\n}\nreturn t5;\n",
+        );
+
+        let super::GeneratedBodyShape::PrefixedBindings { bindings, inner } = shape else {
+            panic!("expected prefixed bindings shape, got {shape:?}");
+        };
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].pattern, "{ arr1, arr2 }");
+        assert!(
+            !matches!(inner.as_ref(), super::GeneratedBodyShape::Unknown),
+            "expected structured inner shape, got {inner:?}"
         );
     }
 }
