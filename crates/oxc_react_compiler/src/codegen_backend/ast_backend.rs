@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use oxc_allocator::{Allocator, CloneIn, Dummy};
 use oxc_ast::{AstBuilder, NONE, ast};
@@ -4487,6 +4487,18 @@ fn try_build_function_body_from_shape<'a>(
                 inner.as_ref(),
                 cache_prologue,
             )?;
+            let guard_aliases = collect_guard_alias_binding_map(bindings);
+            if !guard_aliases.is_empty() {
+                for statement in body.statements.iter_mut() {
+                    rewrite_guard_aliases_in_statement_ast(
+                        builder,
+                        allocator,
+                        source_type,
+                        statement,
+                        &guard_aliases,
+                    );
+                }
+            }
             let mut prefixed =
                 build_generated_binding_statements(builder, allocator, source_type, bindings)?;
             prefixed.extend(body.statements);
@@ -7250,6 +7262,116 @@ fn codegen_statement_source(
         builder.vec1(statement.clone_in(allocator)),
     );
     codegen_program(&program)
+}
+
+fn codegen_expression_source(
+    allocator: &Allocator,
+    source_type: SourceType,
+    expression: &ast::Expression<'_>,
+) -> String {
+    let builder = AstBuilder::new(allocator);
+    let statement = builder.statement_expression(SPAN, expression.clone_in(allocator));
+    codegen_statement_source(allocator, source_type, &statement)
+        .trim()
+        .trim_end_matches(';')
+        .to_string()
+}
+
+fn is_simple_generated_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first == '$' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphanumeric())
+}
+
+fn collect_guard_alias_binding_map(
+    bindings: &[crate::reactive_scopes::codegen_reactive::GeneratedBinding],
+) -> HashMap<String, String> {
+    bindings
+        .iter()
+        .filter(|binding| is_simple_generated_identifier(&binding.pattern))
+        .map(|binding| (binding.expression.clone(), binding.pattern.clone()))
+        .collect()
+}
+
+fn rewrite_guard_aliases_in_expression_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    expression: &mut ast::Expression<'a>,
+    guard_aliases: &HashMap<String, String>,
+) {
+    let expression_source = codegen_expression_source(allocator, source_type, expression);
+    if let Some(alias_name) = guard_aliases.get(&expression_source) {
+        *expression = builder.expression_identifier(SPAN, builder.ident(alias_name));
+        return;
+    }
+    if let ast::Expression::LogicalExpression(logical) = expression {
+        rewrite_guard_aliases_in_expression_ast(
+            builder,
+            allocator,
+            source_type,
+            &mut logical.left,
+            guard_aliases,
+        );
+        rewrite_guard_aliases_in_expression_ast(
+            builder,
+            allocator,
+            source_type,
+            &mut logical.right,
+            guard_aliases,
+        );
+    }
+}
+
+fn rewrite_guard_aliases_in_statement_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    statement: &mut ast::Statement<'a>,
+    guard_aliases: &HashMap<String, String>,
+) {
+    match statement {
+        ast::Statement::IfStatement(if_statement) => {
+            rewrite_guard_aliases_in_expression_ast(
+                builder,
+                allocator,
+                source_type,
+                &mut if_statement.test,
+                guard_aliases,
+            );
+            rewrite_guard_aliases_in_statement_ast(
+                builder,
+                allocator,
+                source_type,
+                &mut if_statement.consequent,
+                guard_aliases,
+            );
+            if let Some(alternate) = if_statement.alternate.as_mut() {
+                rewrite_guard_aliases_in_statement_ast(
+                    builder,
+                    allocator,
+                    source_type,
+                    alternate,
+                    guard_aliases,
+                );
+            }
+        }
+        ast::Statement::BlockStatement(block) => {
+            for statement in block.body.iter_mut() {
+                rewrite_guard_aliases_in_statement_ast(
+                    builder,
+                    allocator,
+                    source_type,
+                    statement,
+                    guard_aliases,
+                );
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
