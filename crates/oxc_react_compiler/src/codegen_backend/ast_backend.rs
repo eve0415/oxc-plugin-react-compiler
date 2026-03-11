@@ -50,7 +50,6 @@ const FLOW_CAST_MARKER_HELPER: &str = "__REACT_COMPILER_FLOW_CAST__";
 struct RenderedOutlinedFunction {
     name: String,
     params: Vec<CompiledParam>,
-    body: Option<String>,
     body_shape: crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
     directives: Vec<String>,
     cache_prologue: Option<crate::reactive_scopes::codegen_reactive::CachePrologue>,
@@ -4784,6 +4783,7 @@ fn try_build_function_body_from_shape<'a>(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn normalize_compiled_body_for_hir_match(body_source: &str) -> String {
     let flow_cast_normalized = normalize_generated_body_flow_cast_marker_calls(body_source);
     let iife_normalized = normalize_generated_body_iife_parenthesization(&flow_cast_normalized);
@@ -4805,6 +4805,7 @@ pub(crate) fn normalize_compiled_body_for_hir_match(body_source: &str) -> String
     ))
 }
 
+#[cfg(test)]
 fn canonicalize_body_source_for_hir_match(body_source: &str) -> Option<String> {
     let allocator = Allocator::default();
     for source_type in [
@@ -4831,6 +4832,7 @@ fn canonicalize_body_source_for_hir_match(body_source: &str) -> Option<String> {
     None
 }
 
+#[cfg(test)]
 fn normalize_hir_match_multiline_brace_literals(code: &str) -> String {
     let lines: Vec<&str> = code.lines().collect();
     let mut result = Vec::new();
@@ -4894,6 +4896,7 @@ fn normalize_hir_match_multiline_brace_literals(code: &str) -> String {
     result.join("\n")
 }
 
+#[cfg(test)]
 fn normalize_hir_match_object_shorthand_pairs(code: &str) -> String {
     code.lines()
         .map(|line| {
@@ -4910,6 +4913,7 @@ fn normalize_hir_match_object_shorthand_pairs(code: &str) -> String {
         .join("\n")
 }
 
+#[cfg(test)]
 fn normalize_hir_match_destructuring_brace_spacing(code: &str) -> String {
     code.lines()
         .map(collapse_hir_match_destructuring_brace_spacing)
@@ -4917,6 +4921,7 @@ fn normalize_hir_match_destructuring_brace_spacing(code: &str) -> String {
         .join("\n")
 }
 
+#[cfg(test)]
 fn collapse_hir_match_destructuring_brace_spacing(line: &str) -> String {
     for prefix in ["const {", "let {", "var {"] {
         let Some(rest) = line.strip_prefix(prefix) else {
@@ -4930,6 +4935,7 @@ fn collapse_hir_match_destructuring_brace_spacing(line: &str) -> String {
     line.trim().to_string()
 }
 
+#[cfg(test)]
 fn collapse_hir_match_object_shorthand_pairs_once(line: &str) -> String {
     let bytes = line.as_bytes();
     let mut out = String::with_capacity(line.len());
@@ -4994,14 +5000,17 @@ fn collapse_hir_match_object_shorthand_pairs_once(line: &str) -> String {
     out
 }
 
+#[cfg(test)]
 fn is_hir_match_ident_start(ch: char) -> bool {
     ch == '_' || ch == '$' || ch.is_ascii_alphabetic()
 }
 
+#[cfg(test)]
 fn is_hir_match_ident_continue(ch: char) -> bool {
     is_hir_match_ident_start(ch) || ch.is_ascii_digit()
 }
 
+#[cfg(test)]
 fn is_basic_block_label_open_brace(line: &str) -> bool {
     if !line.starts_with("bb") || !line.ends_with(": {") {
         return false;
@@ -5010,6 +5019,7 @@ fn is_basic_block_label_open_brace(line: &str) -> bool {
     !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit())
 }
 
+#[cfg(test)]
 fn parse_rendered_function_body<'a>(
     allocator: &'a Allocator,
     source_type: SourceType,
@@ -5088,24 +5098,13 @@ fn build_rendered_outlined_function_statement<'a>(
     outlined: &RenderedOutlinedFunction,
     state: &AstRenderState,
 ) -> Option<ast::Statement<'a>> {
-    let mut body = if let Some(body) = try_build_function_body_from_shape(
+    let mut body = try_build_function_body_from_shape(
         builder,
         allocator,
         source_type,
         &outlined.body_shape,
         outlined.cache_prologue.as_ref(),
-    ) {
-        body
-    } else {
-        parse_rendered_function_body(
-            allocator,
-            source_type,
-            outlined.is_async,
-            outlined.is_generator,
-            outlined.body.as_deref()?,
-        )
-        .ok()?
-    };
+    )?;
     apply_preserved_directives(builder, &mut body, &outlined.directives);
     wrap_hook_guard_body(
         builder,
@@ -5275,6 +5274,7 @@ fn parse_assignment_target_source<'a>(
     Err("failed to parse assignment target snippet".to_string())
 }
 
+#[cfg(test)]
 fn normalize_generated_body_iife_parenthesization(body_source: &str) -> String {
     let mut changed = false;
     let normalized = body_source
@@ -6241,7 +6241,6 @@ fn collect_rendered_outlined_functions(cf: &CompiledFunction) -> Vec<RenderedOut
         .map(|outlined_function| RenderedOutlinedFunction {
             name: outlined_function.name.clone(),
             params: outlined_function.params.clone(),
-            body: outlined_function.body.clone(),
             body_shape: outlined_function.body_shape.clone(),
             directives: outlined_function.directives.clone(),
             cache_prologue: outlined_function.cache_prologue.clone(),
@@ -8009,7 +8008,10 @@ export const FIXTURE_ENTRYPOINT = {
             rewritten.contains("let t1 = useFire(bar);"),
             "rewritten={rewritten}"
         );
-        assert!(rewritten.contains("return [t0, t1];"), "rewritten={rewritten}");
+        assert!(
+            rewritten.contains("return [t0, t1];"),
+            "rewritten={rewritten}"
+        );
     }
 
     #[test]
@@ -8060,14 +8062,8 @@ export const FIXTURE_ENTRYPOINT = {
             "let t0;\nif ($[0] !== props.value) {\n  t0 = props.value;\n  $[0] = props.value;\n  $[1] = t0;\n} else {\n  t0 = $[1];\n}\nreturn t0;",
         )
         .expect("expected function body");
-        let mut compiled_function = make_test_compiled_function(
-            "useFoo",
-            0,
-            0,
-            "return null;",
-            &["props"],
-            false,
-        );
+        let mut compiled_function =
+            make_test_compiled_function("useFoo", 0, 0, "return null;", &["props"], false);
         compiled_function.needs_emit_freeze = true;
         let state = AstRenderState {
             make_read_only_ident: "makeReadOnly".to_string(),
@@ -8744,8 +8740,10 @@ export const FIXTURE_ENTRYPOINT = {
                     is_rest: true,
                 },
             ],
-            body: Some("return await load(...rest);".to_string()),
-            body_shape: crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown,
+            body_shape:
+                crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnExpression(
+                    "await load(...rest)".to_string(),
+                ),
             directives: vec![],
             cache_prologue: None,
             needs_function_hook_guard_wrapper: false,

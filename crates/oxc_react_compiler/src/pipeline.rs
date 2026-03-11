@@ -1849,24 +1849,12 @@ fn codegen_outlined_function(
         });
     }
     let mut body_shape = codegen.body_shape;
-    let mut body = codegen.body_without_cache_prologue;
     for (from, to) in rename_pairs {
-        if let Some(rendered_body) = body.as_mut() {
-            *rendered_body = replace_identifier_tokens(rendered_body, &from, &to);
-        }
         rename_generated_body_shape(&mut body_shape, &from, &to);
     }
     Some(CompiledOutlinedFunction {
         name: func.id.as_ref()?.clone(),
         params: rendered_params,
-        body: if matches!(
-            body_shape,
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown
-        ) {
-            body
-        } else {
-            None
-        },
         body_shape,
         directives: func
             .directives
@@ -1961,15 +1949,11 @@ fn outlined_function_needs_backend_render(
     outlined_function: &CompiledOutlinedFunction,
     hir_function: &HIRFunction,
 ) -> bool {
+    let _ = hir_function;
     !matches!(
         outlined_function.body_shape,
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown
-    ) || outlined_function
-        .body
-        .as_deref()
-        .is_some_and(|rendered_body| {
-            !compiled_function_body_matches_hir(rendered_body, hir_function)
-        })
+    )
 }
 
 fn generated_body_shape_is_nonmemoized_hir_lowerable(
@@ -2047,23 +2031,13 @@ fn generated_body_shape_is_nonmemoized_hir_lowerable(
     }
 }
 
-fn compiled_function_body_matches_hir(generated_body: &str, hir_function: &HIRFunction) -> bool {
-    let Some(lowered_body) =
-        crate::codegen_backend::hir_to_ast::try_lower_function_body(hir_function)
-    else {
-        return false;
-    };
-    crate::codegen_backend::ast_backend::normalize_compiled_body_for_hir_match(generated_body)
-        == crate::codegen_backend::ast_backend::normalize_compiled_body_for_hir_match(&lowered_body)
-}
-
 fn dedupe_outlined_functions(outlined: &mut Vec<CompiledOutlinedFunction>) {
     let debug = std::env::var("DEBUG_OUTLINE_DEDUPE").is_ok();
     if debug {
         for (idx, outlined_function) in outlined.iter().enumerate() {
             eprintln!(
-                "[OUTLINE_DEDUPE] before idx={} name={} params={:?} body={:?}",
-                idx, outlined_function.name, outlined_function.params, outlined_function.body
+                "[OUTLINE_DEDUPE] before idx={} name={} params={:?}",
+                idx, outlined_function.name, outlined_function.params
             );
         }
     }
@@ -2074,8 +2048,8 @@ fn dedupe_outlined_functions(outlined: &mut Vec<CompiledOutlinedFunction>) {
             kept_rev.push(outlined_function);
         } else if debug {
             eprintln!(
-                "[OUTLINE_DEDUPE] drop-duplicate name={} params={:?} body={:?}",
-                outlined_function.name, outlined_function.params, outlined_function.body
+                "[OUTLINE_DEDUPE] drop-duplicate name={} params={:?}",
+                outlined_function.name, outlined_function.params
             );
         }
     }

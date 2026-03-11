@@ -2,8 +2,11 @@ use std::collections::{HashMap, HashSet};
 
 use oxc_allocator::{Allocator, CloneIn};
 use oxc_ast::{AstBuilder, NONE, ast};
+#[cfg(test)]
 use oxc_codegen::{Codegen, CodegenOptions, IndentChar};
-use oxc_span::{SPAN, SourceType};
+use oxc_span::SPAN;
+#[cfg(test)]
+use oxc_span::SourceType;
 use oxc_syntax::{
     identifier::is_identifier_name,
     number::NumberBase,
@@ -65,6 +68,7 @@ pub(crate) fn try_lower_function_body_ast<'a>(
     Some(strip_trailing_empty_return(body))
 }
 
+#[cfg(test)]
 pub(crate) fn try_lower_function_body(hir_function: &HIRFunction) -> Option<String> {
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);

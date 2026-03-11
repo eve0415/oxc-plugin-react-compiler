@@ -78,7 +78,6 @@ pub(crate) struct CompiledParamPrefixStatement {
 pub(crate) struct CompiledOutlinedFunction {
     pub(crate) name: String,
     pub(crate) params: Vec<CompiledParam>,
-    pub(crate) body: Option<String>,
     pub(crate) body_shape: crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
     pub(crate) directives: Vec<String>,
     pub(crate) cache_prologue: Option<crate::reactive_scopes::codegen_reactive::CachePrologue>,
