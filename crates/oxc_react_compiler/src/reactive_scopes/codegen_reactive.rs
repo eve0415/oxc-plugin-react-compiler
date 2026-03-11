@@ -412,8 +412,6 @@ struct GeneratedDependencyGuard {
 }
 
 pub struct CodegenResult {
-    /// Generated function body without rendered directives/cache prologue statements.
-    pub body_without_cache_prologue: Option<String>,
     /// Structured shape of the emitted body for downstream AST-based rewrites.
     pub body_shape: GeneratedBodyShape,
     /// Number of cache slots used.
@@ -1010,8 +1008,6 @@ fn codegen_reactive_function_with_primitives(
 
     let body_shape = analyze_generated_body_shape(&body);
     CodegenResult {
-        body_without_cache_prologue: matches!(body_shape, GeneratedBodyShape::Unknown)
-            .then_some(body.clone()),
         body_shape,
         cache_size,
         needs_cache_import,
@@ -25107,7 +25103,6 @@ fn build_generated_switch_cases_ast<'a>(
             &FunctionBodyRenderSpec {
                 params: &[],
                 param_names: &[],
-                body_source: None,
                 body_shape: &case.consequent,
                 directives: &[],
                 cache_prologue,
@@ -25187,7 +25182,6 @@ fn replace_final_return_expression_ast<'a>(
 struct FunctionBodyRenderSpec<'a> {
     params: &'a [Argument],
     param_names: &'a [String],
-    body_source: Option<&'a str>,
     body_shape: &'a GeneratedBodyShape,
     directives: &'a [String],
     cache_prologue: Option<&'a CachePrologue>,
@@ -25276,7 +25270,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 &FunctionBodyRenderSpec {
                     params: spec.params,
                     param_names: spec.param_names,
-                    body_source: spec.body_source,
                     body_shape: inner.as_ref(),
                     directives: &[],
                     cache_prologue: spec.cache_prologue,
@@ -25298,7 +25291,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 &FunctionBodyRenderSpec {
                     params: spec.params,
                     param_names: spec.param_names,
-                    body_source: spec.body_source,
                     body_shape: inner.as_ref(),
                     directives: &[],
                     cache_prologue: spec.cache_prologue,
@@ -25369,7 +25361,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let inner_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: inner.as_ref(),
                 directives: &[],
                 cache_prologue: spec.cache_prologue,
@@ -25433,7 +25424,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let inner_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: inner.as_ref(),
                 directives: spec.directives,
                 cache_prologue: spec.cache_prologue,
@@ -25471,7 +25461,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let consequent_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: consequent.as_ref(),
                 directives: &[],
                 cache_prologue: spec.cache_prologue,
@@ -25487,7 +25476,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let alternate_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: alternate.as_ref(),
                 directives: &[],
                 cache_prologue: spec.cache_prologue,
@@ -25536,7 +25524,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let body_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: body.as_ref(),
                 directives: &[],
                 cache_prologue: None,
@@ -25564,7 +25551,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let body_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: body.as_ref(),
                 directives: &[],
                 cache_prologue: None,
@@ -25610,7 +25596,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let body_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: body.as_ref(),
                 directives: &[],
                 cache_prologue: None,
@@ -25644,7 +25629,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let body_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: body.as_ref(),
                 directives: &[],
                 cache_prologue: None,
@@ -25677,7 +25661,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let body_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: body.as_ref(),
                 directives: &[],
                 cache_prologue: None,
@@ -26004,7 +25987,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 let fallback_spec = FunctionBodyRenderSpec {
                     params: spec.params,
                     param_names: spec.param_names,
-                    body_source: spec.body_source,
                     body_shape: fallback_body.as_ref(),
                     directives: &[],
                     cache_prologue: spec.cache_prologue,
@@ -26029,7 +26011,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let try_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: try_body.as_ref(),
                 directives: &[],
                 cache_prologue: None,
@@ -26043,7 +26024,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let catch_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: catch_body.as_ref(),
                 directives: &[],
                 cache_prologue: None,
@@ -26973,7 +26953,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let inner_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: inner.as_ref(),
                 directives: spec.directives,
                 cache_prologue: spec.cache_prologue,
@@ -27003,7 +26982,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let inner_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: inner.as_ref(),
                 directives: spec.directives,
                 cache_prologue: spec.cache_prologue,
@@ -27048,7 +27026,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let inner_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: inner.as_ref(),
                 directives: spec.directives,
                 cache_prologue: spec.cache_prologue,
@@ -27097,7 +27074,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let inner_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: inner.as_ref(),
                 directives: spec.directives,
                 cache_prologue: spec.cache_prologue,
@@ -27129,7 +27105,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let inner_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: inner.as_ref(),
                 directives: spec.directives,
                 cache_prologue: spec.cache_prologue,
@@ -27152,7 +27127,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let inner_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: inner.as_ref(),
                 directives: spec.directives,
                 cache_prologue: spec.cache_prologue,
@@ -27175,7 +27149,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let inner_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: inner.as_ref(),
                 directives: spec.directives,
                 cache_prologue: spec.cache_prologue,
@@ -27198,7 +27171,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let prefix_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: prefix.as_ref(),
                 directives: spec.directives,
                 cache_prologue: spec.cache_prologue,
@@ -27220,7 +27192,6 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let inner_spec = FunctionBodyRenderSpec {
                 params: spec.params,
                 param_names: spec.param_names,
-                body_source: spec.body_source,
                 body_shape: inner.as_ref(),
                 directives: spec.directives,
                 cache_prologue: spec.cache_prologue,
@@ -27370,20 +27341,8 @@ fn build_object_method_property_ast<'a>(
     computed_key_source: Option<&str>,
     spec: &FunctionBodyRenderSpec<'_>,
 ) -> Option<ast::ObjectPropertyKind<'a>> {
-    let parsed_body = if let Some(body) =
-        build_function_body_from_generated_shape_for_ast_codegen(builder, allocator, spec)
-    {
-        body
-    } else {
-        parse_function_body_for_ast_codegen(
-            allocator,
-            SourceType::mjs().with_jsx(true),
-            spec.is_async,
-            spec.is_generator,
-            spec.body_source?,
-        )
-        .ok()?
-    };
+    let parsed_body =
+        build_function_body_from_generated_shape_for_ast_codegen(builder, allocator, spec)?;
     let mut parsed_body = parsed_body;
     apply_function_body_preludes_ast(
         builder,
@@ -27546,17 +27505,6 @@ fn render_object_expression_ast(
                             &FunctionBodyRenderSpec {
                                 params: &lf.func.params,
                                 param_names: &inner_result.param_names,
-                                body_source: matches!(
-                                    inner_result.body_shape,
-                                    GeneratedBodyShape::Unknown
-                                )
-                                .then(|| {
-                                    inner_result
-                                        .body_without_cache_prologue
-                                        .as_deref()
-                                        .map(str::trim)
-                                })
-                                .flatten(),
                                 body_shape: &inner_result.body_shape,
                                 directives: &lf.func.directives,
                                 cache_prologue: inner_result.cache_prologue.as_ref(),
@@ -28658,23 +28606,11 @@ fn build_identifier_assignment_statement_ast_with_expression<'a>(
 
 fn render_function_expression_ast(spec: &FunctionExpressionRenderSpec<'_>) -> Option<String> {
     let allocator = Allocator::default();
-    let source_type = SourceType::mjs().with_jsx(true);
-    let parsed_body = if let Some(body) = build_function_body_from_generated_shape_for_ast_codegen(
+    let parsed_body = build_function_body_from_generated_shape_for_ast_codegen(
         AstBuilder::new(&allocator),
         &allocator,
         &spec.body,
-    ) {
-        body
-    } else {
-        parse_function_body_for_ast_codegen(
-            &allocator,
-            source_type,
-            spec.body.is_async,
-            spec.body.is_generator,
-            spec.body.body_source?,
-        )
-        .ok()?
-    };
+    )?;
     let mut parsed_body = parsed_body;
     let builder = AstBuilder::new(&allocator);
     let formal_params =
@@ -28822,14 +28758,6 @@ fn render_lowered_function_expression_source(
         body: FunctionBodyRenderSpec {
             params: &lowered_func.func.params,
             param_names: &inner_result.param_names,
-            body_source: matches!(inner_result.body_shape, GeneratedBodyShape::Unknown)
-                .then(|| {
-                    inner_result
-                        .body_without_cache_prologue
-                        .as_deref()
-                        .map(str::trim)
-                })
-                .flatten(),
             body_shape: &inner_result.body_shape,
             directives: &lowered_func.func.directives,
             cache_prologue: inner_result.cache_prologue.as_ref(),
@@ -29358,8 +29286,10 @@ mod tests {
             body: FunctionBodyRenderSpec {
                 params: &[Argument::Place(named_place(0, 0, "value"))],
                 param_names: &["value".to_string()],
-                body_source: Some("return value;"),
-                body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown,
+                body_shape:
+                    &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(
+                        "value".to_string(),
+                    ),
                 directives: &[],
                 cache_prologue: None,
                 needs_function_hook_guard_wrapper: false,
@@ -29382,8 +29312,10 @@ mod tests {
             body: FunctionBodyRenderSpec {
                 params: &[Argument::Place(named_place(0, 0, "value"))],
                 param_names: &["value".to_string()],
-                body_source: Some("return value;"),
-                body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown,
+                body_shape:
+                    &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(
+                        "value".to_string(),
+                    ),
                 directives: &[],
                 cache_prologue: None,
                 needs_function_hook_guard_wrapper: false,
@@ -29412,8 +29344,10 @@ mod tests {
             body: FunctionBodyRenderSpec {
                 params: &[Argument::Place(named_place(0, 0, "value"))],
                 param_names: &["value".to_string()],
-                body_source: Some("return value;"),
-                body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown,
+                body_shape:
+                    &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(
+                        "value".to_string(),
+                    ),
                 directives: &directives,
                 cache_prologue: Some(&cache_prologue),
                 needs_function_hook_guard_wrapper: false,
@@ -29437,8 +29371,10 @@ mod tests {
             body: FunctionBodyRenderSpec {
                 params: &[Argument::Place(named_place(0, 0, "value"))],
                 param_names: &["value".to_string()],
-                body_source: Some("return useMemo(value);"),
-                body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown,
+                body_shape:
+                    &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnExpression(
+                        "useMemo(value)".to_string(),
+                    ),
                 directives: &[],
                 cache_prologue: None,
                 needs_function_hook_guard_wrapper: true,
@@ -29773,8 +29709,10 @@ mod tests {
             &FunctionBodyRenderSpec {
                 params: &[Argument::Place(named_place(0, 0, "value"))],
                 param_names: &["value".to_string()],
-                body_source: Some("return value;"),
-                body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown,
+                body_shape:
+                    &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(
+                        "value".to_string(),
+                    ),
                 directives: &[],
                 cache_prologue: None,
                 needs_function_hook_guard_wrapper: false,
@@ -29808,8 +29746,10 @@ mod tests {
             &FunctionBodyRenderSpec {
                 params: &[Argument::Place(named_place(0, 0, "value"))],
                 param_names: &["value".to_string()],
-                body_source: Some("return value;"),
-                body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown,
+                body_shape:
+                    &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(
+                        "value".to_string(),
+                    ),
                 directives: &directives,
                 cache_prologue: Some(&cache_prologue),
                 needs_function_hook_guard_wrapper: false,
@@ -31601,7 +31541,6 @@ mod tests {
             body: FunctionBodyRenderSpec {
                 params: &[Argument::Place(named_place(0, 0, "props"))],
                 param_names: &["props".to_string()],
-                body_source: None,
                 body_shape: &body_shape,
                 directives: &[],
                 cache_prologue: Some(&cache_prologue),
@@ -32397,7 +32336,6 @@ mod tests {
             body: FunctionBodyRenderSpec {
                 params: &[Argument::Place(named_place(0, 0, "props"))],
                 param_names: &["props".to_string()],
-                body_source: None,
                 body_shape: &body_shape,
                 directives: &[],
                 cache_prologue: None,
