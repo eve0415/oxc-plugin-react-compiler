@@ -1121,6 +1121,14 @@ fn analyze_generated_body_shape_uncached(
         }
     }
 
+    fn cached_values_prefix_len(prefix_shape: &GeneratedBodyShape) -> usize {
+        match prefix_shape {
+            GeneratedBodyShape::ZeroDependencyMemoizedCachedValues { cached_values, .. }
+            | GeneratedBodyShape::MemoizedCachedValues { cached_values, .. } => cached_values.len(),
+            _ => 0,
+        }
+    }
+
     fn can_follow_cached_values_intermediate_prefix(shape: &GeneratedBodyShape) -> bool {
         matches!(
             shape,
@@ -1175,6 +1183,7 @@ fn analyze_generated_body_shape_uncached(
             }
             GeneratedBodyShape::ReturnIdentifier(name) => {
                 !cached_values_prefix_contains_name(prefix_shape, name)
+                    || cached_values_prefix_len(prefix_shape) > 1
             }
             GeneratedBodyShape::ReturnVoid
             | GeneratedBodyShape::ReturnExpression(_)
@@ -1194,6 +1203,7 @@ fn analyze_generated_body_shape_uncached(
             | GeneratedBodyShape::MultiDependencyMemoizedExistingReturn { value_name, .. }
             | GeneratedBodyShape::SingleSlotMemoizedReturn { value_name, .. } => {
                 !cached_values_prefix_contains_name(prefix_shape, value_name)
+                    || cached_values_prefix_len(prefix_shape) > 1
             }
             GeneratedBodyShape::MemoizedEarlyReturnSentinel { .. } => true,
             GeneratedBodyShape::BoundExpressionReturn { .. }
@@ -32004,6 +32014,18 @@ mod tests {
     fn analyzes_early_return_sentinel_then_memoized_return_body_shape() {
         let shape = super::analyze_generated_body_shape(
             "let t0;\nif ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {\n  t0 = Symbol.for(\"react.early_return_sentinel\");\n  bb0: {\n    const x = [];\n    if (ENABLE_FEATURE) {\n      x.push(42);\n      t0 = x;\n      break bb0;\n    } else {\n      console.log(\"fallthrough\");\n    }\n  }\n  $[0] = t0;\n} else {\n  t0 = $[0];\n}\nif (t0 !== Symbol.for(\"react.early_return_sentinel\")) {\n  return t0;\n}\nlet t1;\nif ($[1] !== props.a) {\n  t1 = makeArray(props.a);\n  $[1] = props.a;\n  $[2] = t1;\n} else {\n  t1 = $[2];\n}\nreturn t1;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_multi_value_cached_return_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "let obj = null;\nlet my_div = null;\nif ($[0] !== data.cond || $[1] !== data.cond1) {\n  bb0: if (data.cond) {\n    obj = makeObject_Primitives();\n    if (data.cond1) {\n      my_div = mutateAndReturn(obj);\n      break bb0;\n    }\n    mutate(obj);\n  }\n  $[0] = data.cond;\n  $[1] = data.cond1;\n  $[2] = obj;\n  $[3] = my_div;\n} else {\n  obj = $[2];\n  my_div = $[3];\n}\nreturn my_div;\n",
         );
 
         assert!(
