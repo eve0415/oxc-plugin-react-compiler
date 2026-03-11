@@ -163,6 +163,10 @@ pub enum GeneratedBodyShape {
         label: String,
         inner: Box<GeneratedBodyShape>,
     },
+    Switch {
+        discriminant: String,
+        cases: Vec<GeneratedSwitchCase>,
+    },
     ExpressionStatements(Vec<String>),
     AssignmentStatements(Vec<GeneratedAssignment>),
     GuardedBody {
@@ -385,6 +389,12 @@ pub struct GeneratedDeclaration {
 pub struct GeneratedAssignment {
     pub target: String,
     pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedSwitchCase {
+    pub test: Option<String>,
+    pub consequent: GeneratedBodyShape,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1057,6 +1067,7 @@ fn analyze_generated_body_shape_uncached(
             GeneratedBodyShape::Unknown => None,
             GeneratedBodyShape::Block { inner } => shape_returned_identifier(inner),
             GeneratedBodyShape::Labeled { inner, .. } => shape_returned_identifier(inner),
+            GeneratedBodyShape::Switch { .. } => None,
             GeneratedBodyShape::ExpressionStatements(_) => None,
             GeneratedBodyShape::AssignmentStatements(_) => None,
             GeneratedBodyShape::GuardedBody { .. } => None,
@@ -1802,6 +1813,43 @@ fn analyze_generated_body_shape_uncached(
             }
         }
 
+        if let [ast::Statement::SwitchStatement(switch_statement)] = statements.as_slice() {
+            let mut cases = Vec::with_capacity(switch_statement.cases.len());
+            let mut all_structured = true;
+            for case in &switch_statement.cases {
+                let consequent = if case.consequent.is_empty() {
+                    GeneratedBodyShape::ExpressionStatements(Vec::new())
+                } else {
+                    let consequent_source =
+                        codegen_statements_with_flow_cast_restore(&case.consequent);
+                    analyze_generated_body_shape_impl_with_guard_aliases(
+                        &consequent_source,
+                        true,
+                        guard_aliases,
+                    )
+                };
+                if matches!(consequent, GeneratedBodyShape::Unknown) {
+                    all_structured = false;
+                    break;
+                }
+                cases.push(GeneratedSwitchCase {
+                    test: case
+                        .test
+                        .as_ref()
+                        .map(codegen_expression_with_flow_cast_restore),
+                    consequent,
+                });
+            }
+            if all_structured {
+                return GeneratedBodyShape::Switch {
+                    discriminant: codegen_expression_with_flow_cast_restore(
+                        &switch_statement.discriminant,
+                    ),
+                    cases,
+                };
+            }
+        }
+
         if statements.len() >= 2
             && let Some(ast::Statement::IfStatement(if_statement)) = statements.first()
             && if_statement.alternate.is_none()
@@ -2525,6 +2573,7 @@ fn analyze_generated_body_shape_uncached(
                 prefix_shape,
                 GeneratedBodyShape::Block { .. }
                     | GeneratedBodyShape::Labeled { .. }
+                    | GeneratedBodyShape::Switch { .. }
                     | GeneratedBodyShape::GuardedBody { .. }
                     | GeneratedBodyShape::GuardedExpressionStatements { .. }
                     | GeneratedBodyShape::GuardedReturnPrefix { .. }
@@ -24762,6 +24811,45 @@ fn build_generated_assignment_statements_ast<'a>(
     Some(statements)
 }
 
+fn build_generated_switch_cases_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    cases: &[GeneratedSwitchCase],
+    cache_prologue: Option<&CachePrologue>,
+    is_async: bool,
+    is_generator: bool,
+) -> Option<oxc_allocator::Vec<'a, ast::SwitchCase<'a>>> {
+    let mut rendered_cases = builder.vec();
+    for case in cases {
+        let parsed_case_test = case
+            .test
+            .as_deref()
+            .map(|test| {
+                parse_expression_for_ast_codegen(allocator, SourceType::mjs().with_jsx(true), test)
+            })
+            .transpose()
+            .ok()?;
+        let consequent = build_function_body_from_generated_shape_for_ast_codegen(
+            builder,
+            allocator,
+            &FunctionBodyRenderSpec {
+                params: &[],
+                param_names: &[],
+                body_source: None,
+                body_shape: &case.consequent,
+                directives: &[],
+                cache_prologue,
+                needs_function_hook_guard_wrapper: false,
+                is_async,
+                is_generator,
+            },
+        )?
+        .statements;
+        rendered_cases.push(builder.switch_case(SPAN, parsed_case_test, consequent));
+    }
+    Some(rendered_cases)
+}
+
 fn build_generated_expression_statements_ast<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
@@ -24959,6 +25047,34 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 )),
             ))
         }
+        GeneratedBodyShape::Switch {
+            discriminant,
+            cases,
+        } => Some(
+            builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(
+                    builder.statement_switch(
+                        SPAN,
+                        parse_expression_for_ast_codegen(
+                            allocator,
+                            SourceType::mjs().with_jsx(true),
+                            discriminant,
+                        )
+                        .ok()?,
+                        build_generated_switch_cases_ast(
+                            builder,
+                            allocator,
+                            cases,
+                            spec.cache_prologue,
+                            spec.is_async,
+                            spec.is_generator,
+                        )?,
+                    ),
+                ),
+            ),
+        ),
         GeneratedBodyShape::ExpressionStatements(expressions) => Some(builder.function_body(
             SPAN,
             builder.vec(),
@@ -31753,6 +31869,88 @@ mod tests {
             tail.as_ref(),
             &super::GeneratedBodyShape::ReturnIdentifier("x".to_string())
         );
+    }
+
+    #[test]
+    fn analyzes_switch_then_return_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "let x;\nswitch (props.value) {\n  case 0:\n    x = foo;\n    break;\n  default:\n    x = bar;\n}\nreturn x;\n",
+        );
+
+        let super::GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } = shape
+        else {
+            panic!("expected prefixed declarations shape, got {shape:?}");
+        };
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations[0].pattern, "x");
+
+        let super::GeneratedBodyShape::Sequential { prefix, inner } = inner.as_ref() else {
+            panic!("expected sequential inner shape, got {inner:?}");
+        };
+        let super::GeneratedBodyShape::Switch {
+            discriminant,
+            cases,
+        } = prefix.as_ref()
+        else {
+            panic!("expected switch prefix shape, got {prefix:?}");
+        };
+        assert_eq!(discriminant, "props.value");
+        assert_eq!(cases.len(), 2);
+        assert_eq!(cases[0].test.as_deref(), Some("0"));
+        assert!(matches!(
+            &cases[0].consequent,
+            super::GeneratedBodyShape::PrefixedAssignments { assignments, inner }
+                if assignments == &vec![super::GeneratedAssignment {
+                    target: "x".to_string(),
+                    value: "foo".to_string(),
+                }]
+                    && matches!(inner.as_ref(), super::GeneratedBodyShape::Break(None))
+        ));
+        assert_eq!(cases[1].test, None);
+        assert_eq!(
+            &cases[1].consequent,
+            &super::GeneratedBodyShape::AssignmentStatements(vec![super::GeneratedAssignment {
+                target: "x".to_string(),
+                value: "bar".to_string(),
+            }])
+        );
+        assert_eq!(
+            inner.as_ref(),
+            &super::GeneratedBodyShape::ReturnIdentifier("x".to_string())
+        );
+    }
+
+    #[test]
+    fn renders_switch_then_return_body_shape() {
+        let body_shape = super::analyze_generated_body_shape(
+            "let x;\nswitch (props.value) {\n  case 0:\n    x = foo;\n    break;\n  default:\n    x = bar;\n}\nreturn x;\n",
+        );
+
+        let rendered = render_function_expression_ast(&FunctionExpressionRenderSpec {
+            body: FunctionBodyRenderSpec {
+                params: &[Argument::Place(named_place(0, 0, "props"))],
+                param_names: &["props".to_string()],
+                body_source: None,
+                body_shape: &body_shape,
+                directives: &[],
+                cache_prologue: None,
+                needs_function_hook_guard_wrapper: false,
+                is_async: false,
+                is_generator: false,
+            },
+            name: None,
+            fn_type: &FunctionExpressionType::FunctionExpression,
+            anonymous_name_hint: None,
+        })
+        .expect("expected rendered function expression");
+
+        assert!(rendered.contains("switch (props.value)"));
+        assert!(rendered.contains("case 0:"));
+        assert!(rendered.contains("break;"));
+        assert!(rendered.contains("return x;"));
     }
 
     #[test]

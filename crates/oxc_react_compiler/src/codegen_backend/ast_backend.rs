@@ -3082,6 +3082,34 @@ fn build_generated_statement_sources<'a>(
     None
 }
 
+fn build_generated_switch_cases<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    cases: &[crate::reactive_scopes::codegen_reactive::GeneratedSwitchCase],
+    cache_prologue: Option<&crate::reactive_scopes::codegen_reactive::CachePrologue>,
+) -> Option<oxc_allocator::Vec<'a, ast::SwitchCase<'a>>> {
+    let mut rendered_cases = builder.vec();
+    for case in cases {
+        let consequent = try_build_function_body_from_shape(
+            builder,
+            allocator,
+            source_type,
+            &case.consequent,
+            cache_prologue,
+        )?
+        .statements;
+        let test = case
+            .test
+            .as_deref()
+            .map(|test| parse_expression_source(allocator, source_type, test))
+            .transpose()
+            .ok()?;
+        rendered_cases.push(builder.switch_case(SPAN, test, consequent));
+    }
+    Some(rendered_cases)
+}
+
 fn replace_final_return_expression<'a>(
     body: &mut ast::FunctionBody<'a>,
     expression: ast::Expression<'a>,
@@ -3136,6 +3164,24 @@ fn try_build_function_body_from_shape<'a>(
                 )),
             ))
         }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Switch {
+            discriminant,
+            cases,
+        } => Some(builder.function_body(
+            SPAN,
+            builder.vec(),
+            builder.vec1(builder.statement_switch(
+                SPAN,
+                parse_expression_source(allocator, source_type, discriminant).ok()?,
+                build_generated_switch_cases(
+                    builder,
+                    allocator,
+                    source_type,
+                    cases,
+                    cache_prologue,
+                )?,
+            )),
+        )),
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ExpressionStatements(
             expressions,
         ) => Some(builder.function_body(
