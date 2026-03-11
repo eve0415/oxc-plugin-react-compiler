@@ -515,6 +515,666 @@ fn generated_body_shape_returned_identifier(shape: &GeneratedBodyShape) -> Optio
     }
 }
 
+fn generated_body_shape_is_empty(shape: &GeneratedBodyShape) -> bool {
+    matches!(shape, GeneratedBodyShape::ExpressionStatements(expressions) if expressions.is_empty())
+}
+
+fn canonicalize_generated_expression(expr: String) -> String {
+    strip_top_level_parenthesized_expression(expr)
+}
+
+fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBodyShape {
+    fn canonicalize_memoized_return(
+        value_name: String,
+        value_kind: ast::VariableDeclarationKind,
+        inner: GeneratedBodyShape,
+    ) -> GeneratedBodyShape {
+        if value_kind == ast::VariableDeclarationKind::Let {
+            GeneratedBodyShape::PrefixedDeclarations {
+                declarations: vec![GeneratedDeclaration {
+                    kind: value_kind,
+                    pattern: value_name,
+                }],
+                inner: Box::new(inner),
+            }
+        } else {
+            inner
+        }
+    }
+
+    match shape {
+        GeneratedBodyShape::Unknown => GeneratedBodyShape::Unknown,
+        GeneratedBodyShape::ReturnIdentifier(name) if !is_valid_js_identifier_name(&name) => {
+            GeneratedBodyShape::ReturnExpression(canonicalize_generated_expression(name))
+        }
+        GeneratedBodyShape::Block { inner } => GeneratedBodyShape::Block {
+            inner: Box::new(canonicalize_generated_body_shape(*inner)),
+        },
+        GeneratedBodyShape::Labeled { label, inner } => GeneratedBodyShape::Labeled {
+            label,
+            inner: Box::new(canonicalize_generated_body_shape(*inner)),
+        },
+        GeneratedBodyShape::Switch {
+            discriminant,
+            cases,
+        } => GeneratedBodyShape::Switch {
+            discriminant,
+            cases: cases
+                .into_iter()
+                .map(|case| GeneratedSwitchCase {
+                    test: case.test,
+                    consequent: canonicalize_generated_body_shape(case.consequent),
+                })
+                .collect(),
+        },
+        GeneratedBodyShape::ConditionalBranches {
+            test,
+            consequent,
+            alternate,
+        } => GeneratedBodyShape::ConditionalBranches {
+            test,
+            consequent: Box::new(canonicalize_generated_body_shape(*consequent)),
+            alternate: Box::new(canonicalize_generated_body_shape(*alternate)),
+        },
+        GeneratedBodyShape::GuardedBody { test, inner } => {
+            let inner = canonicalize_generated_body_shape(*inner);
+            match inner {
+                GeneratedBodyShape::ExpressionStatements(expressions) => {
+                    GeneratedBodyShape::GuardedExpressionStatements { test, expressions }
+                }
+                GeneratedBodyShape::AssignmentStatements(assignments) => {
+                    GeneratedBodyShape::GuardedAssignments { test, assignments }
+                }
+                inner => GeneratedBodyShape::GuardedBody {
+                    test,
+                    inner: Box::new(inner),
+                },
+            }
+        }
+        GeneratedBodyShape::WhileLoop { test, body } => GeneratedBodyShape::WhileLoop {
+            test,
+            body: Box::new(canonicalize_generated_body_shape(*body)),
+        },
+        GeneratedBodyShape::DoWhileLoop { test, body } => GeneratedBodyShape::DoWhileLoop {
+            test,
+            body: Box::new(canonicalize_generated_body_shape(*body)),
+        },
+        GeneratedBodyShape::ForLoop {
+            init,
+            test,
+            update,
+            body,
+        } => GeneratedBodyShape::ForLoop {
+            init,
+            test,
+            update,
+            body: Box::new(canonicalize_generated_body_shape(*body)),
+        },
+        GeneratedBodyShape::ForInLoop { left, right, body } => GeneratedBodyShape::ForInLoop {
+            left,
+            right,
+            body: Box::new(canonicalize_generated_body_shape(*body)),
+        },
+        GeneratedBodyShape::ForOfLoop { left, right, body } => GeneratedBodyShape::ForOfLoop {
+            left,
+            right,
+            body: Box::new(canonicalize_generated_body_shape(*body)),
+        },
+        GeneratedBodyShape::TryCatch {
+            catch_param,
+            try_body,
+            catch_body,
+        } => GeneratedBodyShape::TryCatch {
+            catch_param,
+            try_body: Box::new(canonicalize_generated_body_shape(*try_body)),
+            catch_body: Box::new(canonicalize_generated_body_shape(*catch_body)),
+        },
+        GeneratedBodyShape::PrefixedDeclarations {
+            mut declarations,
+            inner,
+        } => {
+            let inner = canonicalize_generated_body_shape(*inner);
+            match inner {
+                GeneratedBodyShape::PrefixedDeclarations {
+                    declarations: inner_declarations,
+                    inner,
+                } => {
+                    declarations.extend(inner_declarations);
+                    GeneratedBodyShape::PrefixedDeclarations {
+                        declarations,
+                        inner,
+                    }
+                }
+                inner => GeneratedBodyShape::PrefixedDeclarations {
+                    declarations,
+                    inner: Box::new(inner),
+                },
+            }
+        }
+        GeneratedBodyShape::PrefixedBindings {
+            mut bindings,
+            inner,
+        } => {
+            bindings = bindings
+                .into_iter()
+                .map(|binding| GeneratedBinding {
+                    kind: binding.kind,
+                    pattern: binding.pattern,
+                    expression: canonicalize_generated_expression(binding.expression),
+                })
+                .collect();
+            let inner = canonicalize_generated_body_shape(*inner);
+            match inner {
+                GeneratedBodyShape::PrefixedBindings {
+                    bindings: inner_bindings,
+                    inner,
+                } => {
+                    bindings.extend(inner_bindings);
+                    GeneratedBodyShape::PrefixedBindings { bindings, inner }
+                }
+                GeneratedBodyShape::ReturnIdentifier(alias_name) => {
+                    if bindings.len() == 1 {
+                        let binding = &bindings[0];
+                        let binding_name = is_valid_js_identifier_name(binding.pattern.trim())
+                            .then(|| binding.pattern.trim().to_string());
+                        let source_name = rendered_expr_identifier_name(&binding.expression);
+                        if binding_name.as_deref() == Some(alias_name.as_str())
+                            && let Some(source_name) = source_name
+                        {
+                            return GeneratedBodyShape::AliasedReturn {
+                                alias_name,
+                                alias_kind: binding.kind,
+                                source_name: source_name.clone(),
+                                inner: Box::new(GeneratedBodyShape::ReturnIdentifier(source_name)),
+                            };
+                        }
+                    }
+                    GeneratedBodyShape::PrefixedBindings {
+                        bindings,
+                        inner: Box::new(GeneratedBodyShape::ReturnIdentifier(alias_name)),
+                    }
+                }
+                GeneratedBodyShape::ReturnExpression(expression) => {
+                    let source_name = bindings
+                        .iter()
+                        .rev()
+                        .filter_map(|binding| {
+                            let binding_name = binding.pattern.trim();
+                            (is_valid_js_identifier_name(binding_name)
+                                && contains_identifier_token(&expression, binding_name))
+                            .then(|| binding_name.to_string())
+                        })
+                        .next();
+                    if let Some(source_name) = source_name {
+                        let inner = canonicalize_generated_body_shape(
+                            GeneratedBodyShape::PrefixedBindings {
+                                bindings,
+                                inner: Box::new(GeneratedBodyShape::ReturnIdentifier(
+                                    source_name.clone(),
+                                )),
+                            },
+                        );
+                        GeneratedBodyShape::WrappedReturnExpression {
+                            source_name,
+                            expression,
+                            inner: Box::new(inner),
+                        }
+                    } else {
+                        GeneratedBodyShape::PrefixedBindings {
+                            bindings,
+                            inner: Box::new(GeneratedBodyShape::ReturnExpression(expression)),
+                        }
+                    }
+                }
+                inner => GeneratedBodyShape::PrefixedBindings {
+                    bindings,
+                    inner: Box::new(inner),
+                },
+            }
+        }
+        GeneratedBodyShape::PrefixedExpressionStatements {
+            mut expressions,
+            inner,
+        } => {
+            expressions = expressions
+                .into_iter()
+                .map(canonicalize_generated_expression)
+                .collect();
+            let inner = canonicalize_generated_body_shape(*inner);
+            match inner {
+                GeneratedBodyShape::ExpressionStatements(inner_expressions) => {
+                    expressions.extend(inner_expressions);
+                    GeneratedBodyShape::ExpressionStatements(expressions)
+                }
+                GeneratedBodyShape::PrefixedExpressionStatements {
+                    expressions: inner_expressions,
+                    inner,
+                } => {
+                    expressions.extend(inner_expressions);
+                    GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner }
+                }
+                inner => GeneratedBodyShape::PrefixedExpressionStatements {
+                    expressions,
+                    inner: Box::new(inner),
+                },
+            }
+        }
+        GeneratedBodyShape::PrefixedAssignments {
+            mut assignments,
+            inner,
+        } => {
+            assignments = assignments
+                .into_iter()
+                .map(|assignment| GeneratedAssignment {
+                    target: assignment.target,
+                    value: canonicalize_generated_expression(assignment.value),
+                })
+                .collect();
+            let inner = canonicalize_generated_body_shape(*inner);
+            match inner {
+                GeneratedBodyShape::AssignmentStatements(inner_assignments) => {
+                    assignments.extend(inner_assignments);
+                    GeneratedBodyShape::AssignmentStatements(assignments)
+                }
+                inner if generated_body_shape_is_empty(&inner) => {
+                    GeneratedBodyShape::AssignmentStatements(assignments)
+                }
+                GeneratedBodyShape::PrefixedAssignments {
+                    assignments: inner_assignments,
+                    inner,
+                } => {
+                    assignments.extend(inner_assignments);
+                    GeneratedBodyShape::PrefixedAssignments { assignments, inner }
+                }
+                inner => GeneratedBodyShape::PrefixedAssignments {
+                    assignments,
+                    inner: Box::new(inner),
+                },
+            }
+        }
+        GeneratedBodyShape::Sequential { prefix, inner } => {
+            let prefix = canonicalize_generated_body_shape(*prefix);
+            let inner = canonicalize_generated_body_shape(*inner);
+            if generated_body_shape_is_empty(&inner) {
+                prefix
+            } else {
+                GeneratedBodyShape::Sequential {
+                    prefix: Box::new(prefix),
+                    inner: Box::new(inner),
+                }
+            }
+        }
+        GeneratedBodyShape::ZeroDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => canonicalize_memoized_return(
+            value_name.clone(),
+            value_kind,
+            GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+                value_name,
+                value_slot,
+                memoized_bindings,
+                memoized_assignments,
+                memoized_expressions,
+                memoized_setup_statements,
+                memoized_expr,
+            },
+        ),
+        GeneratedBodyShape::SingleDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            dep_slot,
+            dep_expr,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => canonicalize_memoized_return(
+            value_name.clone(),
+            value_kind,
+            GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+                value_name,
+                dep_slot,
+                dep_expr,
+                value_slot,
+                memoized_bindings,
+                memoized_assignments,
+                memoized_expressions,
+                memoized_setup_statements,
+                memoized_expr,
+            },
+        ),
+        GeneratedBodyShape::MultiDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            deps,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => canonicalize_memoized_return(
+            value_name.clone(),
+            value_kind,
+            GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+                value_name,
+                deps,
+                value_slot,
+                memoized_bindings,
+                memoized_assignments,
+                memoized_expressions,
+                memoized_setup_statements,
+                memoized_expr,
+            },
+        ),
+        GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+            value_name,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+            value_name,
+            value_slot,
+            memoized_bindings: memoized_bindings
+                .into_iter()
+                .map(|binding| GeneratedBinding {
+                    kind: binding.kind,
+                    pattern: binding.pattern,
+                    expression: canonicalize_generated_expression(binding.expression),
+                })
+                .collect(),
+            memoized_assignments: memoized_assignments
+                .into_iter()
+                .map(|assignment| GeneratedAssignment {
+                    target: assignment.target,
+                    value: canonicalize_generated_expression(assignment.value),
+                })
+                .collect(),
+            memoized_expressions: memoized_expressions
+                .into_iter()
+                .map(canonicalize_generated_expression)
+                .collect(),
+            memoized_setup_statements,
+            memoized_expr: memoized_expr.map(canonicalize_generated_expression),
+        },
+        GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+            value_name,
+            dep_slot,
+            dep_expr,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+            value_name,
+            dep_slot,
+            dep_expr: canonicalize_generated_expression(dep_expr),
+            value_slot,
+            memoized_bindings: memoized_bindings
+                .into_iter()
+                .map(|binding| GeneratedBinding {
+                    kind: binding.kind,
+                    pattern: binding.pattern,
+                    expression: canonicalize_generated_expression(binding.expression),
+                })
+                .collect(),
+            memoized_assignments: memoized_assignments
+                .into_iter()
+                .map(|assignment| GeneratedAssignment {
+                    target: assignment.target,
+                    value: canonicalize_generated_expression(assignment.value),
+                })
+                .collect(),
+            memoized_expressions: memoized_expressions
+                .into_iter()
+                .map(canonicalize_generated_expression)
+                .collect(),
+            memoized_setup_statements,
+            memoized_expr: memoized_expr.map(canonicalize_generated_expression),
+        },
+        GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+            value_name,
+            deps,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+            value_name,
+            deps: deps
+                .into_iter()
+                .map(|(slot, expr)| (slot, canonicalize_generated_expression(expr)))
+                .collect(),
+            value_slot,
+            memoized_bindings: memoized_bindings
+                .into_iter()
+                .map(|binding| GeneratedBinding {
+                    kind: binding.kind,
+                    pattern: binding.pattern,
+                    expression: canonicalize_generated_expression(binding.expression),
+                })
+                .collect(),
+            memoized_assignments: memoized_assignments
+                .into_iter()
+                .map(|assignment| GeneratedAssignment {
+                    target: assignment.target,
+                    value: canonicalize_generated_expression(assignment.value),
+                })
+                .collect(),
+            memoized_expressions: memoized_expressions
+                .into_iter()
+                .map(canonicalize_generated_expression)
+                .collect(),
+            memoized_setup_statements,
+            memoized_expr: memoized_expr.map(canonicalize_generated_expression),
+        },
+        GeneratedBodyShape::MemoizedComputedReturn {
+            value_name,
+            value_kind,
+            deps,
+            value_slot,
+            computation,
+        } => {
+            let computation = canonicalize_generated_body_shape(*computation);
+            let existing_parts = try_decompose_direct_memoized_existing_return_shape(
+                computation.clone(),
+                &value_name,
+            );
+            let declared_parts = try_decompose_direct_memoized_declared_return_shape(
+                computation.clone(),
+                &value_name,
+            );
+
+            if let Some(ast::VariableDeclarationKind::Let) = value_kind
+                && let Some(parts) = declared_parts
+            {
+                let inner = match deps.as_slice() {
+                    [] => GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+                        value_name: value_name.clone(),
+                        value_slot,
+                        memoized_bindings: parts.bindings,
+                        memoized_assignments: parts.assignments,
+                        memoized_expressions: parts.expressions,
+                        memoized_setup_statements: parts.setup_statements,
+                        memoized_expr: parts.memoized_expr,
+                    },
+                    [(dep_slot, dep_expr)] => {
+                        GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+                            value_name: value_name.clone(),
+                            dep_slot: *dep_slot,
+                            dep_expr: dep_expr.clone(),
+                            value_slot,
+                            memoized_bindings: parts.bindings,
+                            memoized_assignments: parts.assignments,
+                            memoized_expressions: parts.expressions,
+                            memoized_setup_statements: parts.setup_statements,
+                            memoized_expr: parts.memoized_expr,
+                        }
+                    }
+                    _ => GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+                        value_name: value_name.clone(),
+                        deps,
+                        value_slot,
+                        memoized_bindings: parts.bindings,
+                        memoized_assignments: parts.assignments,
+                        memoized_expressions: parts.expressions,
+                        memoized_setup_statements: parts.setup_statements,
+                        memoized_expr: parts.memoized_expr,
+                    },
+                };
+                return GeneratedBodyShape::PrefixedDeclarations {
+                    declarations: vec![GeneratedDeclaration {
+                        kind: ast::VariableDeclarationKind::Let,
+                        pattern: value_name,
+                    }],
+                    inner: Box::new(canonicalize_generated_body_shape(inner)),
+                };
+            }
+
+            if value_kind.is_none()
+                && let Some(parts) = existing_parts
+            {
+                return match deps.as_slice() {
+                    [] => GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+                        value_name,
+                        value_slot,
+                        memoized_bindings: parts.bindings,
+                        memoized_assignments: parts.assignments,
+                        memoized_expressions: parts.expressions,
+                        memoized_setup_statements: parts.setup_statements,
+                        memoized_expr: parts.memoized_expr,
+                    },
+                    [(dep_slot, dep_expr)] => {
+                        GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+                            value_name,
+                            dep_slot: *dep_slot,
+                            dep_expr: dep_expr.clone(),
+                            value_slot,
+                            memoized_bindings: parts.bindings,
+                            memoized_assignments: parts.assignments,
+                            memoized_expressions: parts.expressions,
+                            memoized_setup_statements: parts.setup_statements,
+                            memoized_expr: parts.memoized_expr,
+                        }
+                    }
+                    _ => GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+                        value_name,
+                        deps,
+                        value_slot,
+                        memoized_bindings: parts.bindings,
+                        memoized_assignments: parts.assignments,
+                        memoized_expressions: parts.expressions,
+                        memoized_setup_statements: parts.setup_statements,
+                        memoized_expr: parts.memoized_expr,
+                    },
+                };
+            }
+
+            GeneratedBodyShape::MemoizedComputedReturn {
+                value_name,
+                value_kind,
+                deps,
+                value_slot,
+                computation: Box::new(computation),
+            }
+        }
+        GeneratedBodyShape::ReturnExpression(expression) => {
+            GeneratedBodyShape::ReturnExpression(canonicalize_generated_expression(expression))
+        }
+        GeneratedBodyShape::ThrowExpression(expression) => {
+            GeneratedBodyShape::ThrowExpression(canonicalize_generated_expression(expression))
+        }
+        GeneratedBodyShape::AssignmentStatements(assignments) => {
+            GeneratedBodyShape::AssignmentStatements(
+                assignments
+                    .into_iter()
+                    .map(|assignment| GeneratedAssignment {
+                        target: assignment.target,
+                        value: canonicalize_generated_expression(assignment.value),
+                    })
+                    .collect(),
+            )
+        }
+        GeneratedBodyShape::ExpressionStatements(expressions) => {
+            GeneratedBodyShape::ExpressionStatements(
+                expressions
+                    .into_iter()
+                    .map(canonicalize_generated_expression)
+                    .collect(),
+            )
+        }
+        GeneratedBodyShape::GuardedExpressionStatements { test, expressions } => {
+            GeneratedBodyShape::GuardedExpressionStatements {
+                test: canonicalize_generated_expression(test),
+                expressions: expressions
+                    .into_iter()
+                    .map(canonicalize_generated_expression)
+                    .collect(),
+            }
+        }
+        GeneratedBodyShape::GuardedAssignments { test, assignments } => {
+            GeneratedBodyShape::GuardedAssignments {
+                test: canonicalize_generated_expression(test),
+                assignments: assignments
+                    .into_iter()
+                    .map(|assignment| GeneratedAssignment {
+                        target: assignment.target,
+                        value: canonicalize_generated_expression(assignment.value),
+                    })
+                    .collect(),
+            }
+        }
+        GeneratedBodyShape::GuardedAssignmentExpressions {
+            test,
+            assignments,
+            expressions,
+        } => GeneratedBodyShape::GuardedAssignmentExpressions {
+            test: canonicalize_generated_expression(test),
+            assignments: assignments
+                .into_iter()
+                .map(|assignment| GeneratedAssignment {
+                    target: assignment.target,
+                    value: canonicalize_generated_expression(assignment.value),
+                })
+                .collect(),
+            expressions: expressions
+                .into_iter()
+                .map(canonicalize_generated_expression)
+                .collect(),
+        },
+        shape => shape,
+    }
+}
+
+fn rendered_expr_identifier_name(expr: &str) -> Option<String> {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let allocator = Allocator::default();
+    let expression = parse_rendered_expression_ast(&allocator, trimmed)?;
+    match expression.without_parentheses() {
+        ast::Expression::Identifier(identifier) => Some(identifier.name.to_string()),
+        _ => None,
+    }
+}
+
 /// Codegen context tracking temporaries, declarations, and cache slots.
 #[derive(Clone)]
 struct Context {
@@ -1085,11 +1745,24 @@ fn codegen_reactive_function_with_primitives(
         );
     }
 
-    let body_shape = direct_body_shape.unwrap_or_else(|| {
+    let analyzed_body_shape = {
         let body = strip_trailing_bare_return(&body, func.async_, func.generator);
         let body = prune_unused_const_literal_decls(&body, func.async_, func.generator);
-        analyze_generated_body_shape(&body)
-    });
+        canonicalize_generated_body_shape(analyze_generated_body_shape(&body))
+    };
+    let body_shape = match direct_body_shape {
+        Some(direct_body_shape) => {
+            let direct_body_shape = canonicalize_generated_body_shape(direct_body_shape);
+            if !matches!(analyzed_body_shape, GeneratedBodyShape::Unknown)
+                && direct_body_shape != analyzed_body_shape
+            {
+                analyzed_body_shape
+            } else {
+                direct_body_shape
+            }
+        }
+        None => analyzed_body_shape,
+    };
     CodegenResult {
         body_shape,
         cache_size,
