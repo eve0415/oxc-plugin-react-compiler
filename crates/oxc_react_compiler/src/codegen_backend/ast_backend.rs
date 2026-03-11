@@ -8098,20 +8098,20 @@ export const FIXTURE_ENTRYPOINT = {
         name: &str,
         start: u32,
         end: u32,
-        generated_body: &str,
+        body_source: &str,
         params: &[&str],
         _is_arrow: bool,
     ) -> CompiledFunction {
         let generated_body_shape =
             crate::reactive_scopes::codegen_reactive::analyze_generated_body_shape_for_tests(
-                generated_body,
+                body_source,
             );
         CompiledFunction {
             name: name.to_string(),
             start,
             end,
             generated_body_shape,
-            body_payload: CompiledBodyPayload::GeneratedString,
+            body_payload: CompiledBodyPayload::GeneratedShape,
             needs_cache_import: false,
             compiled_params: Some(
                 params

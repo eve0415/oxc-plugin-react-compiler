@@ -10,7 +10,7 @@ pub(crate) mod shared;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CompiledBodyPayload {
-    GeneratedString,
+    GeneratedShape,
     LowerFromFinalHir,
 }
 

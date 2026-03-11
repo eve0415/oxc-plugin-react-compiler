@@ -6457,7 +6457,7 @@ fn try_compile_function<'a>(
     {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
-        CompiledBodyPayload::GeneratedString
+        CompiledBodyPayload::GeneratedShape
     };
 
     Ok(Some(CompiledFunction {
@@ -6664,7 +6664,7 @@ fn try_compile_function_with_name<'a>(
     {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
-        CompiledBodyPayload::GeneratedString
+        CompiledBodyPayload::GeneratedShape
     };
 
     Ok(Some(CompiledFunction {
@@ -6879,7 +6879,7 @@ fn try_compile_arrow<'a>(
     {
         CompiledBodyPayload::LowerFromFinalHir
     } else {
-        CompiledBodyPayload::GeneratedString
+        CompiledBodyPayload::GeneratedShape
     };
 
     Ok(Some(CompiledFunction {
