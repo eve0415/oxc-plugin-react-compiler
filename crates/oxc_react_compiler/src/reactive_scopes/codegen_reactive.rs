@@ -2757,6 +2757,24 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                 if alternate_block.body.len() != 1 {
                     continue;
                 }
+                if !statement_returns_identifier(&statements[2], &value_name) {
+                    let tail_shape = statement_shape(&statements[2]);
+                    if !matches!(tail_shape, GeneratedBodyShape::Unknown) {
+                        let prefix_source =
+                            codegen_statements_with_flow_cast_restore(&statements[..2]);
+                        let synthetic_return = format!("{prefix_source}\nreturn {value_name};");
+                        let prefix_shape =
+                            analyze_generated_body_shape_impl(&synthetic_return, false);
+                        if shape_returned_identifier(&prefix_shape)
+                            .is_some_and(|name| name == value_name)
+                        {
+                            return GeneratedBodyShape::Sequential {
+                                prefix: Box::new(prefix_shape),
+                                inner: Box::new(tail_shape),
+                            };
+                        }
+                    }
+                }
                 let binary_test = match if_statement.test.without_parentheses() {
                     ast::Expression::BinaryExpression(test) => Some(test),
                     _ => None,
@@ -3278,23 +3296,23 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                 let prefix_source =
                     codegen_statements_with_flow_cast_restore(&statements[..split_index]);
                 let prefix_shape = {
-                    collect_candidate_return_identifiers(&statements[..split_index])
-                        .into_iter()
-                        .find_map(|candidate_name| {
-                            let synthetic_return =
-                                format!("{prefix_source}\nreturn {candidate_name};");
-                            let synthetic_shape =
-                                analyze_generated_body_shape_impl(&synthetic_return, false);
-                            shape_returned_identifier(&synthetic_shape)
-                                .is_some_and(|name| name == candidate_name)
-                                .then_some(synthetic_shape)
-                        })
-                        .or_else(|| {
-                            let direct_shape =
-                                analyze_generated_body_shape_impl(&prefix_source, false);
-                            (!matches!(direct_shape, GeneratedBodyShape::Unknown))
-                                .then_some(direct_shape)
-                        })
+                    let synthetic_shape =
+                        collect_candidate_return_identifiers(&statements[..split_index])
+                            .into_iter()
+                            .find_map(|candidate_name| {
+                                let synthetic_return =
+                                    format!("{prefix_source}\nreturn {candidate_name};");
+                                let synthetic_shape =
+                                    analyze_generated_body_shape_impl(&synthetic_return, false);
+                                shape_returned_identifier(&synthetic_shape)
+                                    .is_some_and(|name| name == candidate_name)
+                                    .then_some(synthetic_shape)
+                            });
+                    synthetic_shape.or_else(|| {
+                        let direct_shape = analyze_generated_body_shape_impl(&prefix_source, false);
+                        (!matches!(direct_shape, GeneratedBodyShape::Unknown))
+                            .then_some(direct_shape)
+                    })
                 };
                 if let Some(prefix_shape) = prefix_shape {
                     return GeneratedBodyShape::Sequential {
@@ -30665,6 +30683,54 @@ mod tests {
     fn analyzes_try_catch_memoized_existing_return_body_shape() {
         let shape = super::analyze_generated_body_shape(
             "let x;\nif ($[0] !== props.e || $[1] !== props.y) {\n  try {\n    const y = [];\n    y.push(props.y);\n    throwInput(y);\n  } catch (t0) {\n    const e = t0;\n    e.push(props.e);\n    x = e;\n  }\n  $[0] = props.e;\n  $[1] = props.y;\n  $[2] = x;\n} else {\n  x = $[2];\n}\nreturn x;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_set_state_effect_callback_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "const [, setState1] = useRef(\"initial value\");\nconst [, setState2] = useRef(\"initial value\");\nlet setState;\nif ($[0] !== props.foo) {\n  if (props.foo) {\n    setState = setState1;\n  } else {\n    setState = setState2;\n  }\n  $[0] = props.foo;\n  $[1] = setState;\n} else {\n  setState = $[1];\n}\nlet t0;\nif ($[2] !== setState) {\n  t0 = () => print(setState);\n  $[2] = setState;\n  $[3] = t0;\n} else {\n  t0 = $[3];\n}\nuseEffect(t0, [setState]);\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_memoized_callback_return_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "let t0;\nif ($[2] !== setState) {\n  t0 = () => print(setState);\n  $[2] = setState;\n  $[3] = t0;\n} else {\n  t0 = $[3];\n}\nreturn t0;\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_memoized_callback_effect_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "let t0;\nif ($[2] !== setState) {\n  t0 = () => print(setState);\n  $[2] = setState;\n  $[3] = t0;\n} else {\n  t0 = $[3];\n}\nuseEffect(t0, [setState]);\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_set_state_selector_return_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "const [, setState1] = useRef(\"initial value\");\nconst [, setState2] = useRef(\"initial value\");\nlet setState;\nif ($[0] !== props.foo) {\n  if (props.foo) {\n    setState = setState1;\n  } else {\n    setState = setState2;\n  }\n  $[0] = props.foo;\n  $[1] = setState;\n} else {\n  setState = $[1];\n}\nreturn setState;\n",
         );
 
         assert!(
