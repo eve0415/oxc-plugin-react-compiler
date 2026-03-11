@@ -1196,6 +1196,24 @@ fn codegen_outlined_function(
                     *expression = replace_identifier_tokens(expression, from, to);
                 }
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::AssignmentStatements(
+                assignments,
+            ) => {
+                for assignment in assignments {
+                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
+                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
+                }
+            }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedAssignments {
+                test,
+                assignments,
+            } => {
+                *test = replace_identifier_tokens(test, from, to);
+                for assignment in assignments {
+                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
+                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
+                }
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(
                 name,
             ) => {

@@ -3105,6 +3105,34 @@ fn try_build_function_body_from_shape<'a>(
             builder.vec(),
             build_generated_expression_statements(builder, allocator, source_type, expressions)?,
         )),
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::AssignmentStatements(
+            assignments,
+        ) => Some(builder.function_body(
+            SPAN,
+            builder.vec(),
+            build_generated_assignment_statements(builder, allocator, source_type, assignments)?,
+        )),
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedAssignments {
+            test,
+            assignments,
+        } => Some(builder.function_body(
+            SPAN,
+            builder.vec(),
+            builder.vec1(builder.statement_if(
+                SPAN,
+                parse_expression_source(allocator, source_type, test).ok()?,
+                builder.statement_block(
+                    SPAN,
+                    build_generated_assignment_statements(
+                        builder,
+                        allocator,
+                        source_type,
+                        assignments,
+                    )?,
+                ),
+                None,
+            )),
+        )),
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(name) => {
             Some(builder.function_body(
                 SPAN,

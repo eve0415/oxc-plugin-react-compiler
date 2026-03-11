@@ -155,6 +155,11 @@ pub struct CachePrologue {
 pub enum GeneratedBodyShape {
     Unknown,
     ExpressionStatements(Vec<String>),
+    AssignmentStatements(Vec<GeneratedAssignment>),
+    GuardedAssignments {
+        test: String,
+        assignments: Vec<GeneratedAssignment>,
+    },
     ReturnIdentifier(String),
     ReturnExpression(String),
     BoundExpressionReturn {
@@ -875,6 +880,8 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
         match shape {
             GeneratedBodyShape::Unknown => None,
             GeneratedBodyShape::ExpressionStatements(_) => None,
+            GeneratedBodyShape::AssignmentStatements(_) => None,
+            GeneratedBodyShape::GuardedAssignments { .. } => None,
             GeneratedBodyShape::ReturnIdentifier(name) => Some(name),
             GeneratedBodyShape::ReturnExpression(_) => None,
             GeneratedBodyShape::BoundExpressionReturn { value_name, .. }
@@ -1179,6 +1186,27 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
         (expressions, prefix_len)
     }
 
+    fn collect_non_cache_assignments(
+        statements: &[ast::Statement<'_>],
+    ) -> (Vec<GeneratedAssignment>, usize) {
+        let mut assignments = Vec::new();
+        let mut prefix_len = 0usize;
+        for statement in statements {
+            let Some((target, value)) = assignment_statement_parts(statement) else {
+                break;
+            };
+            if assignment_target_cache_access(target).is_some() {
+                break;
+            }
+            assignments.push(GeneratedAssignment {
+                target: codegen_assignment_target_with_flow_cast_restore(target),
+                value: codegen_expression_with_flow_cast_restore(value),
+            });
+            prefix_len += 1;
+        }
+        (assignments, prefix_len)
+    }
+
     fn collect_candidate_return_identifiers(statements: &[ast::Statement<'_>]) -> Vec<String> {
         let mut candidates = Vec::new();
         for statement in statements.iter().rev() {
@@ -1340,6 +1368,25 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
             collect_leading_expression_statements(statements);
         if expression_len == statements.len() && !terminal_expressions.is_empty() {
             return GeneratedBodyShape::ExpressionStatements(terminal_expressions);
+        }
+
+        let (terminal_assignments, assignment_len) = collect_non_cache_assignments(statements);
+        if assignment_len == statements.len() && !terminal_assignments.is_empty() {
+            return GeneratedBodyShape::AssignmentStatements(terminal_assignments);
+        }
+
+        if let [ast::Statement::IfStatement(if_statement)] = statements.as_slice()
+            && if_statement.alternate.is_none()
+            && let ast::Statement::BlockStatement(consequent_block) = &if_statement.consequent
+        {
+            let (assignments, assignment_len) =
+                collect_non_cache_assignments(&consequent_block.body);
+            if assignment_len == consequent_block.body.len() && !assignments.is_empty() {
+                return GeneratedBodyShape::GuardedAssignments {
+                    test: codegen_expression_with_flow_cast_restore(&if_statement.test),
+                    assignments,
+                };
+            }
         }
 
         if statements.len() >= 2
@@ -22974,6 +23021,29 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             builder.vec(),
             build_generated_expression_statements_ast(builder, allocator, expressions)?,
         )),
+        GeneratedBodyShape::AssignmentStatements(assignments) => Some(builder.function_body(
+            SPAN,
+            builder.vec(),
+            build_generated_assignment_statements_ast(builder, allocator, assignments)?,
+        )),
+        GeneratedBodyShape::GuardedAssignments { test, assignments } => {
+            let test =
+                parse_expression_for_ast_codegen(allocator, SourceType::mjs().with_jsx(true), test)
+                    .ok()?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_if(
+                    SPAN,
+                    test,
+                    builder.statement_block(
+                        SPAN,
+                        build_generated_assignment_statements_ast(builder, allocator, assignments)?,
+                    ),
+                    None,
+                )),
+            ))
+        }
         GeneratedBodyShape::ReturnIdentifier(name) => Some(builder.function_body(
             SPAN,
             builder.vec(),
@@ -27095,6 +27165,67 @@ mod tests {
             super::GeneratedBodyShape::ExpressionStatements(vec![
                 "useEffect(t2, [arr])".to_string()
             ])
+        );
+    }
+
+    #[test]
+    fn analyzes_assignment_statements_body_shape() {
+        let shape = super::analyze_generated_body_shape("y = x[0][1];\nt = x[1][0];\n");
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::AssignmentStatements(vec![
+                super::GeneratedAssignment {
+                    target: "y".to_string(),
+                    value: "x[0][1]".to_string(),
+                },
+                super::GeneratedAssignment {
+                    target: "t".to_string(),
+                    value: "x[1][0]".to_string(),
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn analyzes_guarded_assignments_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "if (ref.current !== null) {\n  ref.current = \"\";\n}\n",
+        );
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::GuardedAssignments {
+                test: "ref.current !== null".to_string(),
+                assignments: vec![super::GeneratedAssignment {
+                    target: "ref.current".to_string(),
+                    value: "(\"\")".to_string(),
+                }],
+            }
+        );
+    }
+
+    #[test]
+    fn analyzes_prefixed_guarded_assignments_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "const r = useRef(null);\nif (r.current == null) {\n  r.current = 1;\n}\n",
+        );
+
+        let super::GeneratedBodyShape::PrefixedBindings { bindings, inner } = shape else {
+            panic!("expected prefixed bindings shape");
+        };
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].pattern, "r");
+        assert_eq!(bindings[0].expression, "useRef(null)");
+        assert_eq!(
+            inner.as_ref(),
+            &super::GeneratedBodyShape::GuardedAssignments {
+                test: "r.current == null".to_string(),
+                assignments: vec![super::GeneratedAssignment {
+                    target: "r.current".to_string(),
+                    value: "1".to_string(),
+                }],
+            }
         );
     }
 
