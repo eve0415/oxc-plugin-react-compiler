@@ -970,10 +970,11 @@ fn codegen_reactive_function_with_primitives(
     }
 
     let body = codegen_block(&mut cx, &func.body);
-
-    let mut body = strip_trailing_bare_return(&body, func.async_, func.generator);
+    let direct_body_shape = {
+        let mut shape_cx = cx.clone();
+        try_build_generated_body_shape_from_reactive_block(&mut shape_cx, &func.body)
+    };
     let needs_function_hook_guard_wrapper = cx.emit_hook_guards && emit_function_hook_guard;
-    body = prune_unused_const_literal_decls(&body, func.async_, func.generator);
 
     let cache_size = cx.next_cache_index;
     let needs_cache_import = cache_size > 0;
@@ -1006,11 +1007,11 @@ fn codegen_reactive_function_with_primitives(
         );
     }
 
-    let body_shape = {
-        let mut shape_cx = cx.clone();
-        try_build_generated_body_shape_from_reactive_block(&mut shape_cx, &func.body)
-            .unwrap_or_else(|| analyze_generated_body_shape(&body))
-    };
+    let body_shape = direct_body_shape.unwrap_or_else(|| {
+        let body = strip_trailing_bare_return(&body, func.async_, func.generator);
+        let body = prune_unused_const_literal_decls(&body, func.async_, func.generator);
+        analyze_generated_body_shape(&body)
+    });
     CodegenResult {
         body_shape,
         cache_size,
