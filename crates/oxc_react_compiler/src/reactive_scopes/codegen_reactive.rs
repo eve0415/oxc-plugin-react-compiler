@@ -214,6 +214,7 @@ pub enum GeneratedBodyShape {
     ReturnVoid,
     ReturnIdentifier(String),
     ReturnExpression(String),
+    ThrowExpression(String),
     BoundExpressionReturn {
         value_name: String,
         value_kind: ast::VariableDeclarationKind,
@@ -1004,6 +1005,7 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             GeneratedBodyShape::ReturnVoid => None,
             GeneratedBodyShape::ReturnIdentifier(name) => Some(name),
             GeneratedBodyShape::ReturnExpression(_) => None,
+            GeneratedBodyShape::ThrowExpression(_) => None,
             GeneratedBodyShape::BoundExpressionReturn { value_name, .. }
             | GeneratedBodyShape::AssignedExpressionReturn { value_name, .. }
             | GeneratedBodyShape::ZeroDependencyMemoizedReturn { value_name, .. }
@@ -1741,6 +1743,12 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                     ),
                 },
             };
+        }
+
+        if let [ast::Statement::ThrowStatement(throw_stmt)] = statements.as_slice() {
+            return GeneratedBodyShape::ThrowExpression(codegen_expression_with_flow_cast_restore(
+                &throw_stmt.argument,
+            ));
         }
 
         if statements.len() >= 2
@@ -24904,6 +24912,19 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 builder.vec1(builder.statement_return(SPAN, Some(expression))),
             ))
         }
+        GeneratedBodyShape::ThrowExpression(expression_source) => {
+            let expression = parse_expression_for_ast_codegen(
+                allocator,
+                SourceType::mjs().with_jsx(true),
+                expression_source,
+            )
+            .ok()?;
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_throw(SPAN, expression)),
+            ))
+        }
         GeneratedBodyShape::BoundExpressionReturn {
             value_name,
             value_kind,
@@ -29558,6 +29579,15 @@ mod tests {
     fn analyzes_return_void_body_shape() {
         let shape = super::analyze_generated_body_shape("return;\n");
         assert_eq!(shape, super::GeneratedBodyShape::ReturnVoid);
+    }
+
+    #[test]
+    fn analyzes_throw_expression_body_shape() {
+        let shape = super::analyze_generated_body_shape("throw new Error(\"boom\");\n");
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::ThrowExpression("new Error(\"boom\")".to_string())
+        );
     }
 
     #[test]

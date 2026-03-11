@@ -1366,6 +1366,11 @@ fn codegen_outlined_function(
             ) => {
                 *expression = replace_identifier_tokens(expression, from, to);
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ThrowExpression(
+                expression,
+            ) => {
+                *expression = replace_identifier_tokens(expression, from, to);
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::BoundExpressionReturn {
                 value_name,
                 expression,
@@ -1881,6 +1886,7 @@ fn generated_body_shape_is_nonmemoized_hir_lowerable(
         | Shape::ReturnVoid
         | Shape::ReturnIdentifier(_)
         | Shape::ReturnExpression(_)
+        | Shape::ThrowExpression(_)
         | Shape::BoundExpressionReturn { .. }
         | Shape::AssignedExpressionReturn { .. } => true,
         Shape::GuardedBody { inner, .. }
