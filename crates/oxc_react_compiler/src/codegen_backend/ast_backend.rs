@@ -3542,6 +3542,30 @@ fn try_build_function_body_from_shape<'a>(
                 )),
             ))
         }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Break(label) => {
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_break(
+                    SPAN,
+                    label
+                        .as_ref()
+                        .map(|label| builder.label_identifier(SPAN, builder.atom(label))),
+                )),
+            ))
+        }
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Continue(label) => {
+            Some(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_continue(
+                    SPAN,
+                    label
+                        .as_ref()
+                        .map(|label| builder.label_identifier(SPAN, builder.atom(label))),
+                )),
+            ))
+        }
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnVoid => {
             Some(builder.function_body(
                 SPAN,

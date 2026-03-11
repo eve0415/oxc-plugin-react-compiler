@@ -1360,6 +1360,8 @@ fn codegen_outlined_function(
                 rename_generated_body_shape(try_body, from, to);
                 rename_generated_body_shape(catch_body, from, to);
             }
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Break(_) => {}
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Continue(_) => {}
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnVoid => {}
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(
                 name,
@@ -1921,6 +1923,8 @@ fn generated_body_shape_is_nonmemoized_hir_lowerable(
         | Shape::GuardedAssignments { .. }
         | Shape::WhileLoop { .. }
         | Shape::GuardedAssignmentExpressions { .. }
+        | Shape::Break(_)
+        | Shape::Continue(_)
         | Shape::ReturnVoid
         | Shape::ReturnIdentifier(_)
         | Shape::ReturnExpression(_)

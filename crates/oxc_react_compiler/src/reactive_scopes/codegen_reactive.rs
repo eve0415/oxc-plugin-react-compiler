@@ -215,6 +215,8 @@ pub enum GeneratedBodyShape {
         try_body: Box<GeneratedBodyShape>,
         catch_body: Box<GeneratedBodyShape>,
     },
+    Break(Option<String>),
+    Continue(Option<String>),
     ReturnVoid,
     ReturnIdentifier(String),
     ReturnExpression(String),
@@ -1016,6 +1018,8 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             GeneratedBodyShape::MemoizedCachedValues { .. } => None,
             GeneratedBodyShape::MemoizedEarlyReturnSentinel { .. } => None,
             GeneratedBodyShape::TryCatch { .. } => None,
+            GeneratedBodyShape::Break(_) => None,
+            GeneratedBodyShape::Continue(_) => None,
             GeneratedBodyShape::ReturnVoid => None,
             GeneratedBodyShape::ReturnIdentifier(name) => Some(name),
             GeneratedBodyShape::ReturnExpression(_) => None,
@@ -1774,6 +1778,24 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             return GeneratedBodyShape::ThrowExpression(codegen_expression_with_flow_cast_restore(
                 &throw_stmt.argument,
             ));
+        }
+
+        if let [ast::Statement::BreakStatement(break_stmt)] = statements.as_slice() {
+            return GeneratedBodyShape::Break(
+                break_stmt
+                    .label
+                    .as_ref()
+                    .map(|label| label.name.to_string()),
+            );
+        }
+
+        if let [ast::Statement::ContinueStatement(continue_stmt)] = statements.as_slice() {
+            return GeneratedBodyShape::Continue(
+                continue_stmt
+                    .label
+                    .as_ref()
+                    .map(|label| label.name.to_string()),
+            );
         }
 
         if statements.len() >= 2
@@ -25049,6 +25071,34 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 )),
             ))
         }
+        GeneratedBodyShape::Break(label) => Some(
+            builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(
+                    builder.statement_break(
+                        SPAN,
+                        label
+                            .as_ref()
+                            .map(|label| builder.label_identifier(SPAN, builder.atom(label))),
+                    ),
+                ),
+            ),
+        ),
+        GeneratedBodyShape::Continue(label) => Some(
+            builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(
+                    builder.statement_continue(
+                        SPAN,
+                        label
+                            .as_ref()
+                            .map(|label| builder.label_identifier(SPAN, builder.atom(label))),
+                    ),
+                ),
+            ),
+        ),
         GeneratedBodyShape::ReturnVoid => Some(builder.function_body(
             SPAN,
             builder.vec(),
@@ -30803,6 +30853,28 @@ mod tests {
         let shape = super::analyze_generated_body_shape(
             "let y = 0;\nwhile (y < props.max) {\n  y++;\n}\nreturn y;\n",
         );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_while_continue_then_expression_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "while (a) {\n  if (b) {\n    continue;\n  }\n  c();\n}\nd();\n",
+        );
+
+        assert!(
+            !matches!(shape, super::GeneratedBodyShape::Unknown),
+            "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_while_break_then_return_body_shape() {
+        let shape = super::analyze_generated_body_shape("while (a) {\n  break;\n}\nreturn b;\n");
 
         assert!(
             !matches!(shape, super::GeneratedBodyShape::Unknown),
