@@ -1511,8 +1511,9 @@ fn analyze_generated_body_shape_uncached(
         stored == restored
     }
 
-    fn collect_non_cache_assignments(
+    fn collect_assignments(
         statements: &[ast::Statement<'_>],
+        allow_cache_targets: bool,
     ) -> (Vec<GeneratedAssignment>, usize) {
         let mut assignments = Vec::new();
         let mut prefix_len = 0usize;
@@ -1520,7 +1521,7 @@ fn analyze_generated_body_shape_uncached(
             let Some((target, value)) = assignment_statement_parts(statement) else {
                 break;
             };
-            if assignment_target_cache_access(target).is_some() {
+            if !allow_cache_targets && assignment_target_cache_access(target).is_some() {
                 break;
             }
             assignments.push(GeneratedAssignment {
@@ -1530,6 +1531,12 @@ fn analyze_generated_body_shape_uncached(
             prefix_len += 1;
         }
         (assignments, prefix_len)
+    }
+
+    fn collect_non_cache_assignments(
+        statements: &[ast::Statement<'_>],
+    ) -> (Vec<GeneratedAssignment>, usize) {
+        collect_assignments(statements, false)
     }
 
     fn collect_candidate_return_identifiers(statements: &[ast::Statement<'_>]) -> Vec<String> {
@@ -1715,6 +1722,20 @@ fn analyze_generated_body_shape_uncached(
         candidates
     }
 
+    fn is_memoization_guard_test(
+        test: &ast::Expression<'_>,
+        guard_aliases: &HashMap<String, Vec<GeneratedDependencyGuard>>,
+    ) -> bool {
+        if let ast::Expression::BinaryExpression(binary) = test.without_parentheses()
+            && binary.operator == AstBinaryOperator::StrictEquality
+            && expression_cache_access(&binary.left).is_some()
+            && expression_is_symbol_for(&binary.right, MEMO_CACHE_SENTINEL)
+        {
+            return true;
+        }
+        collect_dependency_guards(test, guard_aliases).is_some()
+    }
+
     fn statement_shape(
         statement: &ast::Statement<'_>,
         guard_aliases: &HashMap<String, Vec<GeneratedDependencyGuard>>,
@@ -1781,6 +1802,7 @@ fn analyze_generated_body_shape_uncached(
 
         if let [ast::Statement::IfStatement(if_statement)] = statements.as_slice()
             && let Some(alternate) = if_statement.alternate.as_ref()
+            && !is_memoization_guard_test(&if_statement.test, guard_aliases)
         {
             let consequent_shape = statement_shape(&if_statement.consequent, guard_aliases);
             if !matches!(consequent_shape, GeneratedBodyShape::Unknown) {
@@ -2245,7 +2267,7 @@ fn analyze_generated_body_shape_uncached(
             return GeneratedBodyShape::ExpressionStatements(terminal_expressions);
         }
 
-        let (terminal_assignments, assignment_len) = collect_non_cache_assignments(statements);
+        let (terminal_assignments, assignment_len) = collect_assignments(statements, true);
         if assignment_len == statements.len() && !terminal_assignments.is_empty() {
             return GeneratedBodyShape::AssignmentStatements(terminal_assignments);
         }
@@ -2402,7 +2424,7 @@ fn analyze_generated_body_shape_uncached(
             }
         }
 
-        let (prefixed_assignments, prefix_len) = collect_non_cache_assignments(statements);
+        let (prefixed_assignments, prefix_len) = collect_assignments(statements, true);
         if prefix_len > 0 && prefix_len < statements.len() {
             let suffix_source =
                 codegen_statements_with_flow_cast_restore(&statements[prefix_len..]);
@@ -30337,6 +30359,25 @@ mod tests {
     }
 
     #[test]
+    fn analyzes_cache_assignment_statements_body_shape() {
+        let shape = super::analyze_generated_body_shape("$[0] = a;\n$[1] = t0;\n");
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::AssignmentStatements(vec![
+                super::GeneratedAssignment {
+                    target: "$[0]".to_string(),
+                    value: "a".to_string(),
+                },
+                super::GeneratedAssignment {
+                    target: "$[1]".to_string(),
+                    value: "t0".to_string(),
+                },
+            ])
+        );
+    }
+
+    #[test]
     fn analyzes_guarded_assignments_body_shape() {
         let shape = super::analyze_generated_body_shape(
             "if (ref.current !== null) {\n  ref.current = \"\";\n}\n",
@@ -31535,6 +31576,38 @@ mod tests {
                 value: "$[2]".to_string(),
             }])
         );
+    }
+
+    #[test]
+    fn analyzes_cache_assignment_prefix_then_structural_check_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "$[1] = x;\n$[2] = t1;\nif (condition) {\n  t1 = <div>{x}</div>;\n  $structuralCheck($[2], t1, \"t1\", \"Component\", \"recomputed\", \"(7:7)\");\n  t1 = $[2];\n}\n",
+        );
+
+        let super::GeneratedBodyShape::PrefixedAssignments { assignments, inner } = shape else {
+            panic!("expected prefixed assignments shape, got {shape:?}");
+        };
+        assert_eq!(
+            assignments.as_slice(),
+            vec![
+                super::GeneratedAssignment {
+                    target: "$[1]".to_string(),
+                    value: "x".to_string(),
+                },
+                super::GeneratedAssignment {
+                    target: "$[2]".to_string(),
+                    value: "t1".to_string(),
+                },
+            ]
+            .as_slice()
+        );
+        assert!(matches!(
+            inner.as_ref(),
+            super::GeneratedBodyShape::GuardedBody {
+                test,
+                ..
+            } if test == "condition"
+        ));
     }
 
     #[test]
