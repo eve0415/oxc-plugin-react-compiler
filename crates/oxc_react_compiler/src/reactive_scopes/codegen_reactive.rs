@@ -1700,11 +1700,12 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
             if alternate_block.body.len() != 1 {
                 continue;
             }
-            let ast::Expression::BinaryExpression(test) = if_statement.test.without_parentheses()
-            else {
-                continue;
+            let binary_test = match if_statement.test.without_parentheses() {
+                ast::Expression::BinaryExpression(test) => Some(test),
+                _ => None,
             };
-            if test.operator == AstBinaryOperator::StrictEquality
+            if let Some(test) = binary_test
+                && test.operator == AstBinaryOperator::StrictEquality
                 && let Some((cache_var, value_slot)) = expression_cache_access(&test.left)
                 && expression_is_symbol_for(&test.right, MEMO_CACHE_SENTINEL)
             {
@@ -1945,6 +1946,9 @@ fn analyze_generated_body_shape_uncached(body: &str, allow_sequential: bool) -> 
                 };
             }
 
+            let Some(test) = binary_test else {
+                continue;
+            };
             if test.operator != AstBinaryOperator::StrictInequality {
                 continue;
             }
@@ -4045,7 +4049,7 @@ fn codegen_block_no_reset_with_options(
         let allocator = Allocator::default();
         let statement = match parse_single_statement_for_ast_codegen(
             &allocator,
-            SourceType::mjs().with_jsx(true),
+            oxc_span::SourceType::mjs().with_jsx(true),
             trimmed,
         ) {
             Ok(statement) => statement,
@@ -4106,7 +4110,7 @@ fn codegen_block_no_reset_with_options(
         let allocator = Allocator::default();
         let statement = parse_single_statement_for_ast_codegen(
             &allocator,
-            SourceType::mjs().with_jsx(true),
+            oxc_span::SourceType::mjs().with_jsx(true),
             stmt.trim(),
         )
         .ok()?;
@@ -27755,6 +27759,53 @@ mod tests {
             shape,
             super::GeneratedBodyShape::ExpressionStatements(Vec::new())
         );
+    }
+
+    #[test]
+    fn analyzes_multi_dependency_memoized_body_shape_with_fragment_expr() {
+        let shape = super::analyze_generated_body_shape(
+            "let t1;\nif ($[0] !== children || $[1] !== x) {\n  t1 = <>{x}{children}</>;\n  $[0] = children;\n  $[1] = x;\n  $[2] = t1;\n} else {\n  t1 = $[2];\n}\nreturn t1;\n",
+        );
+
+        assert!(matches!(
+            shape,
+            super::GeneratedBodyShape::MultiDependencyMemoizedReturn {
+                value_name,
+                deps,
+                value_slot,
+                memoized_expr,
+                ..
+            } if value_name == "t1"
+                && deps == vec![(0, "children".to_string()), (1, "x".to_string())]
+                && value_slot == 2
+                && memoized_expr == Some("<>{x}{children}</>".to_string())
+        ));
+    }
+
+    #[test]
+    fn analyzes_prefixed_fragment_memoized_body_shape() {
+        let shape = super::analyze_generated_body_shape(
+            "const { x, children } = t0;\nlet t1;\nif ($[0] !== children || $[1] !== x) {\n  t1 = <>{x}{children}</>;\n  $[0] = children;\n  $[1] = x;\n  $[2] = t1;\n} else {\n  t1 = $[2];\n}\nreturn t1;\n",
+        );
+
+        let super::GeneratedBodyShape::PrefixedBindings { bindings, inner } = shape else {
+            panic!("expected prefixed bindings shape, got {shape:?}");
+        };
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].pattern, "{ x, children }");
+        assert!(matches!(
+            inner.as_ref(),
+            super::GeneratedBodyShape::MultiDependencyMemoizedReturn {
+                value_name,
+                deps,
+                value_slot,
+                memoized_expr,
+                ..
+            } if value_name == "t1"
+                && deps == &vec![(0, "children".to_string()), (1, "x".to_string())]
+                && *value_slot == 2
+                && memoized_expr == &Some("<>{x}{children}</>".to_string())
+        ));
     }
 
     #[test]
