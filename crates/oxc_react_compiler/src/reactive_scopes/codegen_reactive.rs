@@ -154,6 +154,7 @@ pub struct CachePrologue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GeneratedBodyShape {
     Unknown,
+    ExpressionStatements(Vec<String>),
     ReturnIdentifier(String),
     ReturnExpression(String),
     BoundExpressionReturn {
@@ -870,6 +871,7 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
     fn shape_returned_identifier(shape: &GeneratedBodyShape) -> Option<&str> {
         match shape {
             GeneratedBodyShape::Unknown => None,
+            GeneratedBodyShape::ExpressionStatements(_) => None,
             GeneratedBodyShape::ReturnIdentifier(name) => Some(name),
             GeneratedBodyShape::ReturnExpression(_) => None,
             GeneratedBodyShape::BoundExpressionReturn { value_name, .. }
@@ -1329,6 +1331,12 @@ fn analyze_generated_body_shape_impl(body: &str, allow_sequential: bool) -> Gene
                     codegen_expression_with_flow_cast_restore(argument),
                 ),
             };
+        }
+
+        let (terminal_expressions, expression_len) =
+            collect_leading_expression_statements(statements);
+        if expression_len == statements.len() && !terminal_expressions.is_empty() {
+            return GeneratedBodyShape::ExpressionStatements(terminal_expressions);
         }
 
         if statements.len() >= 2
@@ -22760,6 +22768,11 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
 ) -> Option<ast::FunctionBody<'a>> {
     match spec.body_shape {
         GeneratedBodyShape::Unknown => None,
+        GeneratedBodyShape::ExpressionStatements(expressions) => Some(builder.function_body(
+            SPAN,
+            builder.vec(),
+            build_generated_expression_statements_ast(builder, allocator, expressions)?,
+        )),
         GeneratedBodyShape::ReturnIdentifier(name) => Some(builder.function_body(
             SPAN,
             builder.vec(),
@@ -26846,6 +26859,18 @@ mod tests {
             super::GeneratedBodyShape::ZeroDependencyMemoizedReturn { value_name, value_slot, .. }
                 if value_name == "t0" && *value_slot == 0
         ));
+    }
+
+    #[test]
+    fn analyzes_terminal_expression_statements_body_shape() {
+        let shape = super::analyze_generated_body_shape("useEffect(t2, [arr]);\n");
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::ExpressionStatements(vec![
+                "useEffect(t2, [arr])".to_string()
+            ])
+        );
     }
 
     #[test]

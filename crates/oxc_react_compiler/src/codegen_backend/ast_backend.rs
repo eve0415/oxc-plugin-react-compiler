@@ -3063,6 +3063,13 @@ fn try_build_function_body_from_shape<'a>(
 ) -> Option<ast::FunctionBody<'a>> {
     match body_shape {
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown => None,
+        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ExpressionStatements(
+            expressions,
+        ) => Some(builder.function_body(
+            SPAN,
+            builder.vec(),
+            build_generated_expression_statements(builder, allocator, source_type, expressions)?,
+        )),
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(name) => {
             Some(builder.function_body(
                 SPAN,
@@ -7483,6 +7490,37 @@ function Component(props) {
 
         assert!(rewritten.contains("function Foo(props) {"));
         assert!(rewritten.contains("return value;"));
+    }
+
+    #[test]
+    fn builds_expression_statements_body_from_shape_without_generated_source() {
+        let source = "function Foo(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "useEffect(t2, [arr]);",
+            &["props"],
+            false,
+        );
+        compiled_function.generated_body = None;
+        compiled_function.generated_body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ExpressionStatements(
+                vec!["useEffect(t2, [arr])".to_string()],
+            );
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("useEffect(t2, [arr]);"));
     }
 
     #[test]

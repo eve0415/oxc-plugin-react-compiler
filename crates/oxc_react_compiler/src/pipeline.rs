@@ -1189,6 +1189,13 @@ fn codegen_outlined_function(
     ) {
         match body_shape {
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown => {}
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ExpressionStatements(
+                expressions,
+            ) => {
+                for expression in expressions {
+                    *expression = replace_identifier_tokens(expression, from, to);
+                }
+            }
             crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(
                 name,
             ) => {
