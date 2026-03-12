@@ -681,6 +681,39 @@ fn rewrite_cached_prefix_for_outer_declarations(
     }
 }
 
+fn canonicalize_generated_statement_source(statement_source: String) -> String {
+    let allocator = Allocator::default();
+    let Ok(mut statement) = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        &statement_source,
+    ) else {
+        return statement_source;
+    };
+    match &mut statement {
+        ast::Statement::IfStatement(if_statement) => {
+            if if_statement.alternate.as_ref().is_some_and(|alternate| {
+                matches!(
+                    alternate,
+                    ast::Statement::BlockStatement(block) if block.body.is_empty()
+                )
+            }) {
+                if_statement.alternate = None;
+            }
+        }
+        ast::Statement::LabeledStatement(labeled) => {
+            if let ast::Statement::BlockStatement(block) = &mut labeled.body
+                && block.body.len() == 1
+                && matches!(block.body.first(), Some(ast::Statement::SwitchStatement(_)))
+            {
+                labeled.body = block.body.remove(0);
+            }
+        }
+        _ => {}
+    }
+    codegen_statement_with_flow_cast_restore(&statement)
+}
+
 fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBodyShape {
     fn build_existing_return_from_cached_prefix(
         prefix: GeneratedBodyShape,
@@ -1231,6 +1264,59 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     }
                 }
                 (
+                    prefix,
+                    GeneratedBodyShape::WrappedReturnExpression {
+                        source_name,
+                        expression,
+                        inner,
+                    },
+                ) => GeneratedBodyShape::WrappedReturnExpression {
+                    source_name,
+                    expression,
+                    inner: Box::new(canonicalize_generated_body_shape(
+                        GeneratedBodyShape::Sequential {
+                            prefix: Box::new(prefix),
+                            inner,
+                        },
+                    )),
+                },
+                (
+                    prefix,
+                    GeneratedBodyShape::AssignedAliasReturn {
+                        alias_name,
+                        source_name,
+                        inner,
+                    },
+                ) => GeneratedBodyShape::AssignedAliasReturn {
+                    alias_name,
+                    source_name,
+                    inner: Box::new(canonicalize_generated_body_shape(
+                        GeneratedBodyShape::Sequential {
+                            prefix: Box::new(prefix),
+                            inner,
+                        },
+                    )),
+                },
+                (
+                    prefix,
+                    GeneratedBodyShape::AliasedReturn {
+                        alias_name,
+                        alias_kind,
+                        source_name,
+                        inner,
+                    },
+                ) => GeneratedBodyShape::AliasedReturn {
+                    alias_name,
+                    alias_kind,
+                    source_name,
+                    inner: Box::new(canonicalize_generated_body_shape(
+                        GeneratedBodyShape::Sequential {
+                            prefix: Box::new(prefix),
+                            inner,
+                        },
+                    )),
+                },
+                (
                     GeneratedBodyShape::GuardedBody {
                         test,
                         inner: consequent_inner,
@@ -1360,6 +1446,10 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     memoized_setup_statements,
                     memoized_expr,
                 );
+            let memoized_setup_statements = memoized_setup_statements
+                .into_iter()
+                .map(canonicalize_generated_statement_source)
+                .collect();
             GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
                 value_name,
                 value_slot,
@@ -1403,6 +1493,10 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     memoized_setup_statements,
                     memoized_expr,
                 );
+            let memoized_setup_statements = memoized_setup_statements
+                .into_iter()
+                .map(canonicalize_generated_statement_source)
+                .collect();
             GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
                 value_name,
                 dep_slot,
@@ -1447,6 +1541,10 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     memoized_setup_statements,
                     memoized_expr,
                 );
+            let memoized_setup_statements = memoized_setup_statements
+                .into_iter()
+                .map(canonicalize_generated_statement_source)
+                .collect();
             GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
                 value_name,
                 deps: deps
@@ -32969,6 +33067,26 @@ mod tests {
     }
 
     #[test]
+    fn canonicalizes_setup_statement_without_empty_else() {
+        assert_eq!(
+            super::canonicalize_generated_statement_source(
+                "if (cond) {\n  x = [];\n} else {}".to_string()
+            ),
+            "if (cond) {\n  x = [];\n}".to_string()
+        );
+    }
+
+    #[test]
+    fn canonicalizes_labeled_switch_statement_source() {
+        assert_eq!(
+            super::canonicalize_generated_statement_source(
+                "bb0: {\n  switch (identity(other)) {\n    case 1: {\n      x.a = props.a.b;\n      break bb0;\n    }\n    default: {\n      x.c = props.a.b;\n    }\n  }\n}".to_string()
+            ),
+            "bb0: switch (identity(other)) {\n  case 1: {\n    x.a = props.a.b;\n    break bb0;\n  }\n  default: {\n    x.c = props.a.b;\n  }\n}".to_string()
+        );
+    }
+
+    #[test]
     fn detects_rendered_property_paths_via_ast() {
         assert!(rendered_expr_has_property_path("value.prop"));
         assert!(rendered_expr_has_property_path("value?.prop"));
@@ -34637,6 +34755,67 @@ mod tests {
                         memoized_expr: None,
                     }
                 ),
+            }
+        );
+    }
+
+    #[test]
+    fn lifts_aliased_return_out_of_sequential_prefixes() {
+        let shape =
+            super::canonicalize_generated_body_shape(super::GeneratedBodyShape::Sequential {
+                prefix: Box::new(super::GeneratedBodyShape::PrefixedDeclarations {
+                    declarations: vec![super::GeneratedDeclaration {
+                        kind: ast::VariableDeclarationKind::Let,
+                        pattern: "t0".to_string(),
+                    }],
+                    inner: Box::new(super::GeneratedBodyShape::MemoizedCachedValues {
+                        deps: vec![(0, "a".to_string())],
+                        setup_statements: vec!["t0 = makeObject(a);".to_string()],
+                        cached_values: vec![super::GeneratedCachedValue {
+                            name: "t0".to_string(),
+                            slot: 1,
+                        }],
+                        restored_values: vec![super::GeneratedCachedValue {
+                            name: "t0".to_string(),
+                            slot: 1,
+                        }],
+                    }),
+                }),
+                inner: Box::new(super::GeneratedBodyShape::AliasedReturn {
+                    alias_name: "y".to_string(),
+                    alias_kind: ast::VariableDeclarationKind::Const,
+                    source_name: "t0".to_string(),
+                    inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                        "t0".to_string(),
+                    )),
+                }),
+            });
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::PrefixedDeclarations {
+                declarations: vec![super::GeneratedDeclaration {
+                    kind: ast::VariableDeclarationKind::Let,
+                    pattern: "t0".to_string(),
+                }],
+                inner: Box::new(super::GeneratedBodyShape::AliasedReturn {
+                    alias_name: "y".to_string(),
+                    alias_kind: ast::VariableDeclarationKind::Const,
+                    source_name: "t0".to_string(),
+                    inner: Box::new(
+                        super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+                            value_name: "t0".to_string(),
+                            dep_slot: 0,
+                            dep_expr: "a".to_string(),
+                            value_slot: 1,
+                            memoized_bindings: vec![],
+                            memoized_assignments: vec![],
+                            memoized_expressions: vec![],
+                            memoized_setup_statements: vec!["t0 = makeObject(a);".to_string()],
+                            memoized_expr: None,
+                        }
+                    ),
+                }),
             }
         );
     }
