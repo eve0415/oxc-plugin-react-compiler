@@ -890,6 +890,20 @@ fn rebase_nested_cache_slots_for_outer_wrapper(
     shift_cache_slots_in_statement_sources(setup_statements, sorted_outer_slots.len() as u32)
 }
 
+fn shift_nested_cache_slots_after_outer(
+    setup_statements: Vec<String>,
+    outer_slot_count: usize,
+) -> Vec<String> {
+    if outer_slot_count == 0 {
+        return setup_statements;
+    }
+    let inner_slots = collect_cache_slots_in_statement_sources(&setup_statements);
+    if inner_slots.first().copied() != Some(0) {
+        return setup_statements;
+    }
+    shift_cache_slots_in_statement_sources(setup_statements, outer_slot_count as u32)
+}
+
 fn canonicalize_generated_statement_source(statement_source: String) -> String {
     let allocator = Allocator::default();
     let Ok(mut statement) = parse_single_statement_for_ast_codegen(
@@ -1663,6 +1677,46 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     prefix: Box::new(prefix),
                     inner: Box::new(inner),
                 },
+            }
+        }
+        GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+            sentinel_slot,
+            setup_statements,
+            cached_values,
+            restored_values,
+        } => GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+            sentinel_slot,
+            setup_statements: shift_nested_cache_slots_after_outer(
+                setup_statements
+                    .into_iter()
+                    .map(canonicalize_generated_statement_source)
+                    .collect(),
+                cached_values.len(),
+            ),
+            cached_values,
+            restored_values,
+        },
+        GeneratedBodyShape::MemoizedCachedValues {
+            deps,
+            setup_statements,
+            cached_values,
+            restored_values,
+        } => {
+            let deps: Vec<(u32, String)> = deps
+                .into_iter()
+                .map(|(slot, expr)| (slot, canonicalize_generated_expression(expr)))
+                .collect();
+            GeneratedBodyShape::MemoizedCachedValues {
+                setup_statements: shift_nested_cache_slots_after_outer(
+                    setup_statements
+                        .into_iter()
+                        .map(canonicalize_generated_statement_source)
+                        .collect(),
+                    deps.len() + cached_values.len(),
+                ),
+                deps,
+                cached_values,
+                restored_values,
             }
         }
         GeneratedBodyShape::ZeroDependencyMemoizedReturn {
@@ -2888,6 +2942,9 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
         });
         for output_decl in sorted_decls {
             let value_name = identifier_name_with_cx(cx, &output_decl.identifier);
+            cx.declare(&output_decl.identifier);
+            cx.declared_names.insert(value_name.clone());
+            cx.mark_decl_runtime_emitted(output_decl.identifier.declaration_id);
             declarations.push(GeneratedDeclaration {
                 kind: ast::VariableDeclarationKind::Let,
                 pattern: value_name.clone(),
@@ -2902,7 +2959,11 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
                 .then_with(|| a.declaration_id.0.cmp(&b.declaration_id.0))
         });
         for reassignment in &reassignments {
-            output_names.push(identifier_name_with_cx(cx, reassignment));
+            cx.declare(reassignment);
+            cx.mark_decl_runtime_emitted(reassignment.declaration_id);
+            let value_name = identifier_name_with_cx(cx, reassignment);
+            cx.declared_names.insert(value_name.clone());
+            output_names.push(value_name);
         }
     } else {
         return None;
@@ -2930,11 +2991,19 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
     }
     let inner = if dep_exprs.is_empty() {
         let mut cached_values = Vec::with_capacity(output_names.len());
+        let mut outer_slots = Vec::with_capacity(output_names.len());
         for output_name in &output_names {
+            let slot = cx.alloc_cache_slot();
+            outer_slots.push(slot);
             cached_values.push(GeneratedCachedValue {
                 name: output_name.clone(),
-                slot: cx.alloc_cache_slot(),
+                slot,
             });
+        }
+        let setup_statements =
+            rebase_nested_cache_slots_for_outer_wrapper(setup_statements, &mut outer_slots);
+        for (cached_value, slot) in cached_values.iter_mut().zip(outer_slots.iter().copied()) {
+            cached_value.slot = slot;
         }
         let sentinel_slot = cached_values.first()?.slot;
         let restored_values = cached_values.clone();
@@ -2946,15 +3015,32 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
         }
     } else {
         let mut deps = Vec::with_capacity(dep_exprs.len());
+        let mut outer_slots = Vec::with_capacity(dep_exprs.len() + output_names.len());
         for dep_expr in dep_exprs {
-            deps.push((cx.alloc_cache_slot(), dep_expr));
+            let slot = cx.alloc_cache_slot();
+            outer_slots.push(slot);
+            deps.push((slot, dep_expr));
         }
         let mut cached_values = Vec::with_capacity(output_names.len());
         for output_name in &output_names {
+            let slot = cx.alloc_cache_slot();
+            outer_slots.push(slot);
             cached_values.push(GeneratedCachedValue {
                 name: output_name.clone(),
-                slot: cx.alloc_cache_slot(),
+                slot,
             });
+        }
+        let setup_statements =
+            rebase_nested_cache_slots_for_outer_wrapper(setup_statements, &mut outer_slots);
+        for ((dep_slot, _), slot) in deps.iter_mut().zip(outer_slots.iter().copied()) {
+            *dep_slot = slot;
+        }
+        let dep_count = deps.len();
+        for (cached_value, slot) in cached_values
+            .iter_mut()
+            .zip(outer_slots.into_iter().skip(dep_count))
+        {
+            cached_value.slot = slot;
         }
         let restored_values = cached_values.clone();
         GeneratedBodyShape::MemoizedCachedValues {
@@ -3766,10 +3852,7 @@ fn can_inline_direct_scope_shape(scope: &ReactiveScope) -> bool {
 }
 
 fn can_inline_direct_pruned_scope_shape(scope: &ReactiveScope) -> bool {
-    scope.declarations.is_empty()
-        && scope.reassignments.is_empty()
-        && scope.merged_id.is_none()
-        && scope.early_return_value.is_none()
+    scope.merged_id.is_none() && scope.early_return_value.is_none()
 }
 
 fn try_wrap_generated_body_shape_with_instruction_prefix(
@@ -36577,23 +36660,23 @@ mod tests {
                     pattern: "context".to_string(),
                 }],
                 inner: Box::new(super::GeneratedBodyShape::MemoizedCachedValues {
-                    deps: vec![(2, "props.value".to_string())],
+                    deps: vec![(0, "props.value".to_string())],
                     setup_statements: vec![
                         "const key = { a: \"key\" };".to_string(),
                         "const t0 = key.a;".to_string(),
                         "const t1 = identity([props.value]);".to_string(),
                         "let t2;".to_string(),
-                        "if ($[0] !== t1) {\n  t2 = { [t0]: t1 };\n  $[0] = t1;\n  $[1] = t2;\n} else {\n  t2 = $[1];\n}".to_string(),
+                        "if ($[2] !== t1) {\n  t2 = { [t0]: t1 };\n  $[2] = t1;\n  $[3] = t2;\n} else {\n  t2 = $[3];\n}".to_string(),
                         "context = t2;".to_string(),
                         "mutate(key);".to_string(),
                     ],
                     cached_values: vec![super::GeneratedCachedValue {
                         name: "context".to_string(),
-                        slot: 3,
+                        slot: 1,
                     }],
                     restored_values: vec![super::GeneratedCachedValue {
                         name: "context".to_string(),
-                        slot: 3,
+                        slot: 1,
                     }],
                 }),
             }),
