@@ -2678,6 +2678,12 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
     let setup_statements =
         try_build_simple_scope_setup_statements(&output_name, &computation_shape).or_else(
             || {
+                if std::env::var("DEBUG_SCOPE_STATEMENT_FALLBACK").is_ok() {
+                    eprintln!(
+                        "[SCOPE_STATEMENT_FALLBACK] output={} deps={:?} shape={:#?}",
+                        output_name, dep_exprs, computation_shape
+                    );
+                }
                 bump_scope_statement_shape_render_fallback();
                 try_render_statement_sources_from_generated_body_shape(&computation_shape)
             },
@@ -2746,6 +2752,41 @@ fn try_build_simple_scope_setup_statements(
                 render_reactive_assignment_statement_ast(output_name, &binding.expression)?;
             Some(vec![assignment.trim_end().to_string()])
         }
+        GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
+            let mut statements = Vec::new();
+            for binding in bindings {
+                statements.push(
+                    render_reactive_variable_statement_ast(
+                        binding.kind,
+                        &binding.pattern,
+                        Some(&binding.expression),
+                    )?
+                    .trim_end()
+                    .to_string(),
+                );
+            }
+            statements.extend(try_build_simple_scope_setup_statements(output_name, inner)?);
+            Some(statements)
+        }
+        GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } => {
+            let mut statements = Vec::new();
+            for declaration in declarations {
+                statements.push(
+                    render_reactive_variable_statement_ast(
+                        declaration.kind,
+                        &declaration.pattern,
+                        None,
+                    )?
+                    .trim_end()
+                    .to_string(),
+                );
+            }
+            statements.extend(try_build_simple_scope_setup_statements(output_name, inner)?);
+            Some(statements)
+        }
         GeneratedBodyShape::PrefixedAssignments { assignments, inner }
             if generated_shape_is_empty_expression_body(inner) && assignments.len() == 1 =>
         {
@@ -2756,6 +2797,134 @@ fn try_build_simple_scope_setup_statements(
             let statement =
                 render_reactive_assignment_statement_ast(&assignment.target, &assignment.value)?;
             Some(vec![statement.trim_end().to_string()])
+        }
+        GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
+            let mut statements = Vec::new();
+            for assignment in assignments {
+                statements.push(
+                    render_reactive_assignment_statement_ast(
+                        &assignment.target,
+                        &assignment.value,
+                    )?
+                    .trim_end()
+                    .to_string(),
+                );
+            }
+            statements.extend(try_build_simple_scope_setup_statements(output_name, inner)?);
+            Some(statements)
+        }
+        GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
+            let mut statements = Vec::new();
+            for expression in expressions {
+                statements.push(
+                    render_reactive_expression_statement_ast(expression)?
+                        .trim_end()
+                        .to_string(),
+                );
+            }
+            statements.extend(try_build_simple_scope_setup_statements(output_name, inner)?);
+            Some(statements)
+        }
+        GeneratedBodyShape::ExpressionStatements(expressions) => {
+            let mut statements = Vec::new();
+            for expression in expressions {
+                statements.push(
+                    render_reactive_expression_statement_ast(expression)?
+                        .trim_end()
+                        .to_string(),
+                );
+            }
+            Some(statements)
+        }
+        GeneratedBodyShape::MemoizedCachedValues {
+            deps,
+            setup_statements,
+            cached_values,
+            restored_values,
+        } if cached_values.len() == 1
+            && restored_values.len() == 1
+            && cached_values[0].name == restored_values[0].name =>
+        {
+            let value_name = &cached_values[0].name;
+            let value_slot = cached_values[0].slot;
+            let mut consequent = String::new();
+            for statement in setup_statements {
+                consequent.push_str(statement);
+                if !statement.ends_with('\n') {
+                    consequent.push('\n');
+                }
+            }
+            for (dep_slot, dep_expr) in deps {
+                consequent.push_str(&render_reactive_assignment_statement_ast(
+                    &format!("$[{dep_slot}]"),
+                    dep_expr,
+                )?);
+            }
+            consequent.push_str(&render_reactive_assignment_statement_ast(
+                &format!("$[{value_slot}]"),
+                value_name,
+            )?);
+            let alternate =
+                render_reactive_assignment_statement_ast(value_name, &format!("$[{value_slot}]"))?;
+            let test = deps
+                .iter()
+                .map(|(dep_slot, dep_expr)| format!("$[{dep_slot}] !== {dep_expr}"))
+                .collect::<Vec<_>>()
+                .join(" || ");
+            Some(vec![
+                render_reactive_if_statement_ast_with_context(
+                    &test,
+                    &consequent,
+                    Some(&alternate),
+                    false,
+                    false,
+                )?
+                .trim_end()
+                .to_string(),
+            ])
+        }
+        GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+            sentinel_slot,
+            setup_statements,
+            cached_values,
+            restored_values,
+        } if cached_values.len() == 1
+            && restored_values.len() == 1
+            && cached_values[0].name == restored_values[0].name
+            && cached_values[0].slot == *sentinel_slot =>
+        {
+            let value_name = &cached_values[0].name;
+            let mut consequent = String::new();
+            for statement in setup_statements {
+                consequent.push_str(statement);
+                if !statement.ends_with('\n') {
+                    consequent.push('\n');
+                }
+            }
+            consequent.push_str(&render_reactive_assignment_statement_ast(
+                &format!("$[{sentinel_slot}]"),
+                value_name,
+            )?);
+            let alternate = render_reactive_assignment_statement_ast(
+                value_name,
+                &format!("$[{sentinel_slot}]"),
+            )?;
+            Some(vec![
+                render_reactive_if_statement_ast_with_context(
+                    &format!("$[{sentinel_slot}] === Symbol.for(\"{MEMO_CACHE_SENTINEL}\")"),
+                    &consequent,
+                    Some(&alternate),
+                    false,
+                    false,
+                )?
+                .trim_end()
+                .to_string(),
+            ])
+        }
+        GeneratedBodyShape::Sequential { prefix, inner } => {
+            let mut statements = try_build_simple_scope_setup_statements(output_name, prefix)?;
+            statements.extend(try_build_simple_scope_setup_statements(output_name, inner)?);
+            Some(statements)
         }
         _ => None,
     }
@@ -30865,7 +31034,6 @@ fn render_reactive_throw_statement_ast(argument: &str) -> Option<String> {
     ))
 }
 
-#[cfg(test)]
 fn render_reactive_if_statement_ast_with_context(
     test: &str,
     consequent_body: &str,
