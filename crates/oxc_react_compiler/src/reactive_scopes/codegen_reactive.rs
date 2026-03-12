@@ -3188,12 +3188,11 @@ fn try_build_simple_scope_setup_statements(
 ) -> Option<Vec<String>> {
     match computation_shape {
         GeneratedBodyShape::PrefixedBindings { bindings, inner }
-            if generated_shape_is_empty_expression_body(inner) && bindings.len() == 1 =>
+            if generated_shape_is_empty_expression_body(inner)
+                && bindings.len() == 1
+                && bindings[0].pattern == output_name =>
         {
             let binding = bindings.first()?;
-            if binding.pattern != output_name {
-                return None;
-            }
             let assignment =
                 render_reactive_assignment_statement_ast(output_name, &binding.expression)?;
             Some(vec![assignment.trim_end().to_string()])
@@ -3234,12 +3233,11 @@ fn try_build_simple_scope_setup_statements(
             Some(statements)
         }
         GeneratedBodyShape::PrefixedAssignments { assignments, inner }
-            if generated_shape_is_empty_expression_body(inner) && assignments.len() == 1 =>
+            if generated_shape_is_empty_expression_body(inner)
+                && assignments.len() == 1
+                && assignments[0].target == output_name =>
         {
             let assignment = assignments.first()?;
-            if assignment.target != output_name {
-                return None;
-            }
             let statement =
                 render_reactive_assignment_statement_ast(&assignment.target, &assignment.value)?;
             Some(vec![statement.trim_end().to_string()])
