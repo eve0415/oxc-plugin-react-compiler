@@ -572,8 +572,16 @@ fn strip_top_level_trailing_return_void(shape: GeneratedBodyShape) -> GeneratedB
 
 fn canonicalize_generated_expression(expr: String) -> String {
     let allocator = Allocator::default();
-    if let Some(parsed) = parse_rendered_expression_ast(&allocator, &expr) {
+    let trimmed = expr.trim();
+    if let Some(parsed) = parse_rendered_expression_ast(&allocator, trimmed) {
         codegen_expression_with_flow_cast_restore(&parsed)
+    } else if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        let wrapped = format!("({trimmed})");
+        if let Some(parsed) = parse_rendered_expression_ast(&allocator, &wrapped) {
+            codegen_expression_with_flow_cast_restore(&parsed)
+        } else {
+            strip_top_level_parenthesized_expression(expr)
+        }
     } else {
         strip_top_level_parenthesized_expression(expr)
     }
@@ -32946,6 +32954,18 @@ mod tests {
         assert!(rendered_expr_contains_optional_chain("(value?.prop).next"));
         assert!(!rendered_expr_contains_optional_chain("value.prop"));
         assert!(!rendered_expr_contains_optional_chain("value ?? fallback"));
+    }
+
+    #[test]
+    fn canonicalizes_bare_object_literal_expressions() {
+        assert_eq!(
+            super::canonicalize_generated_expression("{}".to_string()),
+            "({})".to_string()
+        );
+        assert_eq!(
+            super::canonicalize_generated_expression("{ a }".to_string()),
+            "({ a })".to_string()
+        );
     }
 
     #[test]
