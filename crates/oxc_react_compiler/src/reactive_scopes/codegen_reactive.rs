@@ -938,6 +938,116 @@ fn canonicalize_generated_statement_source(statement_source: String) -> String {
 }
 
 fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBodyShape {
+    fn prefix_chain_can_absorb_inner(prefix: &GeneratedBodyShape) -> bool {
+        match prefix {
+            GeneratedBodyShape::ExpressionStatements(_) => true,
+            GeneratedBodyShape::PrefixedDeclarations { inner, .. }
+            | GeneratedBodyShape::PrefixedBindings { inner, .. }
+            | GeneratedBodyShape::PrefixedAssignments { inner, .. }
+            | GeneratedBodyShape::PrefixedExpressionStatements { inner, .. }
+            | GeneratedBodyShape::Block { inner }
+            | GeneratedBodyShape::Labeled { inner, .. } => prefix_chain_can_absorb_inner(inner),
+            GeneratedBodyShape::Sequential { inner, .. } => prefix_chain_can_absorb_inner(inner),
+            _ => false,
+        }
+    }
+
+    fn push_inner_through_prefix(
+        prefix: GeneratedBodyShape,
+        inner: GeneratedBodyShape,
+    ) -> Option<GeneratedBodyShape> {
+        if !prefix_chain_can_absorb_inner(&prefix) {
+            return None;
+        }
+        match prefix {
+            GeneratedBodyShape::Sequential {
+                prefix: outer_prefix,
+                inner: outer_inner,
+            } => Some(canonicalize_generated_body_shape(
+                GeneratedBodyShape::Sequential {
+                    prefix: outer_prefix,
+                    inner: Box::new(canonicalize_generated_body_shape(
+                        GeneratedBodyShape::Sequential {
+                            prefix: outer_inner,
+                            inner: Box::new(inner),
+                        },
+                    )),
+                },
+            )),
+            GeneratedBodyShape::PrefixedDeclarations {
+                declarations,
+                inner: prefix_inner,
+            } => Some(GeneratedBodyShape::PrefixedDeclarations {
+                declarations,
+                inner: Box::new(canonicalize_generated_body_shape(
+                    GeneratedBodyShape::Sequential {
+                        prefix: prefix_inner,
+                        inner: Box::new(inner),
+                    },
+                )),
+            }),
+            GeneratedBodyShape::PrefixedBindings {
+                bindings,
+                inner: prefix_inner,
+            } => Some(GeneratedBodyShape::PrefixedBindings {
+                bindings,
+                inner: Box::new(canonicalize_generated_body_shape(
+                    GeneratedBodyShape::Sequential {
+                        prefix: prefix_inner,
+                        inner: Box::new(inner),
+                    },
+                )),
+            }),
+            GeneratedBodyShape::PrefixedAssignments {
+                assignments,
+                inner: prefix_inner,
+            } => Some(GeneratedBodyShape::PrefixedAssignments {
+                assignments,
+                inner: Box::new(canonicalize_generated_body_shape(
+                    GeneratedBodyShape::Sequential {
+                        prefix: prefix_inner,
+                        inner: Box::new(inner),
+                    },
+                )),
+            }),
+            GeneratedBodyShape::PrefixedExpressionStatements {
+                expressions,
+                inner: prefix_inner,
+            } => Some(GeneratedBodyShape::PrefixedExpressionStatements {
+                expressions,
+                inner: Box::new(canonicalize_generated_body_shape(
+                    GeneratedBodyShape::Sequential {
+                        prefix: prefix_inner,
+                        inner: Box::new(inner),
+                    },
+                )),
+            }),
+            GeneratedBodyShape::Block {
+                inner: prefix_inner,
+            } => Some(GeneratedBodyShape::Block {
+                inner: Box::new(canonicalize_generated_body_shape(
+                    GeneratedBodyShape::Sequential {
+                        prefix: prefix_inner,
+                        inner: Box::new(inner),
+                    },
+                )),
+            }),
+            GeneratedBodyShape::Labeled {
+                label,
+                inner: prefix_inner,
+            } => Some(GeneratedBodyShape::Labeled {
+                label,
+                inner: Box::new(canonicalize_generated_body_shape(
+                    GeneratedBodyShape::Sequential {
+                        prefix: prefix_inner,
+                        inner: Box::new(inner),
+                    },
+                )),
+            }),
+            _ => None,
+        }
+    }
+
     fn build_existing_return_from_cached_prefix(
         prefix: GeneratedBodyShape,
     ) -> Option<(String, GeneratedBodyShape)> {
@@ -1673,10 +1783,16 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     }
                 }
                 (prefix, inner) if generated_body_shape_is_empty(&inner) => prefix,
-                (prefix, inner) => GeneratedBodyShape::Sequential {
-                    prefix: Box::new(prefix),
-                    inner: Box::new(inner),
-                },
+                (prefix, inner) => {
+                    if let Some(shape) = push_inner_through_prefix(prefix.clone(), inner.clone()) {
+                        shape
+                    } else {
+                        GeneratedBodyShape::Sequential {
+                            prefix: Box::new(prefix),
+                            inner: Box::new(inner),
+                        }
+                    }
+                }
             }
         }
         GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
@@ -35387,6 +35503,101 @@ mod tests {
                         memoized_expr: None,
                     }
                 ),
+            }
+        );
+    }
+
+    #[test]
+    fn canonicalizes_nested_prefix_chain_before_tail_body_shape() {
+        let shape =
+            super::canonicalize_generated_body_shape(super::GeneratedBodyShape::Sequential {
+                prefix: Box::new(super::GeneratedBodyShape::PrefixedBindings {
+                    bindings: vec![super::GeneratedBinding {
+                        kind: ast::VariableDeclarationKind::Const,
+                        pattern: "x".to_string(),
+                        expression: "makeObject()".to_string(),
+                    }],
+                    inner: Box::new(super::GeneratedBodyShape::PrefixedDeclarations {
+                        declarations: vec![super::GeneratedDeclaration {
+                            kind: ast::VariableDeclarationKind::Let,
+                            pattern: "t0".to_string(),
+                        }],
+                        inner: Box::new(super::GeneratedBodyShape::Sequential {
+                            prefix: Box::new(
+                                super::GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+                                    sentinel_slot: 0,
+                                    setup_statements: vec!["t0 = {};".to_string()],
+                                    cached_values: vec![super::GeneratedCachedValue {
+                                        name: "t0".to_string(),
+                                        slot: 0,
+                                    }],
+                                    restored_values: vec![super::GeneratedCachedValue {
+                                        name: "t0".to_string(),
+                                        slot: 0,
+                                    }],
+                                },
+                            ),
+                            inner: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![
+                                "posts.push(t0)".to_string(),
+                            ])),
+                        }),
+                    }),
+                }),
+                inner: Box::new(super::GeneratedBodyShape::PrefixedBindings {
+                    bindings: vec![super::GeneratedBinding {
+                        kind: ast::VariableDeclarationKind::Const,
+                        pattern: "count".to_string(),
+                        expression: "posts.length".to_string(),
+                    }],
+                    inner: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![
+                        "foo(count)".to_string(),
+                    ])),
+                }),
+            });
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::PrefixedBindings {
+                bindings: vec![super::GeneratedBinding {
+                    kind: ast::VariableDeclarationKind::Const,
+                    pattern: "x".to_string(),
+                    expression: "makeObject()".to_string(),
+                }],
+                inner: Box::new(super::GeneratedBodyShape::PrefixedDeclarations {
+                    declarations: vec![super::GeneratedDeclaration {
+                        kind: ast::VariableDeclarationKind::Let,
+                        pattern: "t0".to_string(),
+                    }],
+                    inner: Box::new(super::GeneratedBodyShape::Sequential {
+                        prefix: Box::new(
+                            super::GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+                                sentinel_slot: 0,
+                                setup_statements: vec!["t0 = {};".to_string()],
+                                cached_values: vec![super::GeneratedCachedValue {
+                                    name: "t0".to_string(),
+                                    slot: 0,
+                                }],
+                                restored_values: vec![super::GeneratedCachedValue {
+                                    name: "t0".to_string(),
+                                    slot: 0,
+                                }],
+                            },
+                        ),
+                        inner: Box::new(super::GeneratedBodyShape::PrefixedExpressionStatements {
+                            expressions: vec!["posts.push(t0)".to_string()],
+                            inner: Box::new(super::GeneratedBodyShape::PrefixedBindings {
+                                bindings: vec![super::GeneratedBinding {
+                                    kind: ast::VariableDeclarationKind::Const,
+                                    pattern: "count".to_string(),
+                                    expression: "posts.length".to_string(),
+                                }],
+                                inner: Box::new(super::GeneratedBodyShape::ExpressionStatements(
+                                    vec!["foo(count)".to_string()],
+                                )),
+                            }),
+                        }),
+                    }),
+                }),
             }
         );
     }
