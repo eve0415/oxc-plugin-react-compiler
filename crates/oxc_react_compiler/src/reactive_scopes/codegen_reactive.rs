@@ -3881,6 +3881,8 @@ fn try_render_statement_sources_from_generated_body_shape(
     )
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn normalize_rendered_generated_body_source(source: &str) -> String {
     source
         .lines()
@@ -3890,6 +3892,8 @@ fn normalize_rendered_generated_body_source(source: &str) -> String {
         .join("\n")
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn canonicalize_rendered_generated_body_source(source: &str) -> String {
     let allocator = Allocator::default();
     if let Ok(statements) =
@@ -3903,6 +3907,8 @@ fn canonicalize_rendered_generated_body_source(source: &str) -> String {
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn generated_body_shapes_render_equivalent(
     direct: &GeneratedBodyShape,
     analyzed: &GeneratedBodyShape,
@@ -3918,6 +3924,8 @@ fn generated_body_shapes_render_equivalent(
         == canonicalize_rendered_generated_body_source(&analyzed_source.join("\n"))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn generated_body_shape_matches_rendered_body(
     shape: &GeneratedBodyShape,
     rendered_body: &str,
@@ -3930,6 +3938,8 @@ fn generated_body_shape_matches_rendered_body(
         == canonicalize_rendered_generated_body_source(rendered_body)
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn generated_body_shape_reanalyzes_equivalent(
     shape: &GeneratedBodyShape,
     analyzed: &GeneratedBodyShape,
