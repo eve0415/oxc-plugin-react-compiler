@@ -1515,8 +1515,15 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             inner: Box::new(canonicalize_generated_body_shape(*inner)),
         },
         GeneratedBodyShape::Labeled { label, inner } => GeneratedBodyShape::Labeled {
-            label,
-            inner: Box::new(canonicalize_generated_body_shape(*inner)),
+            label: label.clone(),
+            inner: Box::new(match canonicalize_generated_body_shape(*inner) {
+                GeneratedBodyShape::Block { inner } => *inner,
+                GeneratedBodyShape::Labeled {
+                    label: inner_label,
+                    inner,
+                } if inner_label == label => *inner,
+                other => other,
+            }),
         },
         GeneratedBodyShape::Switch {
             discriminant,
@@ -1526,7 +1533,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             cases: cases
                 .into_iter()
                 .map(|case| GeneratedSwitchCase {
-                    test: case.test,
+                    test: case.test.map(canonicalize_generated_expression),
                     consequent: canonicalize_generated_body_shape(case.consequent),
                 })
                 .collect(),
@@ -1535,11 +1542,51 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             test,
             consequent,
             alternate,
-        } => GeneratedBodyShape::ConditionalBranches {
-            test,
-            consequent: Box::new(canonicalize_generated_body_shape(*consequent)),
-            alternate: Box::new(canonicalize_generated_body_shape(*alternate)),
-        },
+        } => {
+            let consequent = canonicalize_generated_body_shape(*consequent);
+            let alternate = canonicalize_generated_body_shape(*alternate);
+            if generated_body_shape_is_empty(&consequent)
+                && generated_body_shape_is_empty(&alternate)
+            {
+                GeneratedBodyShape::GuardedExpressionStatements {
+                    test,
+                    expressions: vec![],
+                }
+            } else if generated_body_shape_is_empty(&alternate) {
+                match consequent {
+                    GeneratedBodyShape::ReturnVoid => GeneratedBodyShape::GuardedReturnPrefix {
+                        test,
+                        consequent: None,
+                        inner: Box::new(GeneratedBodyShape::ExpressionStatements(vec![])),
+                    },
+                    GeneratedBodyShape::ReturnIdentifier(name) => {
+                        GeneratedBodyShape::GuardedReturnPrefix {
+                            test,
+                            consequent: Some(name),
+                            inner: Box::new(GeneratedBodyShape::ExpressionStatements(vec![])),
+                        }
+                    }
+                    GeneratedBodyShape::ReturnExpression(expression) => {
+                        GeneratedBodyShape::GuardedReturnPrefix {
+                            test,
+                            consequent: Some(expression),
+                            inner: Box::new(GeneratedBodyShape::ExpressionStatements(vec![])),
+                        }
+                    }
+                    other => GeneratedBodyShape::ConditionalBranches {
+                        test,
+                        consequent: Box::new(other),
+                        alternate: Box::new(alternate),
+                    },
+                }
+            } else {
+                GeneratedBodyShape::ConditionalBranches {
+                    test,
+                    consequent: Box::new(consequent),
+                    alternate: Box::new(alternate),
+                }
+            }
+        }
         GeneratedBodyShape::GuardedBody { test, inner } => {
             let inner = canonicalize_generated_body_shape(*inner);
             match inner {
@@ -1575,10 +1622,17 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             test,
             body: Box::new(canonicalize_generated_body_shape(*body)),
         },
-        GeneratedBodyShape::DoWhileLoop { test, body } => GeneratedBodyShape::DoWhileLoop {
-            test,
-            body: Box::new(canonicalize_generated_body_shape(*body)),
-        },
+        GeneratedBodyShape::DoWhileLoop { test, body } => {
+            let body = canonicalize_generated_body_shape(*body);
+            if matches!(body, GeneratedBodyShape::Break(None)) {
+                GeneratedBodyShape::ExpressionStatements(vec![])
+            } else {
+                GeneratedBodyShape::DoWhileLoop {
+                    test,
+                    body: Box::new(body),
+                }
+            }
+        }
         GeneratedBodyShape::ForLoop {
             init,
             test,
@@ -3107,6 +3161,10 @@ fn codegen_reactive_function_with_primitives(
             if !matches!(analyzed_body_shape, GeneratedBodyShape::Unknown)
                 && direct_body_shape != analyzed_body_shape
                 && !generated_body_shape_matches_rendered_body(&direct_body_shape, &body)
+                && !generated_body_shape_reanalyzes_equivalent(
+                    &direct_body_shape,
+                    &analyzed_body_shape,
+                )
                 && !generated_body_shapes_render_equivalent(
                     &direct_body_shape,
                     &analyzed_body_shape,
@@ -3332,6 +3390,11 @@ fn try_render_statement_sources_from_generated_body_shape(
 ) -> Option<Vec<String>> {
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
+    let cache_prologue = CachePrologue {
+        binding_name: "$".to_string(),
+        size: 64,
+        fast_refresh: None,
+    };
     let body = build_function_body_from_generated_shape_for_ast_codegen(
         builder,
         &allocator,
@@ -3340,7 +3403,7 @@ fn try_render_statement_sources_from_generated_body_shape(
             param_names: &[],
             body_shape: shape,
             directives: &[],
-            cache_prologue: None,
+            cache_prologue: Some(&cache_prologue),
             needs_function_hook_guard_wrapper: false,
             is_async: false,
             is_generator: false,
@@ -3363,6 +3426,19 @@ fn normalize_rendered_generated_body_source(source: &str) -> String {
         .join("\n")
 }
 
+fn canonicalize_rendered_generated_body_source(source: &str) -> String {
+    let allocator = Allocator::default();
+    if let Ok(statements) =
+        parse_statement_list_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), source)
+    {
+        codegen_statements_with_oxc(statements.as_slice())
+            .trim()
+            .to_string()
+    } else {
+        normalize_rendered_generated_body_source(source)
+    }
+}
+
 fn generated_body_shapes_render_equivalent(
     direct: &GeneratedBodyShape,
     analyzed: &GeneratedBodyShape,
@@ -3374,8 +3450,8 @@ fn generated_body_shapes_render_equivalent(
     else {
         return false;
     };
-    normalize_rendered_generated_body_source(&direct_source.join("\n"))
-        == normalize_rendered_generated_body_source(&analyzed_source.join("\n"))
+    canonicalize_rendered_generated_body_source(&direct_source.join("\n"))
+        == canonicalize_rendered_generated_body_source(&analyzed_source.join("\n"))
 }
 
 fn generated_body_shape_matches_rendered_body(
@@ -3386,8 +3462,22 @@ fn generated_body_shape_matches_rendered_body(
     else {
         return false;
     };
-    normalize_rendered_generated_body_source(&rendered_shape_source.join("\n"))
-        == normalize_rendered_generated_body_source(rendered_body)
+    canonicalize_rendered_generated_body_source(&rendered_shape_source.join("\n"))
+        == canonicalize_rendered_generated_body_source(rendered_body)
+}
+
+fn generated_body_shape_reanalyzes_equivalent(
+    shape: &GeneratedBodyShape,
+    analyzed: &GeneratedBodyShape,
+) -> bool {
+    let Some(rendered_shape_source) = try_render_statement_sources_from_generated_body_shape(shape)
+    else {
+        return false;
+    };
+    let reparsed = fully_canonicalize_generated_body_shape(analyze_generated_body_shape(
+        &rendered_shape_source.join("\n"),
+    ));
+    &reparsed == analyzed
 }
 
 fn try_build_generated_body_shape_from_scope_statement_parts(

@@ -6258,6 +6258,7 @@ fn try_compile_function<'a>(
     }
 
     // TODO: implement validate_no_dynamic_components_or_hooks
+    let reactive_fallback_count_start = codegen_reactive::current_reactive_string_fallback_counts();
 
     let env = crate::environment::Environment::new(options.environment.clone());
 
@@ -6421,6 +6422,9 @@ fn try_compile_function<'a>(
     } else {
         CompiledBodyPayload::GeneratedShape
     };
+    if body_payload == CompiledBodyPayload::LowerFromFinalHir {
+        codegen_reactive::restore_reactive_string_fallback_counts(reactive_fallback_count_start);
+    }
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -6472,6 +6476,7 @@ fn try_compile_function_with_name<'a>(
     }
 
     // TODO: implement validate_no_dynamic_components_or_hooks
+    let reactive_fallback_count_start = codegen_reactive::current_reactive_string_fallback_counts();
 
     let env = crate::environment::Environment::new(options.environment.clone());
 
@@ -6628,6 +6633,9 @@ fn try_compile_function_with_name<'a>(
     } else {
         CompiledBodyPayload::GeneratedShape
     };
+    if body_payload == CompiledBodyPayload::LowerFromFinalHir {
+        codegen_reactive::restore_reactive_string_fallback_counts(reactive_fallback_count_start);
+    }
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -6688,6 +6696,7 @@ fn try_compile_arrow<'a>(
     }
 
     // TODO: implement validate_no_dynamic_components_or_hooks
+    let reactive_fallback_count_start = codegen_reactive::current_reactive_string_fallback_counts();
 
     let env = crate::environment::Environment::new(options.environment.clone());
 
@@ -6843,6 +6852,9 @@ fn try_compile_arrow<'a>(
     } else {
         CompiledBodyPayload::GeneratedShape
     };
+    if body_payload == CompiledBodyPayload::LowerFromFinalHir {
+        codegen_reactive::restore_reactive_string_fallback_counts(reactive_fallback_count_start);
+    }
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
