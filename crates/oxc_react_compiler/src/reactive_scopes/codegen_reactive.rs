@@ -1512,6 +1512,75 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
         (setup_statements, None)
     }
 
+    fn fold_temp_binding_into_conditional_setup(
+        mut memoized_bindings: Vec<GeneratedBinding>,
+        mut setup_statements: Vec<String>,
+    ) -> (Vec<GeneratedBinding>, Vec<String>) {
+        if memoized_bindings.is_empty() || setup_statements.len() < 2 {
+            return (memoized_bindings, setup_statements);
+        }
+        let Some(binding) = memoized_bindings.last().cloned() else {
+            return (memoized_bindings, setup_statements);
+        };
+        let binding_name = binding.pattern.trim();
+        if !is_codegen_temp_name(binding_name) || !is_valid_js_identifier_name(binding_name) {
+            return (memoized_bindings, setup_statements);
+        }
+        let Some((assign_indent, assign_target, assign_rhs)) =
+            parse_assignment_statement_line(&setup_statements[0])
+        else {
+            return (memoized_bindings, setup_statements);
+        };
+        let Some((ternary_indent, ternary_test, ternary_consequent, ternary_alternate)) =
+            parse_ternary_statement_line(&setup_statements[1])
+        else {
+            return (memoized_bindings, setup_statements);
+        };
+        if assign_indent != ternary_indent || ternary_test != binding_name {
+            return (memoized_bindings, setup_statements);
+        }
+        let Some(assign_expr) = render_assignment_expression_ast(&assign_target, &assign_rhs) else {
+            return (memoized_bindings, setup_statements);
+        };
+        let consequent_uses_target = contains_identifier_token(&ternary_consequent, &assign_target);
+        let alternate_uses_target = contains_identifier_token(&ternary_alternate, &assign_target);
+        if consequent_uses_target == alternate_uses_target {
+            return (memoized_bindings, setup_statements);
+        }
+        let consequent = if consequent_uses_target {
+            let Some(expr) =
+                render_sequence_expression_ast(std::slice::from_ref(&assign_expr), &ternary_consequent)
+            else {
+                return (memoized_bindings, setup_statements);
+            };
+            expr
+        } else {
+            ternary_consequent
+        };
+        let alternate = if alternate_uses_target {
+            let Some(expr) =
+                render_sequence_expression_ast(std::slice::from_ref(&assign_expr), &ternary_alternate)
+            else {
+                return (memoized_bindings, setup_statements);
+            };
+            expr
+        } else {
+            ternary_alternate
+        };
+        let Some(rewritten) =
+            render_conditional_expression_ast(&binding.expression, &consequent, &alternate)
+        else {
+            return (memoized_bindings, setup_statements);
+        };
+        let Some(rewritten_statement) = render_reactive_expression_statement_ast(&rewritten) else {
+            return (memoized_bindings, setup_statements);
+        };
+        memoized_bindings.pop();
+        setup_statements.remove(0);
+        setup_statements[0] = rewritten_statement.trim_end().to_string();
+        (memoized_bindings, setup_statements)
+    }
+
     match shape {
         GeneratedBodyShape::Unknown => GeneratedBodyShape::Unknown,
         GeneratedBodyShape::ReturnIdentifier(name) => {
@@ -2288,6 +2357,8 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     memoized_setup_statements,
                     memoized_expr,
                 );
+            let (memoized_bindings, memoized_setup_statements) =
+                fold_temp_binding_into_conditional_setup(memoized_bindings, memoized_setup_statements);
             let (memoized_setup_statements, memoized_expr) =
                 promote_memoized_expr_to_setup_statement(
                     &value_name,
@@ -2344,6 +2415,8 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     memoized_setup_statements,
                     memoized_expr,
                 );
+            let (memoized_bindings, memoized_setup_statements) =
+                fold_temp_binding_into_conditional_setup(memoized_bindings, memoized_setup_statements);
             let (memoized_setup_statements, memoized_expr) =
                 promote_memoized_expr_to_setup_statement(
                     &value_name,
@@ -2404,6 +2477,8 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     memoized_setup_statements,
                     memoized_expr,
                 );
+            let (memoized_bindings, memoized_setup_statements) =
+                fold_temp_binding_into_conditional_setup(memoized_bindings, memoized_setup_statements);
             let (memoized_setup_statements, memoized_expr) =
                 promote_memoized_expr_to_setup_statement(
                     &value_name,
@@ -3828,6 +3903,7 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
             scope.id.0, primary_output_name, dep_exprs, computation_shape, setup_statements
         );
     }
+    setup_statements = rewrite_generated_setup_statements(setup_statements);
     if !declarations.is_empty() {
         setup_statements =
             rewrite_cached_setup_statements_for_outer_declarations(setup_statements, &declarations);
@@ -3951,6 +4027,40 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
 
 fn generated_shape_is_empty_expression_body(shape: &GeneratedBodyShape) -> bool {
     matches!(shape, GeneratedBodyShape::ExpressionStatements(expressions) if expressions.is_empty())
+}
+
+fn rewrite_generated_setup_statements(mut setup_statements: Vec<String>) -> Vec<String> {
+    if setup_statements.is_empty() {
+        return setup_statements;
+    }
+    let original = setup_statements.clone();
+    let mut computation = String::new();
+    for statement in &setup_statements {
+        computation.push_str(statement);
+        if !statement.ends_with('\n') {
+            computation.push('\n');
+        }
+    }
+    let rewritten = rewrite_named_test_reassign_ternary_in_scope_computation(&computation);
+    let rewritten = rewrite_named_temp_ternary_in_scope_computation(&rewritten);
+    if rewritten == computation {
+        return setup_statements;
+    }
+    let allocator = Allocator::default();
+    match parse_statement_list_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        &rewritten,
+    ) {
+        Ok(statements) => {
+            setup_statements = statements
+                .iter()
+                .map(codegen_statement_with_flow_cast_restore)
+                .collect();
+            setup_statements
+        }
+        Err(_) => original,
+    }
 }
 
 fn try_build_simple_scope_setup_statements(
@@ -5450,14 +5560,16 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
         ),
     };
     if shape.is_none() && std::env::var("DEBUG_DIRECT_BODY_SHAPE_TRACE").is_ok() {
+        let rendered = codegen_instruction_nullable(cx, instr).unwrap_or_default();
         eprintln!(
-            "[DIRECT_BODY_SHAPE_TRACE] wrap_prefix_none tag={} lvalue={:?}",
+            "[DIRECT_BODY_SHAPE_TRACE] wrap_prefix_none tag={} lvalue={:?} rendered={}",
             instruction_value_tag(&instr.value),
             instr.lvalue.as_ref().and_then(|place| place
                 .identifier
                 .name
                 .as_ref()
-                .map(|name| name.value()))
+                .map(|name| name.value())),
+            rendered.replace('\n', "\\n"),
         );
     }
     shape
