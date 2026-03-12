@@ -5220,6 +5220,15 @@ fn try_decompose_direct_memoized_existing_return_shape(
         GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_existing_return_shape(*inner, value_name)?;
+            if !parts.setup_statements.is_empty() {
+                let mut prefix_statements = bindings
+                    .iter()
+                    .map(render_generated_binding_statement)
+                    .collect::<Option<Vec<_>>>()?;
+                prefix_statements.extend(parts.setup_statements);
+                parts.setup_statements = prefix_statements;
+                return Some(parts);
+            }
             let mut prefixed_bindings = bindings;
             prefixed_bindings.extend(parts.bindings);
             parts.bindings = prefixed_bindings;
@@ -5228,6 +5237,15 @@ fn try_decompose_direct_memoized_existing_return_shape(
         GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_existing_return_shape(*inner, value_name)?;
+            if !parts.setup_statements.is_empty() {
+                let mut prefix_statements = assignments
+                    .iter()
+                    .map(render_generated_assignment_statement)
+                    .collect::<Option<Vec<_>>>()?;
+                prefix_statements.extend(parts.setup_statements);
+                parts.setup_statements = prefix_statements;
+                return Some(parts);
+            }
             let mut prefixed_assignments = assignments;
             prefixed_assignments.extend(parts.assignments);
             parts.assignments = prefixed_assignments;
@@ -5236,6 +5254,15 @@ fn try_decompose_direct_memoized_existing_return_shape(
         GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_existing_return_shape(*inner, value_name)?;
+            if !parts.setup_statements.is_empty() {
+                let mut prefix_statements = expressions
+                    .iter()
+                    .map(|expression| render_generated_expression_statement(expression))
+                    .collect::<Option<Vec<_>>>()?;
+                prefix_statements.extend(parts.setup_statements);
+                parts.setup_statements = prefix_statements;
+                return Some(parts);
+            }
             let mut prefixed_expressions = expressions;
             prefixed_expressions.extend(parts.expressions);
             parts.expressions = prefixed_expressions;
@@ -5427,6 +5454,25 @@ fn render_generated_declaration_statement(declaration: &GeneratedDeclaration) ->
     Some(codegen_statement_with_flow_cast_restore(&statement))
 }
 
+fn render_generated_binding_statement(binding: &GeneratedBinding) -> Option<String> {
+    render_reactive_variable_statement_ast(
+        binding.kind,
+        &binding.pattern,
+        Some(&binding.expression),
+    )
+    .map(|statement| statement.trim_end().to_string())
+}
+
+fn render_generated_assignment_statement(assignment: &GeneratedAssignment) -> Option<String> {
+    render_reactive_assignment_statement_ast(&assignment.target, &assignment.value)
+        .map(|statement| statement.trim_end().to_string())
+}
+
+fn render_generated_expression_statement(expression: &str) -> Option<String> {
+    render_reactive_expression_statement_ast(expression)
+        .map(|statement| statement.trim_end().to_string())
+}
+
 fn try_decompose_direct_memoized_declared_return_shape(
     shape: GeneratedBodyShape,
     value_name: &str,
@@ -5463,6 +5509,22 @@ fn try_decompose_direct_memoized_declared_return_shape(
         GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_declared_return_shape(*inner, value_name)?;
+            if !parts.setup_statements.is_empty() {
+                let mut prefix_statements = Vec::new();
+                for binding in bindings {
+                    if binding.pattern == value_name {
+                        if parts.memoized_expr.is_some() {
+                            return None;
+                        }
+                        parts.memoized_expr = Some(binding.expression);
+                    } else {
+                        prefix_statements.push(render_generated_binding_statement(&binding)?);
+                    }
+                }
+                prefix_statements.extend(parts.setup_statements);
+                parts.setup_statements = prefix_statements;
+                return Some(parts);
+            }
             let mut prefixed_bindings = Vec::new();
             for binding in bindings {
                 if binding.pattern == value_name {
@@ -5481,6 +5543,22 @@ fn try_decompose_direct_memoized_declared_return_shape(
         GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_declared_return_shape(*inner, value_name)?;
+            if !parts.setup_statements.is_empty() {
+                let mut prefix_statements = Vec::new();
+                for assignment in assignments {
+                    if assignment.target == value_name {
+                        if parts.memoized_expr.is_some() {
+                            return None;
+                        }
+                        parts.memoized_expr = Some(assignment.value);
+                    } else {
+                        prefix_statements.push(render_generated_assignment_statement(&assignment)?);
+                    }
+                }
+                prefix_statements.extend(parts.setup_statements);
+                parts.setup_statements = prefix_statements;
+                return Some(parts);
+            }
             let mut prefixed_assignments = Vec::new();
             for assignment in assignments {
                 if assignment.target == value_name {
@@ -5499,6 +5577,15 @@ fn try_decompose_direct_memoized_declared_return_shape(
         GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_declared_return_shape(*inner, value_name)?;
+            if !parts.setup_statements.is_empty() {
+                let mut prefix_statements = expressions
+                    .iter()
+                    .map(|expression| render_generated_expression_statement(expression))
+                    .collect::<Option<Vec<_>>>()?;
+                prefix_statements.extend(parts.setup_statements);
+                parts.setup_statements = prefix_statements;
+                return Some(parts);
+            }
             let mut prefixed_expressions = expressions;
             prefixed_expressions.extend(parts.expressions);
             parts.expressions = prefixed_expressions;
