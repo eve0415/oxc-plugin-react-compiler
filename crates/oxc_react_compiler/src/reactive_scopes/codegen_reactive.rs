@@ -3282,6 +3282,20 @@ fn try_build_simple_scope_setup_statements(
             }
             Some(statements)
         }
+        GeneratedBodyShape::AssignmentStatements(assignments) => {
+            let mut statements = Vec::new();
+            for assignment in assignments {
+                statements.push(
+                    render_reactive_assignment_statement_ast(
+                        &assignment.target,
+                        &assignment.value,
+                    )?
+                    .trim_end()
+                    .to_string(),
+                );
+            }
+            Some(statements)
+        }
         GeneratedBodyShape::Block { .. }
         | GeneratedBodyShape::Labeled { .. }
         | GeneratedBodyShape::Switch { .. }
