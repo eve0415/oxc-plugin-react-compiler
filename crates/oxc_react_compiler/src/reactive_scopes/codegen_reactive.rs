@@ -3747,11 +3747,8 @@ fn generated_body_shape_reanalyzes_equivalent(
         return false;
     };
     let rendered_shape_source = rendered_shape_source.join("\n");
-    let rendered_shape_source = strip_trailing_bare_return(
-        &rendered_shape_source,
-        is_async,
-        is_generator,
-    );
+    let rendered_shape_source =
+        strip_trailing_bare_return(&rendered_shape_source, is_async, is_generator);
     let rendered_shape_source =
         prune_unused_const_literal_decls(&rendered_shape_source, is_async, is_generator);
     let reparsed = fully_canonicalize_generated_body_shape(analyze_generated_body_shape(
@@ -5260,9 +5257,13 @@ fn try_decompose_direct_memoized_existing_return_shape(
             Some(parts)
         }
         GeneratedBodyShape::Sequential { prefix, inner } => {
-            let _ = prefix;
-            let _ = inner;
-            None
+            let mut parts =
+                try_decompose_direct_memoized_existing_return_shape(*inner, value_name)?;
+            let mut prefix_statements =
+                try_render_statement_sources_from_generated_body_shape(&prefix)?;
+            prefix_statements.extend(parts.setup_statements);
+            parts.setup_statements = prefix_statements;
+            Some(parts)
         }
         _ => None,
     }
@@ -5519,9 +5520,13 @@ fn try_decompose_direct_memoized_declared_return_shape(
             Some(parts)
         }
         GeneratedBodyShape::Sequential { prefix, inner } => {
-            let _ = prefix;
-            let _ = inner;
-            None
+            let mut parts =
+                try_decompose_direct_memoized_declared_return_shape(*inner, value_name)?;
+            let mut prefix_statements =
+                try_render_statement_sources_from_generated_body_shape(&prefix)?;
+            prefix_statements.extend(parts.setup_statements);
+            parts.setup_statements = prefix_statements;
+            Some(parts)
         }
         _ => None,
     }
@@ -5554,7 +5559,10 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
                     inner: Box::new(inner),
                 })
             } else {
-                rendered_single_statement_prefix(codegen_instruction_nullable(cx, instr)?.as_str(), inner)
+                rendered_single_statement_prefix(
+                    codegen_instruction_nullable(cx, instr)?.as_str(),
+                    inner,
+                )
             }
         }
         InstructionValue::StoreLocal { lvalue, value, .. }
@@ -5584,7 +5592,10 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
                 })
             }
             InstructionKind::Function | InstructionKind::HoistedFunction => {
-                rendered_single_statement_prefix(codegen_instruction_nullable(cx, instr)?.as_str(), inner)
+                rendered_single_statement_prefix(
+                    codegen_instruction_nullable(cx, instr)?.as_str(),
+                    inner,
+                )
             }
         },
         InstructionValue::Destructure { lvalue, value, .. } => {
@@ -35198,31 +35209,27 @@ mod tests {
         let shape = super::try_build_generated_body_shape_from_reactive_block(&mut cx, &block)
             .expect("expected direct body shape");
 
-        let super::GeneratedBodyShape::MemoizedComputedReturn {
+        let super::GeneratedBodyShape::SingleDependencyMemoizedReturn {
             value_name,
-            value_kind: Some(value_kind),
-            deps,
+            value_kind,
+            dep_slot,
+            dep_expr,
             value_slot,
-            computation,
+            memoized_setup_statements,
+            memoized_expr,
+            ..
         } = shape
         else {
-            panic!("expected direct memoized computed return shape");
+            panic!("expected direct single-dependency memoized return shape");
         };
         assert_eq!(value_name, "value");
         assert_eq!(value_kind, ast::VariableDeclarationKind::Let);
-        assert_eq!(deps, vec![(0, "props.kind".to_string())]);
+        assert_eq!(dep_slot, 0);
+        assert_eq!(dep_expr, "props.kind");
         assert_eq!(value_slot, 1);
-        let super::GeneratedBodyShape::Sequential { prefix, inner } = *computation else {
-            panic!("expected sequential computation shape");
-        };
-        let super::GeneratedBodyShape::Switch { discriminant, .. } = *prefix else {
-            panic!("expected switch prefix shape");
-        };
-        assert_eq!(discriminant, "props.kind");
-        assert_eq!(
-            *inner,
-            super::GeneratedBodyShape::ReturnIdentifier("value".to_string())
-        );
+        assert_eq!(memoized_expr, None);
+        assert_eq!(memoized_setup_statements.len(), 1);
+        assert!(memoized_setup_statements[0].starts_with("switch (props.kind) {"));
     }
 
     #[test]
@@ -37076,22 +37083,16 @@ mod tests {
 
         assert_eq!(
             shape,
-            super::GeneratedBodyShape::MemoizedComputedReturn {
+            super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
                 value_name: "value".to_string(),
-                value_kind: None,
-                deps: vec![(0, "dep".to_string())],
+                dep_slot: 0,
+                dep_expr: "dep".to_string(),
                 value_slot: 1,
-                computation: Box::new(super::GeneratedBodyShape::Sequential {
-                    prefix: Box::new(super::GeneratedBodyShape::WhileLoop {
-                        test: "cond".to_string(),
-                        body: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![
-                            "step()".to_string(),
-                        ])),
-                    }),
-                    inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
-                        "value".to_string(),
-                    )),
-                }),
+                memoized_bindings: Vec::new(),
+                memoized_assignments: Vec::new(),
+                memoized_expressions: Vec::new(),
+                memoized_setup_statements: vec!["while (cond) {\n  step();\n}".to_string()],
+                memoized_expr: None,
             }
         );
     }
@@ -37118,20 +37119,24 @@ mod tests {
 
         assert_eq!(
             shape,
-            super::GeneratedBodyShape::MemoizedComputedReturn {
-                value_name: "value".to_string(),
-                value_kind: Some(ast::VariableDeclarationKind::Let),
-                deps: vec![(0, "dep".to_string())],
-                value_slot: 1,
-                computation: Box::new(super::GeneratedBodyShape::Sequential {
-                    prefix: Box::new(super::GeneratedBodyShape::GuardedExpressionStatements {
-                        test: "flag".to_string(),
-                        expressions: vec!["touch()".to_string()],
-                    }),
-                    inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
-                        "value".to_string(),
-                    )),
-                }),
+            super::GeneratedBodyShape::PrefixedDeclarations {
+                declarations: vec![super::GeneratedDeclaration {
+                    kind: ast::VariableDeclarationKind::Let,
+                    pattern: "value".to_string(),
+                }],
+                inner: Box::new(
+                    super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+                        value_name: "value".to_string(),
+                        dep_slot: 0,
+                        dep_expr: "dep".to_string(),
+                        value_slot: 1,
+                        memoized_bindings: Vec::new(),
+                        memoized_assignments: Vec::new(),
+                        memoized_expressions: Vec::new(),
+                        memoized_setup_statements: vec!["if (flag) {\n  touch();\n}".to_string()],
+                        memoized_expr: None,
+                    }
+                ),
             }
         );
     }
