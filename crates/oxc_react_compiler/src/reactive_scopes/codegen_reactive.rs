@@ -7,7 +7,7 @@
 //! and emits JavaScript code with memoization cache guards.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use oxc_allocator::{Allocator, CloneIn};
 use oxc_ast::{AstBuilder, NONE, ast};
@@ -752,6 +752,144 @@ fn rewrite_cached_prefix_for_outer_declarations(
     }
 }
 
+fn extract_leading_generated_bindings_from_setup_statements(
+    setup_statements: Vec<String>,
+) -> (Vec<GeneratedBinding>, Vec<String>) {
+    let mut bindings = Vec::new();
+    let mut rest = Vec::new();
+    let mut still_collecting = true;
+    for statement_source in setup_statements {
+        if still_collecting {
+            let allocator = Allocator::default();
+            if let Ok(ast::Statement::VariableDeclaration(declaration)) =
+                parse_single_statement_for_ast_codegen(
+                    &allocator,
+                    SourceType::mjs().with_jsx(true),
+                    &statement_source,
+                )
+                && declaration.declarations.len() == 1
+                && let Some(declarator) = declaration.declarations.first()
+                && let Some(init) = declarator.init.as_ref()
+            {
+                bindings.push(GeneratedBinding {
+                    kind: declaration.kind,
+                    pattern: codegen_binding_pattern_with_flow_cast_restore(&declarator.id),
+                    expression: codegen_expression_with_flow_cast_restore(init),
+                });
+                continue;
+            }
+            still_collecting = false;
+        }
+        rest.push(statement_source);
+    }
+    (bindings, rest)
+}
+
+fn collect_cache_slots_in_statement_sources(setup_statements: &[String]) -> Vec<u32> {
+    let mut slots = BTreeSet::new();
+    for statement_source in setup_statements {
+        let bytes = statement_source.as_bytes();
+        let mut i = 0;
+        while i + 3 < bytes.len() {
+            if bytes[i] == b'$' && bytes[i + 1] == b'[' {
+                let mut j = i + 2;
+                let mut value = 0u32;
+                let mut saw_digit = false;
+                while j < bytes.len() && bytes[j].is_ascii_digit() {
+                    saw_digit = true;
+                    value = value
+                        .saturating_mul(10)
+                        .saturating_add((bytes[j] - b'0') as u32);
+                    j += 1;
+                }
+                if saw_digit && j < bytes.len() && bytes[j] == b']' {
+                    slots.insert(value);
+                    i = j + 1;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+    }
+    slots.into_iter().collect()
+}
+
+fn shift_cache_slots_in_statement_sources(
+    setup_statements: Vec<String>,
+    delta: u32,
+) -> Vec<String> {
+    if delta == 0 {
+        return setup_statements;
+    }
+    setup_statements
+        .into_iter()
+        .map(|statement_source| {
+            let bytes = statement_source.as_bytes();
+            let mut rewritten = String::with_capacity(statement_source.len() + 8);
+            let mut i = 0;
+            while i < bytes.len() {
+                if i + 3 < bytes.len() && bytes[i] == b'$' && bytes[i + 1] == b'[' {
+                    let mut j = i + 2;
+                    let mut value = 0u32;
+                    let mut saw_digit = false;
+                    while j < bytes.len() && bytes[j].is_ascii_digit() {
+                        saw_digit = true;
+                        value = value
+                            .saturating_mul(10)
+                            .saturating_add((bytes[j] - b'0') as u32);
+                        j += 1;
+                    }
+                    if saw_digit && j < bytes.len() && bytes[j] == b']' {
+                        rewritten.push_str(&format!("$[{}]", value + delta));
+                        i = j + 1;
+                        continue;
+                    }
+                }
+                rewritten.push(bytes[i] as char);
+                i += 1;
+            }
+            rewritten
+        })
+        .collect()
+}
+
+fn rebase_nested_cache_slots_for_outer_wrapper(
+    setup_statements: Vec<String>,
+    outer_slots: &mut [u32],
+) -> Vec<String> {
+    if outer_slots.is_empty() {
+        return setup_statements;
+    }
+    let inner_slots = collect_cache_slots_in_statement_sources(&setup_statements);
+    let Some(&last_inner_slot) = inner_slots.last() else {
+        return setup_statements;
+    };
+    let inner_slot_count = last_inner_slot + 1;
+    if !inner_slots
+        .iter()
+        .copied()
+        .enumerate()
+        .all(|(index, slot)| slot == index as u32)
+    {
+        return setup_statements;
+    }
+    let mut sorted_outer_slots = outer_slots.to_vec();
+    sorted_outer_slots.sort_unstable();
+    if !sorted_outer_slots
+        .iter()
+        .copied()
+        .enumerate()
+        .all(|(index, slot)| slot == inner_slot_count + index as u32)
+    {
+        return setup_statements;
+    }
+
+    for slot in outer_slots {
+        *slot -= inner_slot_count;
+    }
+    shift_cache_slots_in_statement_sources(setup_statements, sorted_outer_slots.len() as u32)
+}
+
 fn canonicalize_generated_statement_source(statement_source: String) -> String {
     let allocator = Allocator::default();
     let Ok(mut statement) = parse_single_statement_for_ast_codegen(
@@ -805,13 +943,18 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                 if cached_value != restored_value || cached_value.slot != sentinel_slot {
                     return None;
                 }
+                let mut outer_slots = [sentinel_slot];
+                let setup_statements =
+                    rebase_nested_cache_slots_for_outer_wrapper(setup_statements, &mut outer_slots);
+                let (memoized_bindings, setup_statements) =
+                    extract_leading_generated_bindings_from_setup_statements(setup_statements);
                 let value_name = cached_value.name.clone();
                 Some((
                     value_name.clone(),
                     GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
                         value_name,
-                        value_slot: sentinel_slot,
-                        memoized_bindings: vec![],
+                        value_slot: outer_slots[0],
+                        memoized_bindings,
                         memoized_assignments: vec![],
                         memoized_expressions: vec![],
                         memoized_setup_statements: setup_statements,
@@ -834,8 +977,18 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                 if cached_value != restored_value {
                     return None;
                 }
+                let mut dep_slots: Vec<u32> = deps.iter().map(|(slot, _)| *slot).collect();
+                let dep_exprs: Vec<String> = deps.iter().map(|(_, expr)| expr.clone()).collect();
+                dep_slots.push(cached_value.slot);
+                let setup_statements =
+                    rebase_nested_cache_slots_for_outer_wrapper(setup_statements, &mut dep_slots);
+                let value_slot = dep_slots
+                    .pop()
+                    .expect("cached value slot should be present");
+                let deps: Vec<(u32, String)> = dep_slots.into_iter().zip(dep_exprs).collect();
+                let (memoized_bindings, setup_statements) =
+                    extract_leading_generated_bindings_from_setup_statements(setup_statements);
                 let value_name = cached_value.name.clone();
-                let value_slot = cached_value.slot;
                 let shape = if deps.len() == 1 {
                     let (dep_slot, dep_expr) = deps.into_iter().next()?;
                     GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
@@ -843,10 +996,10 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                         dep_slot,
                         dep_expr,
                         value_slot,
-                        memoized_bindings: vec![],
+                        memoized_bindings: memoized_bindings.clone(),
                         memoized_assignments: vec![],
                         memoized_expressions: vec![],
-                        memoized_setup_statements: setup_statements,
+                        memoized_setup_statements: setup_statements.clone(),
                         memoized_expr: None,
                     }
                 } else {
@@ -854,7 +1007,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                         value_name: value_name.clone(),
                         deps,
                         value_slot,
-                        memoized_bindings: vec![],
+                        memoized_bindings,
                         memoized_assignments: vec![],
                         memoized_expressions: vec![],
                         memoized_setup_statements: setup_statements,
@@ -2511,7 +2664,6 @@ fn codegen_reactive_function_with_primitives(
     }
 
     let analyzed_body_shape = {
-        bump_rendered_body_analysis_fallback();
         let body = strip_trailing_bare_return(&body, func.async_, func.generator);
         let body = prune_unused_const_literal_decls(&body, func.async_, func.generator);
         canonicalize_generated_body_shape(analyze_generated_body_shape(&body))
@@ -2524,12 +2676,16 @@ fn codegen_reactive_function_with_primitives(
             if !matches!(analyzed_body_shape, GeneratedBodyShape::Unknown)
                 && direct_body_shape != analyzed_body_shape
             {
+                bump_rendered_body_analysis_fallback();
                 analyzed_body_shape
             } else {
                 direct_body_shape
             }
         }
-        None => analyzed_body_shape,
+        None => {
+            bump_rendered_body_analysis_fallback();
+            analyzed_body_shape
+        }
     };
     CodegenResult {
         body_shape,
@@ -2563,10 +2719,21 @@ fn try_build_generated_body_shape_from_reactive_block(
                 return Some(shape);
             }
             if can_inline_direct_scope_shape(&scope_block.scope) {
-                return try_build_generated_body_shape_from_reactive_block(
+                let prefix = try_build_generated_body_shape_from_reactive_block(
                     cx,
                     &scope_block.instructions,
-                );
+                )?;
+                if rest.is_empty() {
+                    return Some(prefix);
+                }
+                let inner = try_build_generated_body_shape_from_reactive_block(cx, rest)?;
+                if generated_body_shape_is_empty(&prefix) {
+                    return Some(inner);
+                }
+                return Some(GeneratedBodyShape::Sequential {
+                    prefix: Box::new(prefix),
+                    inner: Box::new(inner),
+                });
             }
             let prefix =
                 try_build_generated_body_shape_from_reactive_scope_statement(cx, scope_block)?;
@@ -35020,10 +35187,14 @@ mod tests {
                         dep_slot: 0,
                         dep_expr: "dep".to_string(),
                         value_slot: 1,
-                        memoized_bindings: vec![],
+                        memoized_bindings: vec![super::GeneratedBinding {
+                            kind: ast::VariableDeclarationKind::Const,
+                            pattern: "t0".to_string(),
+                            expression: "foo(dep)".to_string(),
+                        }],
                         memoized_assignments: vec![],
                         memoized_expressions: vec![],
-                        memoized_setup_statements: vec!["const t0 = foo(dep);".to_string()],
+                        memoized_setup_statements: vec![],
                         memoized_expr: None,
                     }
                 ),
@@ -36371,6 +36542,105 @@ mod tests {
                 && memoized_setup_statements == &vec!["items = [];".to_string(), "items.push(props.a);".to_string()]
                 && memoized_expr.is_none()
         ));
+    }
+
+    #[test]
+    fn canonicalizes_cached_prefix_with_leading_bindings_into_existing_return() {
+        let shape = super::canonicalize_generated_body_shape(super::GeneratedBodyShape::Sequential {
+            prefix: Box::new(super::GeneratedBodyShape::PrefixedDeclarations {
+                declarations: vec![super::GeneratedDeclaration {
+                    kind: ast::VariableDeclarationKind::Let,
+                    pattern: "context".to_string(),
+                }],
+                inner: Box::new(super::GeneratedBodyShape::MemoizedCachedValues {
+                    deps: vec![(2, "props.value".to_string())],
+                    setup_statements: vec![
+                        "const key = { a: \"key\" };".to_string(),
+                        "const t0 = key.a;".to_string(),
+                        "const t1 = identity([props.value]);".to_string(),
+                        "let t2;".to_string(),
+                        "if ($[0] !== t1) {\n  t2 = { [t0]: t1 };\n  $[0] = t1;\n  $[1] = t2;\n} else {\n  t2 = $[1];\n}".to_string(),
+                        "context = t2;".to_string(),
+                        "mutate(key);".to_string(),
+                    ],
+                    cached_values: vec![super::GeneratedCachedValue {
+                        name: "context".to_string(),
+                        slot: 3,
+                    }],
+                    restored_values: vec![super::GeneratedCachedValue {
+                        name: "context".to_string(),
+                        slot: 3,
+                    }],
+                }),
+            }),
+            inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                "context".to_string(),
+            )),
+        });
+
+        let super::GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } = shape
+        else {
+            panic!("expected prefixed declarations shape, got {shape:?}");
+        };
+        assert_eq!(
+            declarations,
+            vec![super::GeneratedDeclaration {
+                kind: ast::VariableDeclarationKind::Let,
+                pattern: "context".to_string(),
+            }]
+        );
+        let super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+            value_name,
+            dep_slot,
+            dep_expr,
+            value_slot,
+            memoized_bindings,
+            memoized_setup_statements,
+            memoized_expr,
+            ..
+        } = inner.as_ref()
+        else {
+            panic!("expected single dependency existing return shape, got {inner:?}");
+        };
+        assert_eq!(value_name, "context");
+        assert_eq!(*dep_slot, 0);
+        assert_eq!(dep_expr, "props.value");
+        assert_eq!(*value_slot, 1);
+        assert_eq!(
+            memoized_bindings.as_slice(),
+            vec![
+                super::GeneratedBinding {
+                    kind: ast::VariableDeclarationKind::Const,
+                    pattern: "key".to_string(),
+                    expression: "({ a: \"key\" })".to_string(),
+                },
+                super::GeneratedBinding {
+                    kind: ast::VariableDeclarationKind::Const,
+                    pattern: "t0".to_string(),
+                    expression: "key.a".to_string(),
+                },
+                super::GeneratedBinding {
+                    kind: ast::VariableDeclarationKind::Const,
+                    pattern: "t1".to_string(),
+                    expression: "identity([props.value])".to_string(),
+                },
+            ]
+            .as_slice()
+        );
+        assert_eq!(
+            memoized_setup_statements.as_slice(),
+            vec![
+                "let t2;".to_string(),
+                "if ($[2] !== t1) {\n  t2 = { [t0]: t1 };\n  $[2] = t1;\n  $[3] = t2;\n} else {\n  t2 = $[3];\n}".to_string(),
+                "context = t2;".to_string(),
+                "mutate(key);".to_string(),
+            ]
+            .as_slice()
+        );
+        assert!(memoized_expr.is_none());
     }
 
     #[test]
