@@ -3832,8 +3832,10 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
             return None;
         }
         let mut deps = Vec::with_capacity(dep_exprs.len());
+        let mut outer_slots = Vec::with_capacity(dep_exprs.len() + output_names.len());
         for dep_expr in dep_exprs {
             deps.push((cx.alloc_cache_slot(), dep_expr));
+            outer_slots.push(deps.last().expect("dep inserted").0);
         }
         let mut cached_values = output_names
             .iter()
@@ -3845,6 +3847,19 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
         }
         for cached_value in &mut cached_values {
             cached_value.slot = cx.alloc_cache_slot();
+            outer_slots.push(cached_value.slot);
+        }
+        let setup_statements =
+            rebase_nested_cache_slots_for_outer_wrapper(setup_statements, &mut outer_slots);
+        let dep_count = deps.len();
+        for ((dep_slot, _), slot) in deps.iter_mut().zip(outer_slots.iter().copied()) {
+            *dep_slot = slot;
+        }
+        for (cached_value, slot) in cached_values
+            .iter_mut()
+            .zip(outer_slots.into_iter().skip(dep_count))
+        {
+            cached_value.slot = slot;
         }
         let restored_values = cached_values.clone();
         let sentinel_name = identifier_name_with_cx(cx, &early_return.value);
@@ -5139,11 +5154,26 @@ fn try_build_generated_early_return_scope_return(
     }
 
     let mut deps = Vec::with_capacity(dep_exprs.len());
+    let mut outer_slots = Vec::with_capacity(dep_exprs.len() + cached_values.len());
     for dep_expr in dep_exprs {
         deps.push((cx.alloc_cache_slot(), dep_expr));
+        outer_slots.push(deps.last().expect("dep inserted").0);
     }
     for cached_value in &mut cached_values {
         cached_value.slot = cx.alloc_cache_slot();
+        outer_slots.push(cached_value.slot);
+    }
+    let setup_statements =
+        rebase_nested_cache_slots_for_outer_wrapper(setup_statements, &mut outer_slots);
+    let dep_count = deps.len();
+    for ((dep_slot, _), slot) in deps.iter_mut().zip(outer_slots.iter().copied()) {
+        *dep_slot = slot;
+    }
+    for (cached_value, slot) in cached_values
+        .iter_mut()
+        .zip(outer_slots.into_iter().skip(dep_count))
+    {
+        cached_value.slot = slot;
     }
     let restored_values = cached_values.clone();
     let sentinel_name = identifier_name_with_cx(cx, &early_return.value);
