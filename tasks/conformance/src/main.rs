@@ -2517,7 +2517,7 @@ fn format_code_for_compare(input_path: &Path, code: &str) -> String {
 
 fn prepare_code_for_compare(code: &str, strict_output: bool) -> String {
     if strict_output {
-        canonicalize_strict_text(code)
+        normalize_shared_cosmetic_equivalences(&canonicalize_strict_text(code))
     } else {
         normalize_shared_cosmetic_equivalences(&normalize_code(code))
     }

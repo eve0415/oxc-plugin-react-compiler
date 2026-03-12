@@ -1499,6 +1499,25 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
         }
     }
 
+    fn promote_memoized_expr_to_setup_statement(
+        value_name: &str,
+        mut setup_statements: Vec<String>,
+        memoized_expr: Option<String>,
+    ) -> (Vec<String>, Option<String>) {
+        if setup_statements.is_empty() {
+            return (setup_statements, memoized_expr);
+        }
+        let Some(memoized_expr) = memoized_expr else {
+            return (setup_statements, None);
+        };
+        let Some(statement) = render_reactive_assignment_statement_ast(value_name, &memoized_expr)
+        else {
+            return (setup_statements, Some(memoized_expr));
+        };
+        setup_statements.push(statement.trim_end().to_string());
+        (setup_statements, None)
+    }
+
     match shape {
         GeneratedBodyShape::Unknown => GeneratedBodyShape::Unknown,
         GeneratedBodyShape::ReturnIdentifier(name) => {
@@ -2039,6 +2058,53 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                         }
                     }
                 }
+                (
+                    GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+                        deps,
+                        setup_statements,
+                        cached_values,
+                        restored_values,
+                        sentinel_name,
+                        final_return: None,
+                        fallback_body: None,
+                    },
+                    inner,
+                ) => {
+                    if generated_body_shape_is_empty(&inner) {
+                        GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+                            deps,
+                            setup_statements,
+                            cached_values,
+                            restored_values,
+                            sentinel_name,
+                            final_return: None,
+                            fallback_body: None,
+                        }
+                    } else if let GeneratedBodyShape::ReturnIdentifier(name) = &inner
+                        && name != &sentinel_name
+                        && cached_values.iter().any(|value| value.name == *name)
+                    {
+                        GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+                            deps,
+                            setup_statements,
+                            cached_values,
+                            restored_values,
+                            sentinel_name,
+                            final_return: Some(name.clone()),
+                            fallback_body: None,
+                        }
+                    } else {
+                        GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+                            deps,
+                            setup_statements,
+                            cached_values,
+                            restored_values,
+                            sentinel_name,
+                            final_return: None,
+                            fallback_body: Some(Box::new(inner)),
+                        }
+                    }
+                }
                 (prefix, inner) if generated_body_shape_is_empty(&inner) => prefix,
                 (prefix, inner) => {
                     if let Some(shape) = push_inner_through_prefix(prefix.clone(), inner.clone()) {
@@ -2090,6 +2156,55 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                 deps,
                 cached_values,
                 restored_values,
+            }
+        }
+        GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+            deps,
+            setup_statements,
+            cached_values,
+            restored_values,
+            sentinel_name,
+            final_return,
+            fallback_body,
+        } => {
+            let deps: Vec<(u32, String)> = deps
+                .into_iter()
+                .map(|(slot, expr)| (slot, canonicalize_generated_expression(expr)))
+                .collect();
+            let setup_statements = shift_nested_cache_slots_after_outer(
+                setup_statements
+                    .into_iter()
+                    .map(canonicalize_generated_statement_source)
+                    .collect(),
+                deps.len() + cached_values.len(),
+            );
+            let fallback_body =
+                fallback_body.map(|body| Box::new(canonicalize_generated_body_shape(*body)));
+            let (final_return, fallback_body) = match (final_return, fallback_body) {
+                (None, Some(body))
+                    if matches!(body.as_ref(), GeneratedBodyShape::ReturnIdentifier(_)) =>
+                {
+                    let GeneratedBodyShape::ReturnIdentifier(name) = body.as_ref() else {
+                        unreachable!()
+                    };
+                    if name != &sentinel_name
+                        && cached_values.iter().any(|value| value.name == *name)
+                    {
+                        (Some(name.clone()), None)
+                    } else {
+                        (None, Some(body))
+                    }
+                }
+                other => other,
+            };
+            GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+                deps,
+                setup_statements,
+                cached_values,
+                restored_values,
+                sentinel_name,
+                final_return,
+                fallback_body,
             }
         }
         GeneratedBodyShape::ZeroDependencyMemoizedReturn {
@@ -2179,6 +2294,12 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     memoized_setup_statements,
                     memoized_expr,
                 );
+            let (memoized_setup_statements, memoized_expr) =
+                promote_memoized_expr_to_setup_statement(
+                    &value_name,
+                    memoized_setup_statements,
+                    memoized_expr,
+                );
             let memoized_setup_statements = rebase_nested_cache_slots_after_memoized_return(
                 memoized_setup_statements
                     .into_iter()
@@ -2225,6 +2346,12 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
         } => {
             let (memoized_setup_statements, memoized_expr) =
                 canonicalize_single_target_setup_statement(
+                    &value_name,
+                    memoized_setup_statements,
+                    memoized_expr,
+                );
+            let (memoized_setup_statements, memoized_expr) =
+                promote_memoized_expr_to_setup_statement(
                     &value_name,
                     memoized_setup_statements,
                     memoized_expr,
@@ -2279,6 +2406,12 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
         } => {
             let (memoized_setup_statements, memoized_expr) =
                 canonicalize_single_target_setup_statement(
+                    &value_name,
+                    memoized_setup_statements,
+                    memoized_expr,
+                );
+            let (memoized_setup_statements, memoized_expr) =
+                promote_memoized_expr_to_setup_statement(
                     &value_name,
                     memoized_setup_statements,
                     memoized_expr,
@@ -2702,6 +2835,9 @@ struct Context {
     preserve_loop_header_inits: bool,
     /// `let` bindings emitted for scope outputs in each active lexical block.
     block_scope_output_names: Vec<HashSet<String>>,
+    /// Inline dependency-free temp-only scopes while reconstructing a parent
+    /// scope computation for direct body-shape matching.
+    inline_temp_zero_dep_scope_shapes: bool,
 }
 
 type TempSnapshot = (
@@ -2999,6 +3135,7 @@ fn codegen_reactive_function_with_primitives(
         elided_named_declarations: HashSet::new(),
         preserve_loop_header_inits: false,
         block_scope_output_names: Vec::new(),
+        inline_temp_zero_dep_scope_shapes: false,
     };
     let fast_refresh_state = if options.enable_reset_cache_on_source_file_changes {
         get_fast_refresh_source_hash().map(|hash| (cx.alloc_cache_slot(), hash))
@@ -3204,6 +3341,56 @@ fn try_build_generated_body_shape_from_reactive_block(
     match block {
         [] => Some(GeneratedBodyShape::ExpressionStatements(vec![])),
         [ReactiveStatement::Scope(scope_block), rest @ ..] => {
+            if let Some((prefix, consumed_following)) =
+                try_build_direct_fused_ternary_source_scope(cx, scope_block, rest)
+            {
+                let inner = try_build_generated_body_shape_from_reactive_block(
+                    cx,
+                    &rest[consumed_following..],
+                )?;
+                if generated_body_shape_is_empty(&inner) {
+                    return Some(prefix);
+                }
+                return Some(GeneratedBodyShape::Sequential {
+                    prefix: Box::new(prefix),
+                    inner: Box::new(inner),
+                });
+            }
+            if let Some((prefix, consumed_following)) =
+                try_build_direct_fused_zero_dep_literal_store_prefix(cx, scope_block, rest)
+            {
+                let inner = try_build_generated_body_shape_from_reactive_block(
+                    cx,
+                    &rest[consumed_following..],
+                )?;
+                if generated_body_shape_is_empty(&inner) {
+                    return Some(prefix);
+                }
+                return Some(GeneratedBodyShape::Sequential {
+                    prefix: Box::new(prefix),
+                    inner: Box::new(inner),
+                });
+            }
+            if let Some(shape) =
+                try_build_direct_inline_zero_dep_literal_into_following_scope(cx, scope_block, rest)
+            {
+                return Some(shape);
+            }
+            if let Some((prefix, consumed_following)) =
+                try_build_direct_fused_zero_dep_ternary_default_scope(cx, scope_block, rest)
+            {
+                let inner = try_build_generated_body_shape_from_reactive_block(
+                    cx,
+                    &rest[consumed_following..],
+                )?;
+                if generated_body_shape_is_empty(&inner) {
+                    return Some(prefix);
+                }
+                return Some(GeneratedBodyShape::Sequential {
+                    prefix: Box::new(prefix),
+                    inner: Box::new(inner),
+                });
+            }
             if let [ReactiveStatement::Terminal(term_stmt)] = rest
                 && let Some(shape) = try_build_generated_body_shape_from_reactive_scope_return(
                     cx,
@@ -3486,11 +3673,12 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
     instructions: &ReactiveBlock,
 ) -> Option<GeneratedBodyShape> {
     let trace = std::env::var("DEBUG_DIRECT_SCOPE_STATEMENT_TRACE").is_ok();
-    if scope.merged_id.is_some() || scope.early_return_value.is_some() {
+    if scope.merged_id.is_some() {
         return None;
     }
     let dep_exprs = collect_direct_scope_dependency_exprs(cx, scope, instructions)?;
     let mut computation_cx = cx.clone();
+    computation_cx.inline_temp_zero_dep_scope_shapes = true;
     let computation_shape = canonicalize_generated_body_shape(
         try_build_generated_body_shape_from_reactive_block(&mut computation_cx, instructions)?,
     );
@@ -3498,7 +3686,8 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
     let mut declarations = Vec::new();
     let mut output_names = Vec::new();
     let mut output_decl_ids = Vec::new();
-    if !scope.declarations.is_empty() && scope.reassignments.is_empty() {
+    let mut seen_output_decls = HashSet::new();
+    if !scope.declarations.is_empty() {
         let mut sorted_decls: Vec<_> = scope.declarations.values().collect();
         sorted_decls.sort_by(|a, b| {
             identifier_name_static(&a.identifier)
@@ -3511,6 +3700,9 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
                 })
         });
         for output_decl in sorted_decls {
+            if !seen_output_decls.insert(output_decl.identifier.declaration_id) {
+                continue;
+            }
             let value_name = identifier_name_with_cx(cx, &output_decl.identifier);
             cx.declare(&output_decl.identifier);
             cx.declared_names.insert(value_name.clone());
@@ -3522,7 +3714,8 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
             output_names.push(value_name);
             output_decl_ids.push(output_decl.identifier.declaration_id);
         }
-    } else if scope.declarations.is_empty() && !scope.reassignments.is_empty() {
+    }
+    if !scope.reassignments.is_empty() {
         let mut reassignments = scope.reassignments.clone();
         reassignments.sort_by(|a, b| {
             identifier_name_static(a)
@@ -3530,6 +3723,9 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
                 .then_with(|| a.declaration_id.0.cmp(&b.declaration_id.0))
         });
         for reassignment in &reassignments {
+            if !seen_output_decls.insert(reassignment.declaration_id) {
+                continue;
+            }
             cx.declare(reassignment);
             cx.mark_decl_runtime_emitted(reassignment.declaration_id);
             let value_name = identifier_name_with_cx(cx, reassignment);
@@ -3537,7 +3733,8 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
             output_names.push(value_name);
             output_decl_ids.push(reassignment.declaration_id);
         }
-    } else {
+    }
+    if output_names.is_empty() {
         if trace {
             eprintln!(
                 "[DIRECT_SCOPE_STATEMENT_TRACE] unsupported outputs scope={} decls={} reassignments={}",
@@ -3550,6 +3747,74 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
     }
     let primary_output_name = output_names.first()?.clone();
     let primary_output_decl_id = *output_decl_ids.first()?;
+    if let Some(early_return) = scope.early_return_value.as_ref() {
+        bump_early_return_shape_render_fallback();
+        let setup_statements =
+            try_render_statement_sources_from_generated_body_shape(&computation_shape)?;
+        if setup_statements.is_empty() {
+            return None;
+        }
+        let mut deps = Vec::with_capacity(dep_exprs.len());
+        for dep_expr in dep_exprs {
+            deps.push((cx.alloc_cache_slot(), dep_expr));
+        }
+        let mut cached_values = output_names
+            .iter()
+            .cloned()
+            .map(|name| GeneratedCachedValue { name, slot: 0 })
+            .collect::<Vec<_>>();
+        if cached_values.is_empty() {
+            return None;
+        }
+        for cached_value in &mut cached_values {
+            cached_value.slot = cx.alloc_cache_slot();
+        }
+        let restored_values = cached_values.clone();
+        let sentinel_name = identifier_name_with_cx(cx, &early_return.value);
+        if !cached_values
+            .iter()
+            .any(|value| value.name == sentinel_name)
+        {
+            return None;
+        }
+        let inner = GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+            deps,
+            setup_statements,
+            cached_values,
+            restored_values,
+            sentinel_name,
+            final_return: None,
+            fallback_body: None,
+        };
+        return if declarations.is_empty() {
+            Some(inner)
+        } else {
+            Some(GeneratedBodyShape::PrefixedDeclarations {
+                declarations,
+                inner: Box::new(inner),
+            })
+        };
+    }
+    if cx.inline_temp_zero_dep_scope_shapes
+        && dep_exprs.is_empty()
+        && output_names.iter().all(|name| is_codegen_temp_name(name))
+    {
+        let inline_shape = if declarations.is_empty() {
+            computation_shape
+        } else {
+            GeneratedBodyShape::PrefixedDeclarations {
+                declarations,
+                inner: Box::new(computation_shape),
+            }
+        };
+        if trace {
+            eprintln!(
+                "[DIRECT_SCOPE_STATEMENT_TRACE] inline zero-dep temp scope={} outputs={:?}",
+                scope.id.0, output_names
+            );
+        }
+        return Some(canonicalize_generated_body_shape(inline_shape));
+    }
     let mut setup_statements =
         try_build_simple_scope_setup_statements(&primary_output_name, &computation_shape).or_else(
             || {
@@ -4003,6 +4268,587 @@ struct DirectMemoizedExistingReturnParts {
     memoized_expr: Option<String>,
 }
 
+fn try_build_direct_fused_ternary_source_scope(
+    cx: &mut Context,
+    scope_block: &ReactiveScopeBlock,
+    following_stmts: &[ReactiveStatement],
+) -> Option<(GeneratedBodyShape, usize)> {
+    if scope_block.scope.dependencies.len() != 1
+        || !scope_block.scope.reassignments.is_empty()
+        || scope_block.scope.declarations.len() != 1
+    {
+        return None;
+    }
+    let decl = scope_block.scope.declarations.values().next()?;
+    let mut ternary_idx: Option<usize> = None;
+    let mut scope_is_consequent: Option<bool> = None;
+    for (idx, stmt) in following_stmts.iter().enumerate().take(8) {
+        let ReactiveStatement::Instruction(instr) = stmt else {
+            break;
+        };
+        if idx > 0
+            && !is_ignorable_bridge_interstitial(instr)
+            && !matches!(&instr.value, InstructionValue::Ternary { .. })
+        {
+            continue;
+        }
+        let lvalue = instr.lvalue.as_ref()?;
+        let InstructionValue::Ternary {
+            consequent,
+            alternate,
+            ..
+        } = &instr.value
+        else {
+            continue;
+        };
+        let cons_is_scope = consequent.identifier.declaration_id == decl.identifier.declaration_id;
+        let alt_is_scope = alternate.identifier.declaration_id == decl.identifier.declaration_id;
+        if !cons_is_scope && !alt_is_scope {
+            continue;
+        }
+        if lvalue.identifier.declaration_id == decl.identifier.declaration_id {
+            continue;
+        }
+        ternary_idx = Some(idx);
+        scope_is_consequent = Some(cons_is_scope);
+        break;
+    }
+    let ternary_idx = ternary_idx?;
+    let scope_is_consequent = scope_is_consequent?;
+    for stmt in &following_stmts[..ternary_idx] {
+        let ReactiveStatement::Instruction(instr) = stmt else {
+            return None;
+        };
+        if !is_ignorable_bridge_interstitial(instr) {
+            return None;
+        }
+        let _ = codegen_instruction_nullable(cx, instr);
+    }
+    let ReactiveStatement::Instruction(ternary_instr) = following_stmts.get(ternary_idx)? else {
+        return None;
+    };
+    let ternary_lvalue = ternary_instr.lvalue.as_ref()?;
+    let InstructionValue::Ternary {
+        test,
+        consequent,
+        alternate,
+        ..
+    } = &ternary_instr.value
+    else {
+        return None;
+    };
+    let non_scope_branch_expr_raw = if scope_is_consequent {
+        codegen_place_to_expression(cx, alternate)
+    } else {
+        codegen_place_to_expression(cx, consequent)
+    };
+    let non_scope_is_inlineable_primitive =
+        is_inlineable_primitive_literal_expression(non_scope_branch_expr_raw.trim());
+    if non_scope_branch_expr_raw != "null" && !non_scope_is_inlineable_primitive {
+        return None;
+    }
+    if scope_block.instructions.is_empty() {
+        return None;
+    }
+    let source_idx = scope_block.instructions.len() - 1;
+    for prefix_stmt in &scope_block.instructions[..source_idx] {
+        let ReactiveStatement::Instruction(prefix_instr) = prefix_stmt else {
+            return None;
+        };
+        let emitted = codegen_instruction_nullable(cx, prefix_instr);
+        if emitted
+            .as_deref()
+            .is_some_and(|stmt| !stmt.trim().is_empty())
+        {
+            return None;
+        }
+    }
+    let ReactiveStatement::Instruction(source_instr) = scope_block.instructions.get(source_idx)?
+    else {
+        return None;
+    };
+    let source_lvalue = source_instr.lvalue.as_ref()?;
+    if source_lvalue.identifier.declaration_id != decl.identifier.declaration_id {
+        return None;
+    }
+    if matches!(
+        &source_instr.value,
+        InstructionValue::StoreLocal { .. }
+            | InstructionValue::StoreContext { .. }
+            | InstructionValue::DeclareLocal { .. }
+            | InstructionValue::DeclareContext { .. }
+            | InstructionValue::Destructure { .. }
+            | InstructionValue::StartMemoize { .. }
+            | InstructionValue::FinishMemoize { .. }
+            | InstructionValue::Debugger { .. }
+            | InstructionValue::ObjectMethod { .. }
+    ) {
+        return None;
+    }
+
+    let raw_dep = &scope_block.scope.dependencies[0];
+    let cond_expr = codegen_place_with_min_prec(cx, test, ExprPrecedence::Conditional);
+    let dep_for_codegen = truncate_ref_current_dep(raw_dep, &cx.stable_ref_decls);
+    let mut dep_expr = codegen_dependency(cx, &dep_for_codegen);
+    let mut force_root_dep = false;
+    if !scope_is_consequent && !dep_for_codegen.path.is_empty() {
+        let root_expr = identifier_name_with_cx(cx, &dep_for_codegen.identifier);
+        if cond_expr.contains(&format!("{}?.", root_expr)) {
+            dep_expr = root_expr;
+            force_root_dep = true;
+        }
+    }
+    let cond_is_non_local = cx
+        .non_local_binding_decls
+        .contains(&test.identifier.declaration_id);
+    let include_cond_dep = !force_root_dep
+        && !cond_is_non_local
+        && !is_inlineable_primitive_literal_expression(cond_expr.trim());
+    let source_ev = codegen_instruction_value_ev(cx, &source_instr.value);
+    let mut source_expr = source_ev.wrap_if_needed(ExprPrecedence::Conditional);
+    let should_compact_source_expr = match &source_instr.value {
+        InstructionValue::ObjectExpression { properties, .. } => {
+            properties.iter().any(|property| {
+                matches!(
+                    property,
+                    ObjectPropertyOrSpread::Property(ObjectProperty {
+                        type_: ObjectPropertyType::Method,
+                        ..
+                    })
+                )
+            })
+        }
+        InstructionValue::CallExpression { .. } => true,
+        _ => false,
+    };
+    if source_expr.contains('\n') && should_compact_source_expr && !source_expr.contains('`') {
+        source_expr = compact_single_statement(&source_expr);
+    }
+    let consequent_expr = if scope_is_consequent {
+        source_expr.clone()
+    } else {
+        codegen_place_with_min_prec(cx, consequent, ExprPrecedence::Conditional)
+    };
+    let alternate_expr = if scope_is_consequent {
+        codegen_place_with_min_prec(cx, alternate, ExprPrecedence::Conditional)
+    } else {
+        source_expr.clone()
+    };
+    let rhs_expr =
+        render_conditional_expression_ast(&cond_expr, &consequent_expr, &alternate_expr)?;
+
+    let decl_name = identifier_name_with_cx(cx, &decl.identifier);
+    let needs_declaration = !has_materialized_named_binding(cx, &decl.identifier);
+    if needs_declaration {
+        cx.mark_decl_runtime_emitted(decl.identifier.declaration_id);
+    }
+    cx.declare(&decl.identifier);
+
+    let mut dep_exprs = Vec::new();
+    if include_cond_dep {
+        dep_exprs.push(cond_expr.clone());
+    }
+    dep_exprs.push(dep_expr);
+    let mut shape = build_direct_existing_memoized_return_shape(
+        cx,
+        decl_name.clone(),
+        dep_exprs,
+        DirectMemoizedExistingReturnParts {
+            memoized_expr: Some(rhs_expr),
+            ..DirectMemoizedExistingReturnParts::default()
+        },
+    )?;
+    if needs_declaration {
+        shape = GeneratedBodyShape::PrefixedDeclarations {
+            declarations: vec![GeneratedDeclaration {
+                kind: ast::VariableDeclarationKind::Let,
+                pattern: decl_name.clone(),
+            }],
+            inner: Box::new(shape),
+        };
+    }
+
+    cx.set_temp_expr(
+        &ternary_lvalue.identifier,
+        Some(ExprValue::primary(decl_name.clone())),
+    );
+    let suppressed_display_idx = ternary_lvalue
+        .identifier
+        .name
+        .as_ref()
+        .and_then(|name| match name {
+            IdentifierName::Named(n) | IdentifierName::Promoted(n) => n
+                .strip_prefix('t')
+                .and_then(|suffix| suffix.parse::<u32>().ok()),
+        })
+        .unwrap_or(ternary_lvalue.identifier.id.0);
+    if !cx.suppressed_temp_ids.contains(&suppressed_display_idx) {
+        cx.suppressed_temp_ids.push(suppressed_display_idx);
+    }
+
+    Some((shape, ternary_idx + 1))
+}
+
+fn try_build_direct_fused_zero_dep_literal_store_prefix(
+    cx: &mut Context,
+    scope_block: &ReactiveScopeBlock,
+    following_stmts: &[ReactiveStatement],
+) -> Option<(GeneratedBodyShape, usize)> {
+    if !cx.inline_temp_zero_dep_scope_shapes {
+        return None;
+    }
+    let (scope_decl, source_instr) = zero_dep_single_decl_scope_source(scope_block)?;
+    if !matches!(
+        &source_instr.value,
+        InstructionValue::Primitive { .. }
+            | InstructionValue::ArrayExpression { .. }
+            | InstructionValue::ObjectExpression { .. }
+    ) {
+        return None;
+    }
+    let ReactiveStatement::Instruction(store_instr) = following_stmts.first()? else {
+        return None;
+    };
+    let (target_ident, store_result_decl) = parse_named_store_from_decl(store_instr, scope_decl)?;
+    if reactive_block_uses_declaration(&following_stmts[1..], scope_decl) {
+        return None;
+    }
+    if let Some(store_result_decl) = store_result_decl
+        && reactive_block_uses_declaration(&following_stmts[1..], store_result_decl)
+    {
+        return None;
+    }
+    let (store_lvalue, _) = match &store_instr.value {
+        InstructionValue::StoreLocal { lvalue, value, .. }
+        | InstructionValue::StoreContext { lvalue, value, .. } => (lvalue, value),
+        _ => return None,
+    };
+    let target_name = identifier_name_with_cx(cx, target_ident);
+    let source_expr = codegen_instruction_value_ev(cx, &source_instr.value)
+        .wrap_if_needed(ExprPrecedence::Assignment);
+    let shape = if store_lvalue.kind != InstructionKind::Reassign
+        && !has_materialized_named_binding(cx, target_ident)
+    {
+        let kind = variable_declaration_kind(store_lvalue.kind)?;
+        cx.mark_decl_runtime_emitted(target_ident.declaration_id);
+        cx.declare(target_ident);
+        GeneratedBodyShape::PrefixedBindings {
+            bindings: vec![GeneratedBinding {
+                kind,
+                pattern: target_name,
+                expression: source_expr,
+            }],
+            inner: Box::new(GeneratedBodyShape::ExpressionStatements(vec![])),
+        }
+    } else {
+        cx.declare(target_ident);
+        GeneratedBodyShape::PrefixedAssignments {
+            assignments: vec![GeneratedAssignment {
+                target: target_name,
+                value: source_expr,
+            }],
+            inner: Box::new(GeneratedBodyShape::ExpressionStatements(vec![])),
+        }
+    };
+    Some((shape, 1))
+}
+
+fn try_build_direct_inline_zero_dep_literal_into_following_scope(
+    cx: &mut Context,
+    scope_block: &ReactiveScopeBlock,
+    following_stmts: &[ReactiveStatement],
+) -> Option<GeneratedBodyShape> {
+    let (source_decl, source_instr) = zero_dep_single_decl_scope_source(scope_block)?;
+    if !matches!(
+        &source_instr.value,
+        InstructionValue::Primitive { .. }
+            | InstructionValue::ArrayExpression { .. }
+            | InstructionValue::ObjectExpression { .. }
+    ) {
+        return None;
+    }
+    let source_lvalue = source_instr.lvalue.as_ref()?;
+
+    let ReactiveStatement::Scope(next_scope) = following_stmts.first()? else {
+        return None;
+    };
+    if next_scope.scope.dependencies.is_empty() {
+        return None;
+    }
+    let ReactiveStatement::Instruction(first_instr) = next_scope.instructions.first()? else {
+        return None;
+    };
+    let (store_lvalue, store_value) = match &first_instr.value {
+        InstructionValue::StoreLocal { lvalue, value, .. }
+        | InstructionValue::StoreContext { lvalue, value, .. } => (lvalue, value),
+        _ => return None,
+    };
+    if store_value.identifier.declaration_id != source_decl
+        || store_lvalue.place.identifier.name.is_none()
+        || first_instr.lvalue.is_some()
+    {
+        return None;
+    }
+    if reactive_block_uses_declaration(&next_scope.instructions[1..], source_decl) {
+        return None;
+    }
+
+    let temp_snapshot = cx.snapshot_temps();
+    let source_seed_expr = codegen_instruction_value_ev(cx, &source_instr.value);
+    cx.set_temp_expr(&source_lvalue.identifier, Some(source_seed_expr));
+    let shape = try_build_generated_body_shape_from_reactive_block(cx, following_stmts);
+    if shape.is_none() {
+        cx.restore_temps(temp_snapshot);
+        return None;
+    }
+
+    let suppressed_display_idx = source_lvalue
+        .identifier
+        .name
+        .as_ref()
+        .and_then(|name| match name {
+            IdentifierName::Named(n) | IdentifierName::Promoted(n) => n
+                .strip_prefix('t')
+                .and_then(|suffix| suffix.parse::<u32>().ok()),
+        })
+        .unwrap_or(source_lvalue.identifier.id.0);
+    if !cx.suppressed_temp_ids.contains(&suppressed_display_idx) {
+        cx.suppressed_temp_ids.push(suppressed_display_idx);
+    }
+
+    shape
+}
+
+fn try_build_direct_fused_zero_dep_ternary_default_scope(
+    cx: &mut Context,
+    scope_block: &ReactiveScopeBlock,
+    following_stmts: &[ReactiveStatement],
+) -> Option<(GeneratedBodyShape, usize)> {
+    if !scope_block.scope.dependencies.is_empty()
+        || !scope_block.scope.reassignments.is_empty()
+        || scope_block.scope.declarations.len() != 1
+        || scope_block.instructions.is_empty()
+    {
+        return None;
+    }
+
+    let decl = scope_block.scope.declarations.values().next()?;
+    let source_decl_id = decl.identifier.declaration_id;
+    let mut probe_cx = cx.clone();
+    let mut source_instr: Option<&ReactiveInstruction> = None;
+    for stmt in &scope_block.instructions {
+        let ReactiveStatement::Instruction(instr) = stmt else {
+            return None;
+        };
+        let source_expr = codegen_instruction_value_ev(&mut probe_cx, &instr.value);
+        let lvalue = instr.lvalue.as_ref()?;
+        probe_cx
+            .temp
+            .insert(lvalue.identifier.declaration_id, Some(source_expr));
+        if lvalue.identifier.declaration_id == source_decl_id {
+            source_instr = Some(instr);
+        }
+    }
+    let source_instr = source_instr?;
+    let source_lvalue = source_instr.lvalue.as_ref()?;
+    if source_lvalue.identifier.declaration_id != source_decl_id {
+        return None;
+    }
+    if matches!(
+        &source_instr.value,
+        InstructionValue::StoreLocal { .. }
+            | InstructionValue::StoreContext { .. }
+            | InstructionValue::DeclareLocal { .. }
+            | InstructionValue::DeclareContext { .. }
+            | InstructionValue::Destructure { .. }
+            | InstructionValue::StartMemoize { .. }
+            | InstructionValue::FinishMemoize { .. }
+            | InstructionValue::Debugger { .. }
+            | InstructionValue::ObjectMethod { .. }
+    ) {
+        return None;
+    }
+
+    let mut source_alias_decls: HashSet<DeclarationId> = HashSet::from([source_decl_id]);
+    let mut ternary_idx: Option<usize> = None;
+    let mut source_is_consequent = false;
+    let mut source_place: Option<Place> = None;
+    let mut dep_place: Option<Place> = None;
+    for (idx, stmt) in following_stmts.iter().enumerate().take(8) {
+        let ReactiveStatement::Instruction(instr) = stmt else {
+            break;
+        };
+        if let Some(lvalue) = &instr.lvalue {
+            let source_derived = match &instr.value {
+                InstructionValue::LoadLocal { place, .. }
+                | InstructionValue::LoadContext { place, .. } => {
+                    source_alias_decls.contains(&place.identifier.declaration_id)
+                }
+                InstructionValue::TypeCastExpression { value, .. } => {
+                    source_alias_decls.contains(&value.identifier.declaration_id)
+                }
+                _ => false,
+            };
+            if source_derived {
+                source_alias_decls.insert(lvalue.identifier.declaration_id);
+            }
+        }
+        if idx > 0
+            && !is_ignorable_bridge_interstitial(instr)
+            && !matches!(&instr.value, InstructionValue::Ternary { .. })
+        {
+            continue;
+        }
+        let _ = instr.lvalue.as_ref()?;
+        let InstructionValue::Ternary {
+            consequent,
+            alternate,
+            ..
+        } = &instr.value
+        else {
+            continue;
+        };
+        let cons_is_source = source_alias_decls.contains(&consequent.identifier.declaration_id);
+        let alt_is_source = source_alias_decls.contains(&alternate.identifier.declaration_id);
+        if cons_is_source == alt_is_source {
+            continue;
+        }
+        let candidate_dep = if cons_is_source {
+            alternate
+        } else {
+            consequent
+        };
+        if candidate_dep.identifier.declaration_id == decl.identifier.declaration_id {
+            continue;
+        }
+        let dep_expr = codegen_place_to_expression(cx, candidate_dep);
+        if !is_valid_js_identifier_name(dep_expr.trim()) {
+            continue;
+        }
+        ternary_idx = Some(idx);
+        source_is_consequent = cons_is_source;
+        source_place = Some(if cons_is_source {
+            consequent.clone()
+        } else {
+            alternate.clone()
+        });
+        dep_place = Some(candidate_dep.clone());
+        break;
+    }
+
+    let ternary_idx = ternary_idx?;
+    let source_seed_expr = probe_cx
+        .temp
+        .get(&source_decl_id)
+        .cloned()
+        .flatten()
+        .unwrap_or_else(|| codegen_instruction_value_ev(&mut probe_cx, &source_instr.value));
+    let cx_snapshot = cx.clone();
+    cx.set_temp_expr(&source_lvalue.identifier, Some(source_seed_expr));
+    for stmt in &following_stmts[..ternary_idx] {
+        let ReactiveStatement::Instruction(instr) = stmt else {
+            *cx = cx_snapshot;
+            return None;
+        };
+        let bridge_stmt = codegen_instruction_nullable(cx, instr);
+        if bridge_stmt
+            .as_deref()
+            .is_some_and(|text| !text.trim().is_empty())
+        {
+            *cx = cx_snapshot;
+            return None;
+        }
+    }
+
+    let ReactiveStatement::Instruction(ternary_instr) = following_stmts.get(ternary_idx)? else {
+        *cx = cx_snapshot;
+        return None;
+    };
+    let ternary_lvalue = ternary_instr.lvalue.as_ref()?;
+    let InstructionValue::Ternary { test, .. } = &ternary_instr.value else {
+        *cx = cx_snapshot;
+        return None;
+    };
+    let dep_place = dep_place?;
+    let source_place = source_place?;
+
+    let cond_expr = codegen_place_with_min_prec(cx, test, ExprPrecedence::Conditional);
+    let source_expr = codegen_place_with_min_prec(cx, &source_place, ExprPrecedence::Conditional);
+    let dep_expr_cond = codegen_place_with_min_prec(cx, &dep_place, ExprPrecedence::Conditional);
+    let dep_expr_guard = codegen_place_to_expression(cx, &dep_place);
+
+    let use_ternary_lvalue =
+        ternary_lvalue
+            .identifier
+            .name
+            .as_ref()
+            .is_some_and(|name| match name {
+                IdentifierName::Named(n) | IdentifierName::Promoted(n) => {
+                    !(n.starts_with('t') && n[1..].chars().all(|ch| ch.is_ascii_digit()))
+                }
+            });
+    let output_ident = if use_ternary_lvalue {
+        &ternary_lvalue.identifier
+    } else {
+        &decl.identifier
+    };
+    let output_name = identifier_name_with_cx(cx, output_ident);
+    let rhs_expr = if source_is_consequent {
+        render_conditional_expression_ast(&cond_expr, &source_expr, &dep_expr_cond)
+    } else {
+        render_conditional_expression_ast(&cond_expr, &dep_expr_cond, &source_expr)
+    }?;
+
+    let needs_declaration = !has_materialized_named_binding(cx, output_ident);
+    if needs_declaration {
+        cx.mark_decl_runtime_emitted(output_ident.declaration_id);
+    }
+    cx.declare(output_ident);
+
+    let mut shape = build_direct_existing_memoized_return_shape(
+        cx,
+        output_name.clone(),
+        vec![dep_expr_guard],
+        DirectMemoizedExistingReturnParts {
+            memoized_expr: Some(rhs_expr),
+            ..DirectMemoizedExistingReturnParts::default()
+        },
+    )?;
+    if needs_declaration {
+        shape = GeneratedBodyShape::PrefixedDeclarations {
+            declarations: vec![GeneratedDeclaration {
+                kind: ast::VariableDeclarationKind::Let,
+                pattern: output_name.clone(),
+            }],
+            inner: Box::new(shape),
+        };
+    }
+
+    cx.set_temp_expr(
+        &ternary_lvalue.identifier,
+        Some(ExprValue::primary(output_name.clone())),
+    );
+    cx.temp.insert(
+        decl.identifier.declaration_id,
+        Some(ExprValue::primary(output_name)),
+    );
+    let suppressed_display_idx = ternary_lvalue
+        .identifier
+        .name
+        .as_ref()
+        .and_then(|name| match name {
+            IdentifierName::Named(n) | IdentifierName::Promoted(n) => n
+                .strip_prefix('t')
+                .and_then(|suffix| suffix.parse::<u32>().ok()),
+        })
+        .unwrap_or(ternary_lvalue.identifier.id.0);
+    if !cx.suppressed_temp_ids.contains(&suppressed_display_idx) {
+        cx.suppressed_temp_ids.push(suppressed_display_idx);
+    }
+
+    Some((shape, ternary_idx + 1))
+}
+
 fn try_build_generated_body_shape_from_reactive_scope_return(
     cx: &mut Context,
     scope_block: &ReactiveScopeBlock,
@@ -4019,8 +4865,11 @@ fn try_build_generated_body_shape_from_reactive_scope_return(
     };
     let mut full_scope_body = scope_block.instructions.clone();
     full_scope_body.push(ReactiveStatement::Terminal(term_stmt.clone()));
+    let mut computation_cx = cx.clone();
+    computation_cx.inline_temp_zero_dep_scope_shapes = true;
     let computation_shape =
-        try_build_generated_body_shape_from_reactive_block(cx, &full_scope_body)?;
+        try_build_generated_body_shape_from_reactive_block(&mut computation_cx, &full_scope_body)?;
+    cx.next_cache_index = computation_cx.next_cache_index;
     let dep_exprs =
         collect_direct_scope_dependency_exprs(cx, &scope_block.scope, &scope_block.instructions)?;
     if scope_block.scope.reassignments.len() == 1 && scope_block.scope.declarations.is_empty() {
@@ -4095,9 +4944,12 @@ fn try_build_generated_early_return_scope_return(
     let early_return = scope_block.scope.early_return_value.as_ref()?;
     let dep_exprs =
         collect_direct_scope_dependency_exprs(cx, &scope_block.scope, &scope_block.instructions)?;
-    let Some(computation_shape) =
-        try_build_generated_body_shape_from_reactive_block(cx, &scope_block.instructions)
-    else {
+    let mut computation_cx = cx.clone();
+    computation_cx.inline_temp_zero_dep_scope_shapes = true;
+    let Some(computation_shape) = try_build_generated_body_shape_from_reactive_block(
+        &mut computation_cx,
+        &scope_block.instructions,
+    ) else {
         if trace {
             eprintln!(
                 "[DIRECT_EARLY_RETURN_TRACE] skip: inner computation shape none scope={}",
@@ -4106,6 +4958,7 @@ fn try_build_generated_early_return_scope_return(
         }
         return None;
     };
+    cx.next_cache_index = computation_cx.next_cache_index;
     bump_early_return_shape_render_fallback();
     let setup_statements =
         try_render_statement_sources_from_generated_body_shape(&computation_shape)?;
@@ -33490,6 +34343,7 @@ mod tests {
             elided_named_declarations: HashSet::new(),
             preserve_loop_header_inits: false,
             block_scope_output_names: Vec::new(),
+            inline_temp_zero_dep_scope_shapes: false,
         }
     }
 
