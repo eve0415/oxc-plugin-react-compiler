@@ -11,7 +11,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use oxc_allocator::{Allocator, CloneIn};
 use oxc_ast::{AstBuilder, NONE, ast};
-use oxc_ast_visit::{Visit, walk};
+use oxc_ast_visit::{Visit, VisitMut, walk};
 use oxc_codegen::{Codegen, CodegenOptions, Context as CodegenPrintContext, Gen, IndentChar};
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SPAN, SourceType};
@@ -34,6 +34,14 @@ pub(crate) const HOOK_GUARD_PUSH: u8 = 0;
 pub(crate) const HOOK_GUARD_POP: u8 = 1;
 const HOOK_GUARD_ALLOW: u8 = 2;
 const HOOK_GUARD_DISALLOW: u8 = 3;
+
+struct StripSnippetSpans;
+
+impl<'a> VisitMut<'a> for StripSnippetSpans {
+    fn visit_span(&mut self, span: &mut oxc_span::Span) {
+        *span = SPAN;
+    }
+}
 
 thread_local! {
     static FAST_REFRESH_SOURCE_HASH: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -1603,6 +1611,49 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                         }
                     }
                 }
+                GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner }
+                    if matches!(inner.as_ref(), GeneratedBodyShape::ReturnExpression(_)) =>
+                {
+                    let GeneratedBodyShape::ReturnExpression(expression) = *inner else {
+                        unreachable!();
+                    };
+                    let source_name = bindings
+                        .iter()
+                        .rev()
+                        .filter_map(|binding| {
+                            let binding_name = binding.pattern.trim();
+                            (is_valid_js_identifier_name(binding_name)
+                                && contains_identifier_token(&expression, binding_name))
+                            .then(|| binding_name.to_string())
+                        })
+                        .next();
+                    if let Some(source_name) = source_name {
+                        let inner = canonicalize_generated_body_shape(
+                            GeneratedBodyShape::PrefixedBindings {
+                                bindings,
+                                inner: Box::new(GeneratedBodyShape::PrefixedExpressionStatements {
+                                    expressions,
+                                    inner: Box::new(GeneratedBodyShape::ReturnIdentifier(
+                                        source_name.clone(),
+                                    )),
+                                }),
+                            },
+                        );
+                        GeneratedBodyShape::WrappedReturnExpression {
+                            source_name,
+                            expression,
+                            inner: Box::new(inner),
+                        }
+                    } else {
+                        GeneratedBodyShape::PrefixedBindings {
+                            bindings,
+                            inner: Box::new(GeneratedBodyShape::PrefixedExpressionStatements {
+                                expressions,
+                                inner: Box::new(GeneratedBodyShape::ReturnExpression(expression)),
+                            }),
+                        }
+                    }
+                }
                 inner => GeneratedBodyShape::PrefixedBindings {
                     bindings,
                     inner: Box::new(inner),
@@ -2879,6 +2930,13 @@ fn codegen_reactive_function_with_primitives(
     let body = codegen_block(&mut cx, &func.body);
     let direct_body_shape =
         try_build_generated_body_shape_from_reactive_block(&mut shape_cx, &func.body);
+    if std::env::var("DEBUG_DIRECT_BODY_SHAPE_STATUS").is_ok() {
+        eprintln!(
+            "[DIRECT_BODY_SHAPE_STATUS] fn={:?} direct={:#?}",
+            func.name_hint.as_deref(),
+            direct_body_shape
+        );
+    }
     let needs_function_hook_guard_wrapper = cx.emit_hook_guards && emit_function_hook_guard;
 
     let cache_size = cx.next_cache_index;
@@ -2922,6 +2980,18 @@ fn codegen_reactive_function_with_primitives(
             let direct_body_shape = fully_canonicalize_generated_body_shape(
                 strip_top_level_trailing_return_void(direct_body_shape),
             );
+            if std::env::var("DEBUG_DIRECT_BODY_SHAPE_MISMATCH").is_ok()
+                && !matches!(analyzed_body_shape, GeneratedBodyShape::Unknown)
+                && direct_body_shape != analyzed_body_shape
+            {
+                eprintln!(
+                    "[DIRECT_BODY_SHAPE_MISMATCH] fn={:?} direct={:#?} analyzed={:#?} body=\n{}",
+                    func.name_hint.as_deref(),
+                    direct_body_shape,
+                    analyzed_body_shape,
+                    body
+                );
+            }
             if !matches!(analyzed_body_shape, GeneratedBodyShape::Unknown)
                 && direct_body_shape != analyzed_body_shape
             {
@@ -4183,6 +4253,10 @@ fn rendered_single_statement_prefix(
                 inner: Box::new(inner),
             })
         }
+        ast::Statement::DebuggerStatement(_) => Some(GeneratedBodyShape::Sequential {
+            prefix: Box::new(GeneratedBodyShape::DebuggerStatements(1)),
+            inner: Box::new(inner),
+        }),
         _ => None,
     }
 }
@@ -31271,6 +31345,8 @@ fn render_object_expression_ast(
 fn codegen_expression_with_oxc(expression: &ast::Expression<'_>) -> String {
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
+    let mut expression = expression.clone_in(&allocator);
+    StripSnippetSpans.visit_expression(&mut expression);
     let program = builder.program(
         SPAN,
         SourceType::mjs().with_jsx(true),
@@ -31278,7 +31354,7 @@ fn codegen_expression_with_oxc(expression: &ast::Expression<'_>) -> String {
         builder.vec(),
         None,
         builder.vec(),
-        builder.vec1(builder.statement_expression(SPAN, expression.clone_in(&allocator))),
+        builder.vec1(builder.statement_expression(SPAN, expression)),
     );
     let code = Codegen::new()
         .with_options(CodegenOptions {
@@ -31295,6 +31371,8 @@ fn codegen_expression_with_oxc(expression: &ast::Expression<'_>) -> String {
 fn codegen_statement_with_oxc(statement: &ast::Statement<'_>) -> String {
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
+    let mut statement = statement.clone_in(&allocator);
+    StripSnippetSpans.visit_statement(&mut statement);
     let program = builder.program(
         SPAN,
         SourceType::mjs().with_jsx(true),
@@ -31302,7 +31380,7 @@ fn codegen_statement_with_oxc(statement: &ast::Statement<'_>) -> String {
         builder.vec(),
         None,
         builder.vec(),
-        builder.vec1(statement.clone_in(&allocator)),
+        builder.vec1(statement),
     );
     Codegen::new()
         .with_options(CodegenOptions {
@@ -31317,6 +31395,9 @@ fn codegen_statement_with_oxc(statement: &ast::Statement<'_>) -> String {
 }
 
 fn codegen_assignment_target_with_oxc(target: &ast::AssignmentTarget<'_>) -> String {
+    let allocator = Allocator::default();
+    let mut target = target.clone_in(&allocator);
+    StripSnippetSpans.visit_assignment_target(&mut target);
     let mut codegen = Codegen::new().with_options(CodegenOptions {
         indent_char: IndentChar::Space,
         indent_width: 2,
@@ -31327,6 +31408,9 @@ fn codegen_assignment_target_with_oxc(target: &ast::AssignmentTarget<'_>) -> Str
 }
 
 fn codegen_for_statement_init_with_oxc(init: &ast::ForStatementInit<'_>) -> String {
+    let allocator = Allocator::default();
+    let mut init = init.clone_in(&allocator);
+    StripSnippetSpans.visit_for_statement_init(&mut init);
     let mut codegen = Codegen::new().with_options(CodegenOptions {
         indent_char: IndentChar::Space,
         indent_width: 2,
@@ -31337,6 +31421,9 @@ fn codegen_for_statement_init_with_oxc(init: &ast::ForStatementInit<'_>) -> Stri
 }
 
 fn codegen_for_statement_left_with_oxc(left: &ast::ForStatementLeft<'_>) -> String {
+    let allocator = Allocator::default();
+    let mut left = left.clone_in(&allocator);
+    StripSnippetSpans.visit_for_statement_left(&mut left);
     let mut codegen = Codegen::new().with_options(CodegenOptions {
         indent_char: IndentChar::Space,
         indent_width: 2,
@@ -31349,6 +31436,14 @@ fn codegen_for_statement_left_with_oxc(left: &ast::ForStatementLeft<'_>) -> Stri
 fn codegen_statements_with_oxc(statements: &[ast::Statement<'_>]) -> String {
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
+    let mut statements = builder.vec_from_iter(
+        statements
+            .iter()
+            .map(|statement| statement.clone_in(&allocator)),
+    );
+    for statement in statements.iter_mut() {
+        StripSnippetSpans.visit_statement(statement);
+    }
     let program = builder.program(
         SPAN,
         SourceType::mjs().with_jsx(true),
@@ -31356,11 +31451,7 @@ fn codegen_statements_with_oxc(statements: &[ast::Statement<'_>]) -> String {
         builder.vec(),
         None,
         builder.vec(),
-        builder.vec_from_iter(
-            statements
-                .iter()
-                .map(|statement| statement.clone_in(&allocator)),
-        ),
+        statements,
     );
     Codegen::new()
         .with_options(CodegenOptions {
@@ -31375,6 +31466,9 @@ fn codegen_statements_with_oxc(statements: &[ast::Statement<'_>]) -> String {
 }
 
 fn codegen_binding_pattern_with_oxc(pattern: &ast::BindingPattern<'_>) -> String {
+    let allocator = Allocator::default();
+    let mut pattern = pattern.clone_in(&allocator);
+    StripSnippetSpans.visit_binding_pattern(&mut pattern);
     let mut codegen = Codegen::new().with_options(CodegenOptions {
         indent_char: IndentChar::Space,
         indent_width: 2,
@@ -31385,6 +31479,9 @@ fn codegen_binding_pattern_with_oxc(pattern: &ast::BindingPattern<'_>) -> String
 }
 
 fn codegen_array_expression_element_with_oxc(element: &ast::ArrayExpressionElement<'_>) -> String {
+    let allocator = Allocator::default();
+    let mut element = element.clone_in(&allocator);
+    StripSnippetSpans.visit_array_expression_element(&mut element);
     let mut codegen = Codegen::new().with_options(CodegenOptions {
         indent_char: IndentChar::Space,
         indent_width: 2,
@@ -36070,6 +36167,45 @@ mod tests {
     }
 
     #[test]
+    fn wraps_prefixed_expression_return_after_binding_prefix() {
+        let shape =
+            super::canonicalize_generated_body_shape(super::GeneratedBodyShape::PrefixedBindings {
+                bindings: vec![super::GeneratedBinding {
+                    kind: ast::VariableDeclarationKind::Const,
+                    pattern: "it".to_string(),
+                    expression: "new Set([1, 2]).values()".to_string(),
+                }],
+                inner: Box::new(super::GeneratedBodyShape::PrefixedExpressionStatements {
+                    expressions: vec!["useIdentity()".to_string()],
+                    inner: Box::new(super::GeneratedBodyShape::ReturnExpression(
+                        "Math.max(...it)".to_string(),
+                    )),
+                }),
+            });
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::WrappedReturnExpression {
+                source_name: "it".to_string(),
+                expression: "Math.max(...it)".to_string(),
+                inner: Box::new(super::GeneratedBodyShape::PrefixedBindings {
+                    bindings: vec![super::GeneratedBinding {
+                        kind: ast::VariableDeclarationKind::Const,
+                        pattern: "it".to_string(),
+                        expression: "new Set([1, 2]).values()".to_string(),
+                    }],
+                    inner: Box::new(super::GeneratedBodyShape::PrefixedExpressionStatements {
+                        expressions: vec!["useIdentity()".to_string()],
+                        inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                            "it".to_string(),
+                        )),
+                    }),
+                }),
+            }
+        );
+    }
+
+    #[test]
     fn strips_top_level_trailing_return_void_from_direct_shape() {
         let shape =
             super::strip_top_level_trailing_return_void(super::GeneratedBodyShape::Sequential {
@@ -37803,6 +37939,27 @@ mod tests {
         assert!(
             !matches!(shape, super::GeneratedBodyShape::Unknown),
             "expected structured shape, got {shape:?}"
+        );
+    }
+
+    #[test]
+    fn direct_prefix_shape_supports_debugger_statement() {
+        let shape = super::rendered_single_statement_prefix(
+            "debugger;\n",
+            super::GeneratedBodyShape::ReturnIdentifier("value".to_string()),
+        )
+        .expect("expected direct debugger prefix shape");
+
+        let super::GeneratedBodyShape::Sequential { prefix, inner } = shape else {
+            panic!("expected sequential shape");
+        };
+        assert_eq!(
+            prefix.as_ref(),
+            &super::GeneratedBodyShape::DebuggerStatements(1)
+        );
+        assert_eq!(
+            inner.as_ref(),
+            &super::GeneratedBodyShape::ReturnIdentifier("value".to_string())
         );
     }
 

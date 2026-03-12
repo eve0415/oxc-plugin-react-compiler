@@ -46,6 +46,7 @@ struct InsertedImportSpec {
 }
 
 const FLOW_CAST_MARKER_HELPER: &str = "__REACT_COMPILER_FLOW_CAST__";
+const FLOW_CAST_REWRITE_MARKER_COMMENT: &str = "/*__FLOW_CAST__*/";
 
 struct RenderedOutlinedFunction {
     name: String,
@@ -485,8 +486,8 @@ fn try_emit_module(
     let program = builder.program(
         SPAN,
         state.source_type,
-        "",
-        builder.vec(),
+        allocator.alloc_str(args.source),
+        args.program.comments.clone_in(&allocator),
         args.program.hashbang.clone_in(&allocator),
         args.program.directives.clone_in(&allocator),
         body,
@@ -5920,14 +5921,19 @@ fn split_flow_cast_marker_inner(inner: &str) -> Option<(String, String)> {
 }
 
 fn restore_flow_cast_marker_calls(source: &str) -> String {
-    if !source.contains(FLOW_CAST_MARKER_HELPER) {
-        return source.to_string();
-    }
-
     let mut out = String::with_capacity(source.len());
     let bytes = source.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
+        if source[i..].starts_with(FLOW_CAST_REWRITE_MARKER_COMMENT) {
+            while out.chars().last().is_some_and(char::is_whitespace) {
+                out.pop();
+            }
+            i += FLOW_CAST_REWRITE_MARKER_COMMENT.len();
+            i = skip_ascii_whitespace(source, i);
+            continue;
+        }
+
         if starts_flow_cast_marker(source, i)
             && let Some((replacement, next_idx)) = parse_flow_cast_marker_call(source, i)
         {
@@ -7940,14 +7946,14 @@ mod tests {
     use oxc_span::SourceType;
 
     use crate::{
-        codegen_backend::{CompiledOutlinedFunction, SynthesizedDefaultParamCache},
+        codegen_backend::{CompiledOutlinedFunction, ModuleEmitArgs, SynthesizedDefaultParamCache},
         environment::Environment,
         hir::types::{
             self, BasicBlock, BlockId, DeclarationId, Effect, HIR, HIRFunction, Identifier,
             IdentifierId, IdentifierName, MutableRange, Place, ReactFunctionType, SourceLocation,
             Terminal, Type,
         },
-        options::EnvironmentConfig,
+        options::{EnvironmentConfig, PluginOptions},
     };
 
     use super::{
@@ -8001,6 +8007,15 @@ const z = __REACT_COMPILER_FLOW_CAST__<Array<number>>([]);"#;
     }
 
     #[test]
+    fn strips_residual_flow_cast_rewrite_marker_comments() {
+        let source = r#"const x = ([] 
+  /*__FLOW_CAST__*/: Array<number>);"#;
+        let restored = restore_flow_cast_marker_calls(source);
+        assert!(restored.contains("const x = ([]: Array<number>);"));
+        assert!(!restored.contains("/*__FLOW_CAST__*/"));
+    }
+
+    #[test]
     fn normalize_compiled_body_for_hir_match_canonicalizes_multiline_object_literals() {
         let lowered = r#"const country = Codes[code];
 return {
@@ -8014,6 +8029,47 @@ return { name: country.name, code };"#;
             normalize_compiled_body_for_hir_match(lowered),
             normalize_compiled_body_for_hir_match(rendered)
         );
+    }
+
+    #[test]
+    fn emit_module_preserves_top_level_comments_for_rewritten_functions() {
+        let source = "/** keep me */\nfunction Foo() { return null; }";
+        let allocator = Allocator::default();
+        let source_type = source_type_for_filename("fixture.jsx");
+        let parsed = oxc_parser::Parser::new(&allocator, source, source_type).parse();
+        let program = parsed.program;
+        let ast::Statement::FunctionDeclaration(function) = &program.body[0] else {
+            panic!("expected function declaration");
+        };
+        let compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "return 1;",
+            &[],
+            false,
+        );
+        let options = PluginOptions::default();
+        let result = super::emit_module(
+            ModuleEmitArgs {
+                filename: "fixture.jsx",
+                source,
+                source_untransformed: source,
+                source_type,
+                program: &program,
+                options: &options,
+                dynamic_gate_ident: None,
+            },
+            vec![compiled_function],
+        );
+
+        assert!(
+            result.code.contains("/** keep me */"),
+            "code={}",
+            result.code
+        );
+        assert!(result.code.contains("function Foo() {"));
+        assert!(result.code.contains("return 1;"));
     }
 
     #[test]
