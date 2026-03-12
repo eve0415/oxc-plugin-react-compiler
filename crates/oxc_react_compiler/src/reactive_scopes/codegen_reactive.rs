@@ -56,19 +56,26 @@ fn get_fast_refresh_source_hash() -> Option<String> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReactiveStringFallbackCounts {
     pub rendered_body_analysis: usize,
-    pub generated_shape_statement_render: usize,
+    pub scope_statement_shape_render: usize,
+    pub early_return_shape_render: usize,
+    pub memo_decomposition_shape_render: usize,
 }
 
 impl ReactiveStringFallbackCounts {
     const fn zero() -> Self {
         Self {
             rendered_body_analysis: 0,
-            generated_shape_statement_render: 0,
+            scope_statement_shape_render: 0,
+            early_return_shape_render: 0,
+            memo_decomposition_shape_render: 0,
         }
     }
 
     pub fn total(self) -> usize {
-        self.rendered_body_analysis + self.generated_shape_statement_render
+        self.rendered_body_analysis
+            + self.scope_statement_shape_render
+            + self.early_return_shape_render
+            + self.memo_decomposition_shape_render
     }
 }
 
@@ -88,9 +95,21 @@ fn bump_rendered_body_analysis_fallback() {
     });
 }
 
-fn bump_generated_shape_statement_render_fallback() {
+fn bump_scope_statement_shape_render_fallback() {
     REACTIVE_STRING_FALLBACK_COUNTS.with(|counts| {
-        counts.borrow_mut().generated_shape_statement_render += 1;
+        counts.borrow_mut().scope_statement_shape_render += 1;
+    });
+}
+
+fn bump_early_return_shape_render_fallback() {
+    REACTIVE_STRING_FALLBACK_COUNTS.with(|counts| {
+        counts.borrow_mut().early_return_shape_render += 1;
+    });
+}
+
+fn bump_memo_decomposition_shape_render_fallback() {
+    REACTIVE_STRING_FALLBACK_COUNTS.with(|counts| {
+        counts.borrow_mut().memo_decomposition_shape_render += 1;
     });
 }
 
@@ -2605,7 +2624,6 @@ fn try_build_generated_body_shape_from_reactive_block(
 fn try_render_statement_sources_from_generated_body_shape(
     shape: &GeneratedBodyShape,
 ) -> Option<Vec<String>> {
-    bump_generated_shape_statement_render_fallback();
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let body = build_function_body_from_generated_shape_for_ast_codegen(
@@ -2639,13 +2657,9 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
         return None;
     }
     let dep_exprs = collect_direct_scope_dependency_exprs(cx, scope, instructions)?;
-    let computation_shape = try_build_generated_body_shape_from_reactive_block(cx, instructions)?;
-    let setup_statements =
-        try_render_statement_sources_from_generated_body_shape(&computation_shape)?;
-    if setup_statements.is_empty() {
-        return None;
-    }
-
+    let computation_shape = canonicalize_generated_body_shape(
+        try_build_generated_body_shape_from_reactive_block(cx, instructions)?,
+    );
     let mut declarations = Vec::new();
     let output_name = if scope.declarations.len() == 1 && scope.reassignments.is_empty() {
         let output_decl = scope.declarations.values().next()?;
@@ -2661,6 +2675,16 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
     } else {
         None
     }?;
+    let setup_statements =
+        try_build_simple_scope_setup_statements(&output_name, &computation_shape).or_else(
+            || {
+                bump_scope_statement_shape_render_fallback();
+                try_render_statement_sources_from_generated_body_shape(&computation_shape)
+            },
+        )?;
+    if setup_statements.is_empty() {
+        return None;
+    }
     let inner = if dep_exprs.is_empty() {
         let value_slot = cx.alloc_cache_slot();
         let cached_values = vec![GeneratedCachedValue {
@@ -2699,6 +2723,41 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
             declarations,
             inner: Box::new(inner),
         })
+    }
+}
+
+fn generated_shape_is_empty_expression_body(shape: &GeneratedBodyShape) -> bool {
+    matches!(shape, GeneratedBodyShape::ExpressionStatements(expressions) if expressions.is_empty())
+}
+
+fn try_build_simple_scope_setup_statements(
+    output_name: &str,
+    computation_shape: &GeneratedBodyShape,
+) -> Option<Vec<String>> {
+    match computation_shape {
+        GeneratedBodyShape::PrefixedBindings { bindings, inner }
+            if generated_shape_is_empty_expression_body(inner) && bindings.len() == 1 =>
+        {
+            let binding = bindings.first()?;
+            if binding.pattern != output_name {
+                return None;
+            }
+            let assignment =
+                render_reactive_assignment_statement_ast(output_name, &binding.expression)?;
+            Some(vec![assignment.trim_end().to_string()])
+        }
+        GeneratedBodyShape::PrefixedAssignments { assignments, inner }
+            if generated_shape_is_empty_expression_body(inner) && assignments.len() == 1 =>
+        {
+            let assignment = assignments.first()?;
+            if assignment.target != output_name {
+                return None;
+            }
+            let statement =
+                render_reactive_assignment_statement_ast(&assignment.target, &assignment.value)?;
+            Some(vec![statement.trim_end().to_string()])
+        }
+        _ => None,
     }
 }
 
@@ -2854,6 +2913,7 @@ fn try_build_generated_early_return_scope_return(
         collect_direct_scope_dependency_exprs(cx, &scope_block.scope, &scope_block.instructions)?;
     let computation_shape =
         try_build_generated_body_shape_from_reactive_block(cx, &scope_block.instructions)?;
+    bump_early_return_shape_render_fallback();
     let setup_statements =
         try_render_statement_sources_from_generated_body_shape(&computation_shape)?;
     if setup_statements.is_empty() {
@@ -2994,6 +3054,7 @@ fn try_decompose_direct_memoized_existing_return_shape(
         GeneratedBodyShape::Sequential { prefix, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_existing_return_shape(*inner, value_name)?;
+            bump_memo_decomposition_shape_render_fallback();
             let mut prefix_statements =
                 try_render_statement_sources_from_generated_body_shape(&prefix)?;
             prefix_statements.extend(parts.setup_statements);
@@ -3270,6 +3331,7 @@ fn try_decompose_direct_memoized_declared_return_shape(
         GeneratedBodyShape::Sequential { prefix, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_declared_return_shape(*inner, value_name)?;
+            bump_memo_decomposition_shape_render_fallback();
             let mut prefix_statements =
                 try_render_statement_sources_from_generated_body_shape(&prefix)?;
             prefix_statements.extend(parts.setup_statements);
@@ -33234,6 +33296,42 @@ mod tests {
             ),
             "bb0: switch (identity(other)) {\n  case 1: {\n    x.a = props.a.b;\n    break bb0;\n  }\n  default: {\n    x.c = props.a.b;\n  }\n}".to_string()
         );
+    }
+
+    #[test]
+    fn builds_simple_scope_setup_statement_from_prefixed_binding_shape() {
+        let statements = super::try_build_simple_scope_setup_statements(
+            "t1",
+            &super::GeneratedBodyShape::PrefixedBindings {
+                bindings: vec![super::GeneratedBinding {
+                    kind: ast::VariableDeclarationKind::Const,
+                    pattern: "t1".to_string(),
+                    expression: "identity([props.value])".to_string(),
+                }],
+                inner: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![])),
+            },
+        );
+
+        assert_eq!(
+            statements,
+            Some(vec!["t1 = identity([props.value]);".to_string()])
+        );
+    }
+
+    #[test]
+    fn builds_simple_scope_setup_statement_from_prefixed_assignment_shape() {
+        let statements = super::try_build_simple_scope_setup_statements(
+            "t2",
+            &super::GeneratedBodyShape::PrefixedAssignments {
+                assignments: vec![super::GeneratedAssignment {
+                    target: "t2".to_string(),
+                    value: "({ [t0]: t1 })".to_string(),
+                }],
+                inner: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![])),
+            },
+        );
+
+        assert_eq!(statements, Some(vec!["t2 = { [t0]: t1 };".to_string()]));
     }
 
     #[test]
