@@ -589,6 +589,156 @@ fn generated_body_shape_is_empty(shape: &GeneratedBodyShape) -> bool {
     matches!(shape, GeneratedBodyShape::ExpressionStatements(expressions) if expressions.is_empty())
 }
 
+fn rewrite_tail_return_expression_with_identifier(
+    shape: GeneratedBodyShape,
+    source_name: &str,
+) -> Option<(String, GeneratedBodyShape)> {
+    match shape {
+        GeneratedBodyShape::ReturnExpression(expression)
+            if contains_identifier_token(&expression, source_name) =>
+        {
+            Some((
+                expression,
+                GeneratedBodyShape::ReturnIdentifier(source_name.to_string()),
+            ))
+        }
+        GeneratedBodyShape::Block { inner } => {
+            let (expression, inner) =
+                rewrite_tail_return_expression_with_identifier(*inner, source_name)?;
+            Some((
+                expression,
+                GeneratedBodyShape::Block {
+                    inner: Box::new(inner),
+                },
+            ))
+        }
+        GeneratedBodyShape::Labeled { label, inner } => {
+            let (expression, inner) =
+                rewrite_tail_return_expression_with_identifier(*inner, source_name)?;
+            Some((
+                expression,
+                GeneratedBodyShape::Labeled {
+                    label,
+                    inner: Box::new(inner),
+                },
+            ))
+        }
+        GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } => {
+            let (expression, inner) =
+                rewrite_tail_return_expression_with_identifier(*inner, source_name)?;
+            Some((
+                expression,
+                GeneratedBodyShape::PrefixedDeclarations {
+                    declarations,
+                    inner: Box::new(inner),
+                },
+            ))
+        }
+        GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
+            let (expression, inner) =
+                rewrite_tail_return_expression_with_identifier(*inner, source_name)?;
+            Some((
+                expression,
+                GeneratedBodyShape::PrefixedBindings {
+                    bindings,
+                    inner: Box::new(inner),
+                },
+            ))
+        }
+        GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
+            let (expression, inner) =
+                rewrite_tail_return_expression_with_identifier(*inner, source_name)?;
+            Some((
+                expression,
+                GeneratedBodyShape::PrefixedExpressionStatements {
+                    expressions,
+                    inner: Box::new(inner),
+                },
+            ))
+        }
+        GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
+            let (expression, inner) =
+                rewrite_tail_return_expression_with_identifier(*inner, source_name)?;
+            Some((
+                expression,
+                GeneratedBodyShape::PrefixedAssignments {
+                    assignments,
+                    inner: Box::new(inner),
+                },
+            ))
+        }
+        GeneratedBodyShape::Sequential { prefix, inner } => {
+            let (expression, inner) =
+                rewrite_tail_return_expression_with_identifier(*inner, source_name)?;
+            Some((
+                expression,
+                GeneratedBodyShape::Sequential {
+                    prefix,
+                    inner: Box::new(inner),
+                },
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn try_wrap_prefixed_bindings_tail_return(
+    bindings: &[GeneratedBinding],
+    inner: &GeneratedBodyShape,
+) -> Option<GeneratedBodyShape> {
+    for binding in bindings.iter().rev() {
+        let binding_name = binding.pattern.trim();
+        if !is_valid_js_identifier_name(binding_name) {
+            continue;
+        }
+        if let Some((expression, rewritten_inner)) =
+            rewrite_tail_return_expression_with_identifier(inner.clone(), binding_name)
+        {
+            let wrapped_inner =
+                canonicalize_generated_body_shape(GeneratedBodyShape::PrefixedBindings {
+                    bindings: bindings.to_vec(),
+                    inner: Box::new(rewritten_inner),
+                });
+            return Some(GeneratedBodyShape::WrappedReturnExpression {
+                source_name: binding_name.to_string(),
+                expression,
+                inner: Box::new(wrapped_inner),
+            });
+        }
+    }
+    None
+}
+
+fn try_wrap_prefixed_assignments_tail_return(
+    assignments: &[GeneratedAssignment],
+    inner: &GeneratedBodyShape,
+) -> Option<GeneratedBodyShape> {
+    for assignment in assignments.iter().rev() {
+        let target_name = assignment.target.trim();
+        if !is_valid_js_identifier_name(target_name) {
+            continue;
+        }
+        if let Some((expression, rewritten_inner)) =
+            rewrite_tail_return_expression_with_identifier(inner.clone(), target_name)
+        {
+            let wrapped_inner =
+                canonicalize_generated_body_shape(GeneratedBodyShape::PrefixedAssignments {
+                    assignments: assignments.to_vec(),
+                    inner: Box::new(rewritten_inner),
+                });
+            return Some(GeneratedBodyShape::WrappedReturnExpression {
+                source_name: target_name.to_string(),
+                expression,
+                inner: Box::new(wrapped_inner),
+            });
+        }
+    }
+    None
+}
+
 fn strip_top_level_trailing_return_void(shape: GeneratedBodyShape) -> GeneratedBodyShape {
     match shape {
         GeneratedBodyShape::ReturnVoid => GeneratedBodyShape::ExpressionStatements(Vec::new()),
@@ -1520,7 +1670,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                 })
                 .collect();
             let inner = canonicalize_generated_body_shape(*inner);
-            match inner {
+            let shape = match inner {
                 GeneratedBodyShape::PrefixedBindings {
                     bindings: inner_bindings,
                     inner,
@@ -1579,85 +1729,21 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                         inner: Box::new(GeneratedBodyShape::ReturnIdentifier(alias_name)),
                     }
                 }
-                GeneratedBodyShape::ReturnExpression(expression) => {
-                    let source_name = bindings
-                        .iter()
-                        .rev()
-                        .filter_map(|binding| {
-                            let binding_name = binding.pattern.trim();
-                            (is_valid_js_identifier_name(binding_name)
-                                && contains_identifier_token(&expression, binding_name))
-                            .then(|| binding_name.to_string())
-                        })
-                        .next();
-                    if let Some(source_name) = source_name {
-                        let inner = canonicalize_generated_body_shape(
-                            GeneratedBodyShape::PrefixedBindings {
-                                bindings,
-                                inner: Box::new(GeneratedBodyShape::ReturnIdentifier(
-                                    source_name.clone(),
-                                )),
-                            },
-                        );
-                        GeneratedBodyShape::WrappedReturnExpression {
-                            source_name,
-                            expression,
-                            inner: Box::new(inner),
-                        }
-                    } else {
-                        GeneratedBodyShape::PrefixedBindings {
-                            bindings,
-                            inner: Box::new(GeneratedBodyShape::ReturnExpression(expression)),
-                        }
-                    }
-                }
-                GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner }
-                    if matches!(inner.as_ref(), GeneratedBodyShape::ReturnExpression(_)) =>
-                {
-                    let GeneratedBodyShape::ReturnExpression(expression) = *inner else {
-                        unreachable!();
-                    };
-                    let source_name = bindings
-                        .iter()
-                        .rev()
-                        .filter_map(|binding| {
-                            let binding_name = binding.pattern.trim();
-                            (is_valid_js_identifier_name(binding_name)
-                                && contains_identifier_token(&expression, binding_name))
-                            .then(|| binding_name.to_string())
-                        })
-                        .next();
-                    if let Some(source_name) = source_name {
-                        let inner = canonicalize_generated_body_shape(
-                            GeneratedBodyShape::PrefixedBindings {
-                                bindings,
-                                inner: Box::new(GeneratedBodyShape::PrefixedExpressionStatements {
-                                    expressions,
-                                    inner: Box::new(GeneratedBodyShape::ReturnIdentifier(
-                                        source_name.clone(),
-                                    )),
-                                }),
-                            },
-                        );
-                        GeneratedBodyShape::WrappedReturnExpression {
-                            source_name,
-                            expression,
-                            inner: Box::new(inner),
-                        }
-                    } else {
-                        GeneratedBodyShape::PrefixedBindings {
-                            bindings,
-                            inner: Box::new(GeneratedBodyShape::PrefixedExpressionStatements {
-                                expressions,
-                                inner: Box::new(GeneratedBodyShape::ReturnExpression(expression)),
-                            }),
-                        }
-                    }
-                }
                 inner => GeneratedBodyShape::PrefixedBindings {
-                    bindings,
-                    inner: Box::new(inner),
+                    bindings: bindings.clone(),
+                    inner: Box::new(inner.clone()),
                 },
+            };
+            match shape {
+                GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
+                    if let Some(wrapped) = try_wrap_prefixed_bindings_tail_return(&bindings, &inner)
+                    {
+                        wrapped
+                    } else {
+                        GeneratedBodyShape::PrefixedBindings { bindings, inner }
+                    }
+                }
+                other => other,
             }
         }
         GeneratedBodyShape::PrefixedExpressionStatements {
@@ -1699,7 +1785,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                 })
                 .collect();
             let inner = canonicalize_generated_body_shape(*inner);
-            match inner {
+            let shape = match inner {
                 GeneratedBodyShape::AssignmentStatements(inner_assignments) => {
                     assignments.extend(inner_assignments);
                     GeneratedBodyShape::AssignmentStatements(assignments)
@@ -1715,9 +1801,21 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     GeneratedBodyShape::PrefixedAssignments { assignments, inner }
                 }
                 inner => GeneratedBodyShape::PrefixedAssignments {
-                    assignments,
-                    inner: Box::new(inner),
+                    assignments: assignments.clone(),
+                    inner: Box::new(inner.clone()),
                 },
+            };
+            match shape {
+                GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
+                    if let Some(wrapped) =
+                        try_wrap_prefixed_assignments_tail_return(&assignments, &inner)
+                    {
+                        wrapped
+                    } else {
+                        GeneratedBodyShape::PrefixedAssignments { assignments, inner }
+                    }
+                }
+                other => other,
             }
         }
         GeneratedBodyShape::Sequential { prefix, inner } => {
@@ -2928,6 +3026,8 @@ fn codegen_reactive_function_with_primitives(
 
     let mut shape_cx = cx.clone();
     let body = codegen_block(&mut cx, &func.body);
+    shape_cx.callback_deps = cx.callback_deps.clone();
+    shape_cx.hook_callback_arg_decls = cx.hook_callback_arg_decls.clone();
     let direct_body_shape =
         try_build_generated_body_shape_from_reactive_block(&mut shape_cx, &func.body);
     if std::env::var("DEBUG_DIRECT_BODY_SHAPE_STATUS").is_ok() {
@@ -3572,6 +3672,17 @@ fn try_build_generated_body_shape_from_terminal_statement(
 fn apply_direct_prefix_codegen_state(cx: &mut Context, instr: &ReactiveInstruction) -> bool {
     let mut probe_cx = cx.clone();
     if codegen_instruction_nullable(&mut probe_cx, instr).is_none() {
+        if std::env::var("DEBUG_DIRECT_BODY_SHAPE_TRACE").is_ok() {
+            eprintln!(
+                "[DIRECT_BODY_SHAPE_TRACE] codegen_instruction_nullable_none tag={} lvalue={:?}",
+                instruction_value_tag(&instr.value),
+                instr.lvalue.as_ref().and_then(|place| place
+                    .identifier
+                    .name
+                    .as_ref()
+                    .map(|name| name.value()))
+            );
+        }
         if materialize_fusable_temp_instruction(&mut probe_cx, instr) {
             *cx = probe_cx;
             return false;
@@ -4130,7 +4241,7 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
     instr: &ReactiveInstruction,
     inner: GeneratedBodyShape,
 ) -> Option<GeneratedBodyShape> {
-    match &instr.value {
+    let shape = match &instr.value {
         InstructionValue::DeclareLocal { lvalue, .. }
         | InstructionValue::DeclareContext { lvalue, .. } => {
             let pattern = identifier_name_with_cx(cx, &lvalue.place.identifier);
@@ -4184,7 +4295,19 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
             codegen_instruction_nullable(cx, instr)?.as_str(),
             inner,
         ),
+    };
+    if shape.is_none() && std::env::var("DEBUG_DIRECT_BODY_SHAPE_TRACE").is_ok() {
+        eprintln!(
+            "[DIRECT_BODY_SHAPE_TRACE] wrap_prefix_none tag={} lvalue={:?}",
+            instruction_value_tag(&instr.value),
+            instr.lvalue.as_ref().and_then(|place| place
+                .identifier
+                .name
+                .as_ref()
+                .map(|name| name.value()))
+        );
     }
+    shape
 }
 
 fn rendered_single_statement_prefix(
@@ -4212,9 +4335,6 @@ fn rendered_single_statement_prefix(
                 let expression = strip_top_level_parenthesized_expression(
                     codegen_expression_with_flow_cast_restore(init),
                 );
-                if rendered_expr_is_function_like(&expression) {
-                    return None;
-                }
                 Some(GeneratedBodyShape::PrefixedBindings {
                     bindings: vec![GeneratedBinding {
                         kind: declaration.kind,
