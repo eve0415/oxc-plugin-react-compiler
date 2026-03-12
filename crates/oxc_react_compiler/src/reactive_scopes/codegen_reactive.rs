@@ -3382,6 +3382,8 @@ fn codegen_reactive_function_with_primitives(
                 && !generated_body_shape_reanalyzes_equivalent(
                     &direct_body_shape,
                     &analyzed_body_shape,
+                    func.async_,
+                    func.generator,
                 )
                 && !generated_body_shapes_render_equivalent(
                     &direct_body_shape,
@@ -3737,13 +3739,23 @@ fn generated_body_shape_matches_rendered_body(
 fn generated_body_shape_reanalyzes_equivalent(
     shape: &GeneratedBodyShape,
     analyzed: &GeneratedBodyShape,
+    is_async: bool,
+    is_generator: bool,
 ) -> bool {
     let Some(rendered_shape_source) = try_render_statement_sources_from_generated_body_shape(shape)
     else {
         return false;
     };
+    let rendered_shape_source = rendered_shape_source.join("\n");
+    let rendered_shape_source = strip_trailing_bare_return(
+        &rendered_shape_source,
+        is_async,
+        is_generator,
+    );
+    let rendered_shape_source =
+        prune_unused_const_literal_decls(&rendered_shape_source, is_async, is_generator);
     let reparsed = fully_canonicalize_generated_body_shape(analyze_generated_body_shape(
-        &rendered_shape_source.join("\n"),
+        &rendered_shape_source,
     ));
     &reparsed == analyzed
 }
@@ -5535,14 +5547,15 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
     let shape = match &instr.value {
         InstructionValue::DeclareLocal { lvalue, .. }
         | InstructionValue::DeclareContext { lvalue, .. } => {
-            let pattern = identifier_name_with_cx(cx, &lvalue.place.identifier);
-            Some(GeneratedBodyShape::PrefixedDeclarations {
-                declarations: vec![GeneratedDeclaration {
-                    kind: variable_declaration_kind(lvalue.kind)?,
-                    pattern,
-                }],
-                inner: Box::new(inner),
-            })
+            if let Some(kind) = variable_declaration_kind(lvalue.kind) {
+                let pattern = identifier_name_with_cx(cx, &lvalue.place.identifier);
+                Some(GeneratedBodyShape::PrefixedDeclarations {
+                    declarations: vec![GeneratedDeclaration { kind, pattern }],
+                    inner: Box::new(inner),
+                })
+            } else {
+                rendered_single_statement_prefix(codegen_instruction_nullable(cx, instr)?.as_str(), inner)
+            }
         }
         InstructionValue::StoreLocal { lvalue, value, .. }
         | InstructionValue::StoreContext { lvalue, value, .. } => match lvalue.kind {
@@ -5570,7 +5583,9 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
                     inner: Box::new(inner),
                 })
             }
-            InstructionKind::Function | InstructionKind::HoistedFunction => None,
+            InstructionKind::Function | InstructionKind::HoistedFunction => {
+                rendered_single_statement_prefix(codegen_instruction_nullable(cx, instr)?.as_str(), inner)
+            }
         },
         InstructionValue::Destructure { lvalue, value, .. } => {
             Some(GeneratedBodyShape::PrefixedBindings {
