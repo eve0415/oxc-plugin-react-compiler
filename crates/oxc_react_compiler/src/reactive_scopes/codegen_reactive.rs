@@ -4079,21 +4079,43 @@ fn try_build_generated_early_return_scope_return(
     scope_block: &ReactiveScopeBlock,
     term_stmt: &ReactiveTerminalStatement,
 ) -> Option<GeneratedBodyShape> {
+    let trace = std::env::var("DEBUG_DIRECT_EARLY_RETURN_TRACE").is_ok();
     if term_stmt.label.is_some() {
+        if trace {
+            eprintln!("[DIRECT_EARLY_RETURN_TRACE] skip: terminal label present");
+        }
         return None;
     }
     let ReactiveTerminal::Return { value, .. } = &term_stmt.terminal else {
+        if trace {
+            eprintln!("[DIRECT_EARLY_RETURN_TRACE] skip: terminal not return");
+        }
         return None;
     };
     let early_return = scope_block.scope.early_return_value.as_ref()?;
     let dep_exprs =
         collect_direct_scope_dependency_exprs(cx, &scope_block.scope, &scope_block.instructions)?;
-    let computation_shape =
-        try_build_generated_body_shape_from_reactive_block(cx, &scope_block.instructions)?;
+    let Some(computation_shape) =
+        try_build_generated_body_shape_from_reactive_block(cx, &scope_block.instructions)
+    else {
+        if trace {
+            eprintln!(
+                "[DIRECT_EARLY_RETURN_TRACE] skip: inner computation shape none scope={}",
+                scope_block.scope.id.0
+            );
+        }
+        return None;
+    };
     bump_early_return_shape_render_fallback();
     let setup_statements =
         try_render_statement_sources_from_generated_body_shape(&computation_shape)?;
     if setup_statements.is_empty() {
+        if trace {
+            eprintln!(
+                "[DIRECT_EARLY_RETURN_TRACE] skip: empty setup statements scope={}",
+                scope_block.scope.id.0
+            );
+        }
         return None;
     }
 
@@ -4128,6 +4150,12 @@ fn try_build_generated_early_return_scope_return(
     }
 
     if cached_values.is_empty() {
+        if trace {
+            eprintln!(
+                "[DIRECT_EARLY_RETURN_TRACE] skip: no cached values scope={}",
+                scope_block.scope.id.0
+            );
+        }
         return None;
     }
 
@@ -4144,6 +4172,12 @@ fn try_build_generated_early_return_scope_return(
         .iter()
         .any(|value| value.name == sentinel_name)
     {
+        if trace {
+            eprintln!(
+                "[DIRECT_EARLY_RETURN_TRACE] skip: sentinel {} not in cached values {:?}",
+                sentinel_name, cached_values
+            );
+        }
         return None;
     }
     let final_return = if value.identifier.declaration_id == early_return.value.declaration_id {
