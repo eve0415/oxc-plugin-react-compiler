@@ -579,6 +579,100 @@ fn canonicalize_generated_expression(expr: String) -> String {
     }
 }
 
+fn rewrite_cached_setup_statements_for_outer_declarations(
+    setup_statements: Vec<String>,
+    declarations: &[GeneratedDeclaration],
+) -> Vec<String> {
+    let declaration_names: HashSet<&str> = declarations
+        .iter()
+        .filter_map(|declaration| {
+            is_valid_js_identifier_name(&declaration.pattern)
+                .then_some(declaration.pattern.as_str())
+        })
+        .collect();
+    if declaration_names.is_empty() {
+        return setup_statements;
+    }
+    let mut rewritten = Vec::with_capacity(setup_statements.len());
+    for statement_source in setup_statements {
+        let allocator = Allocator::default();
+        let Ok(statement) = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            &statement_source,
+        ) else {
+            rewritten.push(statement_source);
+            continue;
+        };
+        let ast::Statement::VariableDeclaration(declaration) = statement else {
+            rewritten.push(statement_source);
+            continue;
+        };
+        if declaration.declarations.len() != 1 {
+            rewritten.push(statement_source);
+            continue;
+        }
+        let declarator = declaration.declarations.first().expect("len checked");
+        let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id else {
+            rewritten.push(statement_source);
+            continue;
+        };
+        if !declaration_names.contains(identifier.name.as_str()) {
+            rewritten.push(statement_source);
+            continue;
+        }
+        let Some(init) = declarator.init.as_ref() else {
+            continue;
+        };
+        let rhs = codegen_expression_with_flow_cast_restore(init);
+        let Some(assignment) =
+            render_reactive_assignment_statement_ast(identifier.name.as_str(), &rhs)
+        else {
+            rewritten.push(statement_source);
+            continue;
+        };
+        rewritten.push(assignment.trim_end().to_string());
+    }
+    rewritten
+}
+
+fn rewrite_cached_prefix_for_outer_declarations(
+    prefix: GeneratedBodyShape,
+    declarations: &[GeneratedDeclaration],
+) -> GeneratedBodyShape {
+    match prefix {
+        GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+            sentinel_slot,
+            setup_statements,
+            cached_values,
+            restored_values,
+        } => GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+            sentinel_slot,
+            setup_statements: rewrite_cached_setup_statements_for_outer_declarations(
+                setup_statements,
+                declarations,
+            ),
+            cached_values,
+            restored_values,
+        },
+        GeneratedBodyShape::MemoizedCachedValues {
+            deps,
+            setup_statements,
+            cached_values,
+            restored_values,
+        } => GeneratedBodyShape::MemoizedCachedValues {
+            deps,
+            setup_statements: rewrite_cached_setup_statements_for_outer_declarations(
+                setup_statements,
+                declarations,
+            ),
+            cached_values,
+            restored_values,
+        },
+        other => other,
+    }
+}
+
 fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBodyShape {
     fn build_existing_return_from_cached_prefix(
         prefix: GeneratedBodyShape,
@@ -661,7 +755,8 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                 declarations,
                 inner,
             } => {
-                let (value_name, inner) = build_existing_return_from_cached_prefix(*inner)?;
+                let inner = rewrite_cached_prefix_for_outer_declarations(*inner, &declarations);
+                let (value_name, inner) = build_existing_return_from_cached_prefix(inner)?;
                 Some((
                     value_name,
                     GeneratedBodyShape::PrefixedDeclarations {
@@ -1092,11 +1187,15 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                         | GeneratedBodyShape::MemoizedCachedValues { .. }
                 ) =>
                 {
+                    let prefixed_inner = rewrite_cached_prefix_for_outer_declarations(
+                        *prefixed_inner,
+                        &declarations,
+                    );
                     GeneratedBodyShape::PrefixedDeclarations {
                         declarations,
                         inner: Box::new(canonicalize_generated_body_shape(
                             GeneratedBodyShape::Sequential {
-                                prefix: prefixed_inner,
+                                prefix: Box::new(prefixed_inner),
                                 inner: Box::new(inner),
                             },
                         )),
@@ -34438,7 +34537,7 @@ mod tests {
                     }],
                     inner: Box::new(super::GeneratedBodyShape::MemoizedCachedValues {
                         deps: vec![(0, "dep".to_string())],
-                        setup_statements: vec!["t0 = foo(dep);".to_string()],
+                        setup_statements: vec!["const t0 = foo(dep);".to_string()],
                         cached_values: vec![super::GeneratedCachedValue {
                             name: "t0".to_string(),
                             slot: 1,
