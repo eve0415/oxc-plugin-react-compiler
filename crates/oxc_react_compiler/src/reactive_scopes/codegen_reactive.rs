@@ -1514,6 +1514,14 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     expressions.extend(inner_expressions);
                     GeneratedBodyShape::ExpressionStatements(expressions)
                 }
+                (GeneratedBodyShape::ExpressionStatements(expressions), inner)
+                    if !expressions.is_empty() =>
+                {
+                    GeneratedBodyShape::PrefixedExpressionStatements {
+                        expressions,
+                        inner: Box::new(inner),
+                    }
+                }
                 (
                     GeneratedBodyShape::PrefixedDeclarations {
                         declarations,
@@ -2722,11 +2730,13 @@ fn try_build_generated_body_shape_from_reactive_block(
                 let prefix = try_build_generated_body_shape_from_reactive_block(
                     cx,
                     &scope_block.instructions,
-                )?;
+                );
+                let prefix = prefix?;
                 if rest.is_empty() {
                     return Some(prefix);
                 }
-                let inner = try_build_generated_body_shape_from_reactive_block(cx, rest)?;
+                let inner = try_build_generated_body_shape_from_reactive_block(cx, rest);
+                let inner = inner?;
                 if generated_body_shape_is_empty(&prefix) {
                     return Some(inner);
                 }
@@ -2736,40 +2746,43 @@ fn try_build_generated_body_shape_from_reactive_block(
                 });
             }
             let prefix =
-                try_build_generated_body_shape_from_reactive_scope_statement(cx, scope_block)?;
-            let inner = try_build_generated_body_shape_from_reactive_block(cx, rest)?;
+                try_build_generated_body_shape_from_reactive_scope_statement(cx, scope_block);
+            let prefix = prefix?;
+            let inner = try_build_generated_body_shape_from_reactive_block(cx, rest);
+            let inner = inner?;
             Some(GeneratedBodyShape::Sequential {
                 prefix: Box::new(prefix),
                 inner: Box::new(inner),
             })
         }
         [ReactiveStatement::PrunedScope(scope_block), rest @ ..] => {
-            if can_inline_direct_scope_shape(&scope_block.scope) {
-                if !rest.is_empty()
-                    && try_build_generated_body_shape_from_temp_call_load(cx, rest).is_some()
-                {
-                    let prefix = try_build_generated_body_shape_from_scope_statement_parts(
-                        cx,
-                        &scope_block.scope,
-                        &scope_block.instructions,
-                    )?;
-                    let inner = try_build_generated_body_shape_from_reactive_block(cx, rest)?;
-                    return Some(GeneratedBodyShape::Sequential {
-                        prefix: Box::new(prefix),
-                        inner: Box::new(inner),
-                    });
-                }
-                return try_build_generated_body_shape_from_reactive_block(
+            if can_inline_direct_pruned_scope_shape(&scope_block.scope) {
+                let prefix = try_build_generated_body_shape_from_reactive_block(
                     cx,
                     &scope_block.instructions,
                 );
+                let prefix = prefix?;
+                if rest.is_empty() {
+                    return Some(prefix);
+                }
+                let inner = try_build_generated_body_shape_from_reactive_block(cx, rest);
+                let inner = inner?;
+                if generated_body_shape_is_empty(&prefix) {
+                    return Some(inner);
+                }
+                return Some(GeneratedBodyShape::Sequential {
+                    prefix: Box::new(prefix),
+                    inner: Box::new(inner),
+                });
             }
             let prefix = try_build_generated_body_shape_from_scope_statement_parts(
                 cx,
                 &scope_block.scope,
                 &scope_block.instructions,
-            )?;
-            let inner = try_build_generated_body_shape_from_reactive_block(cx, rest)?;
+            );
+            let prefix = prefix?;
+            let inner = try_build_generated_body_shape_from_reactive_block(cx, rest);
+            let inner = inner?;
             Some(GeneratedBodyShape::Sequential {
                 prefix: Box::new(prefix),
                 inner: Box::new(inner),
@@ -2849,45 +2862,73 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
         try_build_generated_body_shape_from_reactive_block(cx, instructions)?,
     );
     let mut declarations = Vec::new();
-    let output_name = if scope.declarations.len() == 1 && scope.reassignments.is_empty() {
-        let output_decl = scope.declarations.values().next()?;
-        let value_name = identifier_name_with_cx(cx, &output_decl.identifier);
-        declarations.push(GeneratedDeclaration {
-            kind: ast::VariableDeclarationKind::Let,
-            pattern: value_name.clone(),
+    let mut output_names = Vec::new();
+    if !scope.declarations.is_empty() && scope.reassignments.is_empty() {
+        let mut sorted_decls: Vec<_> = scope.declarations.values().collect();
+        sorted_decls.sort_by(|a, b| {
+            identifier_name_static(&a.identifier)
+                .cmp(&identifier_name_static(&b.identifier))
+                .then_with(|| {
+                    a.identifier
+                        .declaration_id
+                        .0
+                        .cmp(&b.identifier.declaration_id.0)
+                })
         });
-        Some(value_name)
-    } else if scope.declarations.is_empty() && scope.reassignments.len() == 1 {
-        let reassignment = &scope.reassignments[0];
-        Some(identifier_name_with_cx(cx, reassignment))
+        for output_decl in sorted_decls {
+            let value_name = identifier_name_with_cx(cx, &output_decl.identifier);
+            declarations.push(GeneratedDeclaration {
+                kind: ast::VariableDeclarationKind::Let,
+                pattern: value_name.clone(),
+            });
+            output_names.push(value_name);
+        }
+    } else if scope.declarations.is_empty() && !scope.reassignments.is_empty() {
+        let mut reassignments = scope.reassignments.clone();
+        reassignments.sort_by(|a, b| {
+            identifier_name_static(a)
+                .cmp(&identifier_name_static(b))
+                .then_with(|| a.declaration_id.0.cmp(&b.declaration_id.0))
+        });
+        for reassignment in &reassignments {
+            output_names.push(identifier_name_with_cx(cx, reassignment));
+        }
     } else {
-        None
-    }?;
-    let setup_statements =
-        try_build_simple_scope_setup_statements(&output_name, &computation_shape).or_else(
+        return None;
+    }
+    let primary_output_name = output_names.first()?.clone();
+    let mut setup_statements =
+        try_build_simple_scope_setup_statements(&primary_output_name, &computation_shape).or_else(
             || {
                 if std::env::var("DEBUG_SCOPE_STATEMENT_FALLBACK").is_ok() {
                     eprintln!(
-                        "[SCOPE_STATEMENT_FALLBACK] output={} deps={:?} shape={:#?}",
-                        output_name, dep_exprs, computation_shape
+                        "[SCOPE_STATEMENT_FALLBACK] outputs={:?} deps={:?} shape={:#?}",
+                        output_names, dep_exprs, computation_shape
                     );
                 }
                 bump_scope_statement_shape_render_fallback();
                 try_render_statement_sources_from_generated_body_shape(&computation_shape)
             },
         )?;
+    if !declarations.is_empty() {
+        setup_statements =
+            rewrite_cached_setup_statements_for_outer_declarations(setup_statements, &declarations);
+    }
     if setup_statements.is_empty() {
         return None;
     }
     let inner = if dep_exprs.is_empty() {
-        let value_slot = cx.alloc_cache_slot();
-        let cached_values = vec![GeneratedCachedValue {
-            name: output_name.clone(),
-            slot: value_slot,
-        }];
+        let mut cached_values = Vec::with_capacity(output_names.len());
+        for output_name in &output_names {
+            cached_values.push(GeneratedCachedValue {
+                name: output_name.clone(),
+                slot: cx.alloc_cache_slot(),
+            });
+        }
+        let sentinel_slot = cached_values.first()?.slot;
         let restored_values = cached_values.clone();
         GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
-            sentinel_slot: value_slot,
+            sentinel_slot,
             setup_statements,
             cached_values,
             restored_values,
@@ -2897,11 +2938,13 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
         for dep_expr in dep_exprs {
             deps.push((cx.alloc_cache_slot(), dep_expr));
         }
-        let value_slot = cx.alloc_cache_slot();
-        let cached_values = vec![GeneratedCachedValue {
-            name: output_name.clone(),
-            slot: value_slot,
-        }];
+        let mut cached_values = Vec::with_capacity(output_names.len());
+        for output_name in &output_names {
+            cached_values.push(GeneratedCachedValue {
+                name: output_name.clone(),
+                slot: cx.alloc_cache_slot(),
+            });
+        }
         let restored_values = cached_values.clone();
         GeneratedBodyShape::MemoizedCachedValues {
             deps,
@@ -3149,6 +3192,10 @@ fn try_build_generated_body_shape_from_terminal_statement(
 fn apply_direct_prefix_codegen_state(cx: &mut Context, instr: &ReactiveInstruction) -> bool {
     let mut probe_cx = cx.clone();
     if codegen_instruction_nullable(&mut probe_cx, instr).is_none() {
+        if materialize_fusable_temp_instruction(&mut probe_cx, instr) {
+            *cx = probe_cx;
+            return false;
+        }
         *cx = probe_cx;
         return false;
     }
@@ -3172,47 +3219,6 @@ fn apply_direct_prefix_codegen_state(cx: &mut Context, instr: &ReactiveInstructi
         _ => {}
     }
     true
-}
-
-fn try_build_generated_body_shape_from_temp_call_load(
-    cx: &Context,
-    block: &[ReactiveStatement],
-) -> Option<(GeneratedBodyShape, usize)> {
-    let [
-        ReactiveStatement::Instruction(load_instr),
-        ReactiveStatement::Instruction(call_instr),
-        ..,
-    ] = block
-    else {
-        return None;
-    };
-    let temp = load_instr.lvalue.as_ref()?;
-    if temp.identifier.name.is_some() {
-        return None;
-    }
-    let source_place = match &load_instr.value {
-        InstructionValue::LoadLocal { place, .. } | InstructionValue::LoadContext { place, .. } => {
-            place
-        }
-        _ => return None,
-    };
-    let call_callee = match &call_instr.value {
-        InstructionValue::CallExpression { callee, .. } => callee,
-        _ => return None,
-    };
-    if call_instr.lvalue.is_some()
-        || call_callee.identifier.declaration_id != temp.identifier.declaration_id
-        || source_place.identifier.name.is_none()
-    {
-        return None;
-    }
-
-    let mut probe_cx = cx.clone();
-    let source_expr = identifier_name_with_cx(&mut probe_cx, &source_place.identifier);
-    probe_cx.set_temp_expr(&temp.identifier, Some(ExprValue::primary(source_expr)));
-    let stmt = codegen_instruction_nullable(&mut probe_cx, call_instr)?;
-    let expr = extract_simple_expression_statement_global(&stmt)?;
-    Some((GeneratedBodyShape::ExpressionStatements(vec![expr]), 2))
 }
 
 #[derive(Default)]
@@ -3743,6 +3749,13 @@ fn try_decompose_direct_memoized_declared_return_shape(
 fn can_inline_direct_scope_shape(scope: &ReactiveScope) -> bool {
     scope.dependencies.is_empty()
         && scope.declarations.is_empty()
+        && scope.reassignments.is_empty()
+        && scope.merged_id.is_none()
+        && scope.early_return_value.is_none()
+}
+
+fn can_inline_direct_pruned_scope_shape(scope: &ReactiveScope) -> bool {
+    scope.declarations.is_empty()
         && scope.reassignments.is_empty()
         && scope.merged_id.is_none()
         && scope.early_return_value.is_none()
