@@ -143,6 +143,8 @@ target/
 
 # AI
 .claude/*.local.*
+.mcp.json
+plans/
 
 # JetBrains IDEs
 .idea/
