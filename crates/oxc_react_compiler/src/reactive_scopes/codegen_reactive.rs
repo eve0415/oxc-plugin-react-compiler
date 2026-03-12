@@ -2088,6 +2088,17 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
     }
 }
 
+fn fully_canonicalize_generated_body_shape(mut shape: GeneratedBodyShape) -> GeneratedBodyShape {
+    for _ in 0..8 {
+        let next = canonicalize_generated_body_shape(shape.clone());
+        if next == shape {
+            return shape;
+        }
+        shape = next;
+    }
+    shape
+}
+
 fn rendered_expr_identifier_name(expr: &str) -> Option<String> {
     let trimmed = expr.trim();
     if trimmed.is_empty() {
@@ -2674,11 +2685,11 @@ fn codegen_reactive_function_with_primitives(
     let analyzed_body_shape = {
         let body = strip_trailing_bare_return(&body, func.async_, func.generator);
         let body = prune_unused_const_literal_decls(&body, func.async_, func.generator);
-        canonicalize_generated_body_shape(analyze_generated_body_shape(&body))
+        fully_canonicalize_generated_body_shape(analyze_generated_body_shape(&body))
     };
     let body_shape = match direct_body_shape {
         Some(direct_body_shape) => {
-            let direct_body_shape = canonicalize_generated_body_shape(
+            let direct_body_shape = fully_canonicalize_generated_body_shape(
                 strip_top_level_trailing_return_void(direct_body_shape),
             );
             if !matches!(analyzed_body_shape, GeneratedBodyShape::Unknown)
