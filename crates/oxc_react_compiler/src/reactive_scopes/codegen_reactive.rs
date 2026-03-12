@@ -904,6 +904,48 @@ fn shift_nested_cache_slots_after_outer(
     shift_cache_slots_in_statement_sources(setup_statements, outer_slot_count as u32)
 }
 
+fn rebase_nested_cache_slots_after_memoized_return(
+    setup_statements: Vec<String>,
+    outer_slots: &mut [u32],
+) -> Vec<String> {
+    if outer_slots.is_empty() {
+        return setup_statements;
+    }
+    let mut inner_slots = collect_cache_slots_in_statement_sources(&setup_statements);
+    if inner_slots.is_empty() {
+        return setup_statements;
+    }
+    inner_slots.sort_unstable();
+    inner_slots.dedup();
+    let inner_start = inner_slots[0];
+    if !inner_slots
+        .iter()
+        .enumerate()
+        .all(|(index, slot)| *slot == inner_start + index as u32)
+    {
+        return setup_statements;
+    }
+    let mut sorted_outer_slots = outer_slots.to_vec();
+    sorted_outer_slots.sort_unstable();
+    if !sorted_outer_slots
+        .iter()
+        .enumerate()
+        .all(|(index, slot)| *slot == sorted_outer_slots[0] + index as u32)
+    {
+        return setup_statements;
+    }
+    if sorted_outer_slots[0] != inner_start + inner_slots.len() as u32 {
+        return setup_statements;
+    }
+
+    let inner_count = inner_slots.len() as u32;
+    let outer_count = sorted_outer_slots.len() as u32;
+    for slot in outer_slots {
+        *slot -= inner_count;
+    }
+    shift_cache_slots_in_statement_sources(setup_statements, outer_count)
+}
+
 fn canonicalize_generated_statement_source(statement_source: String) -> String {
     let allocator = Allocator::default();
     let Ok(mut statement) = parse_single_statement_for_ast_codegen(
@@ -1909,7 +1951,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
         ),
         GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
             value_name,
-            value_slot,
+            mut value_slot,
             memoized_bindings,
             memoized_assignments,
             memoized_expressions,
@@ -1922,10 +1964,13 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     memoized_setup_statements,
                     memoized_expr,
                 );
-            let memoized_setup_statements = memoized_setup_statements
-                .into_iter()
-                .map(canonicalize_generated_statement_source)
-                .collect();
+            let memoized_setup_statements = rebase_nested_cache_slots_after_memoized_return(
+                memoized_setup_statements
+                    .into_iter()
+                    .map(canonicalize_generated_statement_source)
+                    .collect(),
+                std::slice::from_mut(&mut value_slot),
+            );
             GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
                 value_name,
                 value_slot,
@@ -1954,9 +1999,9 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
         }
         GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
             value_name,
-            dep_slot,
+            mut dep_slot,
             dep_expr,
-            value_slot,
+            mut value_slot,
             memoized_bindings,
             memoized_assignments,
             memoized_expressions,
@@ -1969,10 +2014,16 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     memoized_setup_statements,
                     memoized_expr,
                 );
-            let memoized_setup_statements = memoized_setup_statements
-                .into_iter()
-                .map(canonicalize_generated_statement_source)
-                .collect();
+            let mut outer_slots = vec![dep_slot, value_slot];
+            let memoized_setup_statements = rebase_nested_cache_slots_after_memoized_return(
+                memoized_setup_statements
+                    .into_iter()
+                    .map(canonicalize_generated_statement_source)
+                    .collect(),
+                &mut outer_slots,
+            );
+            dep_slot = outer_slots[0];
+            value_slot = outer_slots[1];
             GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
                 value_name,
                 dep_slot,
@@ -2003,8 +2054,8 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
         }
         GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
             value_name,
-            deps,
-            value_slot,
+            mut deps,
+            mut value_slot,
             memoized_bindings,
             memoized_assignments,
             memoized_expressions,
@@ -2017,10 +2068,19 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     memoized_setup_statements,
                     memoized_expr,
                 );
-            let memoized_setup_statements = memoized_setup_statements
-                .into_iter()
-                .map(canonicalize_generated_statement_source)
-                .collect();
+            let mut outer_slots: Vec<u32> = deps.iter().map(|(slot, _)| *slot).collect();
+            outer_slots.push(value_slot);
+            let memoized_setup_statements = rebase_nested_cache_slots_after_memoized_return(
+                memoized_setup_statements
+                    .into_iter()
+                    .map(canonicalize_generated_statement_source)
+                    .collect(),
+                &mut outer_slots,
+            );
+            value_slot = outer_slots.pop().expect("value slot should exist");
+            for ((slot, _), new_slot) in deps.iter_mut().zip(outer_slots.into_iter()) {
+                *slot = new_slot;
+            }
             GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
                 value_name,
                 deps: deps
@@ -35623,6 +35683,79 @@ mod tests {
                     }),
                 }),
             }
+        );
+    }
+
+    #[test]
+    fn canonicalizes_nested_cached_helper_slots_inside_memoized_return() {
+        let shape = super::canonicalize_generated_body_shape(
+            super::GeneratedBodyShape::AliasedReturn {
+                alias_name: "result".to_string(),
+                alias_kind: ast::VariableDeclarationKind::Const,
+                source_name: "t2".to_string(),
+                inner: Box::new(super::GeneratedBodyShape::PrefixedDeclarations {
+                    declarations: vec![
+                        super::GeneratedDeclaration {
+                            kind: ast::VariableDeclarationKind::Let,
+                            pattern: "t0".to_string(),
+                        },
+                        super::GeneratedDeclaration {
+                            kind: ast::VariableDeclarationKind::Let,
+                            pattern: "t1".to_string(),
+                        },
+                        super::GeneratedDeclaration {
+                            kind: ast::VariableDeclarationKind::Let,
+                            pattern: "t2".to_string(),
+                        },
+                    ],
+                    inner: Box::new(
+                        super::GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+                            value_name: "t2".to_string(),
+                            deps: vec![(6, "arr".to_string()), (7, "props.y".to_string())],
+                            value_slot: 8,
+                            memoized_bindings: vec![],
+                            memoized_assignments: vec![],
+                            memoized_expressions: vec![],
+                            memoized_setup_statements: vec![
+                                "let t3;".to_string(),
+                                "if ($[4] !== props.y) {\n  t3 = bar(props.y);\n  $[4] = props.y;\n  $[5] = t3;\n} else {\n  t3 = $[5];\n}".to_string(),
+                                "t2 = arr.at(t3);".to_string(),
+                            ],
+                            memoized_expr: None,
+                        },
+                    ),
+                }),
+            },
+        );
+
+        let super::GeneratedBodyShape::AliasedReturn { inner, .. } = shape else {
+            panic!("expected aliased return, got {shape:?}");
+        };
+        let super::GeneratedBodyShape::PrefixedDeclarations { inner, .. } = inner.as_ref() else {
+            panic!("expected prefixed declarations, got {inner:?}");
+        };
+        let super::GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+            deps,
+            value_slot,
+            memoized_setup_statements,
+            ..
+        } = inner.as_ref()
+        else {
+            panic!("expected multi dependency existing return, got {inner:?}");
+        };
+        assert_eq!(
+            deps.as_slice(),
+            vec![(4, "arr".to_string()), (5, "props.y".to_string())].as_slice()
+        );
+        assert_eq!(*value_slot, 6);
+        assert_eq!(
+            memoized_setup_statements.as_slice(),
+            vec![
+                "let t3;".to_string(),
+                "if ($[7] !== props.y) {\n  t3 = bar(props.y);\n  $[7] = props.y;\n  $[8] = t3;\n} else {\n  t3 = $[8];\n}".to_string(),
+                "t2 = arr.at(t3);".to_string(),
+            ]
+            .as_slice()
         );
     }
 
