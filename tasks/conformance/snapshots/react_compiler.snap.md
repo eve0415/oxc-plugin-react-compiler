@@ -1,9 +1,96 @@
-# React Compiler Conformance — 100.0% parity rate
+# React Compiler Conformance — 95.0% parity rate
 
-**1752** parity_success, **0** parity_failure, **0** skipped
+**1665** parity_success, **87** parity_failure, **0** skipped
 
 ## Failed
 
+- `alias-while`: Output mismatch
+- `allow-passing-ref-to-render-helper-props-object`: Output mismatch
+- `assume-invoked/conditional-call-chain`: Output mismatch
+- `assume-invoked/function-with-conditional-callsite-in-another-function`: Output mismatch
+- `bailout-retry/bailout-capitalized-fn-call`: Output mismatch
+- `bailout-retry/bailout-eslint-suppressions`: Output mismatch
+- `bailout-retry/bailout-validate-preserve-memo`: Output mismatch
+- `bailout-retry/bailout-validate-prop-write`: Output mismatch
+- `bailout-retry/bailout-validate-ref-current-access`: Output mismatch
+- `bug-separate-memoization-due-to-callback-capturing`: Output mismatch
+- `call-args-destructuring-assignment`: Output mismatch
+- `change-detect-reassign`: Output mismatch
+- `codegen-inline-iife-reassign`: Output mismatch
+- `computed-call-evaluation-order`: Output mismatch
+- `console-readonly`: Output mismatch
+- `createElement-freeze`: Output mismatch
+- `destructure-array-declaration-to-context-var`: Output mismatch
+- `destructure-object-declaration-to-context-var`: Output mismatch
+- `destructuring-mixed-scope-and-local-variables-with-default`: Expected transformed output, but compiler bailed out/skipped
+- `do-while-early-unconditional-break`: Output mismatch
+- `dominator`: Output mismatch
+- `early-return-nested-early-return-within-reactive-scope`: Output mismatch
+- `early-return-no-declarations-reassignments-dependencies`: Expected transformed output, but compiler bailed out/skipped
+- `hoisting-setstate-captured-indirectly-jsx`: Output mismatch
+- `infer-types-through-type-cast.flow`: Expected transformed output, but compiler bailed out/skipped
+- `jsx-tag-evaluation-order-non-global`: Output mismatch
+- `memoize-value-block-value-logical`: Output mismatch
+- `memoize-value-block-value-sequence`: Output mismatch
+- `meta-isms/repro-cx-assigned-to-temporary`: Output mismatch
+- `meta-isms/repro-cx-namespace-assigned-to-temporary`: Output mismatch
+- `mutation-within-jsx`: Output mismatch
+- `mutation-within-jsx-and-break`: Output mismatch
+- `nested-optional-member-expr`: Output mismatch
+- `new-mutability/ssa-renaming-ternary-destruction`: Output mismatch
+- `nullable-objects/array-map-simple`: Output mismatch
+- `option-enable-change-variable-codegen`: Output mismatch
+- `partial-early-return-within-reactive-scope`: Output mismatch
+- `preserve-memo-validation/useMemo-conditional-access-alloc`: Output mismatch
+- `preserve-memo-validation/useMemo-conditional-access-noAlloc`: Output mismatch
+- `propagate-scope-deps-hir-fork/early-return-nested-early-return-within-reactive-scope`: Output mismatch
+- `propagate-scope-deps-hir-fork/infer-non-null-destructure`: Output mismatch
+- `propagate-scope-deps-hir-fork/partial-early-return-within-reactive-scope`: Output mismatch
+- `propagate-scope-deps-hir-fork/repro-invariant`: Output mismatch
+- `propagate-scope-deps-hir-fork/repro-scope-missing-mutable-range`: Output mismatch
+- `propagate-scope-deps-hir-fork/ssa-renaming-ternary-destruction`: Output mismatch
+- `propagate-scope-deps-hir-fork/ssa-renaming-ternary-destruction-with-mutation`: Output mismatch
+- `propagate-scope-deps-hir-fork/ssa-renaming-ternary-with-mutation`: Output mismatch
+- `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-ternary`: Output mismatch
+- `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-ternary-with-mutation`: Output mismatch
+- `propagate-scope-deps-hir-fork/switch`: Output mismatch
+- `propagate-scope-deps-hir-fork/switch-non-final-default`: Output mismatch
+- `property-call-evaluation-order`: Output mismatch
+- `reassignment-separate-scopes`: Output mismatch
+- `recursive-function-expression`: Output mismatch
+- `rename-source-variables`: Output mismatch
+- `rename-source-variables-nested-function`: Output mismatch
+- `rename-source-variables-nested-object-method`: Output mismatch
+- `renaming-jsx-tag-lowercase`: Output mismatch
+- `repro-dont-memoize-array-with-mutable-map-after-hook`: Output mismatch
+- `repro-invalid-reactivity-value-block`: Output mismatch
+- `repro-mutate-ref-in-function-passed-to-hook`: Output mismatch
+- `repro-no-declarations-in-reactive-scope-with-early-return`: Output mismatch
+- `repro-no-value-for-temporary-reactive-scope-with-early-return`: Expected transformed output, but compiler bailed out/skipped
+- `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`: Output mismatch
+- `repro-reassign-to-variable-without-mutable-range`: Output mismatch
+- `repro-renaming-conflicting-decls`: Output mismatch
+- `repro-scope-missing-mutable-range`: Output mismatch
+- `repro-separate-memoization-due-to-callback-capturing`: Output mismatch
+- `sequence-expression`: Output mismatch
+- `ssa-property-alias-if`: Output mismatch
+- `ssa-renaming-ternary-destruction`: Output mismatch
+- `ssa-renaming-ternary-destruction-with-mutation`: Output mismatch
+- `ssa-renaming-ternary-with-mutation`: Output mismatch
+- `ssa-renaming-unconditional-ternary`: Output mismatch
+- `ssa-renaming-unconditional-ternary-with-mutation`: Output mismatch
+- `ssa-renaming-via-destructuring`: Expected transformed output, but compiler bailed out/skipped
+- `switch`: Output mismatch
+- `switch-non-final-default`: Output mismatch
+- `try-catch-with-catch-param`: Expected transformed output, but compiler bailed out/skipped
+- `try-catch-with-return`: Expected transformed output, but compiler bailed out/skipped
+- `unused-conditional`: Output mismatch
+- `update-expression-in-sequence`: Output mismatch
+- `useMemo-simple-preserved-nomemo`: Output mismatch
+- `useState-and-other-hook-unpruned-dependency`: Output mismatch
+- `useState-pruned-dependency-change-detect`: Output mismatch
+- `useState-unpruned-dependency`: Output mismatch
+- `validate-no-set-state-in-render-uncalled-function-with-mutable-range-is-valid`: Output mismatch
 
 ## Passed
 
@@ -12,7 +99,6 @@
 - `alias-computed-load`
 - `alias-nested-member-path`
 - `alias-nested-member-path-mutate`
-- `alias-while`
 - `aliased-nested-scope-fn-expr`
 - `aliased-nested-scope-truncated-dep`
 - `align-scope-starts-within-cond`
@@ -41,7 +127,6 @@
 - `allow-mutating-ref-property-in-callback-passed-to-jsx`
 - `allow-mutating-ref-property-in-callback-passed-to-jsx-indirect`
 - `allow-passing-ref-to-render-helper`
-- `allow-passing-ref-to-render-helper-props-object`
 - `allow-passing-refs-as-props`
 - `allow-reassignment-to-global-function-jsx-prop`
 - `allow-ref-access-in-effect`
@@ -85,10 +170,8 @@
 - `assignment-variations-complex-lvalue`
 - `assignment-variations-complex-lvalue-array`
 - `assume-invoked/conditional-call`
-- `assume-invoked/conditional-call-chain`
 - `assume-invoked/conditionally-return-fn`
 - `assume-invoked/direct-call`
-- `assume-invoked/function-with-conditional-callsite-in-another-function`
 - `assume-invoked/hook-call`
 - `assume-invoked/jsx-and-passed`
 - `assume-invoked/jsx-function`
@@ -101,11 +184,6 @@
 - `babel-existing-react-namespace-import`
 - `babel-existing-react-runtime-import`
 - `babel-repro-compact-negative-number`
-- `bailout-retry/bailout-capitalized-fn-call`
-- `bailout-retry/bailout-eslint-suppressions`
-- `bailout-retry/bailout-validate-preserve-memo`
-- `bailout-retry/bailout-validate-prop-write`
-- `bailout-retry/bailout-validate-ref-current-access`
 - `bailout-retry/error.callsite-in-non-react-fn`
 - `bailout-retry/error.callsite-in-non-react-fn-default-import`
 - `bailout-retry/error.non-inlined-effect-fn`
@@ -127,12 +205,10 @@
 - `block-scoping-switch-variable-scoping`
 - `bug-capturing-func-maybealias-captured-mutate`
 - `bug-ref-prefix-postfix-operator`
-- `bug-separate-memoization-due-to-callback-capturing`
 - `bug-type-inference-control-flow`
 - `builtin-jsx-tag-lowered-between-mutations`
 - `call`
 - `call-args-assignment`
-- `call-args-destructuring-assignment`
 - `call-spread`
 - `call-spread-argument-mutable-iterator`
 - `call-with-independently-memoizable-arg`
@@ -195,19 +271,16 @@
 - `capturing-variable-in-nested-function`
 - `chained-assignment-context-variable`
 - `chained-assignment-expressions`
-- `change-detect-reassign`
 - `class-component-with-render-helper`
 - `codegen-emit-imports-same-source`
 - `codegen-emit-make-read-only`
 - `codegen-inline-iife`
-- `codegen-inline-iife-reassign`
 - `codegen-inline-iife-storeprop`
 - `codegen-instrument-forget-test`
 - `complex-while`
 - `component`
 - `component-declaration-basic.flow`
 - `component-inner-function-with-many-args`
-- `computed-call-evaluation-order`
 - `computed-call-spread`
 - `computed-load-primitive-as-dependency`
 - `computed-store-alias`
@@ -219,7 +292,6 @@
 - `conflict-codegen-instrument-forget`
 - `conflicting-dollar-sign-variable`
 - `consecutive-use-memo`
-- `console-readonly`
 - `const-propagation-into-function-expression-global`
 - `const-propagation-into-function-expression-primitive`
 - `const-propagation-phi-nodes`
@@ -248,7 +320,6 @@
 - `context-variable-reassigned-reactive-capture`
 - `context-variable-reassigned-two-lambdas`
 - `controlled-input`
-- `createElement-freeze`
 - `custom-opt-out-directive`
 - `dce-loop`
 - `dce-unused-const`
@@ -267,14 +338,12 @@
 - `dependencies`
 - `dependencies-outputs`
 - `destructure-array-assignment-to-context-var`
-- `destructure-array-declaration-to-context-var`
 - `destructure-capture-global`
 - `destructure-default-array-with-unary`
 - `destructure-direct-reassignment`
 - `destructure-in-branch-ssa`
 - `destructure-mixed-property-key-types`
 - `destructure-object-assignment-to-context-var`
-- `destructure-object-declaration-to-context-var`
 - `destructure-param-string-literal-key`
 - `destructure-param-string-literal-key-invalid-identifier`
 - `destructure-string-literal-invalid-identifier-property-key`
@@ -288,7 +357,6 @@
 - `destructuring-default-at-explicit-null`
 - `destructuring-default-at-explicit-undefined`
 - `destructuring-default-past-end-of-array`
-- `destructuring-mixed-scope-and-local-variables-with-default`
 - `destructuring-mixed-scope-declarations-and-locals`
 - `destructuring-object-default`
 - `destructuring-object-param-default`
@@ -301,9 +369,7 @@
 - `do-while-compound-test`
 - `do-while-conditional-break`
 - `do-while-continue`
-- `do-while-early-unconditional-break`
 - `do-while-simple`
-- `dominator`
 - `dont-memoize-primitive-function-call-non-escaping`
 - `dont-memoize-primitive-function-call-non-escaping-useMemo`
 - `dont-merge-if-dep-is-inner-declaration-of-previous-scope`
@@ -312,8 +378,6 @@
 - `drop-methodcall-usecallback`
 - `drop-methodcall-usememo`
 - `early-return`
-- `early-return-nested-early-return-within-reactive-scope`
-- `early-return-no-declarations-reassignments-dependencies`
 - `early-return-within-reactive-scope`
 - `ecma/error.reserved-words`
 - `emit-freeze-conflicting-imports`
@@ -692,7 +756,6 @@
 - `hoisting-recursive-call`
 - `hoisting-recursive-call-within-lambda`
 - `hoisting-repro-variable-used-in-assignment`
-- `hoisting-setstate-captured-indirectly-jsx`
 - `hoisting-simple-const-declaration`
 - `hoisting-simple-function-expression`
 - `hoisting-simple-let-declaration`
@@ -770,7 +833,6 @@
 - `infer-property-delete`
 - `infer-sequential-optional-chain-nonnull`
 - `infer-skip-components-without-hooks-or-jsx`
-- `infer-types-through-type-cast.flow`
 - `inline-jsx-transform`
 - `inner-memo-value-not-promoted-to-outer-scope-dynamic`
 - `inner-memo-value-not-promoted-to-outer-scope-static`
@@ -819,7 +881,6 @@
 - `jsx-string-attribute-expression-container`
 - `jsx-string-attribute-non-ascii`
 - `jsx-tag-evaluation-order`
-- `jsx-tag-evaluation-order-non-global`
 - `jsx-ternary-local-variable`
 - `jump-poisoned/break-in-scope`
 - `jump-poisoned/break-poisons-outer-scope`
@@ -860,9 +921,7 @@
 - `memoization-comments`
 - `memoize-primitive-function-calls`
 - `memoize-value-block-value-conditional`
-- `memoize-value-block-value-logical`
 - `memoize-value-block-value-logical-no-sequence`
-- `memoize-value-block-value-sequence`
 - `merge-consecutive-nested-scopes`
 - `merge-consecutive-scopes`
 - `merge-consecutive-scopes-deps-subset-of-decls`
@@ -872,8 +931,6 @@
 - `merge-nested-scopes-with-same-inputs`
 - `merge-scopes-callback`
 - `merged-scopes-are-valid-effect-deps`
-- `meta-isms/repro-cx-assigned-to-temporary`
-- `meta-isms/repro-cx-namespace-assigned-to-temporary`
 - `meta-isms/repro-cx-namespace-nesting`
 - `method-call`
 - `method-call-computed`
@@ -890,14 +947,11 @@
 - `mutate-outer-scope-within-value-block`
 - `mutation-during-jsx-construction`
 - `mutation-within-capture-and-mutablerange`
-- `mutation-within-jsx`
-- `mutation-within-jsx-and-break`
 - `name-anonymous-functions`
 - `name-anonymous-functions-outline`
 - `nested-function-shadowed-identifiers`
 - `nested-function-with-param-as-captured-dep`
 - `nested-optional-chains`
-- `nested-optional-member-expr`
 - `nested-scopes-begin-same-instr-valueblock`
 - `nested-scopes-hook-call`
 - `new-does-not-mutate-class`
@@ -949,7 +1003,6 @@
 - `new-mutability/retry-no-emit`
 - `new-mutability/set-add-mutate`
 - `new-mutability/shared-hook-calls`
-- `new-mutability/ssa-renaming-ternary-destruction`
 - `new-mutability/todo-control-flow-sensitive-mutation`
 - `new-mutability/todo-transitivity-createfrom-capture-lambda`
 - `new-mutability/transitive-mutation-before-capturing-value-created-earlier`
@@ -976,7 +1029,6 @@
 - `nullable-objects/array-map-named-callback`
 - `nullable-objects/array-map-named-callback-cross-context`
 - `nullable-objects/array-map-named-chained-callbacks`
-- `nullable-objects/array-map-simple`
 - `nullable-objects/bug-invalid-array-map-manual`
 - `nullable-objects/return-object-of-functions`
 - `numeric-literal-as-object-property-key`
@@ -1017,7 +1069,6 @@
 - `object-shorthand-method-nested`
 - `object-values`
 - `object-values-mutation`
-- `option-enable-change-variable-codegen`
 - `optional-call`
 - `optional-call-chained`
 - `optional-call-logical`
@@ -1048,7 +1099,6 @@
 - `overlapping-scopes-shadowing-within-block`
 - `overlapping-scopes-while`
 - `overlapping-scopes-within-block`
-- `partial-early-return-within-reactive-scope`
 - `phi-reference-effects`
 - `phi-type-inference-array-push`
 - `phi-type-inference-array-push-consecutive-phis`
@@ -1101,8 +1151,6 @@
 - `preserve-memo-validation/useCallback-reordering-depslist-assignment`
 - `preserve-memo-validation/useCallback-with-no-depslist`
 - `preserve-memo-validation/useMemo-alias-property-load-dep`
-- `preserve-memo-validation/useMemo-conditional-access-alloc`
-- `preserve-memo-validation/useMemo-conditional-access-noAlloc`
 - `preserve-memo-validation/useMemo-conditional-access-own-scope`
 - `preserve-memo-validation/useMemo-constant-prop`
 - `preserve-memo-validation/useMemo-dep-array-literal-access`
@@ -1124,14 +1172,12 @@
 - `propagate-scope-deps-hir-fork/conditional-break-labeled`
 - `propagate-scope-deps-hir-fork/conditional-early-return`
 - `propagate-scope-deps-hir-fork/conditional-on-mutable`
-- `propagate-scope-deps-hir-fork/early-return-nested-early-return-within-reactive-scope`
 - `propagate-scope-deps-hir-fork/early-return-within-reactive-scope`
 - `propagate-scope-deps-hir-fork/error.todo-optional-call-chain-in-optional`
 - `propagate-scope-deps-hir-fork/error.todo-optional-member-expression-with-conditional`
 - `propagate-scope-deps-hir-fork/error.todo-optional-member-expression-with-conditional-optional`
 - `propagate-scope-deps-hir-fork/iife-return-modified-later-phi`
 - `propagate-scope-deps-hir-fork/infer-component-props-non-null`
-- `propagate-scope-deps-hir-fork/infer-non-null-destructure`
 - `propagate-scope-deps-hir-fork/infer-sequential-optional-chain-nonnull`
 - `propagate-scope-deps-hir-fork/nested-optional-chains`
 - `propagate-scope-deps-hir-fork/object-mutated-in-consequent-alternate-both-return`
@@ -1139,33 +1185,22 @@
 - `propagate-scope-deps-hir-fork/optional-member-expression-inverted-optionals-parallel-paths`
 - `propagate-scope-deps-hir-fork/optional-member-expression-single`
 - `propagate-scope-deps-hir-fork/optional-member-expression-single-with-unconditional`
-- `propagate-scope-deps-hir-fork/partial-early-return-within-reactive-scope`
 - `propagate-scope-deps-hir-fork/phi-type-inference-array-push`
 - `propagate-scope-deps-hir-fork/phi-type-inference-array-push-consecutive-phis`
 - `propagate-scope-deps-hir-fork/phi-type-inference-property-store`
 - `propagate-scope-deps-hir-fork/reactive-dependencies-non-optional-properties-inside-optional-chain`
-- `propagate-scope-deps-hir-fork/repro-invariant`
-- `propagate-scope-deps-hir-fork/repro-scope-missing-mutable-range`
 - `propagate-scope-deps-hir-fork/ssa-cascading-eliminated-phis`
 - `propagate-scope-deps-hir-fork/ssa-leave-case`
 - `propagate-scope-deps-hir-fork/ssa-renaming-ternary`
-- `propagate-scope-deps-hir-fork/ssa-renaming-ternary-destruction`
-- `propagate-scope-deps-hir-fork/ssa-renaming-ternary-destruction-with-mutation`
-- `propagate-scope-deps-hir-fork/ssa-renaming-ternary-with-mutation`
-- `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-ternary`
-- `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-ternary-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-via-destructuring-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-with-mutation`
-- `propagate-scope-deps-hir-fork/switch`
-- `propagate-scope-deps-hir-fork/switch-non-final-default`
 - `propagate-scope-deps-hir-fork/try-catch-maybe-null-dependency`
 - `propagate-scope-deps-hir-fork/try-catch-mutate-outer-value`
 - `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch`
 - `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch-escaping`
 - `propagate-scope-deps-hir-fork/useMemo-multiple-if-else`
 - `property-assignment`
-- `property-call-evaluation-order`
 - `property-call-spread`
 - `props-method-dependency`
 - `prune-scopes-whose-deps-invalidate-array`
@@ -1230,9 +1265,7 @@
 - `reassigned-phi-in-returned-function-expression`
 - `reassignment`
 - `reassignment-conditional`
-- `reassignment-separate-scopes`
 - `recursive-function`
-- `recursive-function-expression`
 - `reduce-reactive-cond-deps-break-in-scope`
 - `reduce-reactive-cond-deps-cfg-nested-testifelse`
 - `reduce-reactive-cond-deps-return-in-scope`
@@ -1302,10 +1335,6 @@
 - `ref-parameter-mutate-in-effect`
 - `regexp-literal`
 - `relay-transitive-mixeddata`
-- `rename-source-variables`
-- `rename-source-variables-nested-function`
-- `rename-source-variables-nested-object-method`
-- `renaming-jsx-tag-lowercase`
 - `reordering-across-blocks`
 - `repro`
 - `repro-aliased-capture-aliased-mutate`
@@ -1319,7 +1348,6 @@
 - `repro-dispatch-spread-event-marks-event-frozen`
 - `repro-dont-add-hook-guards-on-retry`
 - `repro-dont-memoize-array-with-capturing-map-after-hook`
-- `repro-dont-memoize-array-with-mutable-map-after-hook`
 - `repro-duplicate-import-specifier`
 - `repro-duplicate-instruction-from-merge-consecutive-scopes`
 - `repro-duplicate-type-import`
@@ -1331,7 +1359,6 @@
 - `repro-invalid-phi-as-dependency`
 - `repro-invalid-pruned-scope-leaks-value`
 - `repro-invalid-pruned-scope-leaks-value-via-alias`
-- `repro-invalid-reactivity-value-block`
 - `repro-invalid-scope-merging-value-blocks`
 - `repro-local-mutation-of-new-object-from-destructured-prop`
 - `repro-memoize-array-with-immutable-map-after-hook`
@@ -1341,15 +1368,11 @@
 - `repro-missing-memoization-lack-of-phi-types-explicit-types`
 - `repro-missing-phi-after-dce-merge-scopes`
 - `repro-mutable-range-extending-into-ternary`
-- `repro-mutate-ref-in-function-passed-to-hook`
 - `repro-mutate-result-of-function-call-with-frozen-argument-in-function-expression`
 - `repro-mutate-result-of-method-call-on-frozen-value-in-function-expression`
 - `repro-mutate-result-of-method-call-on-frozen-value-is-allowed`
-- `repro-no-declarations-in-reactive-scope-with-early-return`
 - `repro-no-value-for-temporary`
-- `repro-no-value-for-temporary-reactive-scope-with-early-return`
 - `repro-non-identifier-object-keys`
-- `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`
 - `repro-object-fromEntries-entries`
 - `repro-object-pattern`
 - `repro-preds-undefined-try-catch-return-primitive`
@@ -1357,14 +1380,10 @@
 - `repro-propagate-type-of-ternary-jsx`
 - `repro-propagate-type-of-ternary-nested`
 - `repro-reassign-props`
-- `repro-reassign-to-variable-without-mutable-range`
 - `repro-ref-mutable-range`
-- `repro-renaming-conflicting-decls`
 - `repro-retain-source-when-bailout`
 - `repro-returned-inner-fn-mutates-context`
 - `repro-returned-inner-fn-reassigns-context`
-- `repro-scope-missing-mutable-range`
-- `repro-separate-memoization-due-to-callback-capturing`
 - `repro-separate-scopes-for-divs`
 - `repro-slow-validate-preserve-memo`
 - `repro-undefined-expression-of-jsxexpressioncontainer`
@@ -1479,7 +1498,6 @@
 - `same-variable-as-dep-and-redeclare`
 - `same-variable-as-dep-and-redeclare-maybe-frozen`
 - `script-source-type`
-- `sequence-expression`
 - `sequential-destructuring-assignment-to-scope-declarations`
 - `sequential-destructuring-both-mixed-local-and-scope-declaration`
 - `sequentially-constant-progagatable-if-test-conditions`
@@ -1512,7 +1530,6 @@
 - `ssa-objectexpression-phi`
 - `ssa-property`
 - `ssa-property-alias-alias-mutate-if`
-- `ssa-property-alias-if`
 - `ssa-property-alias-mutate`
 - `ssa-property-alias-mutate-if`
 - `ssa-property-alias-mutate-inside-if`
@@ -1524,13 +1541,7 @@
 - `ssa-reassign-in-rval`
 - `ssa-renaming`
 - `ssa-renaming-ternary`
-- `ssa-renaming-ternary-destruction`
-- `ssa-renaming-ternary-destruction-with-mutation`
-- `ssa-renaming-ternary-with-mutation`
-- `ssa-renaming-unconditional-ternary`
-- `ssa-renaming-unconditional-ternary-with-mutation`
 - `ssa-renaming-unconditional-with-mutation`
-- `ssa-renaming-via-destructuring`
 - `ssa-renaming-via-destructuring-with-mutation`
 - `ssa-renaming-with-mutation`
 - `ssa-return`
@@ -1550,9 +1561,7 @@
 - `static-components/invalid-dynamically-constructed-component-new`
 - `store-via-call`
 - `store-via-new`
-- `switch`
 - `switch-global-propertyload-case-test`
-- `switch-non-final-default`
 - `switch-with-fallthrough`
 - `switch-with-only-default`
 - `tagged-template-in-hook`
@@ -1611,8 +1620,6 @@
 - `try-catch-try-immediately-throws-after-constant-propagation`
 - `try-catch-try-value-modified-in-catch`
 - `try-catch-try-value-modified-in-catch-escaping`
-- `try-catch-with-catch-param`
-- `try-catch-with-return`
 - `try-catch-within-function-expression`
 - `try-catch-within-function-expression-returns-caught-value`
 - `try-catch-within-mutable-range`
@@ -1663,7 +1670,6 @@
 - `unmemoized-nonreactive-dependency-is-pruned-as-dependency`
 - `unused-array-middle-element`
 - `unused-array-rest-element`
-- `unused-conditional`
 - `unused-logical`
 - `unused-logical-assigned-to-variable`
 - `unused-object-element`
@@ -1672,7 +1678,6 @@
 - `unused-ternary-assigned-to-variable`
 - `update-expression`
 - `update-expression-constant-propagation`
-- `update-expression-in-sequence`
 - `update-expression-on-function-parameter-1`
 - `update-expression-on-function-parameter-2`
 - `update-expression-on-function-parameter-3`
@@ -1734,14 +1739,10 @@
 - `useMemo-return-empty`
 - `useMemo-simple`
 - `useMemo-simple-preserved`
-- `useMemo-simple-preserved-nomemo`
 - `useMemo-switch-no-fallthrough`
 - `useMemo-switch-return`
 - `useMemo-with-optional`
 - `useReducer-returned-dispatcher-is-non-reactive`
-- `useState-and-other-hook-unpruned-dependency`
-- `useState-pruned-dependency-change-detect`
-- `useState-unpruned-dependency`
 - `valid-set-state-in-useEffect-from-ref`
 - `valid-setState-in-effect-from-ref-arithmetic`
 - `valid-setState-in-effect-from-ref-array-index`
@@ -1749,7 +1750,6 @@
 - `valid-setState-in-useEffect-listener`
 - `valid-setState-in-useEffect-listener-transitive`
 - `valid-setState-in-useLayoutEffect-from-ref`
-- `validate-no-set-state-in-render-uncalled-function-with-mutable-range-is-valid`
 - `validate-no-set-state-in-render-unconditional-lambda-which-conditionally-sets-state-ok`
 - `value-block-mutates-outer-value`
 - `weakmap-constructor`

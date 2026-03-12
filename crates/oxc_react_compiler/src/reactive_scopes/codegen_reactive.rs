@@ -1651,7 +1651,8 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
         memoized_bindings: Vec<GeneratedBinding>,
         mut setup_statements: Vec<String>,
     ) -> (Vec<GeneratedBinding>, Vec<String>) {
-        let setup_declared_names = collect_declared_binding_names_from_statements(&setup_statements);
+        let setup_declared_names =
+            collect_declared_binding_names_from_statements(&setup_statements);
         if setup_declared_names.is_empty() {
             return (memoized_bindings, setup_statements);
         }
@@ -5911,14 +5912,25 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
             }
         },
         InstructionValue::Destructure { lvalue, value, .. } => {
-            Some(GeneratedBodyShape::PrefixedBindings {
-                bindings: vec![GeneratedBinding {
-                    kind: variable_declaration_kind(lvalue.kind)?,
-                    pattern: codegen_pattern(cx, &lvalue.pattern),
-                    expression: codegen_place_to_expression(cx, value),
-                }],
-                inner: Box::new(inner),
-            })
+            let pattern = codegen_pattern(cx, &lvalue.pattern);
+            let expression = codegen_place_to_expression(cx, value);
+            match lvalue.kind {
+                InstructionKind::Reassign => Some(GeneratedBodyShape::PrefixedAssignments {
+                    assignments: vec![GeneratedAssignment {
+                        target: pattern,
+                        value: expression,
+                    }],
+                    inner: Box::new(inner),
+                }),
+                _ => Some(GeneratedBodyShape::PrefixedBindings {
+                    bindings: vec![GeneratedBinding {
+                        kind: variable_declaration_kind(lvalue.kind)?,
+                        pattern,
+                        expression,
+                    }],
+                    inner: Box::new(inner),
+                }),
+            }
         }
         _ => rendered_single_statement_prefix(
             codegen_instruction_nullable(cx, instr)?.as_str(),
@@ -24709,30 +24721,18 @@ fn codegen_instruction_expr_with_prec_kind(
                 render_reactive_variable_statement_ast(decl_kind, &name, Some(&rhs))
             }
         }
-    } else {
-        if value == "undefined" {
-            None
-        } else if let InstructionValue::LoadLocal { place, .. }
-        | InstructionValue::LoadContext { place, .. } = &instr.value
+    } else if value == "undefined" {
+        None
+    } else if let InstructionValue::LoadLocal { place, .. }
+    | InstructionValue::LoadContext { place, .. } = &instr.value
+    {
+        if place.identifier.name.is_none()
+            && (is_inlineable_primitive_literal_expression(value)
+                || is_simple_identifier_expression(value))
         {
-            if place.identifier.name.is_none()
-                && (is_inlineable_primitive_literal_expression(value)
-                    || is_simple_identifier_expression(value))
-            {
-                // Preserve upstream parity: unnamed-temp literal loads in statement
-                // position are dead no-ops after lowering and should be elided.
-                None
-            } else {
-                debug_codegen_expr(
-                    "stmt-expr-emit",
-                    format!(
-                        "kind={} expr={}",
-                        instruction_value_tag(&instr.value),
-                        value
-                    ),
-                );
-                render_reactive_expression_statement_ast(value)
-            }
+            // Preserve upstream parity: unnamed-temp literal loads in statement
+            // position are dead no-ops after lowering and should be elided.
+            None
         } else {
             debug_codegen_expr(
                 "stmt-expr-emit",
@@ -24744,6 +24744,16 @@ fn codegen_instruction_expr_with_prec_kind(
             );
             render_reactive_expression_statement_ast(value)
         }
+    } else {
+        debug_codegen_expr(
+            "stmt-expr-emit",
+            format!(
+                "kind={} expr={}",
+                instruction_value_tag(&instr.value),
+                value
+            ),
+        );
+        render_reactive_expression_statement_ast(value)
     }
 }
 

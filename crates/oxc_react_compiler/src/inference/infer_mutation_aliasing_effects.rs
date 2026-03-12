@@ -3304,39 +3304,37 @@ fn compute_signature_for_instruction(
                     place: lval.place.clone(),
                     error: global_reassignment_diagnostic(&variable_name_for_error(&lval.place)),
                 });
-            } else {
-                if ctx.is_function_expression
-                    && ctx
-                        .captured_context_declarations
+            } else if ctx.is_function_expression
+                && ctx
+                    .captured_context_declarations
+                    .contains(&lval.place.identifier.declaration_id)
+            {
+                let target_place = resolve_captured_context_place(ctx, &lval.place);
+                if lval.kind == InstructionKind::Reassign
+                    || ctx
+                        .hoisted_context_declarations
                         .contains(&lval.place.identifier.declaration_id)
                 {
-                    let target_place = resolve_captured_context_place(ctx, &lval.place);
-                    if lval.kind == InstructionKind::Reassign
-                        || ctx
-                            .hoisted_context_declarations
-                            .contains(&lval.place.identifier.declaration_id)
-                    {
-                        effects.push(AliasingEffect::Mutate {
-                            value: target_place.clone(),
-                            reason: None,
-                        });
-                    } else {
-                        effects.push(AliasingEffect::Create {
-                            into: target_place.clone(),
-                            value: ValueKind::Mutable,
-                            reason: ValueReason::Other,
-                        });
-                    }
-                    effects.push(AliasingEffect::Capture {
-                        from: val.clone(),
-                        into: target_place,
+                    effects.push(AliasingEffect::Mutate {
+                        value: target_place.clone(),
+                        reason: None,
                     });
                 } else {
-                    effects.push(AliasingEffect::Assign {
-                        from: val.clone(),
-                        into: lval.place.clone(),
+                    effects.push(AliasingEffect::Create {
+                        into: target_place.clone(),
+                        value: ValueKind::Mutable,
+                        reason: ValueReason::Other,
                     });
                 }
+                effects.push(AliasingEffect::Capture {
+                    from: val.clone(),
+                    into: target_place,
+                });
+            } else {
+                effects.push(AliasingEffect::Assign {
+                    from: val.clone(),
+                    into: lval.place.clone(),
+                });
             }
             effects.push(AliasingEffect::Assign {
                 from: val.clone(),
