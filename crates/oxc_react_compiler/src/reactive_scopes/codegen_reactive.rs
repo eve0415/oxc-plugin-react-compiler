@@ -3039,9 +3039,11 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
         return None;
     }
     let dep_exprs = collect_direct_scope_dependency_exprs(cx, scope, instructions)?;
+    let mut computation_cx = cx.clone();
     let computation_shape = canonicalize_generated_body_shape(
-        try_build_generated_body_shape_from_reactive_block(cx, instructions)?,
+        try_build_generated_body_shape_from_reactive_block(&mut computation_cx, instructions)?,
     );
+    cx.next_cache_index = computation_cx.next_cache_index;
     let mut declarations = Vec::new();
     let mut output_names = Vec::new();
     if !scope.declarations.is_empty() && scope.reassignments.is_empty() {
@@ -3279,6 +3281,29 @@ fn try_build_simple_scope_setup_statements(
                 );
             }
             Some(statements)
+        }
+        GeneratedBodyShape::Block { .. }
+        | GeneratedBodyShape::Labeled { .. }
+        | GeneratedBodyShape::Switch { .. }
+        | GeneratedBodyShape::ConditionalBranches { .. }
+        | GeneratedBodyShape::GuardedBody { .. }
+        | GeneratedBodyShape::GuardedAssignments { .. }
+        | GeneratedBodyShape::GuardedAssignmentExpressions { .. }
+        | GeneratedBodyShape::GuardedExpressionStatements { .. }
+        | GeneratedBodyShape::GuardedReturnPrefix { .. }
+        | GeneratedBodyShape::WhileLoop { .. }
+        | GeneratedBodyShape::DoWhileLoop { .. }
+        | GeneratedBodyShape::ForLoop { .. }
+        | GeneratedBodyShape::ForInLoop { .. }
+        | GeneratedBodyShape::ForOfLoop { .. }
+        | GeneratedBodyShape::TryCatch { .. }
+        | GeneratedBodyShape::Break(_)
+        | GeneratedBodyShape::Continue(_)
+        | GeneratedBodyShape::ReturnVoid
+        | GeneratedBodyShape::ReturnIdentifier(_)
+        | GeneratedBodyShape::ReturnExpression(_)
+        | GeneratedBodyShape::ThrowExpression(_) => {
+            try_render_statement_sources_from_generated_body_shape(computation_shape)
         }
         GeneratedBodyShape::MemoizedCachedValues {
             deps,
