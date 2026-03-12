@@ -1355,6 +1355,13 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             let inner = canonicalize_generated_body_shape(*inner);
             match (prefix, inner) {
                 (
+                    GeneratedBodyShape::ExpressionStatements(mut expressions),
+                    GeneratedBodyShape::ExpressionStatements(inner_expressions),
+                ) => {
+                    expressions.extend(inner_expressions);
+                    GeneratedBodyShape::ExpressionStatements(expressions)
+                }
+                (
                     GeneratedBodyShape::PrefixedDeclarations {
                         declarations,
                         inner: prefixed_inner,
@@ -2571,6 +2578,20 @@ fn try_build_generated_body_shape_from_reactive_block(
         }
         [ReactiveStatement::PrunedScope(scope_block), rest @ ..] => {
             if can_inline_direct_scope_shape(&scope_block.scope) {
+                if !rest.is_empty()
+                    && try_build_generated_body_shape_from_temp_call_load(cx, rest).is_some()
+                {
+                    let prefix = try_build_generated_body_shape_from_scope_statement_parts(
+                        cx,
+                        &scope_block.scope,
+                        &scope_block.instructions,
+                    )?;
+                    let inner = try_build_generated_body_shape_from_reactive_block(cx, rest)?;
+                    return Some(GeneratedBodyShape::Sequential {
+                        prefix: Box::new(prefix),
+                        inner: Box::new(inner),
+                    });
+                }
                 return try_build_generated_body_shape_from_reactive_block(
                     cx,
                     &scope_block.instructions,
@@ -2984,6 +3005,47 @@ fn apply_direct_prefix_codegen_state(cx: &mut Context, instr: &ReactiveInstructi
         _ => {}
     }
     true
+}
+
+fn try_build_generated_body_shape_from_temp_call_load(
+    cx: &Context,
+    block: &[ReactiveStatement],
+) -> Option<(GeneratedBodyShape, usize)> {
+    let [
+        ReactiveStatement::Instruction(load_instr),
+        ReactiveStatement::Instruction(call_instr),
+        ..,
+    ] = block
+    else {
+        return None;
+    };
+    let temp = load_instr.lvalue.as_ref()?;
+    if temp.identifier.name.is_some() {
+        return None;
+    }
+    let source_place = match &load_instr.value {
+        InstructionValue::LoadLocal { place, .. } | InstructionValue::LoadContext { place, .. } => {
+            place
+        }
+        _ => return None,
+    };
+    let call_callee = match &call_instr.value {
+        InstructionValue::CallExpression { callee, .. } => callee,
+        _ => return None,
+    };
+    if call_instr.lvalue.is_some()
+        || call_callee.identifier.declaration_id != temp.identifier.declaration_id
+        || source_place.identifier.name.is_none()
+    {
+        return None;
+    }
+
+    let mut probe_cx = cx.clone();
+    let source_expr = identifier_name_with_cx(&mut probe_cx, &source_place.identifier);
+    probe_cx.set_temp_expr(&temp.identifier, Some(ExprValue::primary(source_expr)));
+    let stmt = codegen_instruction_nullable(&mut probe_cx, call_instr)?;
+    let expr = extract_simple_expression_statement_global(&stmt)?;
+    Some((GeneratedBodyShape::ExpressionStatements(vec![expr]), 2))
 }
 
 #[derive(Default)]
