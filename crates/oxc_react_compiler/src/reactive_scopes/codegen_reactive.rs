@@ -814,6 +814,33 @@ fn rewrite_cached_setup_statements_for_outer_declarations(
     setup_statements: Vec<String>,
     declarations: &[GeneratedDeclaration],
 ) -> Vec<String> {
+    fn collect_binding_pattern_names(pattern: &ast::BindingPattern<'_>, names: &mut Vec<String>) {
+        match pattern {
+            ast::BindingPattern::BindingIdentifier(identifier) => {
+                names.push(identifier.name.to_string());
+            }
+            ast::BindingPattern::AssignmentPattern(assignment) => {
+                collect_binding_pattern_names(&assignment.left, names);
+            }
+            ast::BindingPattern::ObjectPattern(object) => {
+                for property in &object.properties {
+                    collect_binding_pattern_names(&property.value, names);
+                }
+                if let Some(rest) = &object.rest {
+                    collect_binding_pattern_names(&rest.argument, names);
+                }
+            }
+            ast::BindingPattern::ArrayPattern(array) => {
+                for element in array.elements.iter().flatten() {
+                    collect_binding_pattern_names(element, names);
+                }
+                if let Some(rest) = &array.rest {
+                    collect_binding_pattern_names(&rest.argument, names);
+                }
+            }
+        }
+    }
+
     let declaration_names: HashSet<&str> = declarations
         .iter()
         .filter_map(|declaration| {
@@ -844,11 +871,14 @@ fn rewrite_cached_setup_statements_for_outer_declarations(
             continue;
         }
         let declarator = declaration.declarations.first().expect("len checked");
-        let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id else {
-            rewritten.push(statement_source);
-            continue;
-        };
-        if !declaration_names.contains(identifier.name.as_str()) {
+        let pattern = codegen_binding_pattern_with_flow_cast_restore(&declarator.id);
+        let mut binding_names = Vec::new();
+        collect_binding_pattern_names(&declarator.id, &mut binding_names);
+        if binding_names.is_empty()
+            || !binding_names
+                .iter()
+                .all(|name| declaration_names.contains(name.as_str()))
+        {
             rewritten.push(statement_source);
             continue;
         }
@@ -856,8 +886,7 @@ fn rewrite_cached_setup_statements_for_outer_declarations(
             continue;
         };
         let rhs = codegen_expression_with_flow_cast_restore(init);
-        let Some(assignment) =
-            render_reactive_assignment_statement_ast(identifier.name.as_str(), &rhs)
+        let Some(assignment) = render_reactive_assignment_target_statement_ast(&pattern, &rhs)
         else {
             rewritten.push(statement_source);
             continue;
@@ -1135,6 +1164,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
     fn prefix_chain_can_absorb_inner(prefix: &GeneratedBodyShape) -> bool {
         match prefix {
             GeneratedBodyShape::ExpressionStatements(_) => true,
+            GeneratedBodyShape::MemoizedEarlyReturnSentinel { .. } => true,
             GeneratedBodyShape::PrefixedDeclarations { inner, .. }
             | GeneratedBodyShape::PrefixedBindings { inner, .. }
             | GeneratedBodyShape::PrefixedAssignments { inner, .. }
@@ -5225,6 +5255,31 @@ fn try_decompose_direct_memoized_existing_return_shape(
         GeneratedBodyShape::ReturnIdentifier(name) if name == value_name => {
             Some(DirectMemoizedExistingReturnParts::default())
         }
+        GeneratedBodyShape::AssignedAliasReturn {
+            alias_name,
+            source_name,
+            inner,
+        } if alias_name == value_name => {
+            let mut parts =
+                try_decompose_direct_memoized_existing_return_shape(*inner, &source_name)?;
+            if parts.memoized_expr.is_none() {
+                parts.memoized_expr = Some(source_name);
+            }
+            Some(parts)
+        }
+        GeneratedBodyShape::AliasedReturn {
+            alias_name,
+            source_name,
+            inner,
+            ..
+        } if alias_name == value_name => {
+            let mut parts =
+                try_decompose_direct_memoized_existing_return_shape(*inner, &source_name)?;
+            if parts.memoized_expr.is_none() {
+                parts.memoized_expr = Some(source_name);
+            }
+            Some(parts)
+        }
         GeneratedBodyShape::AssignedExpressionReturn {
             value_name: assigned_name,
             expression,
@@ -5510,6 +5565,31 @@ fn try_decompose_direct_memoized_declared_return_shape(
     match shape {
         GeneratedBodyShape::ReturnIdentifier(name) if name == value_name => {
             Some(DirectMemoizedExistingReturnParts::default())
+        }
+        GeneratedBodyShape::AssignedAliasReturn {
+            alias_name,
+            source_name,
+            inner,
+        } if alias_name == value_name => {
+            let mut parts =
+                try_decompose_direct_memoized_declared_return_shape(*inner, &source_name)?;
+            if parts.memoized_expr.is_none() {
+                parts.memoized_expr = Some(source_name);
+            }
+            Some(parts)
+        }
+        GeneratedBodyShape::AliasedReturn {
+            alias_name,
+            source_name,
+            inner,
+            ..
+        } if alias_name == value_name => {
+            let mut parts =
+                try_decompose_direct_memoized_declared_return_shape(*inner, &source_name)?;
+            if parts.memoized_expr.is_none() {
+                parts.memoized_expr = Some(source_name);
+            }
+            Some(parts)
         }
         GeneratedBodyShape::AssignedExpressionReturn {
             value_name: assigned_name,
@@ -33141,6 +33221,32 @@ fn render_reactive_assignment_statement_ast(target_name: &str, rhs: &str) -> Opt
         builder,
         target_name,
         rhs_expression,
+    );
+    Some(format!(
+        "{}\n",
+        codegen_statement_with_flow_cast_restore(&statement)
+    ))
+}
+
+fn render_reactive_assignment_target_statement_ast(target: &str, rhs: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let builder = AstBuilder::new(&allocator);
+    let assignment_target = parse_assignment_target_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        target,
+    )
+    .ok()?;
+    let rhs_expression =
+        parse_expression_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), rhs).ok()?;
+    let statement = builder.statement_expression(
+        SPAN,
+        builder.expression_assignment(
+            SPAN,
+            AssignmentOperator::Assign,
+            assignment_target,
+            rhs_expression,
+        ),
     );
     Some(format!(
         "{}\n",
