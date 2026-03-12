@@ -3125,6 +3125,7 @@ fn try_build_generated_body_shape_from_reactive_block(
     cx: &mut Context,
     block: &[ReactiveStatement],
 ) -> Option<GeneratedBodyShape> {
+    let trace = std::env::var("DEBUG_DIRECT_BODY_SHAPE_BLOCK_TRACE").is_ok();
     match block {
         [] => Some(GeneratedBodyShape::ExpressionStatements(vec![])),
         [ReactiveStatement::Scope(scope_block), rest @ ..] => {
@@ -3142,12 +3143,28 @@ fn try_build_generated_body_shape_from_reactive_block(
                     cx,
                     &scope_block.instructions,
                 );
-                let prefix = prefix?;
+                let Some(prefix) = prefix else {
+                    if trace {
+                        eprintln!(
+                            "[DIRECT_BODY_SHAPE_BLOCK_TRACE] inline scope prefix none scope={}",
+                            scope_block.scope.id.0
+                        );
+                    }
+                    return None;
+                };
                 if rest.is_empty() {
                     return Some(prefix);
                 }
                 let inner = try_build_generated_body_shape_from_reactive_block(cx, rest);
-                let inner = inner?;
+                let Some(inner) = inner else {
+                    if trace {
+                        eprintln!(
+                            "[DIRECT_BODY_SHAPE_BLOCK_TRACE] inline scope inner none scope={}",
+                            scope_block.scope.id.0
+                        );
+                    }
+                    return None;
+                };
                 if generated_body_shape_is_empty(&prefix) {
                     return Some(inner);
                 }
@@ -3158,9 +3175,25 @@ fn try_build_generated_body_shape_from_reactive_block(
             }
             let prefix =
                 try_build_generated_body_shape_from_reactive_scope_statement(cx, scope_block);
-            let prefix = prefix?;
+            let Some(prefix) = prefix else {
+                if trace {
+                    eprintln!(
+                        "[DIRECT_BODY_SHAPE_BLOCK_TRACE] scope statement none scope={}",
+                        scope_block.scope.id.0
+                    );
+                }
+                return None;
+            };
             let inner = try_build_generated_body_shape_from_reactive_block(cx, rest);
-            let inner = inner?;
+            let Some(inner) = inner else {
+                if trace {
+                    eprintln!(
+                        "[DIRECT_BODY_SHAPE_BLOCK_TRACE] scope statement inner none scope={}",
+                        scope_block.scope.id.0
+                    );
+                }
+                return None;
+            };
             Some(GeneratedBodyShape::Sequential {
                 prefix: Box::new(prefix),
                 inner: Box::new(inner),
@@ -3172,12 +3205,28 @@ fn try_build_generated_body_shape_from_reactive_block(
                     cx,
                     &scope_block.instructions,
                 );
-                let prefix = prefix?;
+                let Some(prefix) = prefix else {
+                    if trace {
+                        eprintln!(
+                            "[DIRECT_BODY_SHAPE_BLOCK_TRACE] inline pruned scope prefix none scope={}",
+                            scope_block.scope.id.0
+                        );
+                    }
+                    return None;
+                };
                 if rest.is_empty() {
                     return Some(prefix);
                 }
                 let inner = try_build_generated_body_shape_from_reactive_block(cx, rest);
-                let inner = inner?;
+                let Some(inner) = inner else {
+                    if trace {
+                        eprintln!(
+                            "[DIRECT_BODY_SHAPE_BLOCK_TRACE] inline pruned scope inner none scope={}",
+                            scope_block.scope.id.0
+                        );
+                    }
+                    return None;
+                };
                 if generated_body_shape_is_empty(&prefix) {
                     return Some(inner);
                 }
@@ -3191,9 +3240,25 @@ fn try_build_generated_body_shape_from_reactive_block(
                 &scope_block.scope,
                 &scope_block.instructions,
             );
-            let prefix = prefix?;
+            let Some(prefix) = prefix else {
+                if trace {
+                    eprintln!(
+                        "[DIRECT_BODY_SHAPE_BLOCK_TRACE] pruned scope statement none scope={}",
+                        scope_block.scope.id.0
+                    );
+                }
+                return None;
+            };
             let inner = try_build_generated_body_shape_from_reactive_block(cx, rest);
-            let inner = inner?;
+            let Some(inner) = inner else {
+                if trace {
+                    eprintln!(
+                        "[DIRECT_BODY_SHAPE_BLOCK_TRACE] pruned scope statement inner none scope={}",
+                        scope_block.scope.id.0
+                    );
+                }
+                return None;
+            };
             Some(GeneratedBodyShape::Sequential {
                 prefix: Box::new(prefix),
                 inner: Box::new(inner),
@@ -3203,7 +3268,19 @@ fn try_build_generated_body_shape_from_reactive_block(
             let should_wrap = apply_direct_prefix_codegen_state(cx, instr);
             let inner = try_build_generated_body_shape_from_reactive_block(cx, rest)?;
             if should_wrap {
-                try_wrap_generated_body_shape_with_instruction_prefix(cx, instr, inner)
+                let shape = try_wrap_generated_body_shape_with_instruction_prefix(cx, instr, inner);
+                if shape.is_none() && trace {
+                    eprintln!(
+                        "[DIRECT_BODY_SHAPE_BLOCK_TRACE] instruction prefix none tag={} lvalue={:?}",
+                        instruction_value_tag(&instr.value),
+                        instr.lvalue.as_ref().and_then(|place| place
+                            .identifier
+                            .name
+                            .as_ref()
+                            .map(|name| name.value()))
+                    );
+                }
+                shape
             } else {
                 Some(inner)
             }
@@ -3265,6 +3342,7 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
     scope: &ReactiveScope,
     instructions: &ReactiveBlock,
 ) -> Option<GeneratedBodyShape> {
+    let trace = std::env::var("DEBUG_DIRECT_SCOPE_STATEMENT_TRACE").is_ok();
     if scope.merged_id.is_some() || scope.early_return_value.is_some() {
         return None;
     }
@@ -3276,6 +3354,7 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
     cx.next_cache_index = computation_cx.next_cache_index;
     let mut declarations = Vec::new();
     let mut output_names = Vec::new();
+    let mut output_decl_ids = Vec::new();
     if !scope.declarations.is_empty() && scope.reassignments.is_empty() {
         let mut sorted_decls: Vec<_> = scope.declarations.values().collect();
         sorted_decls.sort_by(|a, b| {
@@ -3298,6 +3377,7 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
                 pattern: value_name.clone(),
             });
             output_names.push(value_name);
+            output_decl_ids.push(output_decl.identifier.declaration_id);
         }
     } else if scope.declarations.is_empty() && !scope.reassignments.is_empty() {
         let mut reassignments = scope.reassignments.clone();
@@ -3312,11 +3392,21 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
             let value_name = identifier_name_with_cx(cx, reassignment);
             cx.declared_names.insert(value_name.clone());
             output_names.push(value_name);
+            output_decl_ids.push(reassignment.declaration_id);
         }
     } else {
+        if trace {
+            eprintln!(
+                "[DIRECT_SCOPE_STATEMENT_TRACE] unsupported outputs scope={} decls={} reassignments={}",
+                scope.id.0,
+                scope.declarations.len(),
+                scope.reassignments.len()
+            );
+        }
         return None;
     }
     let primary_output_name = output_names.first()?.clone();
+    let primary_output_decl_id = *output_decl_ids.first()?;
     let mut setup_statements =
         try_build_simple_scope_setup_statements(&primary_output_name, &computation_shape).or_else(
             || {
@@ -3330,12 +3420,32 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
                 try_render_statement_sources_from_generated_body_shape(&computation_shape)
             },
         )?;
+    if trace {
+        eprintln!(
+            "[DIRECT_SCOPE_STATEMENT_TRACE] scope={} output={} deps={:?} shape={:#?} setup={:#?}",
+            scope.id.0, primary_output_name, dep_exprs, computation_shape, setup_statements
+        );
+    }
     if !declarations.is_empty() {
         setup_statements =
             rewrite_cached_setup_statements_for_outer_declarations(setup_statements, &declarations);
     }
     if setup_statements.is_empty() {
-        return None;
+        if let Some(Some(expr_value)) = computation_cx.temp.get(&primary_output_decl_id).cloned() {
+            setup_statements.push(
+                render_reactive_assignment_statement_ast(&primary_output_name, &expr_value.expr)?
+                    .trim_end()
+                    .to_string(),
+            );
+            if trace {
+                eprintln!(
+                    "[DIRECT_SCOPE_STATEMENT_TRACE] materialized temp scope={} output={} expr={}",
+                    scope.id.0, primary_output_name, expr_value.expr
+                );
+            }
+        } else {
+            return None;
+        }
     }
     let inner = if dep_exprs.is_empty() {
         let mut cached_values = Vec::with_capacity(output_names.len());
