@@ -4264,17 +4264,17 @@ fn try_build_function_body_from_shape<'a>(
                 source_type,
                 memoized_assignments,
             )?);
-            consequent.extend(build_generated_expression_statements(
-                builder,
-                allocator,
-                source_type,
-                memoized_expressions,
-            )?);
             consequent.extend(build_generated_statement_sources(
                 builder,
                 allocator,
                 source_type,
                 memoized_setup_statements,
+            )?);
+            consequent.extend(build_generated_expression_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_expressions,
             )?);
             if let Some(memoized_expr) = memoized_expr {
                 let memoized_expr =
@@ -4361,17 +4361,17 @@ fn try_build_function_body_from_shape<'a>(
                 source_type,
                 memoized_assignments,
             )?);
-            consequent.extend(build_generated_expression_statements(
-                builder,
-                allocator,
-                source_type,
-                memoized_expressions,
-            )?);
             consequent.extend(build_generated_statement_sources(
                 builder,
                 allocator,
                 source_type,
                 memoized_setup_statements,
+            )?);
+            consequent.extend(build_generated_expression_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_expressions,
             )?);
             if let Some(memoized_expr) = memoized_expr {
                 let memoized_expr =
@@ -4446,17 +4446,17 @@ fn try_build_function_body_from_shape<'a>(
                 source_type,
                 memoized_assignments,
             )?);
-            consequent.extend(build_generated_expression_statements(
-                builder,
-                allocator,
-                source_type,
-                memoized_expressions,
-            )?);
             consequent.extend(build_generated_statement_sources(
                 builder,
                 allocator,
                 source_type,
                 memoized_setup_statements,
+            )?);
+            consequent.extend(build_generated_expression_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_expressions,
             )?);
             if let Some(memoized_expr) = memoized_expr {
                 let memoized_expr =
@@ -4552,17 +4552,17 @@ fn try_build_function_body_from_shape<'a>(
                 source_type,
                 memoized_assignments,
             )?);
-            consequent.extend(build_generated_expression_statements(
-                builder,
-                allocator,
-                source_type,
-                memoized_expressions,
-            )?);
             consequent.extend(build_generated_statement_sources(
                 builder,
                 allocator,
                 source_type,
                 memoized_setup_statements,
+            )?);
+            consequent.extend(build_generated_expression_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_expressions,
             )?);
             if let Some(memoized_expr) = memoized_expr {
                 let memoized_expr =
@@ -4662,17 +4662,17 @@ fn try_build_function_body_from_shape<'a>(
                 source_type,
                 memoized_assignments,
             )?);
-            consequent.extend(build_generated_expression_statements(
-                builder,
-                allocator,
-                source_type,
-                memoized_expressions,
-            )?);
             consequent.extend(build_generated_statement_sources(
                 builder,
                 allocator,
                 source_type,
                 memoized_setup_statements,
+            )?);
+            consequent.extend(build_generated_expression_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_expressions,
             )?);
             if let Some(memoized_expr) = memoized_expr {
                 let memoized_expr =
@@ -4773,17 +4773,17 @@ fn try_build_function_body_from_shape<'a>(
                 source_type,
                 memoized_assignments,
             )?);
-            consequent.extend(build_generated_expression_statements(
-                builder,
-                allocator,
-                source_type,
-                memoized_expressions,
-            )?);
             consequent.extend(build_generated_statement_sources(
                 builder,
                 allocator,
                 source_type,
                 memoized_setup_statements,
+            )?);
+            consequent.extend(build_generated_expression_statements(
+                builder,
+                allocator,
+                source_type,
+                memoized_expressions,
             )?);
             if let Some(memoized_expr) = memoized_expr {
                 let memoized_expr =
@@ -10234,6 +10234,137 @@ export const FIXTURE_ENTRYPOINT = {
         assert!(rewritten.contains("items.push(props.a);"));
         assert!(rewritten.contains("$[0] = props.a;"));
         assert!(rewritten.contains("$[1] = items;"));
+    }
+
+    #[test]
+    fn emits_memoized_setup_before_trailing_expressions_from_shape() {
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        let body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MultiDependencyMemoizedReturn {
+                value_name: "value".to_string(),
+                value_kind: ast::VariableDeclarationKind::Let,
+                deps: vec![(0, "props.a".to_string()), (1, "props.b".to_string())],
+                value_slot: 2,
+                memoized_bindings: vec![crate::reactive_scopes::codegen_reactive::GeneratedBinding {
+                    kind: ast::VariableDeclarationKind::Const,
+                    pattern: "x".to_string(),
+                    expression: "{}".to_string(),
+                }],
+                memoized_assignments: vec![],
+                memoized_expressions: vec!["setProperty(x, props.a)".to_string()],
+                memoized_setup_statements: vec![
+                    "mutate(x);".to_string(),
+                    "const y = identity(props.b);".to_string(),
+                ],
+                memoized_expr: Some("[x, y]".to_string()),
+            };
+        let function_body = super::try_build_function_body_from_shape(
+            builder,
+            &allocator,
+            source_type_for_filename("fixture.jsx"),
+            &body_shape,
+            Some(&crate::reactive_scopes::codegen_reactive::CachePrologue {
+                binding_name: "$".to_string(),
+                size: 3,
+                fast_refresh: None,
+            }),
+        )
+        .expect("expected AST-native body");
+        let rewritten = function_body
+            .statements
+            .iter()
+            .map(|statement| {
+                codegen_statement_source(
+                    &allocator,
+                    source_type_for_filename("fixture.jsx"),
+                    statement,
+                )
+                .trim_end_matches('\n')
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mutate_idx = rewritten.find("mutate(x);").expect("expected mutate");
+        let set_property_idx = rewritten
+            .find("setProperty(x, props.a);")
+            .expect("expected setProperty");
+
+        assert!(mutate_idx < set_property_idx);
+        assert!(rewritten.contains("const y = identity(props.b);"));
+    }
+
+    #[test]
+    fn emits_existing_memoized_return_in_original_setup_order() {
+        let source = "function Foo(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "let t0; if ($[0] !== props.a || $[1] !== props.b) { const x = {}; mutate(x); const t1 = identity(props.b) + 1; let t2; if ($[3] !== t1) { t2 = identity(t1); $[3] = t1; $[4] = t2; } else { t2 = $[4]; } const y = t2; setProperty(x, props.a); t0 = [x, y]; $[0] = props.a; $[1] = props.b; $[2] = t0; } else { t0 = $[2]; } return t0;",
+            &["props"],
+            false,
+        );
+        compiled_function.generated_body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedDeclarations {
+                declarations: vec![crate::reactive_scopes::codegen_reactive::GeneratedDeclaration {
+                    kind: ast::VariableDeclarationKind::Let,
+                    pattern: "t0".to_string(),
+                }],
+                inner: Box::new(
+                    crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+                        value_name: "t0".to_string(),
+                        deps: vec![(0, "props.a".to_string()), (1, "props.b".to_string())],
+                        value_slot: 2,
+                        memoized_bindings: vec![],
+                        memoized_assignments: vec![],
+                        memoized_expressions: vec!["setProperty(x, props.a)".to_string()],
+                        memoized_setup_statements: vec![
+                            "const x = {};".to_string(),
+                            "mutate(x);".to_string(),
+                            "const t1 = identity(props.b) + 1;".to_string(),
+                            "let t2;".to_string(),
+                            "if ($[3] !== t1) { t2 = identity(t1); $[3] = t1; $[4] = t2; } else { t2 = $[4]; }".to_string(),
+                            "const y = t2;".to_string(),
+                        ],
+                        memoized_expr: Some("[x, y]".to_string()),
+                    },
+                ),
+            };
+        compiled_function.needs_cache_import = true;
+        compiled_function.cache_prologue =
+            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+                binding_name: "$".to_string(),
+                size: 5,
+                fast_refresh: None,
+            });
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        let x_idx = rewritten.find("const x = {};").expect("expected x");
+        let mutate_idx = rewritten.find("mutate(x);").expect("expected mutate");
+        let t1_idx = rewritten
+            .find("const t1 = identity(props.b) + 1;")
+            .expect("expected t1");
+        let set_property_idx = rewritten
+            .find("setProperty(x, props.a);")
+            .expect("expected setProperty");
+        let value_idx = rewritten.find("t0 = [x, y];").expect("expected value assignment");
+
+        assert!(x_idx < mutate_idx, "{rewritten}");
+        assert!(mutate_idx < t1_idx, "{rewritten}");
+        assert!(t1_idx < set_property_idx, "{rewritten}");
+        assert!(set_property_idx < value_idx, "{rewritten}");
     }
 
     #[test]

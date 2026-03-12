@@ -933,6 +933,59 @@ fn rewrite_cached_prefix_for_outer_declarations(
     }
 }
 
+fn collect_binding_pattern_names_for_codegen(
+    pattern: &ast::BindingPattern<'_>,
+    names: &mut Vec<String>,
+) {
+    match pattern {
+        ast::BindingPattern::BindingIdentifier(identifier) => {
+            names.push(identifier.name.to_string());
+        }
+        ast::BindingPattern::AssignmentPattern(assignment) => {
+            collect_binding_pattern_names_for_codegen(&assignment.left, names);
+        }
+        ast::BindingPattern::ObjectPattern(object) => {
+            for property in &object.properties {
+                collect_binding_pattern_names_for_codegen(&property.value, names);
+            }
+            if let Some(rest) = &object.rest {
+                collect_binding_pattern_names_for_codegen(&rest.argument, names);
+            }
+        }
+        ast::BindingPattern::ArrayPattern(array) => {
+            for element in array.elements.iter().flatten() {
+                collect_binding_pattern_names_for_codegen(element, names);
+            }
+            if let Some(rest) = &array.rest {
+                collect_binding_pattern_names_for_codegen(&rest.argument, names);
+            }
+        }
+    }
+}
+
+fn collect_declared_binding_names_from_statements(setup_statements: &[String]) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for statement_source in setup_statements {
+        let allocator = Allocator::default();
+        let Ok(statement) = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            statement_source,
+        ) else {
+            continue;
+        };
+        let ast::Statement::VariableDeclaration(declaration) = statement else {
+            continue;
+        };
+        for declarator in &declaration.declarations {
+            let mut binding_names = Vec::new();
+            collect_binding_pattern_names_for_codegen(&declarator.id, &mut binding_names);
+            names.extend(binding_names);
+        }
+    }
+    names
+}
+
 fn extract_leading_generated_bindings_from_setup_statements(
     setup_statements: Vec<String>,
 ) -> (Vec<GeneratedBinding>, Vec<String>) {
@@ -964,6 +1017,17 @@ fn extract_leading_generated_bindings_from_setup_statements(
         rest.push(statement_source);
     }
     (bindings, rest)
+}
+
+fn canonicalize_generated_bindings(bindings: Vec<GeneratedBinding>) -> Vec<GeneratedBinding> {
+    bindings
+        .into_iter()
+        .map(|binding| GeneratedBinding {
+            kind: binding.kind,
+            pattern: binding.pattern,
+            expression: canonicalize_generated_expression(binding.expression),
+        })
+        .collect()
 }
 
 fn collect_cache_slots_in_statement_sources(setup_statements: &[String]) -> Vec<u32> {
@@ -1515,7 +1579,11 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
         value_name: &str,
         mut setup_statements: Vec<String>,
         memoized_expr: Option<String>,
+        allow_promotion: bool,
     ) -> (Vec<String>, Option<String>) {
+        if !allow_promotion {
+            return (setup_statements, memoized_expr);
+        }
         if setup_statements.is_empty() {
             return (setup_statements, memoized_expr);
         }
@@ -1528,6 +1596,31 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
         };
         setup_statements.push(statement.trim_end().to_string());
         (setup_statements, None)
+    }
+
+    fn defer_setup_dependent_bindings_to_setup(
+        memoized_bindings: Vec<GeneratedBinding>,
+        mut setup_statements: Vec<String>,
+    ) -> (Vec<GeneratedBinding>, Vec<String>) {
+        let setup_declared_names = collect_declared_binding_names_from_statements(&setup_statements);
+        if setup_declared_names.is_empty() {
+            return (memoized_bindings, setup_statements);
+        }
+
+        let mut kept = Vec::new();
+        for binding in memoized_bindings {
+            let depends_on_setup = setup_declared_names
+                .iter()
+                .any(|name| contains_identifier_token(&binding.expression, name));
+            if depends_on_setup
+                && let Some(statement) = render_generated_binding_statement(&binding)
+            {
+                setup_statements.push(statement.trim_end().to_string());
+            } else {
+                kept.push(binding);
+            }
+        }
+        (kept, setup_statements)
     }
 
     fn fold_temp_binding_into_conditional_setup(
@@ -2372,6 +2465,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             memoized_setup_statements,
             memoized_expr,
         } => {
+            let has_trailing_expressions = !memoized_expressions.is_empty();
             let (memoized_setup_statements, memoized_expr) =
                 canonicalize_single_target_setup_statement(
                     &value_name,
@@ -2388,6 +2482,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     &value_name,
                     memoized_setup_statements,
                     memoized_expr,
+                    !has_trailing_expressions,
                 );
             let memoized_setup_statements = rebase_nested_cache_slots_after_memoized_return(
                 memoized_setup_statements
@@ -2396,17 +2491,20 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     .collect(),
                 std::slice::from_mut(&mut value_slot),
             );
+            let memoized_expressions = memoized_expressions
+                .into_iter()
+                .map(canonicalize_generated_expression)
+                .collect();
+            let memoized_bindings = canonicalize_generated_bindings(memoized_bindings);
+            let (memoized_bindings, memoized_setup_statements) =
+                defer_setup_dependent_bindings_to_setup(
+                    memoized_bindings,
+                    memoized_setup_statements,
+                );
             GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
                 value_name,
                 value_slot,
-                memoized_bindings: memoized_bindings
-                    .into_iter()
-                    .map(|binding| GeneratedBinding {
-                        kind: binding.kind,
-                        pattern: binding.pattern,
-                        expression: canonicalize_generated_expression(binding.expression),
-                    })
-                    .collect(),
+                memoized_bindings,
                 memoized_assignments: memoized_assignments
                     .into_iter()
                     .map(|assignment| GeneratedAssignment {
@@ -2414,10 +2512,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                         value: canonicalize_generated_expression(assignment.value),
                     })
                     .collect(),
-                memoized_expressions: memoized_expressions
-                    .into_iter()
-                    .map(canonicalize_generated_expression)
-                    .collect(),
+                memoized_expressions,
                 memoized_setup_statements,
                 memoized_expr: memoized_expr.map(canonicalize_generated_expression),
             }
@@ -2433,6 +2528,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             memoized_setup_statements,
             memoized_expr,
         } => {
+            let has_trailing_expressions = !memoized_expressions.is_empty();
             let (memoized_setup_statements, memoized_expr) =
                 canonicalize_single_target_setup_statement(
                     &value_name,
@@ -2449,6 +2545,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     &value_name,
                     memoized_setup_statements,
                     memoized_expr,
+                    !has_trailing_expressions,
                 );
             let mut outer_slots = vec![dep_slot, value_slot];
             let memoized_setup_statements = rebase_nested_cache_slots_after_memoized_return(
@@ -2460,19 +2557,22 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             );
             dep_slot = outer_slots[0];
             value_slot = outer_slots[1];
+            let memoized_expressions = memoized_expressions
+                .into_iter()
+                .map(canonicalize_generated_expression)
+                .collect();
+            let memoized_bindings = canonicalize_generated_bindings(memoized_bindings);
+            let (memoized_bindings, memoized_setup_statements) =
+                defer_setup_dependent_bindings_to_setup(
+                    memoized_bindings,
+                    memoized_setup_statements,
+                );
             GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
                 value_name,
                 dep_slot,
                 dep_expr: canonicalize_generated_expression(dep_expr),
                 value_slot,
-                memoized_bindings: memoized_bindings
-                    .into_iter()
-                    .map(|binding| GeneratedBinding {
-                        kind: binding.kind,
-                        pattern: binding.pattern,
-                        expression: canonicalize_generated_expression(binding.expression),
-                    })
-                    .collect(),
+                memoized_bindings,
                 memoized_assignments: memoized_assignments
                     .into_iter()
                     .map(|assignment| GeneratedAssignment {
@@ -2480,10 +2580,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                         value: canonicalize_generated_expression(assignment.value),
                     })
                     .collect(),
-                memoized_expressions: memoized_expressions
-                    .into_iter()
-                    .map(canonicalize_generated_expression)
-                    .collect(),
+                memoized_expressions,
                 memoized_setup_statements,
                 memoized_expr: memoized_expr.map(canonicalize_generated_expression),
             }
@@ -2498,6 +2595,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             memoized_setup_statements,
             memoized_expr,
         } => {
+            let has_trailing_expressions = !memoized_expressions.is_empty();
             let (memoized_setup_statements, memoized_expr) =
                 canonicalize_single_target_setup_statement(
                     &value_name,
@@ -2514,6 +2612,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     &value_name,
                     memoized_setup_statements,
                     memoized_expr,
+                    !has_trailing_expressions,
                 );
             let mut outer_slots: Vec<u32> = deps.iter().map(|(slot, _)| *slot).collect();
             outer_slots.push(value_slot);
@@ -2528,6 +2627,16 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             for ((slot, _), new_slot) in deps.iter_mut().zip(outer_slots.into_iter()) {
                 *slot = new_slot;
             }
+            let memoized_expressions = memoized_expressions
+                .into_iter()
+                .map(canonicalize_generated_expression)
+                .collect();
+            let memoized_bindings = canonicalize_generated_bindings(memoized_bindings);
+            let (memoized_bindings, memoized_setup_statements) =
+                defer_setup_dependent_bindings_to_setup(
+                    memoized_bindings,
+                    memoized_setup_statements,
+                );
             GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
                 value_name,
                 deps: deps
@@ -2535,14 +2644,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     .map(|(slot, expr)| (slot, canonicalize_generated_expression(expr)))
                     .collect(),
                 value_slot,
-                memoized_bindings: memoized_bindings
-                    .into_iter()
-                    .map(|binding| GeneratedBinding {
-                        kind: binding.kind,
-                        pattern: binding.pattern,
-                        expression: canonicalize_generated_expression(binding.expression),
-                    })
-                    .collect(),
+                memoized_bindings,
                 memoized_assignments: memoized_assignments
                     .into_iter()
                     .map(|assignment| GeneratedAssignment {
@@ -2550,10 +2652,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                         value: canonicalize_generated_expression(assignment.value),
                     })
                     .collect(),
-                memoized_expressions: memoized_expressions
-                    .into_iter()
-                    .map(canonicalize_generated_expression)
-                    .collect(),
+                memoized_expressions,
                 memoized_setup_statements,
                 memoized_expr: memoized_expr.map(canonicalize_generated_expression),
             }
@@ -5305,52 +5404,34 @@ fn try_decompose_direct_memoized_existing_return_shape(
         GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_existing_return_shape(*inner, value_name)?;
-            if !parts.setup_statements.is_empty() {
-                let mut prefix_statements = bindings
-                    .iter()
-                    .map(render_generated_binding_statement)
-                    .collect::<Option<Vec<_>>>()?;
-                prefix_statements.extend(parts.setup_statements);
-                parts.setup_statements = prefix_statements;
-                return Some(parts);
-            }
-            let mut prefixed_bindings = bindings;
-            prefixed_bindings.extend(parts.bindings);
-            parts.bindings = prefixed_bindings;
+            let mut prefix_statements = bindings
+                .iter()
+                .map(render_generated_binding_statement)
+                .collect::<Option<Vec<_>>>()?;
+            prefix_statements.extend(parts.setup_statements);
+            parts.setup_statements = prefix_statements;
             Some(parts)
         }
         GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_existing_return_shape(*inner, value_name)?;
-            if !parts.setup_statements.is_empty() {
-                let mut prefix_statements = assignments
-                    .iter()
-                    .map(render_generated_assignment_statement)
-                    .collect::<Option<Vec<_>>>()?;
-                prefix_statements.extend(parts.setup_statements);
-                parts.setup_statements = prefix_statements;
-                return Some(parts);
-            }
-            let mut prefixed_assignments = assignments;
-            prefixed_assignments.extend(parts.assignments);
-            parts.assignments = prefixed_assignments;
+            let mut prefix_statements = assignments
+                .iter()
+                .map(render_generated_assignment_statement)
+                .collect::<Option<Vec<_>>>()?;
+            prefix_statements.extend(parts.setup_statements);
+            parts.setup_statements = prefix_statements;
             Some(parts)
         }
         GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_existing_return_shape(*inner, value_name)?;
-            if !parts.setup_statements.is_empty() {
-                let mut prefix_statements = expressions
-                    .iter()
-                    .map(|expression| render_generated_expression_statement(expression))
-                    .collect::<Option<Vec<_>>>()?;
-                prefix_statements.extend(parts.setup_statements);
-                parts.setup_statements = prefix_statements;
-                return Some(parts);
-            }
-            let mut prefixed_expressions = expressions;
-            prefixed_expressions.extend(parts.expressions);
-            parts.expressions = prefixed_expressions;
+            let mut prefix_statements = expressions
+                .iter()
+                .map(|expression| render_generated_expression_statement(expression))
+                .collect::<Option<Vec<_>>>()?;
+            prefix_statements.extend(parts.setup_statements);
+            parts.setup_statements = prefix_statements;
             Some(parts)
         }
         GeneratedBodyShape::Sequential { prefix, inner } => {
@@ -5619,23 +5700,7 @@ fn try_decompose_direct_memoized_declared_return_shape(
         GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_declared_return_shape(*inner, value_name)?;
-            if !parts.setup_statements.is_empty() {
-                let mut prefix_statements = Vec::new();
-                for binding in bindings {
-                    if binding.pattern == value_name {
-                        if parts.memoized_expr.is_some() {
-                            return None;
-                        }
-                        parts.memoized_expr = Some(binding.expression);
-                    } else {
-                        prefix_statements.push(render_generated_binding_statement(&binding)?);
-                    }
-                }
-                prefix_statements.extend(parts.setup_statements);
-                parts.setup_statements = prefix_statements;
-                return Some(parts);
-            }
-            let mut prefixed_bindings = Vec::new();
+            let mut prefix_statements = Vec::new();
             for binding in bindings {
                 if binding.pattern == value_name {
                     if parts.memoized_expr.is_some() {
@@ -5643,33 +5708,17 @@ fn try_decompose_direct_memoized_declared_return_shape(
                     }
                     parts.memoized_expr = Some(binding.expression);
                 } else {
-                    prefixed_bindings.push(binding);
+                    prefix_statements.push(render_generated_binding_statement(&binding)?);
                 }
             }
-            prefixed_bindings.extend(parts.bindings);
-            parts.bindings = prefixed_bindings;
+            prefix_statements.extend(parts.setup_statements);
+            parts.setup_statements = prefix_statements;
             Some(parts)
         }
         GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_declared_return_shape(*inner, value_name)?;
-            if !parts.setup_statements.is_empty() {
-                let mut prefix_statements = Vec::new();
-                for assignment in assignments {
-                    if assignment.target == value_name {
-                        if parts.memoized_expr.is_some() {
-                            return None;
-                        }
-                        parts.memoized_expr = Some(assignment.value);
-                    } else {
-                        prefix_statements.push(render_generated_assignment_statement(&assignment)?);
-                    }
-                }
-                prefix_statements.extend(parts.setup_statements);
-                parts.setup_statements = prefix_statements;
-                return Some(parts);
-            }
-            let mut prefixed_assignments = Vec::new();
+            let mut prefix_statements = Vec::new();
             for assignment in assignments {
                 if assignment.target == value_name {
                     if parts.memoized_expr.is_some() {
@@ -5677,28 +5726,22 @@ fn try_decompose_direct_memoized_declared_return_shape(
                     }
                     parts.memoized_expr = Some(assignment.value);
                 } else {
-                    prefixed_assignments.push(assignment);
+                    prefix_statements.push(render_generated_assignment_statement(&assignment)?);
                 }
             }
-            prefixed_assignments.extend(parts.assignments);
-            parts.assignments = prefixed_assignments;
+            prefix_statements.extend(parts.setup_statements);
+            parts.setup_statements = prefix_statements;
             Some(parts)
         }
         GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_declared_return_shape(*inner, value_name)?;
-            if !parts.setup_statements.is_empty() {
-                let mut prefix_statements = expressions
-                    .iter()
-                    .map(|expression| render_generated_expression_statement(expression))
-                    .collect::<Option<Vec<_>>>()?;
-                prefix_statements.extend(parts.setup_statements);
-                parts.setup_statements = prefix_statements;
-                return Some(parts);
-            }
-            let mut prefixed_expressions = expressions;
-            prefixed_expressions.extend(parts.expressions);
-            parts.expressions = prefixed_expressions;
+            let mut prefix_statements = expressions
+                .iter()
+                .map(|expression| render_generated_expression_statement(expression))
+                .collect::<Option<Vec<_>>>()?;
+            prefix_statements.extend(parts.setup_statements);
+            parts.setup_statements = prefix_statements;
             Some(parts)
         }
         GeneratedBodyShape::Sequential { prefix, inner } => {
