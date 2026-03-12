@@ -3722,21 +3722,8 @@ fn try_decompose_direct_memoized_existing_return_shape(
 fn collect_direct_scope_dependency_exprs(
     cx: &mut Context,
     scope: &ReactiveScope,
-    block: &[ReactiveStatement],
+    _block: &[ReactiveStatement],
 ) -> Option<Vec<String>> {
-    if block.iter().any(|stmt| {
-        matches!(
-            stmt,
-            ReactiveStatement::Instruction(instr)
-                if matches!(
-                    instr.value,
-                    InstructionValue::FunctionExpression { .. }
-                        | InstructionValue::ObjectMethod { .. }
-                )
-        )
-    }) {
-        return None;
-    }
     let sorted_deps: Vec<ReactiveScopeDependency> = scope
         .dependencies
         .iter()
