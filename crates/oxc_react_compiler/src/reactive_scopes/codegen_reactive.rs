@@ -5642,7 +5642,21 @@ fn rendered_single_statement_prefix(
             prefix: Box::new(GeneratedBodyShape::DebuggerStatements(1)),
             inner: Box::new(inner),
         }),
-        _ => None,
+        _ => {
+            let analyzed = fully_canonicalize_generated_body_shape(analyze_generated_body_shape(
+                rendered,
+            ));
+            if matches!(analyzed, GeneratedBodyShape::Unknown) {
+                None
+            } else if generated_body_shape_is_empty(&analyzed) {
+                Some(inner)
+            } else {
+                Some(GeneratedBodyShape::Sequential {
+                    prefix: Box::new(analyzed),
+                    inner: Box::new(inner),
+                })
+            }
+        }
     }
 }
 
