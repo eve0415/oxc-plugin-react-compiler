@@ -115,18 +115,6 @@ fn bump_rendered_body_analysis_fallback() {
     });
 }
 
-fn bump_scope_statement_shape_render_fallback() {
-    REACTIVE_STRING_FALLBACK_COUNTS.with(|counts| {
-        counts.borrow_mut().scope_statement_shape_render += 1;
-    });
-}
-
-fn bump_early_return_shape_render_fallback() {
-    REACTIVE_STRING_FALLBACK_COUNTS.with(|counts| {
-        counts.borrow_mut().early_return_shape_render += 1;
-    });
-}
-
 /// Expression precedence levels (matching JavaScript operator precedence).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum ExprPrecedence {
@@ -3838,7 +3826,6 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
     let primary_output_name = output_names.first()?.clone();
     let primary_output_decl_id = *output_decl_ids.first()?;
     if let Some(early_return) = scope.early_return_value.as_ref() {
-        bump_early_return_shape_render_fallback();
         let setup_statements =
             try_render_statement_sources_from_generated_body_shape(&computation_shape)?;
         if setup_statements.is_empty() {
@@ -3915,7 +3902,6 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
                         output_names, dep_exprs, computation_shape
                     );
                 }
-                bump_scope_statement_shape_render_fallback();
                 try_render_statement_sources_from_generated_body_shape(&computation_shape)
             },
         )?;
@@ -5100,7 +5086,6 @@ fn try_build_generated_early_return_scope_return(
         return None;
     };
     cx.next_cache_index = computation_cx.next_cache_index;
-    bump_early_return_shape_render_fallback();
     let setup_statements =
         try_render_statement_sources_from_generated_body_shape(&computation_shape)?;
     if setup_statements.is_empty() {
