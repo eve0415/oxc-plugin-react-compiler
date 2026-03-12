@@ -1539,7 +1539,8 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
         if assign_indent != ternary_indent || ternary_test != binding_name {
             return (memoized_bindings, setup_statements);
         }
-        let Some(assign_expr) = render_assignment_expression_ast(&assign_target, &assign_rhs) else {
+        let Some(assign_expr) = render_assignment_expression_ast(&assign_target, &assign_rhs)
+        else {
             return (memoized_bindings, setup_statements);
         };
         let consequent_uses_target = contains_identifier_token(&ternary_consequent, &assign_target);
@@ -1548,9 +1549,10 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             return (memoized_bindings, setup_statements);
         }
         let consequent = if consequent_uses_target {
-            let Some(expr) =
-                render_sequence_expression_ast(std::slice::from_ref(&assign_expr), &ternary_consequent)
-            else {
+            let Some(expr) = render_sequence_expression_ast(
+                std::slice::from_ref(&assign_expr),
+                &ternary_consequent,
+            ) else {
                 return (memoized_bindings, setup_statements);
             };
             expr
@@ -1558,9 +1560,10 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             ternary_consequent
         };
         let alternate = if alternate_uses_target {
-            let Some(expr) =
-                render_sequence_expression_ast(std::slice::from_ref(&assign_expr), &ternary_alternate)
-            else {
+            let Some(expr) = render_sequence_expression_ast(
+                std::slice::from_ref(&assign_expr),
+                &ternary_alternate,
+            ) else {
                 return (memoized_bindings, setup_statements);
             };
             expr
@@ -2358,7 +2361,10 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     memoized_expr,
                 );
             let (memoized_bindings, memoized_setup_statements) =
-                fold_temp_binding_into_conditional_setup(memoized_bindings, memoized_setup_statements);
+                fold_temp_binding_into_conditional_setup(
+                    memoized_bindings,
+                    memoized_setup_statements,
+                );
             let (memoized_setup_statements, memoized_expr) =
                 promote_memoized_expr_to_setup_statement(
                     &value_name,
@@ -2416,7 +2422,10 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     memoized_expr,
                 );
             let (memoized_bindings, memoized_setup_statements) =
-                fold_temp_binding_into_conditional_setup(memoized_bindings, memoized_setup_statements);
+                fold_temp_binding_into_conditional_setup(
+                    memoized_bindings,
+                    memoized_setup_statements,
+                );
             let (memoized_setup_statements, memoized_expr) =
                 promote_memoized_expr_to_setup_statement(
                     &value_name,
@@ -2478,7 +2487,10 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     memoized_expr,
                 );
             let (memoized_bindings, memoized_setup_statements) =
-                fold_temp_binding_into_conditional_setup(memoized_bindings, memoized_setup_statements);
+                fold_temp_binding_into_conditional_setup(
+                    memoized_bindings,
+                    memoized_setup_statements,
+                );
             let (memoized_setup_statements, memoized_expr) =
                 promote_memoized_expr_to_setup_statement(
                     &value_name,
@@ -3867,6 +3879,7 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
     if cx.inline_temp_zero_dep_scope_shapes
         && dep_exprs.is_empty()
         && output_names.iter().all(|name| is_codegen_temp_name(name))
+        && !generated_body_shape_is_function_like_seed(&computation_shape)
     {
         let inline_shape = if declarations.is_empty() {
             computation_shape
@@ -4027,6 +4040,21 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
 
 fn generated_shape_is_empty_expression_body(shape: &GeneratedBodyShape) -> bool {
     matches!(shape, GeneratedBodyShape::ExpressionStatements(expressions) if expressions.is_empty())
+}
+
+fn generated_body_shape_is_function_like_seed(shape: &GeneratedBodyShape) -> bool {
+    match shape {
+        GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
+            bindings.len() == 1
+                && rendered_expr_is_function_like(&bindings[0].expression)
+                && generated_shape_is_empty_expression_body(inner)
+        }
+        GeneratedBodyShape::PrefixedDeclarations { inner, .. }
+        | GeneratedBodyShape::PrefixedAssignments { inner, .. }
+        | GeneratedBodyShape::PrefixedExpressionStatements { inner, .. }
+        | GeneratedBodyShape::Block { inner } => generated_body_shape_is_function_like_seed(inner),
+        _ => false,
+    }
 }
 
 fn rewrite_generated_setup_statements(mut setup_statements: Vec<String>) -> Vec<String> {
@@ -5643,9 +5671,8 @@ fn rendered_single_statement_prefix(
             inner: Box::new(inner),
         }),
         _ => {
-            let analyzed = fully_canonicalize_generated_body_shape(analyze_generated_body_shape(
-                rendered,
-            ));
+            let analyzed =
+                fully_canonicalize_generated_body_shape(analyze_generated_body_shape(rendered));
             if matches!(analyzed, GeneratedBodyShape::Unknown) {
                 None
             } else if generated_body_shape_is_empty(&analyzed) {
