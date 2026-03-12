@@ -4229,13 +4229,23 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
         None
     };
     codegen_reactive::set_fast_refresh_source_hash(fast_refresh_hash);
+    let reactive_fallback_count_start = codegen_reactive::current_reactive_string_fallback_counts();
+    let rollback_reactive_fallback_counts = || {
+        codegen_reactive::restore_reactive_string_fallback_counts(reactive_fallback_count_start);
+    };
+    macro_rules! untransformed_result {
+        ($code:expr) => {{
+            rollback_reactive_fallback_counts();
+            return CompileResult {
+                transformed: false,
+                code: $code,
+                map: None,
+            };
+        }};
+    }
 
     if options.no_emit {
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     // Pre-process: convert Flow `component`/`hook` declarations to `function`
@@ -4318,11 +4328,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
                         (parsed.program, ts_type)
                     } else {
                         if parser_ret.panicked {
-                            return CompileResult {
-                                transformed: false,
-                                code: source.to_string(),
-                                map: None,
-                            };
+                            untransformed_result!(source.to_string());
                         }
                         (parser_ret.program, source_type)
                     }
@@ -4330,11 +4336,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
             } else {
                 // TS parsing also failed — fall back to original parse result.
                 if parser_ret.panicked {
-                    return CompileResult {
-                        transformed: false,
-                        code: source.to_string(),
-                        map: None,
-                    };
+                    untransformed_result!(source.to_string());
                 }
                 (parser_ret.program, source_type)
             }
@@ -4349,11 +4351,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
         }
     } else {
         if parser_ret.panicked {
-            return CompileResult {
-                transformed: false,
-                code: source.to_string(),
-                map: None,
-            };
+            untransformed_result!(source.to_string());
         }
         (parser_ret.program, source_type)
     };
@@ -4362,22 +4360,14 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
 
     // File-level skip: already compiled (has runtime import)
     if has_memo_cache_import(&program) {
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     // Module-level opt-out: 'use no memo' / 'use no forget' / custom directives
     if !options.ignore_use_no_forget
         && has_module_scope_opt_out(&program, &options.custom_opt_out_directives)
     {
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     // Scan for eslint/flow suppression comments that prevent compilation.
@@ -4388,11 +4378,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
             && (options.environment.enable_fire
                 || options.environment.infer_effect_dependencies.is_some()))
     {
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     // Validate config: disableMemoizationForDebugging and enableChangeDetectionForDebugging
@@ -4400,11 +4386,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
     if options.environment.disable_memoization_for_debugging
         && options.environment.enable_change_detection_for_debugging
     {
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     // Validate blocklisted imports: if any import statement references a blocklisted
@@ -4416,11 +4398,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
             if let oxc_ast::ast::Statement::ImportDeclaration(import_decl) = stmt {
                 let module_name = import_decl.source.value.as_str();
                 if blocklisted.iter().any(|b| b == module_name) {
-                    return CompileResult {
-                        transformed: false,
-                        code: source.to_string(),
-                        map: None,
-                    };
+                    untransformed_result!(source.to_string());
                 }
             }
         }
@@ -4433,11 +4411,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
         .validate_no_dynamically_created_components_or_hooks
         && validate_no_dynamic_components_or_hooks_program(&program).is_err()
     {
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     // Build semantic analysis
@@ -4467,19 +4441,11 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
                 filename
             );
         }
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     if compiled.is_empty() {
-        return CompileResult {
-            transformed: false,
-            code: source_untransformed,
-            map: None,
-        };
+        untransformed_result!(source_untransformed);
     }
 
     // Dynamic gating: parse directive `use memo if(<identifier>)`.
@@ -4489,20 +4455,12 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
             .environment
             .validate_preserve_existing_memoization_guarantees
         {
-            return CompileResult {
-                transformed: false,
-                code: source.to_string(),
-                map: None,
-            };
+            untransformed_result!(source.to_string());
         }
         match parse_dynamic_gating_identifier(source) {
             Some(ident) => Some(ident),
             None => {
-                return CompileResult {
-                    transformed: false,
-                    code: source.to_string(),
-                    map: None,
-                };
+                untransformed_result!(source.to_string());
             }
         }
     } else {
@@ -4516,22 +4474,14 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
         && (options.gating.is_some() || dynamic_gate_ident.is_some())
         && source.contains("AUTODEPS")
     {
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     // Upstream currently bails out for AUTODEPS on default-import module property calls
     // (e.g. `React.useEffect(..., React.AUTODEPS)`), where effect inference cannot
     // reliably resolve dependencies in this path.
     if has_infer_effect_autodeps_default_import_property_call(&program, source, options) {
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     // Upstream currently errors for nested fbt/fbs calls inside `fbt.param`/`fbs.param`
@@ -4544,11 +4494,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
                 filename
             );
         }
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     crate::codegen_backend::emit_module(

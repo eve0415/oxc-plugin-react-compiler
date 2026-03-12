@@ -97,6 +97,18 @@ pub fn take_reactive_string_fallback_counts() -> ReactiveStringFallbackCounts {
     REACTIVE_STRING_FALLBACK_COUNTS.with(|counts| *counts.borrow())
 }
 
+pub(crate) fn current_reactive_string_fallback_counts() -> ReactiveStringFallbackCounts {
+    REACTIVE_STRING_FALLBACK_COUNTS.with(|counts| *counts.borrow())
+}
+
+pub(crate) fn restore_reactive_string_fallback_counts(
+    counts_to_restore: ReactiveStringFallbackCounts,
+) {
+    REACTIVE_STRING_FALLBACK_COUNTS.with(|counts| {
+        *counts.borrow_mut() = counts_to_restore;
+    });
+}
+
 fn bump_rendered_body_analysis_fallback() {
     REACTIVE_STRING_FALLBACK_COUNTS.with(|counts| {
         counts.borrow_mut().rendered_body_analysis += 1;
