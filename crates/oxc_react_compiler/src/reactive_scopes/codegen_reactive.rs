@@ -3106,6 +3106,7 @@ fn codegen_reactive_function_with_primitives(
             }
             if !matches!(analyzed_body_shape, GeneratedBodyShape::Unknown)
                 && direct_body_shape != analyzed_body_shape
+                && !generated_body_shape_matches_rendered_body(&direct_body_shape, &body)
                 && !generated_body_shapes_render_equivalent(
                     &direct_body_shape,
                     &analyzed_body_shape,
@@ -3375,6 +3376,18 @@ fn generated_body_shapes_render_equivalent(
     };
     normalize_rendered_generated_body_source(&direct_source.join("\n"))
         == normalize_rendered_generated_body_source(&analyzed_source.join("\n"))
+}
+
+fn generated_body_shape_matches_rendered_body(
+    shape: &GeneratedBodyShape,
+    rendered_body: &str,
+) -> bool {
+    let Some(rendered_shape_source) = try_render_statement_sources_from_generated_body_shape(shape)
+    else {
+        return false;
+    };
+    normalize_rendered_generated_body_source(&rendered_shape_source.join("\n"))
+        == normalize_rendered_generated_body_source(rendered_body)
 }
 
 fn try_build_generated_body_shape_from_scope_statement_parts(
