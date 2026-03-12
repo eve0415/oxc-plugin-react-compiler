@@ -986,6 +986,55 @@ fn collect_declared_binding_names_from_statements(setup_statements: &[String]) -
     names
 }
 
+fn collect_identifier_tokens_from_generated_expression(expression: &str) -> HashSet<String> {
+    let bytes = expression.as_bytes();
+    let mut names = HashSet::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        if !(ch == '_' || ch == '$' || ch.is_ascii_alphabetic()) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        while i < bytes.len() {
+            let current = bytes[i] as char;
+            if current == '_' || current == '$' || current.is_ascii_alphanumeric() {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        names.insert(expression[start..i].to_string());
+    }
+    names
+}
+
+fn setup_statement_reassigns_identifier(statement: &str, ident: &str) -> bool {
+    let trimmed = statement.trim();
+    if trimmed.starts_with("const ") || trimmed.starts_with("let ") || trimmed.starts_with("var ") {
+        return false;
+    }
+    [
+        format!("{ident} ="),
+        format!("{ident}="),
+        format!("{ident} +="),
+        format!("{ident} -="),
+        format!("{ident} *="),
+        format!("{ident} /="),
+        format!("{ident} %="),
+        format!("{ident}++"),
+        format!("{ident}--"),
+        format!("{{ {ident} }} ="),
+        format!("{{{ident}}} ="),
+        format!("{{ {ident}}} ="),
+        format!("{{{ident} }} ="),
+    ]
+    .into_iter()
+    .any(|pattern| trimmed.contains(&pattern))
+}
+
 fn extract_leading_generated_bindings_from_setup_statements(
     setup_statements: Vec<String>,
 ) -> (Vec<GeneratedBinding>, Vec<String>) {
@@ -1621,6 +1670,37 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             }
         }
         (kept, setup_statements)
+    }
+
+    fn move_reassignment_sensitive_expressions_into_setup(
+        memoized_expressions: Vec<String>,
+        mut setup_statements: Vec<String>,
+    ) -> (Vec<String>, Vec<String>) {
+        let mut prefix_statements = Vec::new();
+        let mut trailing_expressions = Vec::new();
+
+        for expression in memoized_expressions {
+            let referenced_names = collect_identifier_tokens_from_generated_expression(&expression);
+            let depends_on_reassigned_setup_name = referenced_names.iter().any(|name| {
+                setup_statements
+                    .iter()
+                    .any(|statement| setup_statement_reassigns_identifier(statement, name))
+            });
+            if depends_on_reassigned_setup_name
+                && let Some(statement) = render_generated_expression_statement(&expression)
+            {
+                prefix_statements.push(statement.trim_end().to_string());
+            } else {
+                trailing_expressions.push(expression);
+            }
+        }
+
+        if !prefix_statements.is_empty() {
+            prefix_statements.extend(setup_statements);
+            setup_statements = prefix_statements;
+        }
+
+        (trailing_expressions, setup_statements)
     }
 
     fn fold_temp_binding_into_conditional_setup(
@@ -2501,6 +2581,11 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     memoized_bindings,
                     memoized_setup_statements,
                 );
+            let (memoized_expressions, memoized_setup_statements) =
+                move_reassignment_sensitive_expressions_into_setup(
+                    memoized_expressions,
+                    memoized_setup_statements,
+                );
             GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
                 value_name,
                 value_slot,
@@ -2565,6 +2650,11 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             let (memoized_bindings, memoized_setup_statements) =
                 defer_setup_dependent_bindings_to_setup(
                     memoized_bindings,
+                    memoized_setup_statements,
+                );
+            let (memoized_expressions, memoized_setup_statements) =
+                move_reassignment_sensitive_expressions_into_setup(
+                    memoized_expressions,
                     memoized_setup_statements,
                 );
             GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
@@ -2635,6 +2725,11 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             let (memoized_bindings, memoized_setup_statements) =
                 defer_setup_dependent_bindings_to_setup(
                     memoized_bindings,
+                    memoized_setup_statements,
+                );
+            let (memoized_expressions, memoized_setup_statements) =
+                move_reassignment_sensitive_expressions_into_setup(
+                    memoized_expressions,
                     memoized_setup_statements,
                 );
             GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
@@ -3493,25 +3588,7 @@ fn codegen_reactive_function_with_primitives(
                     body
                 );
             }
-            if !matches!(analyzed_body_shape, GeneratedBodyShape::Unknown)
-                && direct_body_shape != analyzed_body_shape
-                && !generated_body_shape_matches_rendered_body(&direct_body_shape, &body)
-                && !generated_body_shape_reanalyzes_equivalent(
-                    &direct_body_shape,
-                    &analyzed_body_shape,
-                    func.async_,
-                    func.generator,
-                )
-                && !generated_body_shapes_render_equivalent(
-                    &direct_body_shape,
-                    &analyzed_body_shape,
-                )
-            {
-                bump_rendered_body_analysis_fallback();
-                analyzed_body_shape
-            } else {
-                direct_body_shape
-            }
+            direct_body_shape
         }
         None => {
             bump_rendered_body_analysis_fallback();
@@ -3885,7 +3962,7 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
     }
     let dep_exprs = collect_direct_scope_dependency_exprs(cx, scope, instructions)?;
     let mut computation_cx = cx.clone();
-    computation_cx.inline_temp_zero_dep_scope_shapes = true;
+    computation_cx.inline_temp_zero_dep_scope_shapes = false;
     let computation_shape = canonicalize_generated_body_shape(
         try_build_generated_body_shape_from_reactive_block(&mut computation_cx, instructions)?,
     );
@@ -5137,7 +5214,7 @@ fn try_build_generated_body_shape_from_reactive_scope_return(
     let mut full_scope_body = scope_block.instructions.clone();
     full_scope_body.push(ReactiveStatement::Terminal(term_stmt.clone()));
     let mut computation_cx = cx.clone();
-    computation_cx.inline_temp_zero_dep_scope_shapes = true;
+    computation_cx.inline_temp_zero_dep_scope_shapes = false;
     let computation_shape =
         try_build_generated_body_shape_from_reactive_block(&mut computation_cx, &full_scope_body)?;
     cx.next_cache_index = computation_cx.next_cache_index;
@@ -5216,7 +5293,7 @@ fn try_build_generated_early_return_scope_return(
     let dep_exprs =
         collect_direct_scope_dependency_exprs(cx, &scope_block.scope, &scope_block.instructions)?;
     let mut computation_cx = cx.clone();
-    computation_cx.inline_temp_zero_dep_scope_shapes = true;
+    computation_cx.inline_temp_zero_dep_scope_shapes = false;
     let Some(computation_shape) = try_build_generated_body_shape_from_reactive_block(
         &mut computation_cx,
         &scope_block.instructions,
