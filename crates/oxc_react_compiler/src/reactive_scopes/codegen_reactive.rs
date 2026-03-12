@@ -3094,6 +3094,10 @@ fn codegen_reactive_function_with_primitives(
             }
             if !matches!(analyzed_body_shape, GeneratedBodyShape::Unknown)
                 && direct_body_shape != analyzed_body_shape
+                && !generated_body_shapes_render_equivalent(
+                    &direct_body_shape,
+                    &analyzed_body_shape,
+                )
             {
                 bump_rendered_body_analysis_fallback();
                 analyzed_body_shape
@@ -3337,6 +3341,30 @@ fn try_render_statement_sources_from_generated_body_shape(
     )
 }
 
+fn normalize_rendered_generated_body_source(source: &str) -> String {
+    source
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn generated_body_shapes_render_equivalent(
+    direct: &GeneratedBodyShape,
+    analyzed: &GeneratedBodyShape,
+) -> bool {
+    let Some(direct_source) = try_render_statement_sources_from_generated_body_shape(direct) else {
+        return false;
+    };
+    let Some(analyzed_source) = try_render_statement_sources_from_generated_body_shape(analyzed)
+    else {
+        return false;
+    };
+    normalize_rendered_generated_body_source(&direct_source.join("\n"))
+        == normalize_rendered_generated_body_source(&analyzed_source.join("\n"))
+}
+
 fn try_build_generated_body_shape_from_scope_statement_parts(
     cx: &mut Context,
     scope: &ReactiveScope,
@@ -3432,6 +3460,35 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
     }
     if setup_statements.is_empty() {
         if let Some(Some(expr_value)) = computation_cx.temp.get(&primary_output_decl_id).cloned() {
+            if is_codegen_temp_name(&primary_output_name) {
+                let inner = if declarations.is_empty() {
+                    GeneratedBodyShape::PrefixedAssignments {
+                        assignments: vec![GeneratedAssignment {
+                            target: primary_output_name.clone(),
+                            value: expr_value.expr,
+                        }],
+                        inner: Box::new(GeneratedBodyShape::ExpressionStatements(vec![])),
+                    }
+                } else {
+                    GeneratedBodyShape::PrefixedDeclarations {
+                        declarations,
+                        inner: Box::new(GeneratedBodyShape::PrefixedAssignments {
+                            assignments: vec![GeneratedAssignment {
+                                target: primary_output_name.clone(),
+                                value: expr_value.expr,
+                            }],
+                            inner: Box::new(GeneratedBodyShape::ExpressionStatements(vec![])),
+                        }),
+                    }
+                };
+                if trace {
+                    eprintln!(
+                        "[DIRECT_SCOPE_STATEMENT_TRACE] temp-only direct scope={} output={} inline",
+                        scope.id.0, primary_output_name
+                    );
+                }
+                return Some(inner);
+            }
             setup_statements.push(
                 render_reactive_assignment_statement_ast(&primary_output_name, &expr_value.expr)?
                     .trim_end()
