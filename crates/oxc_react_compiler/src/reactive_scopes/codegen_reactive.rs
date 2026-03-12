@@ -574,7 +574,16 @@ fn canonicalize_generated_expression(expr: String) -> String {
     let allocator = Allocator::default();
     let trimmed = expr.trim();
     if let Some(parsed) = parse_rendered_expression_ast(&allocator, trimmed) {
-        codegen_expression_with_flow_cast_restore(&parsed)
+        let rendered = codegen_expression_with_flow_cast_restore(&parsed);
+        if matches!(
+            parsed.without_parentheses(),
+            ast::Expression::ObjectExpression(_)
+        ) && !rendered.trim_start().starts_with('(')
+        {
+            format!("({rendered})")
+        } else {
+            rendered
+        }
     } else if trimmed.starts_with('{') && trimmed.ends_with('}') {
         let wrapped = format!("({trimmed})");
         if let Some(parsed) = parse_rendered_expression_ast(&allocator, &wrapped) {
@@ -1065,6 +1074,44 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                         inner,
                     }
                 }
+                GeneratedBodyShape::WrappedReturnExpression {
+                    source_name,
+                    expression,
+                    inner,
+                } => GeneratedBodyShape::WrappedReturnExpression {
+                    source_name,
+                    expression,
+                    inner: Box::new(GeneratedBodyShape::PrefixedDeclarations {
+                        declarations,
+                        inner,
+                    }),
+                },
+                GeneratedBodyShape::AssignedAliasReturn {
+                    alias_name,
+                    source_name,
+                    inner,
+                } => GeneratedBodyShape::AssignedAliasReturn {
+                    alias_name,
+                    source_name,
+                    inner: Box::new(GeneratedBodyShape::PrefixedDeclarations {
+                        declarations,
+                        inner,
+                    }),
+                },
+                GeneratedBodyShape::AliasedReturn {
+                    alias_name,
+                    alias_kind,
+                    source_name,
+                    inner,
+                } => GeneratedBodyShape::AliasedReturn {
+                    alias_name,
+                    alias_kind,
+                    source_name,
+                    inner: Box::new(GeneratedBodyShape::PrefixedDeclarations {
+                        declarations,
+                        inner,
+                    }),
+                },
                 inner => GeneratedBodyShape::PrefixedDeclarations {
                     declarations,
                     inner: Box::new(inner),
@@ -1092,6 +1139,35 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     bindings.extend(inner_bindings);
                     GeneratedBodyShape::PrefixedBindings { bindings, inner }
                 }
+                GeneratedBodyShape::WrappedReturnExpression {
+                    source_name,
+                    expression,
+                    inner,
+                } => GeneratedBodyShape::WrappedReturnExpression {
+                    source_name,
+                    expression,
+                    inner: Box::new(GeneratedBodyShape::PrefixedBindings { bindings, inner }),
+                },
+                GeneratedBodyShape::AssignedAliasReturn {
+                    alias_name,
+                    source_name,
+                    inner,
+                } => GeneratedBodyShape::AssignedAliasReturn {
+                    alias_name,
+                    source_name,
+                    inner: Box::new(GeneratedBodyShape::PrefixedBindings { bindings, inner }),
+                },
+                GeneratedBodyShape::AliasedReturn {
+                    alias_name,
+                    alias_kind,
+                    source_name,
+                    inner,
+                } => GeneratedBodyShape::AliasedReturn {
+                    alias_name,
+                    alias_kind,
+                    source_name,
+                    inner: Box::new(GeneratedBodyShape::PrefixedBindings { bindings, inner }),
+                },
                 GeneratedBodyShape::ReturnIdentifier(alias_name) => {
                     if bindings.len() == 1 {
                         let binding = &bindings[0];
@@ -34815,6 +34891,79 @@ mod tests {
                             memoized_expr: None,
                         }
                     ),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn lifts_wrapped_return_out_of_prefixed_declarations() {
+        let shape = super::canonicalize_generated_body_shape(
+            super::GeneratedBodyShape::PrefixedDeclarations {
+                declarations: vec![super::GeneratedDeclaration {
+                    kind: ast::VariableDeclarationKind::Let,
+                    pattern: "t0".to_string(),
+                }],
+                inner: Box::new(super::GeneratedBodyShape::WrappedReturnExpression {
+                    source_name: "t0".to_string(),
+                    expression: "useRef(t0)".to_string(),
+                    inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                        "t0".to_string(),
+                    )),
+                }),
+            },
+        );
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::WrappedReturnExpression {
+                source_name: "t0".to_string(),
+                expression: "useRef(t0)".to_string(),
+                inner: Box::new(super::GeneratedBodyShape::PrefixedDeclarations {
+                    declarations: vec![super::GeneratedDeclaration {
+                        kind: ast::VariableDeclarationKind::Let,
+                        pattern: "t0".to_string(),
+                    }],
+                    inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                        "t0".to_string(),
+                    )),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn lifts_wrapped_return_out_of_prefixed_bindings() {
+        let shape =
+            super::canonicalize_generated_body_shape(super::GeneratedBodyShape::PrefixedBindings {
+                bindings: vec![super::GeneratedBinding {
+                    kind: ast::VariableDeclarationKind::Const,
+                    pattern: "inner".to_string(),
+                    expression: "makeInner()".to_string(),
+                }],
+                inner: Box::new(super::GeneratedBodyShape::WrappedReturnExpression {
+                    source_name: "innerIdentity".to_string(),
+                    expression: "inner(innerIdentity())".to_string(),
+                    inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                        "innerIdentity".to_string(),
+                    )),
+                }),
+            });
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::WrappedReturnExpression {
+                source_name: "innerIdentity".to_string(),
+                expression: "inner(innerIdentity())".to_string(),
+                inner: Box::new(super::GeneratedBodyShape::PrefixedBindings {
+                    bindings: vec![super::GeneratedBinding {
+                        kind: ast::VariableDeclarationKind::Const,
+                        pattern: "inner".to_string(),
+                        expression: "makeInner()".to_string(),
+                    }],
+                    inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                        "innerIdentity".to_string(),
+                    )),
                 }),
             }
         );
