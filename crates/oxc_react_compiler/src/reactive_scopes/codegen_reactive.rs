@@ -39,6 +39,8 @@ thread_local! {
     static FAST_REFRESH_SOURCE_HASH: RefCell<Option<String>> = const { RefCell::new(None) };
     static GENERATED_BODY_SHAPE_CACHE: RefCell<HashMap<(bool, String), GeneratedBodyShape>> =
         RefCell::new(HashMap::new());
+    static REACTIVE_STRING_FALLBACK_COUNTS: RefCell<ReactiveStringFallbackCounts> =
+        const { RefCell::new(ReactiveStringFallbackCounts::zero()) };
 }
 
 pub fn set_fast_refresh_source_hash(hash: Option<String>) {
@@ -49,6 +51,47 @@ pub fn set_fast_refresh_source_hash(hash: Option<String>) {
 
 fn get_fast_refresh_source_hash() -> Option<String> {
     FAST_REFRESH_SOURCE_HASH.with(|slot| slot.borrow().clone())
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReactiveStringFallbackCounts {
+    pub rendered_body_analysis: usize,
+    pub generated_shape_statement_render: usize,
+}
+
+impl ReactiveStringFallbackCounts {
+    const fn zero() -> Self {
+        Self {
+            rendered_body_analysis: 0,
+            generated_shape_statement_render: 0,
+        }
+    }
+
+    pub fn total(self) -> usize {
+        self.rendered_body_analysis + self.generated_shape_statement_render
+    }
+}
+
+pub fn reset_reactive_string_fallback_counts() {
+    REACTIVE_STRING_FALLBACK_COUNTS.with(|counts| {
+        *counts.borrow_mut() = ReactiveStringFallbackCounts::zero();
+    });
+}
+
+pub fn take_reactive_string_fallback_counts() -> ReactiveStringFallbackCounts {
+    REACTIVE_STRING_FALLBACK_COUNTS.with(|counts| *counts.borrow())
+}
+
+fn bump_rendered_body_analysis_fallback() {
+    REACTIVE_STRING_FALLBACK_COUNTS.with(|counts| {
+        counts.borrow_mut().rendered_body_analysis += 1;
+    });
+}
+
+fn bump_generated_shape_statement_render_fallback() {
+    REACTIVE_STRING_FALLBACK_COUNTS.with(|counts| {
+        counts.borrow_mut().generated_shape_statement_render += 1;
+    });
 }
 
 /// Expression precedence levels (matching JavaScript operator precedence).
@@ -1825,6 +1868,35 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                 .map(canonicalize_generated_expression)
                 .collect(),
         },
+        GeneratedBodyShape::WrappedReturnExpression {
+            source_name,
+            expression,
+            inner,
+        } => GeneratedBodyShape::WrappedReturnExpression {
+            source_name,
+            expression: canonicalize_generated_expression(expression),
+            inner: Box::new(canonicalize_generated_body_shape(*inner)),
+        },
+        GeneratedBodyShape::AssignedAliasReturn {
+            alias_name,
+            source_name,
+            inner,
+        } => GeneratedBodyShape::AssignedAliasReturn {
+            alias_name,
+            source_name,
+            inner: Box::new(canonicalize_generated_body_shape(*inner)),
+        },
+        GeneratedBodyShape::AliasedReturn {
+            alias_name,
+            alias_kind,
+            source_name,
+            inner,
+        } => GeneratedBodyShape::AliasedReturn {
+            alias_name,
+            alias_kind,
+            source_name,
+            inner: Box::new(canonicalize_generated_body_shape(*inner)),
+        },
         shape => shape,
     }
 }
@@ -2413,6 +2485,7 @@ fn codegen_reactive_function_with_primitives(
     }
 
     let analyzed_body_shape = {
+        bump_rendered_body_analysis_fallback();
         let body = strip_trailing_bare_return(&body, func.async_, func.generator);
         let body = prune_unused_const_literal_decls(&body, func.async_, func.generator);
         canonicalize_generated_body_shape(analyze_generated_body_shape(&body))
@@ -2532,6 +2605,7 @@ fn try_build_generated_body_shape_from_reactive_block(
 fn try_render_statement_sources_from_generated_body_shape(
     shape: &GeneratedBodyShape,
 ) -> Option<Vec<String>> {
+    bump_generated_shape_statement_render_fallback();
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let body = build_function_body_from_generated_shape_for_ast_codegen(
@@ -34961,6 +35035,58 @@ mod tests {
                         pattern: "inner".to_string(),
                         expression: "makeInner()".to_string(),
                     }],
+                    inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                        "innerIdentity".to_string(),
+                    )),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn canonicalizes_wrapped_return_inner_prefixes() {
+        let shape = super::canonicalize_generated_body_shape(
+            super::GeneratedBodyShape::WrappedReturnExpression {
+                source_name: "innerIdentity".to_string(),
+                expression: "inner(innerIdentity())".to_string(),
+                inner: Box::new(super::GeneratedBodyShape::PrefixedBindings {
+                    bindings: vec![super::GeneratedBinding {
+                        kind: ast::VariableDeclarationKind::Const,
+                        pattern: "inner".to_string(),
+                        expression: "makeInner()".to_string(),
+                    }],
+                    inner: Box::new(super::GeneratedBodyShape::PrefixedBindings {
+                        bindings: vec![super::GeneratedBinding {
+                            kind: ast::VariableDeclarationKind::Const,
+                            pattern: "innerIdentity".to_string(),
+                            expression: "identity(inner)".to_string(),
+                        }],
+                        inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                            "innerIdentity".to_string(),
+                        )),
+                    }),
+                }),
+            },
+        );
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::WrappedReturnExpression {
+                source_name: "innerIdentity".to_string(),
+                expression: "inner(innerIdentity())".to_string(),
+                inner: Box::new(super::GeneratedBodyShape::PrefixedBindings {
+                    bindings: vec![
+                        super::GeneratedBinding {
+                            kind: ast::VariableDeclarationKind::Const,
+                            pattern: "inner".to_string(),
+                            expression: "makeInner()".to_string(),
+                        },
+                        super::GeneratedBinding {
+                            kind: ast::VariableDeclarationKind::Const,
+                            pattern: "innerIdentity".to_string(),
+                            expression: "identity(inner)".to_string(),
+                        },
+                    ],
                     inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
                         "innerIdentity".to_string(),
                     )),
