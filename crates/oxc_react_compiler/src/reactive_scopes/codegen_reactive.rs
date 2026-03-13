@@ -930,6 +930,26 @@ fn rewrite_cached_prefix_for_outer_declarations(
             cached_values,
             restored_values,
         },
+        GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+            deps,
+            setup_statements,
+            cached_values,
+            restored_values,
+            sentinel_name,
+            final_return,
+            fallback_body,
+        } => GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+            deps,
+            setup_statements: rewrite_cached_setup_statements_for_outer_declarations(
+                setup_statements,
+                declarations,
+            ),
+            cached_values,
+            restored_values,
+            sentinel_name,
+            final_return,
+            fallback_body,
+        },
         other => other,
     }
 }
@@ -1951,7 +1971,10 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             mut declarations,
             inner,
         } => {
-            let inner = canonicalize_generated_body_shape(*inner);
+            let inner = rewrite_cached_prefix_for_outer_declarations(
+                canonicalize_generated_body_shape(*inner),
+                &declarations,
+            );
             match inner {
                 GeneratedBodyShape::PrefixedDeclarations {
                     declarations: inner_declarations,
@@ -2198,6 +2221,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     prefixed_inner.as_ref(),
                     GeneratedBodyShape::ZeroDependencyMemoizedCachedValues { .. }
                         | GeneratedBodyShape::MemoizedCachedValues { .. }
+                        | GeneratedBodyShape::MemoizedEarlyReturnSentinel { .. }
                 ) =>
                 {
                     let prefixed_inner = rewrite_cached_prefix_for_outer_declarations(
@@ -3586,10 +3610,9 @@ fn codegen_reactive_function_with_primitives(
             let direct_body_shape = fully_canonicalize_generated_body_shape(
                 strip_top_level_trailing_return_void(direct_body_shape),
             );
-            if std::env::var("DEBUG_DIRECT_BODY_SHAPE_MISMATCH").is_ok()
-                && !matches!(analyzed_body_shape, GeneratedBodyShape::Unknown)
-                && direct_body_shape != analyzed_body_shape
-            {
+            let has_mismatch = !matches!(analyzed_body_shape, GeneratedBodyShape::Unknown)
+                && direct_body_shape != analyzed_body_shape;
+            if std::env::var("DEBUG_DIRECT_BODY_SHAPE_MISMATCH").is_ok() && has_mismatch {
                 eprintln!(
                     "[DIRECT_BODY_SHAPE_MISMATCH] fn={:?} direct={:#?} analyzed={:#?} body=\n{}",
                     func.name_hint.as_deref(),
@@ -3598,7 +3621,12 @@ fn codegen_reactive_function_with_primitives(
                     body
                 );
             }
-            direct_body_shape
+            if has_mismatch {
+                bump_rendered_body_analysis_fallback();
+                analyzed_body_shape
+            } else {
+                direct_body_shape
+            }
         }
         None => {
             bump_rendered_body_analysis_fallback();
@@ -3814,8 +3842,56 @@ fn try_build_generated_body_shape_from_reactive_block(
             })
         }
         [ReactiveStatement::Instruction(instr), rest @ ..] => {
+            if rest.len() == 1
+                && matches!(
+                    &rest[0],
+                    ReactiveStatement::Terminal(term_stmt)
+                        if matches!(
+                            &term_stmt.terminal,
+                            ReactiveTerminal::Return { value, .. }
+                                if matches!(value.identifier.type_, Type::Primitive)
+                        )
+                )
+                && matches!(
+                    &instr.value,
+                    InstructionValue::LoadLocal { place, .. }
+                        | InstructionValue::LoadContext { place, .. }
+                            if instr.lvalue.is_none() && place.identifier.name.is_some()
+                )
+            {
+                let inner = try_build_generated_body_shape_from_reactive_block(cx, rest)?;
+                let (InstructionValue::LoadLocal { place, .. }
+                | InstructionValue::LoadContext { place, .. }) = &instr.value
+                else {
+                    unreachable!();
+                };
+                return Some(GeneratedBodyShape::PrefixedExpressionStatements {
+                    expressions: vec![codegen_place_to_expression(cx, place)],
+                    inner: Box::new(inner),
+                });
+            }
             let should_wrap = apply_direct_prefix_codegen_state(cx, instr);
             let inner = try_build_generated_body_shape_from_reactive_block(cx, rest)?;
+            if !should_wrap
+                && (matches!(inner, GeneratedBodyShape::ReturnVoid)
+                    || generated_body_shape_is_empty(&inner))
+                && matches!(
+                    &instr.value,
+                    InstructionValue::LoadLocal { place, .. }
+                        | InstructionValue::LoadContext { place, .. }
+                            if instr.lvalue.is_none() && place.identifier.name.is_some()
+                )
+            {
+                let (InstructionValue::LoadLocal { place, .. }
+                | InstructionValue::LoadContext { place, .. }) = &instr.value
+                else {
+                    unreachable!();
+                };
+                return Some(GeneratedBodyShape::PrefixedExpressionStatements {
+                    expressions: vec![codegen_place_to_expression(cx, place)],
+                    inner: Box::new(inner),
+                });
+            }
             if should_wrap {
                 let shape = try_wrap_generated_body_shape_with_instruction_prefix(cx, instr, inner);
                 if shape.is_none() && trace {
@@ -3971,6 +4047,34 @@ fn generated_body_shape_reanalyzes_equivalent(
     &reparsed == analyzed
 }
 
+fn maybe_mark_direct_zero_dep_scope_outputs_stable(
+    cx: &mut Context,
+    scope: &ReactiveScope,
+    instructions: &ReactiveBlock,
+) {
+    if !scope.dependencies.is_empty() || !scope.reassignments.is_empty() || instructions.len() != 1
+    {
+        return;
+    }
+    let ReactiveStatement::Instruction(instr) = &instructions[0] else {
+        return;
+    };
+    if !matches!(
+        instr.value,
+        InstructionValue::FunctionExpression { .. }
+            | InstructionValue::ObjectMethod { .. }
+            | InstructionValue::Primitive { .. }
+            | InstructionValue::ArrayExpression { .. }
+            | InstructionValue::ObjectExpression { .. }
+    ) {
+        return;
+    }
+    for decl in scope.declarations.values() {
+        cx.stable_zero_dep_decls
+            .insert(decl.identifier.declaration_id);
+    }
+}
+
 fn try_build_generated_body_shape_from_scope_statement_parts(
     cx: &mut Context,
     scope: &ReactiveScope,
@@ -4052,8 +4156,15 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
         .iter()
         .all(|stmt| matches!(stmt, ReactiveStatement::Instruction(_)));
     if let Some(early_return) = scope.early_return_value.as_ref() {
-        let setup_statements =
+        let mut setup_statements =
             try_render_statement_sources_from_generated_body_shape(&computation_shape)?;
+        setup_statements = rewrite_generated_setup_statements(setup_statements);
+        if !declarations.is_empty() {
+            setup_statements = rewrite_cached_setup_statements_for_outer_declarations(
+                setup_statements,
+                &declarations,
+            );
+        }
         if setup_statements.is_empty() {
             return None;
         }
@@ -4153,6 +4264,7 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
                 scope.id.0, output_names
             );
         }
+        maybe_mark_direct_zero_dep_scope_outputs_stable(cx, scope, instructions);
         return Some(canonicalize_generated_body_shape(inline_shape));
     }
     let mut setup_statements =
@@ -4207,6 +4319,7 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
                         scope.id.0, primary_output_name
                     );
                 }
+                maybe_mark_direct_zero_dep_scope_outputs_stable(cx, scope, instructions);
                 return Some(inner);
             }
             setup_statements.push(
@@ -4306,14 +4419,16 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
             )),
         }
     };
-    if declarations.is_empty() {
-        Some(inner)
+    let shape = if declarations.is_empty() {
+        inner
     } else {
-        Some(GeneratedBodyShape::PrefixedDeclarations {
+        GeneratedBodyShape::PrefixedDeclarations {
             declarations,
             inner: Box::new(inner),
-        })
-    }
+        }
+    };
+    maybe_mark_direct_zero_dep_scope_outputs_stable(cx, scope, instructions);
+    Some(shape)
 }
 
 fn generated_shape_is_empty_expression_body(shape: &GeneratedBodyShape) -> bool {
@@ -5372,8 +5487,9 @@ fn try_build_generated_early_return_scope_return(
         return None;
     };
     cx.next_cache_index = computation_cx.next_cache_index;
-    let setup_statements =
+    let mut setup_statements =
         try_render_statement_sources_from_generated_body_shape(&computation_shape)?;
+    setup_statements = rewrite_generated_setup_statements(setup_statements);
     if setup_statements.is_empty() {
         if trace {
             eprintln!(
@@ -5412,6 +5528,10 @@ fn try_build_generated_early_return_scope_return(
             name: identifier_name_with_cx(cx, reassignment),
             slot: 0,
         });
+    }
+    if !declarations.is_empty() {
+        setup_statements =
+            rewrite_cached_setup_statements_for_outer_declarations(setup_statements, &declarations);
     }
 
     if cached_values.is_empty() {
@@ -37663,6 +37783,81 @@ mod tests {
                 && statement.contains("$[8] = t1;")
                 && statement.contains("t1 = $[8];")
         }));
+    }
+
+    #[test]
+    fn canonicalizes_early_return_cached_prefix_for_outer_declarations() {
+        let shape =
+            super::canonicalize_generated_body_shape(super::GeneratedBodyShape::Sequential {
+                prefix: Box::new(super::GeneratedBodyShape::PrefixedDeclarations {
+                    declarations: vec![
+                        super::GeneratedDeclaration {
+                            kind: ast::VariableDeclarationKind::Let,
+                            pattern: "t0".to_string(),
+                        },
+                        super::GeneratedDeclaration {
+                            kind: ast::VariableDeclarationKind::Let,
+                            pattern: "y".to_string(),
+                        },
+                    ],
+                    inner: Box::new(super::GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+                        deps: vec![(0, "cond".to_string())],
+                        setup_statements: vec![
+                            "let y;".to_string(),
+                            "if (cond) {\n  t0 = foo;\n  break bb0;\n}".to_string(),
+                            "y = foo();".to_string(),
+                        ],
+                        cached_values: vec![
+                            super::GeneratedCachedValue {
+                                name: "t0".to_string(),
+                                slot: 1,
+                            },
+                            super::GeneratedCachedValue {
+                                name: "y".to_string(),
+                                slot: 2,
+                            },
+                        ],
+                        restored_values: vec![
+                            super::GeneratedCachedValue {
+                                name: "t0".to_string(),
+                                slot: 1,
+                            },
+                            super::GeneratedCachedValue {
+                                name: "y".to_string(),
+                                slot: 2,
+                            },
+                        ],
+                        sentinel_name: "t0".to_string(),
+                        final_return: None,
+                        fallback_body: None,
+                    }),
+                }),
+                inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier("y".to_string())),
+            });
+
+        let super::GeneratedBodyShape::PrefixedDeclarations { inner, .. } = shape else {
+            panic!("expected prefixed declarations, got {shape:?}");
+        };
+        let super::GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+            setup_statements,
+            final_return,
+            ..
+        } = inner.as_ref()
+        else {
+            panic!("expected memoized early return sentinel, got {inner:?}");
+        };
+        assert_eq!(final_return.as_deref(), Some("y"));
+        assert!(
+            !setup_statements
+                .iter()
+                .any(|statement| statement.trim() == "let y;")
+        );
+        assert!(
+            setup_statements
+                .iter()
+                .any(|statement| statement.contains("y = foo()")),
+            "expected rewritten assignment in setup statements, got {setup_statements:?}"
+        );
     }
 
     #[test]
