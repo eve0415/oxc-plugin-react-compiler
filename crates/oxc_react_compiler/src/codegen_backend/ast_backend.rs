@@ -530,6 +530,7 @@ fn try_emit_module(
     );
     let mut code = codegen_program(&program);
     code = apply_blank_line_markers(state.source_type, &code, &blank_line_before);
+    code = move_leading_comment_to_import_trailing(&code);
     if code.contains(FLOW_CAST_MARKER_HELPER) {
         code = restore_flow_cast_marker_calls(&code);
     }
@@ -7831,6 +7832,71 @@ fn codegen_program(program: &ast::Program<'_>) -> String {
         ..CodegenOptions::default()
     };
     Codegen::new().with_options(options).build(program).code
+}
+
+/// Move leading file comment(s) to be trailing on the last import line in the import block.
+///
+/// Babel's codegen places leading file comments (e.g., pragmas) as trailing comments
+/// on the last import statement in the import block. Our AST codegen emits them on
+/// separate lines after the imports. This function detects when the last import is
+/// followed by a line comment and moves it to be trailing on the import line.
+///
+/// Pattern: `import ...;\nimport ...;\n// comment\n` → `import ...;\nimport ...; // comment\n`
+fn move_leading_comment_to_import_trailing(code: &str) -> String {
+    if !code.starts_with("import ") {
+        return code.to_string();
+    }
+
+    // Find the last import line in the consecutive import block that ends with a
+    // compiler-runtime import. Only apply comment-move when we inserted a runtime import.
+    let lines: Vec<&str> = code.lines().collect();
+    let mut last_runtime_import_idx: Option<usize> = None;
+    let mut last_import_idx = 0;
+    for (i, line) in lines.iter().enumerate() {
+        if line.starts_with("import ") {
+            last_import_idx = i;
+            if line.contains("react/compiler-runtime") || line.contains("react-compiler-runtime") {
+                last_runtime_import_idx = Some(i);
+            }
+        } else {
+            break;
+        }
+    }
+
+    // Only apply if we have a runtime import, and the comment follows the last import
+    // in the block. Use last_import_idx (not last_runtime_import_idx) since Babel
+    // attaches the comment to whichever import ends up last in the output.
+    if last_runtime_import_idx.is_none() {
+        return code.to_string();
+    }
+
+    // Check if the line after the last import is a comment
+    let comment_idx = last_import_idx + 1;
+    if comment_idx >= lines.len() || !lines[comment_idx].starts_with("//") {
+        return code.to_string();
+    }
+
+    // Build the result: everything up to last import, then import + comment, then rest
+    let mut result = String::with_capacity(code.len());
+    for (i, line) in lines.iter().enumerate() {
+        if i == last_import_idx {
+            result.push_str(line);
+            result.push(' ');
+            result.push_str(lines[comment_idx]);
+            result.push('\n');
+        } else if i == comment_idx {
+            // Skip — already merged onto import line
+            continue;
+        } else {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    // Remove trailing newline if original didn't have one
+    if !code.ends_with('\n') && result.ends_with('\n') {
+        result.pop();
+    }
+    result
 }
 
 /// Apply blank line markers to the generated code.
