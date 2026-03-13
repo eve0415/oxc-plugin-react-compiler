@@ -375,16 +375,37 @@ fn try_emit_module(
         .filter(|_| compiled.iter().any(|cf| cf.needs_cache_import));
 
     let mut body = builder.vec();
+    // Track which output body indices need a blank line before them (preserving original source)
+    let mut blank_line_before: Vec<bool> = Vec::new();
+
     for import_plan in &state.imports_to_insert {
         let statement = build_inserted_import_statement(builder, import_plan);
         body.push(statement);
+        blank_line_before.push(false);
+    }
+
+    // Precompute which original statements have a blank line before them in the source
+    let original_stmts = &args.program.body;
+    let mut original_has_blank_before: Vec<bool> = vec![false; original_stmts.len()];
+    for i in 1..original_stmts.len() {
+        let prev_end = original_stmts[i - 1].span().end as usize;
+        let curr_start = original_stmts[i].span().start as usize;
+        if curr_start > prev_end {
+            let between = &args.source[prev_end..curr_start];
+            let newline_count = between.chars().filter(|&c| c == '\n').count();
+            if newline_count >= 2 {
+                original_has_blank_before[i] = true;
+            }
+        }
     }
 
     let mut compiled_sorted = compiled.iter().collect::<Vec<_>>();
     compiled_sorted.sort_by_key(|cf| cf.start);
     let mut compiled_idx = 0usize;
 
-    for stmt in &args.program.body {
+    for (orig_idx, stmt) in args.program.body.iter().enumerate() {
+        let has_blank = original_has_blank_before[orig_idx];
+
         if let ast::Statement::ImportDeclaration(import_decl) = stmt
             && let Some(plan) = state.runtime_import_merge_plan.as_ref()
             && import_decl.span.start == plan.start
@@ -393,8 +414,10 @@ fn try_emit_module(
             if plan.replacement.is_some() {
                 let statement = build_runtime_import_merge_statement(builder, &plan.merged_specs);
                 body.push(statement);
+                blank_line_before.push(has_blank);
             } else {
                 body.push(stmt.clone_in(&allocator));
+                blank_line_before.push(has_blank);
             }
             continue;
         }
@@ -433,12 +456,19 @@ fn try_emit_module(
                 .unwrap_or(original_stmt.clone());
             if maybe_gated == original_stmt {
                 body.push(stmt.clone_in(&allocator));
+                blank_line_before.push(has_blank);
             } else {
-                body.extend(parse_statements(
+                let stmts = parse_statements(
                     &allocator,
                     state.source_type,
                     allocator.alloc_str(&maybe_gated),
-                )?);
+                )?;
+                let mut first = true;
+                for s in stmts {
+                    body.push(s);
+                    blank_line_before.push(if first { has_blank } else { false });
+                    first = false;
+                }
             }
             continue;
         }
@@ -454,8 +484,11 @@ fn try_emit_module(
                 &state,
             )
         {
+            let mut first = true;
             for statement in statements {
                 body.push(statement);
+                blank_line_before.push(if first { has_blank } else { false });
+                first = false;
             }
             continue;
         }
@@ -469,8 +502,11 @@ fn try_emit_module(
             &stmt_compiled,
             &state,
         ) {
+            let mut first = true;
             for statement in statements {
                 body.push(statement);
+                blank_line_before.push(if first { has_blank } else { false });
+                first = false;
             }
             continue;
         }
@@ -493,6 +529,7 @@ fn try_emit_module(
         body,
     );
     let mut code = codegen_program(&program);
+    code = apply_blank_line_markers(state.source_type, &code, &blank_line_before);
     if code.contains(FLOW_CAST_MARKER_HELPER) {
         code = restore_flow_cast_marker_calls(&code);
     }
@@ -7796,6 +7833,57 @@ fn codegen_program(program: &ast::Program<'_>) -> String {
     Codegen::new().with_options(options).build(program).code
 }
 
+/// Apply blank line markers to the generated code.
+///
+/// `blank_line_before[i]` indicates that the i-th top-level statement in the output
+/// body should be preceded by a blank line. This re-parses the generated code to find
+/// statement boundaries and inserts `\n` at the right positions.
+fn apply_blank_line_markers(
+    source_type: SourceType,
+    code: &str,
+    blank_line_before: &[bool],
+) -> String {
+    if !blank_line_before.iter().any(|&b| b) {
+        return code.to_string();
+    }
+
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, code, source_type).parse();
+    if parsed.panicked || !parsed.errors.is_empty() {
+        return code.to_string();
+    }
+
+    let stmts = &parsed.program.body;
+    let mut insert_positions = Vec::new();
+    for (i, stmt) in stmts.iter().enumerate() {
+        if i < blank_line_before.len() && blank_line_before[i] && i > 0 {
+            let prev_end = stmts[i - 1].span().end as usize;
+            let curr_start = stmt.span().start as usize;
+            let between = &code[prev_end..curr_start];
+            let newline_count = between.chars().filter(|&c| c == '\n').count();
+            if newline_count < 2
+                && let Some(nl_pos) = between.find('\n')
+            {
+                insert_positions.push(prev_end + nl_pos + 1);
+            }
+        }
+    }
+
+    if insert_positions.is_empty() {
+        return code.to_string();
+    }
+
+    let mut result = String::with_capacity(code.len() + insert_positions.len());
+    let mut cursor = 0;
+    for pos in insert_positions {
+        result.push_str(&code[cursor..pos]);
+        result.push('\n');
+        cursor = pos;
+    }
+    result.push_str(&code[cursor..]);
+    result
+}
+
 fn codegen_statement_source(
     allocator: &Allocator,
     source_type: SourceType,
@@ -10359,7 +10447,9 @@ export const FIXTURE_ENTRYPOINT = {
         let set_property_idx = rewritten
             .find("setProperty(x, props.a);")
             .expect("expected setProperty");
-        let value_idx = rewritten.find("t0 = [x, y];").expect("expected value assignment");
+        let value_idx = rewritten
+            .find("t0 = [x, y];")
+            .expect("expected value assignment");
 
         assert!(x_idx < mutate_idx, "{rewritten}");
         assert!(mutate_idx < t1_idx, "{rewritten}");
