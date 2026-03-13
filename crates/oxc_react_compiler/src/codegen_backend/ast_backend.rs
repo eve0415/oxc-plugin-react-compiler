@@ -8149,8 +8149,21 @@ fn transfer_blank_lines_from_original_source(
         return code.to_string();
     }
 
-    // Collect blank-line pairs from the original source of each compiled function.
+    // Collect pairs of consecutive code lines that have a line gap > 1 in the
+    // original source. This handles two cases:
+    //   1. Blank lines between code statements
+    //   2. Comments between code statements (which get removed during compilation,
+    //      but Babel preserves the line gap they create)
     let mut blank_line_pairs: HashSet<(String, String)> = HashSet::new();
+
+    let is_code_line = |s: &str| -> bool {
+        let t = s.trim();
+        !t.is_empty()
+            && !t.starts_with("//")
+            && !t.starts_with("/*")
+            && !t.starts_with("* ")
+            && !t.starts_with("*/")
+    };
 
     for cf in compiled {
         let start = cf.start as usize;
@@ -8160,30 +8173,22 @@ fn transfer_blank_lines_from_original_source(
         }
         let func_source = &source[start..end];
         let lines: Vec<&str> = func_source.lines().collect();
-        for i in 0..lines.len() {
-            if !lines[i].trim().is_empty() {
-                continue;
-            }
-            // This is a blank line. Find non-blank, non-comment lines before and after.
-            // Comments are stripped from compiled output, so matching on them
-            // would never produce a hit.
-            let is_code_line = |s: &str| -> bool {
-                let t = s.trim();
-                !t.is_empty()
-                    && !t.starts_with("//")
-                    && !t.starts_with("/*")
-                    && !t.starts_with("* ")
-                    && !t.starts_with("*/")
-            };
-            let before = (0..i)
-                .rev()
-                .find(|&j| is_code_line(lines[j]))
-                .map(|j| lines[j].trim().to_string());
-            let after = ((i + 1)..lines.len())
-                .find(|&j| is_code_line(lines[j]))
-                .map(|j| lines[j].trim().to_string());
-            if let (Some(before), Some(after)) = (before, after) {
-                blank_line_pairs.insert((before, after));
+
+        // Find all code lines (non-blank, non-comment) and their line numbers
+        let code_lines_with_idx: Vec<(usize, &str)> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| is_code_line(l))
+            .map(|(i, l)| (i, *l))
+            .collect();
+
+        // For each pair of consecutive code lines with a gap > 1, record
+        // them as a blank-line pair
+        for window in code_lines_with_idx.windows(2) {
+            let (line_a, text_a) = window[0];
+            let (line_b, text_b) = window[1];
+            if line_b > line_a + 1 {
+                blank_line_pairs.insert((text_a.trim().to_string(), text_b.trim().to_string()));
             }
         }
     }
