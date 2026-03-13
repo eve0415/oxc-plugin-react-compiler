@@ -3622,8 +3622,20 @@ fn codegen_reactive_function_with_primitives(
                 );
             }
             if has_mismatch {
-                bump_rendered_body_analysis_fallback();
-                analyzed_body_shape
+                // If the direct shape re-analyzes to the analyzed shape, they're
+                // semantically equivalent but categorized differently. Prefer the
+                // direct shape since it preserves the original statement ordering.
+                if generated_body_shape_reanalyzes_equivalent(
+                    &direct_body_shape,
+                    &analyzed_body_shape,
+                    func.async_,
+                    func.generator,
+                ) {
+                    direct_body_shape
+                } else {
+                    bump_rendered_body_analysis_fallback();
+                    analyzed_body_shape
+                }
             } else {
                 direct_body_shape
             }
@@ -4024,8 +4036,6 @@ fn generated_body_shape_matches_rendered_body(
         == canonicalize_rendered_generated_body_source(rendered_body)
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
 fn generated_body_shape_reanalyzes_equivalent(
     shape: &GeneratedBodyShape,
     analyzed: &GeneratedBodyShape,

@@ -1,19 +1,9 @@
-# React Compiler Conformance — 99.4% parity rate
+# React Compiler Conformance — 100.0% parity rate
 
-**1742** parity_success, **10** parity_failure, **0** skipped
+**1752** parity_success, **0** parity_failure, **0** skipped
 
 ## Failed
 
-- `allocating-primitive-as-dep-nested-scope`: Output mismatch
-- `codegen-emit-make-read-only`: Output mismatch
-- `hoisting-let-declaration-without-initialization`: Output mismatch
-- `mutation-within-capture-and-mutablerange`: Output mismatch
-- `new-mutability/array-push`: Output mismatch
-- `new-mutability/transitive-mutation-before-capturing-value-created-earlier`: Output mismatch
-- `primitive-as-dep-nested-scope`: Output mismatch
-- `reactivity-analysis-interleaved-reactivity`: Output mismatch
-- `repro-aliased-capture-aliased-mutate`: Output mismatch
-- `repro-aliased-capture-mutate`: Output mismatch
 
 ## Passed
 
@@ -35,6 +25,7 @@
 - `align-scopes-within-nested-valueblock-in-array`
 - `allocating-logical-expression-instruction-scope`
 - `allocating-primitive-as-dep`
+- `allocating-primitive-as-dep-nested-scope`
 - `allow-assigning-ref-accessing-function-to-object-property-if-not-mutated`
 - `allow-assigning-to-global-in-function-spread-as-jsx`
 - `allow-global-mutation-in-effect-indirect`
@@ -207,6 +198,7 @@
 - `change-detect-reassign`
 - `class-component-with-render-helper`
 - `codegen-emit-imports-same-source`
+- `codegen-emit-make-read-only`
 - `codegen-inline-iife`
 - `codegen-inline-iife-reassign`
 - `codegen-inline-iife-storeprop`
@@ -687,6 +679,7 @@
 - `hoisting-computed-member-expression`
 - `hoisting-functionexpr-conditional-dep`
 - `hoisting-invalid-tdz-let`
+- `hoisting-let-declaration-without-initialization`
 - `hoisting-member-expression`
 - `hoisting-nested-block-statements`
 - `hoisting-nested-const-declaration`
@@ -896,6 +889,7 @@
 - `mutate-captured-arg-separately`
 - `mutate-outer-scope-within-value-block`
 - `mutation-during-jsx-construction`
+- `mutation-within-capture-and-mutablerange`
 - `mutation-within-jsx`
 - `mutation-within-jsx-and-break`
 - `name-anonymous-functions`
@@ -911,6 +905,7 @@
 - `new-mutability/array-filter`
 - `new-mutability/array-map-captures-receiver-noAlias`
 - `new-mutability/array-map-named-callback-cross-context`
+- `new-mutability/array-push`
 - `new-mutability/basic-mutation`
 - `new-mutability/basic-mutation-via-function-expression`
 - `new-mutability/capture-backedge-phi-with-later-mutation`
@@ -957,6 +952,7 @@
 - `new-mutability/ssa-renaming-ternary-destruction`
 - `new-mutability/todo-control-flow-sensitive-mutation`
 - `new-mutability/todo-transitivity-createfrom-capture-lambda`
+- `new-mutability/transitive-mutation-before-capturing-value-created-earlier`
 - `new-mutability/transitivity-add-captured-array-to-itself`
 - `new-mutability/transitivity-capture-createfrom`
 - `new-mutability/transitivity-capture-createfrom-lambda`
@@ -1122,6 +1118,7 @@
 - `preserve-memo-validation/useMemo-with-no-depslist`
 - `primitive-alias-mutate`
 - `primitive-as-dep`
+- `primitive-as-dep-nested-scope`
 - `primitive-reassigned-loop-force-scopes-enabled`
 - `prop-capturing-function-1`
 - `propagate-scope-deps-hir-fork/conditional-break-labeled`
@@ -1214,6 +1211,7 @@
 - `reactive-scope-grouping`
 - `reactive-scopes`
 - `reactive-scopes-if`
+- `reactivity-analysis-interleaved-reactivity`
 - `reactivity-analysis-reactive-via-mutation-of-computed-load`
 - `reactivity-analysis-reactive-via-mutation-of-property-load`
 - `reactivity-via-aliased-mutation-array`
@@ -1310,6 +1308,8 @@
 - `renaming-jsx-tag-lowercase`
 - `reordering-across-blocks`
 - `repro`
+- `repro-aliased-capture-aliased-mutate`
+- `repro-aliased-capture-mutate`
 - `repro-allocating-ternary-test-instruction-scope`
 - `repro-backedge-reference-effect`
 - `repro-bailout-nopanic-shouldnt-outline`
