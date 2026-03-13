@@ -3516,6 +3516,9 @@ struct Context {
     /// Declarations produced by dependency-free scopes. These values are
     /// sentinel-initialized once and then stable across renders.
     stable_zero_dep_decls: HashSet<DeclarationId>,
+    /// Source declarations whose destructuring subtree eventually feeds a
+    /// binding that is later reassigned.
+    mutable_destructure_sources: HashSet<DeclarationId>,
     /// Declaration IDs referenced by any reactive scope dependency.
     scope_dependency_decls: HashSet<DeclarationId>,
     /// Dependency overrides for scopes whose temporary dependency should be
@@ -3750,6 +3753,8 @@ fn codegen_reactive_function_with_primitives(
         collect_mutable_child_context_declarations(&func.body);
     let mut reassigned_decls = collect_reassigned_declarations(&func.body);
     reassigned_decls.extend(mutable_captured_in_child_functions.iter().copied());
+    let mutable_destructure_sources =
+        collect_mutable_destructure_sources(&func.body, &reassigned_decls);
     let read_declarations = collect_read_declarations(&func.body);
     let elidable_null_initializer_decls =
         collect_elidable_null_initializer_declarations(&func.body);
@@ -3828,6 +3833,7 @@ fn codegen_reactive_function_with_primitives(
         pruned_manual_memo_decls: HashSet::new(),
         elidable_null_initializer_decls,
         stable_zero_dep_decls: HashSet::new(),
+        mutable_destructure_sources,
         scope_dependency_decls,
         scope_dependency_overrides: HashMap::new(),
         function_decl_decls,
@@ -5299,10 +5305,33 @@ fn try_build_generated_body_shape_from_reactive_scope_statement(
     )
 }
 
+fn render_terminal_statement_source_for_body_shape(
+    cx: &mut Context,
+    term_stmt: &ReactiveTerminalStatement,
+) -> Option<String> {
+    let stmt = codegen_terminal(cx, &term_stmt.terminal)?;
+    let mut rendered = String::new();
+    append_rendered_terminal_statement(&mut rendered, term_stmt, &stmt);
+    Some(rendered)
+}
+
 fn try_build_generated_body_shape_from_terminal_statement(
     cx: &mut Context,
     term_stmt: &ReactiveTerminalStatement,
 ) -> Option<GeneratedBodyShape> {
+    if matches!(term_stmt.terminal, ReactiveTerminal::Switch { .. }) {
+        let mut probe_cx = cx.clone();
+        if let Some(rendered) =
+            render_terminal_statement_source_for_body_shape(&mut probe_cx, term_stmt)
+        {
+            let rendered_shape = analyze_generated_body_shape(&rendered);
+            if !matches!(rendered_shape, GeneratedBodyShape::Unknown) {
+                *cx = probe_cx;
+                return Some(rendered_shape);
+            }
+        }
+    }
+
     let shape = try_build_generated_body_shape_from_reactive_terminal(cx, &term_stmt.terminal)?;
     if let Some(label) = &term_stmt.label
         && !label.implicit
@@ -10846,6 +10875,382 @@ fn collect_reassigned_declarations(block: &ReactiveBlock) -> HashSet<Declaration
     reassigned
 }
 
+fn collect_mutable_destructure_sources(
+    block: &ReactiveBlock,
+    reassigned: &HashSet<DeclarationId>,
+) -> HashSet<DeclarationId> {
+    let mut destructure_edges: Vec<(DeclarationId, Vec<DeclarationId>)> = Vec::new();
+    let mut assignment_edges: Vec<(DeclarationId, DeclarationId)> = Vec::new();
+    collect_mutable_destructure_edges_in_block(
+        block,
+        &mut destructure_edges,
+        &mut assignment_edges,
+    );
+
+    let mut mutable_sources = reassigned.clone();
+    collect_update_expression_declarations_in_block(block, &mut mutable_sources);
+    let mut changed = true;
+    while changed {
+        changed = false;
+
+        for (source, target) in &assignment_edges {
+            if mutable_sources.contains(target) && mutable_sources.insert(*source) {
+                changed = true;
+            }
+        }
+
+        for (source, operands) in &destructure_edges {
+            if operands
+                .iter()
+                .any(|operand| mutable_sources.contains(operand))
+                && mutable_sources.insert(*source)
+            {
+                changed = true;
+            }
+        }
+    }
+
+    mutable_sources
+}
+
+fn collect_update_expression_declarations_in_block(
+    block: &ReactiveBlock,
+    out: &mut HashSet<DeclarationId>,
+) {
+    let mut temp_sources = HashMap::new();
+    collect_update_expression_declarations_in_block_with_temps(block, out, &mut temp_sources);
+}
+
+fn collect_update_expression_declarations_in_block_with_temps(
+    block: &ReactiveBlock,
+    out: &mut HashSet<DeclarationId>,
+    temp_sources: &mut HashMap<DeclarationId, DeclarationId>,
+) {
+    for stmt in block {
+        match stmt {
+            ReactiveStatement::Instruction(instr) => match &instr.value {
+                InstructionValue::LoadLocal { place, .. }
+                | InstructionValue::LoadContext { place, .. } => {
+                    if let Some(lvalue) = &instr.lvalue {
+                        temp_sources.insert(
+                            lvalue.identifier.declaration_id,
+                            resolve_update_source_decl_id(place, temp_sources),
+                        );
+                    }
+                }
+                InstructionValue::TypeCastExpression { value, .. } => {
+                    if let Some(lvalue) = &instr.lvalue {
+                        temp_sources.insert(
+                            lvalue.identifier.declaration_id,
+                            resolve_update_source_decl_id(value, temp_sources),
+                        );
+                    }
+                }
+                InstructionValue::PrefixUpdate { value, .. }
+                | InstructionValue::PostfixUpdate { value, .. } => {
+                    out.insert(resolve_update_source_decl_id(value, temp_sources));
+                }
+                _ => {}
+            },
+            ReactiveStatement::Scope(scope) => {
+                let mut nested_temp_sources = temp_sources.clone();
+                collect_update_expression_declarations_in_block_with_temps(
+                    &scope.instructions,
+                    out,
+                    &mut nested_temp_sources,
+                );
+            }
+            ReactiveStatement::PrunedScope(scope) => {
+                let mut nested_temp_sources = temp_sources.clone();
+                collect_update_expression_declarations_in_block_with_temps(
+                    &scope.instructions,
+                    out,
+                    &mut nested_temp_sources,
+                );
+            }
+            ReactiveStatement::Terminal(term_stmt) => {
+                collect_update_expression_declarations_in_terminal(
+                    &term_stmt.terminal,
+                    out,
+                    temp_sources,
+                );
+            }
+        }
+    }
+}
+
+fn resolve_update_source_decl_id(
+    place: &Place,
+    temp_sources: &HashMap<DeclarationId, DeclarationId>,
+) -> DeclarationId {
+    temp_sources
+        .get(&place.identifier.declaration_id)
+        .copied()
+        .unwrap_or(place.identifier.declaration_id)
+}
+
+fn collect_update_expression_declarations_in_terminal(
+    terminal: &ReactiveTerminal,
+    out: &mut HashSet<DeclarationId>,
+    temp_sources: &HashMap<DeclarationId, DeclarationId>,
+) {
+    match terminal {
+        ReactiveTerminal::If {
+            consequent,
+            alternate,
+            ..
+        } => {
+            let mut consequent_temp_sources = temp_sources.clone();
+            collect_update_expression_declarations_in_block_with_temps(
+                consequent,
+                out,
+                &mut consequent_temp_sources,
+            );
+            if let Some(alt) = alternate {
+                let mut alternate_temp_sources = temp_sources.clone();
+                collect_update_expression_declarations_in_block_with_temps(
+                    alt,
+                    out,
+                    &mut alternate_temp_sources,
+                );
+            }
+        }
+        ReactiveTerminal::Switch { cases, .. } => {
+            for case in cases {
+                if let Some(block) = &case.block {
+                    let mut case_temp_sources = temp_sources.clone();
+                    collect_update_expression_declarations_in_block_with_temps(
+                        block,
+                        out,
+                        &mut case_temp_sources,
+                    );
+                }
+            }
+        }
+        ReactiveTerminal::For {
+            init,
+            update,
+            loop_block,
+            ..
+        } => {
+            let mut init_temp_sources = temp_sources.clone();
+            collect_update_expression_declarations_in_block_with_temps(
+                init,
+                out,
+                &mut init_temp_sources,
+            );
+            if let Some(update) = update {
+                let mut update_temp_sources = temp_sources.clone();
+                collect_update_expression_declarations_in_block_with_temps(
+                    update,
+                    out,
+                    &mut update_temp_sources,
+                );
+            }
+            let mut loop_temp_sources = temp_sources.clone();
+            collect_update_expression_declarations_in_block_with_temps(
+                loop_block,
+                out,
+                &mut loop_temp_sources,
+            );
+        }
+        ReactiveTerminal::ForOf {
+            init, loop_block, ..
+        }
+        | ReactiveTerminal::ForIn {
+            init, loop_block, ..
+        } => {
+            let mut init_temp_sources = temp_sources.clone();
+            collect_update_expression_declarations_in_block_with_temps(
+                init,
+                out,
+                &mut init_temp_sources,
+            );
+            let mut loop_temp_sources = temp_sources.clone();
+            collect_update_expression_declarations_in_block_with_temps(
+                loop_block,
+                out,
+                &mut loop_temp_sources,
+            );
+        }
+        ReactiveTerminal::DoWhile { loop_block, .. }
+        | ReactiveTerminal::While { loop_block, .. }
+        | ReactiveTerminal::Label {
+            block: loop_block, ..
+        } => {
+            let mut loop_temp_sources = temp_sources.clone();
+            collect_update_expression_declarations_in_block_with_temps(
+                loop_block,
+                out,
+                &mut loop_temp_sources,
+            );
+        }
+        ReactiveTerminal::Try { block, handler, .. } => {
+            let mut block_temp_sources = temp_sources.clone();
+            collect_update_expression_declarations_in_block_with_temps(
+                block,
+                out,
+                &mut block_temp_sources,
+            );
+            let mut handler_temp_sources = temp_sources.clone();
+            collect_update_expression_declarations_in_block_with_temps(
+                handler,
+                out,
+                &mut handler_temp_sources,
+            );
+        }
+        ReactiveTerminal::Break { .. }
+        | ReactiveTerminal::Continue { .. }
+        | ReactiveTerminal::Return { .. }
+        | ReactiveTerminal::Throw { .. } => {}
+    }
+}
+
+fn collect_mutable_destructure_edges_in_block(
+    block: &ReactiveBlock,
+    destructure_edges: &mut Vec<(DeclarationId, Vec<DeclarationId>)>,
+    assignment_edges: &mut Vec<(DeclarationId, DeclarationId)>,
+) {
+    for stmt in block {
+        match stmt {
+            ReactiveStatement::Instruction(instr) => match &instr.value {
+                InstructionValue::Destructure { lvalue, value, .. } => {
+                    destructure_edges.push((
+                        value.identifier.declaration_id,
+                        pattern_operands(&lvalue.pattern)
+                            .into_iter()
+                            .map(|place| place.identifier.declaration_id)
+                            .collect(),
+                    ));
+                }
+                InstructionValue::StoreLocal { lvalue, value, .. }
+                | InstructionValue::StoreContext { lvalue, value, .. } => {
+                    assignment_edges.push((
+                        value.identifier.declaration_id,
+                        lvalue.place.identifier.declaration_id,
+                    ));
+                }
+                _ => {}
+            },
+            ReactiveStatement::Scope(scope) => {
+                collect_mutable_destructure_edges_in_block(
+                    &scope.instructions,
+                    destructure_edges,
+                    assignment_edges,
+                );
+            }
+            ReactiveStatement::PrunedScope(scope) => {
+                collect_mutable_destructure_edges_in_block(
+                    &scope.instructions,
+                    destructure_edges,
+                    assignment_edges,
+                );
+            }
+            ReactiveStatement::Terminal(term_stmt) => {
+                collect_mutable_destructure_edges_in_terminal(
+                    &term_stmt.terminal,
+                    destructure_edges,
+                    assignment_edges,
+                );
+            }
+        }
+    }
+}
+
+fn collect_mutable_destructure_edges_in_terminal(
+    terminal: &ReactiveTerminal,
+    destructure_edges: &mut Vec<(DeclarationId, Vec<DeclarationId>)>,
+    assignment_edges: &mut Vec<(DeclarationId, DeclarationId)>,
+) {
+    match terminal {
+        ReactiveTerminal::If {
+            consequent,
+            alternate,
+            ..
+        } => {
+            collect_mutable_destructure_edges_in_block(
+                consequent,
+                destructure_edges,
+                assignment_edges,
+            );
+            if let Some(alt) = alternate {
+                collect_mutable_destructure_edges_in_block(
+                    alt,
+                    destructure_edges,
+                    assignment_edges,
+                );
+            }
+        }
+        ReactiveTerminal::Switch { cases, .. } => {
+            for case in cases {
+                if let Some(block) = &case.block {
+                    collect_mutable_destructure_edges_in_block(
+                        block,
+                        destructure_edges,
+                        assignment_edges,
+                    );
+                }
+            }
+        }
+        ReactiveTerminal::For {
+            init,
+            update,
+            loop_block,
+            ..
+        } => {
+            collect_mutable_destructure_edges_in_block(init, destructure_edges, assignment_edges);
+            if let Some(update) = update {
+                collect_mutable_destructure_edges_in_block(
+                    update,
+                    destructure_edges,
+                    assignment_edges,
+                );
+            }
+            collect_mutable_destructure_edges_in_block(
+                loop_block,
+                destructure_edges,
+                assignment_edges,
+            );
+        }
+        ReactiveTerminal::ForOf {
+            init, loop_block, ..
+        }
+        | ReactiveTerminal::ForIn {
+            init, loop_block, ..
+        } => {
+            collect_mutable_destructure_edges_in_block(init, destructure_edges, assignment_edges);
+            collect_mutable_destructure_edges_in_block(
+                loop_block,
+                destructure_edges,
+                assignment_edges,
+            );
+        }
+        ReactiveTerminal::DoWhile { loop_block, .. }
+        | ReactiveTerminal::While { loop_block, .. }
+        | ReactiveTerminal::Label {
+            block: loop_block, ..
+        } => {
+            collect_mutable_destructure_edges_in_block(
+                loop_block,
+                destructure_edges,
+                assignment_edges,
+            );
+        }
+        ReactiveTerminal::Try { block, handler, .. } => {
+            collect_mutable_destructure_edges_in_block(block, destructure_edges, assignment_edges);
+            collect_mutable_destructure_edges_in_block(
+                handler,
+                destructure_edges,
+                assignment_edges,
+            );
+        }
+        ReactiveTerminal::Break { .. }
+        | ReactiveTerminal::Continue { .. }
+        | ReactiveTerminal::Return { .. }
+        | ReactiveTerminal::Throw { .. } => {}
+    }
+}
+
 fn collect_elidable_null_initializer_declarations(block: &ReactiveBlock) -> HashSet<DeclarationId> {
     let mut reassigning_scope_ids: HashMap<DeclarationId, HashSet<ScopeId>> = HashMap::new();
     collect_reassigning_scope_ids_in_block(block, &mut reassigning_scope_ids);
@@ -14101,20 +14506,9 @@ fn codegen_block_no_reset_with_options(
                     && let Some(stmt) =
                         maybe_codegen_while_with_pending_sequence(cx, &term_stmt.terminal, pending)
                 {
-                    if let Some(label) = &term_stmt.label {
-                        if !label.implicit {
-                            emit_labeled_statement(&mut output, label.id, &stmt);
-                        } else {
-                            output.push_str(&stmt);
-                        }
-                    } else {
-                        output.push_str(&stmt);
-                    }
+                    append_rendered_terminal_statement(&mut output, term_stmt, &stmt);
                     pending_sequence_expr = None;
                     last_source_end_line = None;
-                    if !output.ends_with('\n') {
-                        output.push('\n');
-                    }
                     i += 1;
                     continue;
                 }
@@ -14150,19 +14544,8 @@ fn codegen_block_no_reset_with_options(
                         should_insert_blank_after_if_trailing_labeled_break(
                             cx, term_stmt, block, i,
                         );
-                    if let Some(label) = &term_stmt.label {
-                        if !label.implicit {
-                            emit_labeled_statement(&mut output, label.id, &stmt);
-                        } else {
-                            output.push_str(&stmt);
-                        }
-                    } else {
-                        output.push_str(&stmt);
-                    }
+                    append_rendered_terminal_statement(&mut output, term_stmt, &stmt);
                     last_source_end_line = None;
-                    if !output.ends_with('\n') {
-                        output.push('\n');
-                    }
                     if (insert_blank_after_labeled_if
                         || insert_blank_after_try
                         || insert_blank_after_breaking_if)
@@ -14386,6 +14769,24 @@ fn emit_labeled_statement(output: &mut String, label_id: BlockId, stmt: &str) {
 fn statement_references_label(stmt: &str, label_id: BlockId) -> bool {
     let label = format!("bb{}", label_id.0);
     rendered_statement_references_label(stmt, &label)
+}
+
+fn append_rendered_terminal_statement(
+    output: &mut String,
+    term_stmt: &ReactiveTerminalStatement,
+    stmt: &str,
+) {
+    if let Some(label) = &term_stmt.label
+        && !label.implicit
+    {
+        emit_labeled_statement(output, label.id, stmt);
+    } else {
+        output.push_str(stmt);
+    }
+
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
 }
 
 fn maybe_codegen_labeled_if_adjacent_block(
@@ -17687,18 +18088,7 @@ fn maybe_codegen_fused_temp_load_into_following_stmt(
                         source_place.identifier.declaration_id.0, start, idx, bridge_exprs
                     ),
                 );
-                if let Some(label) = &term_stmt.label {
-                    if !label.implicit {
-                        emit_labeled_statement(output, label.id, &stmt);
-                    } else {
-                        output.push_str(&stmt);
-                    }
-                } else {
-                    output.push_str(&stmt);
-                }
-                if !output.ends_with('\n') {
-                    output.push('\n');
-                }
+                append_rendered_terminal_statement(output, term_stmt, &stmt);
                 *cx = probe_cx;
                 Some(idx - start + 1)
             }
@@ -24234,13 +24624,41 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
             .any(|stmt| extract_direct_store_assignment(stmt).is_some())
     }
 
+    fn is_synthetic_switch_exit_break(
+        stmt: &ReactiveStatement,
+        switch_loc: &SourceLocation,
+    ) -> bool {
+        matches!(
+            stmt,
+            ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                terminal: ReactiveTerminal::Break { loc, .. },
+                ..
+            }) if loc == switch_loc
+        )
+    }
+
+    fn trim_trailing_synthetic_switch_exit_break<'a>(
+        block: &'a [ReactiveStatement],
+        switch_loc: &SourceLocation,
+    ) -> &'a [ReactiveStatement] {
+        if block
+            .last()
+            .is_some_and(|stmt| is_synthetic_switch_exit_break(stmt, switch_loc))
+        {
+            &block[..block.len().saturating_sub(1)]
+        } else {
+            block
+        }
+    }
+
     fn maybe_trim_dead_switch_case_tail_for_fallthrough(
         previous_case_block: Option<&[ReactiveStatement]>,
         current_case_block: &[ReactiveStatement],
         next_case_block: Option<&[ReactiveStatement]>,
+        switch_loc: &SourceLocation,
     ) -> Option<usize> {
         let next_case_block = next_case_block?;
-        if current_case_block.len() < 3 || !has_explicit_break_terminator(current_case_block) {
+        if current_case_block.len() < 2 || !has_explicit_break_terminator(current_case_block) {
             return None;
         }
 
@@ -24252,7 +24670,7 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
             extract_direct_store_assignment(&current_case_block[current_store_idx])
             && let Some((next_target, _)) =
                 extract_direct_store_assignment(&next_case_block[next_store_idx])
-            && previous_case_block.is_some_and(|prev| !has_direct_store_assignment(prev))
+            && previous_case_block.is_none_or(|prev| !has_direct_store_assignment(prev))
             && current_target == next_target
             && current_case_block[current_store_idx + 1..]
                 .iter()
@@ -24260,9 +24678,9 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                     matches!(
                         stmt,
                         ReactiveStatement::Terminal(ReactiveTerminalStatement {
-                            terminal: ReactiveTerminal::Break { .. },
+                            terminal: ReactiveTerminal::Break { loc, .. },
                             ..
-                        })
+                        }) if loc == switch_loc
                     )
                 })
         {
@@ -24407,20 +24825,32 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                 codegen_statement_with_flow_cast_restore(&statement)
             ))
         }
-        ReactiveTerminal::Switch { test, cases, .. } => {
+        ReactiveTerminal::Switch {
+            test, cases, loc, ..
+        } => {
             let test_expr = codegen_place_to_expression(cx, test);
+            let original_case_blocks: Vec<Option<&[ReactiveStatement]>> =
+                cases.iter().map(|case| case.block.as_deref()).collect();
+            let trimmed_case_blocks: Vec<Option<&[ReactiveStatement]>> = cases
+                .iter()
+                .map(|case| {
+                    case.block
+                        .as_deref()
+                        .map(|block| trim_trailing_synthetic_switch_exit_break(block, loc))
+                })
+                .collect();
             let block_codes: Vec<Option<String>> = cases
                 .iter()
                 .enumerate()
-                .map(|(index, case)| {
-                    case.block.as_ref().map(|block| {
+                .map(|(index, _case)| {
+                    original_case_blocks[index].map(|block| {
                         let cleaned_prefix_len = maybe_trim_dead_switch_case_tail_for_fallthrough(
                             index
                                 .checked_sub(1)
-                                .and_then(|prev| cases.get(prev))
-                                .and_then(|prev| prev.block.as_deref()),
+                                .and_then(|prev| original_case_blocks.get(prev).copied().flatten()),
                             block,
-                            cases.get(index + 1).and_then(|next| next.block.as_deref()),
+                            original_case_blocks.get(index + 1).copied().flatten(),
+                            loc,
                         );
                         if let Some(prefix_len) = cleaned_prefix_len {
                             debug_codegen_expr(
@@ -24432,9 +24862,15 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
                                     block.len()
                                 ),
                             );
-                            codegen_block(cx, &block[..prefix_len])
+                            codegen_block(
+                                cx,
+                                trim_trailing_synthetic_switch_exit_break(
+                                    &block[..prefix_len],
+                                    loc,
+                                ),
+                            )
                         } else {
-                            codegen_block(cx, block)
+                            codegen_block(cx, trimmed_case_blocks[index].unwrap_or(block))
                         }
                     })
                 })
@@ -25333,19 +25769,37 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
                     is_codegen_temp_name(&name)
                 });
             // Upstream consistently emits temporary-pattern destructures as
-            // declarations (`let`), even when our lowered kind is `Reassign`.
+            // declarations, even when our lowered kind is `Reassign`.
             let force_temp_declare = all_codegen_temps;
             debug_codegen_expr(
                 "destructure",
                 format!(
-                    "kind={:?} pattern={} rhs={} all_declared={} force_temp_declare={}",
-                    kind, lval, rhs, all_declared, force_temp_declare
+                    "kind={:?} pattern={} rhs={} all_declared={} force_temp_declare={} mutable_source={}",
+                    kind,
+                    lval,
+                    rhs,
+                    all_declared,
+                    force_temp_declare,
+                    cx.mutable_destructure_sources
+                        .contains(&value.identifier.declaration_id)
                 ),
             );
 
-            if let Some(bridged) =
-                maybe_codegen_captured_context_destructure_bridge(cx, &pattern, &rhs, all_declared)
-            {
+            let bridge_declaration_kind = match kind {
+                InstructionKind::Const
+                | InstructionKind::HoistedConst
+                | InstructionKind::Function => ast::VariableDeclarationKind::Const,
+                _ => ast::VariableDeclarationKind::Let,
+            };
+            let declaration_kind =
+                reactive_destructure_declaration_kind(cx, kind, value.identifier.declaration_id);
+            if let Some(bridged) = maybe_codegen_captured_context_destructure_bridge(
+                cx,
+                &pattern,
+                &rhs,
+                all_declared,
+                bridge_declaration_kind,
+            ) {
                 return Some(bridged);
             }
 
@@ -25364,12 +25818,6 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
                         names.insert(name.clone());
                     }
                 }
-                let declaration_kind = match kind {
-                    InstructionKind::Const | InstructionKind::Function => {
-                        ast::VariableDeclarationKind::Const
-                    }
-                    _ => ast::VariableDeclarationKind::Let,
-                };
                 render_reactive_destructure_statement_ast(
                     cx,
                     &pattern,
@@ -29991,8 +30439,23 @@ fn render_reactive_pattern_assignment_expression_ast(
     ))
 }
 
+fn reactive_destructure_declaration_kind(
+    cx: &Context,
+    kind: InstructionKind,
+    source_decl_id: DeclarationId,
+) -> ast::VariableDeclarationKind {
+    match kind {
+        InstructionKind::Const | InstructionKind::HoistedConst | InstructionKind::Function
+            if !cx.mutable_destructure_sources.contains(&source_decl_id) =>
+        {
+            ast::VariableDeclarationKind::Const
+        }
+        _ => ast::VariableDeclarationKind::Let,
+    }
+}
+
 /// Upstream lowers destructuring declarations to mutable context vars through a
-/// temporary destructure followed by explicit assignments (e.g. `let [t0] = v; x = t0;`).
+/// temporary destructure followed by explicit assignments (e.g. `const [t0] = v; x = t0;`).
 /// Our lowered HIR may still carry `Destructure(Reassign)` directly into captured
 /// mutable context declarations; bridge that shape in codegen for parity.
 fn maybe_codegen_captured_context_destructure_bridge(
@@ -30000,6 +30463,7 @@ fn maybe_codegen_captured_context_destructure_bridge(
     pattern: &Pattern,
     rhs: &str,
     all_declared: bool,
+    declaration_kind: ast::VariableDeclarationKind,
 ) -> Option<String> {
     if !all_declared {
         return None;
@@ -30041,10 +30505,10 @@ fn maybe_codegen_captured_context_destructure_bridge(
             let mut statements = vec![ast::Statement::VariableDeclaration(
                 builder.alloc_variable_declaration(
                     SPAN,
-                    ast::VariableDeclarationKind::Let,
+                    declaration_kind,
                     builder.vec1(builder.variable_declarator(
                         SPAN,
-                        ast::VariableDeclarationKind::Let,
+                        declaration_kind,
                         array_pattern,
                         NONE,
                         Some(rhs_expr),
@@ -30116,10 +30580,10 @@ fn maybe_codegen_captured_context_destructure_bridge(
             let mut statements = vec![ast::Statement::VariableDeclaration(
                 builder.alloc_variable_declaration(
                     SPAN,
-                    ast::VariableDeclarationKind::Let,
+                    declaration_kind,
                     builder.vec1(builder.variable_declarator(
                         SPAN,
-                        ast::VariableDeclarationKind::Let,
+                        declaration_kind,
                         object_pattern,
                         NONE,
                         Some(rhs_expr),
@@ -32036,6 +32500,19 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                     is_generator: spec.is_generator,
                 },
             )?;
+            let labeled_body = if inner_body.statements.len() == 1
+                && matches!(
+                    inner_body.statements.first(),
+                    Some(ast::Statement::SwitchStatement(_))
+                ) {
+                inner_body
+                    .statements
+                    .into_iter()
+                    .next()
+                    .expect("single switch statement should exist")
+            } else {
+                builder.statement_block(SPAN, inner_body.statements)
+            };
             Some(builder.function_body(
                 SPAN,
                 builder.vec(),
@@ -32043,7 +32520,7 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                     builder.alloc_labeled_statement(
                         SPAN,
                         builder.label_identifier(SPAN, builder.atom(label)),
-                        builder.statement_block(SPAN, inner_body.statements),
+                        labeled_body,
                     ),
                 )),
             ))
@@ -36295,6 +36772,7 @@ mod tests {
             pruned_manual_memo_decls: HashSet::new(),
             elidable_null_initializer_decls: HashSet::new(),
             stable_zero_dep_decls: HashSet::new(),
+            mutable_destructure_sources: HashSet::new(),
             scope_dependency_decls: HashSet::new(),
             scope_dependency_overrides: HashMap::new(),
             function_decl_decls: HashSet::new(),
@@ -41372,6 +41850,102 @@ mod tests {
         assert!(rendered.contains("case 0:"));
         assert!(rendered.contains("break;"));
         assert!(rendered.contains("return x;"));
+    }
+
+    #[test]
+    fn codegens_switch_without_synthetic_exit_break_cases() {
+        let mut cx = test_context();
+        let switch_target = crate::hir::types::make_block_id(7);
+        let switch_loc = SourceLocation::Source(crate::hir::types::SourceRange {
+            start: crate::hir::types::SourcePosition { line: 1, column: 0 },
+            end: crate::hir::types::SourcePosition {
+                line: 10,
+                column: 1,
+            },
+        });
+        let explicit_break_loc = SourceLocation::Source(crate::hir::types::SourceRange {
+            start: crate::hir::types::SourcePosition { line: 6, column: 4 },
+            end: crate::hir::types::SourcePosition { line: 6, column: 9 },
+        });
+        let rendered = super::codegen_terminal(
+            &mut cx,
+            &ReactiveTerminal::Switch {
+                test: named_place(0, 0, "value"),
+                cases: vec![
+                    crate::hir::types::ReactiveSwitchCase {
+                        test: Some(named_place(1, 1, "zero")),
+                        block: Some(vec![ReactiveStatement::Terminal(
+                            ReactiveTerminalStatement {
+                                terminal: ReactiveTerminal::Break {
+                                    target: switch_target,
+                                    target_kind:
+                                        crate::hir::types::ReactiveTerminalTargetKind::Labeled,
+                                    id: crate::hir::types::make_instruction_id(0),
+                                    loc: switch_loc.clone(),
+                                },
+                                label: None,
+                            },
+                        )]),
+                    },
+                    crate::hir::types::ReactiveSwitchCase {
+                        test: Some(named_place(2, 2, "one")),
+                        block: Some(vec![ReactiveStatement::Terminal(
+                            ReactiveTerminalStatement {
+                                terminal: ReactiveTerminal::Break {
+                                    target: switch_target,
+                                    target_kind:
+                                        crate::hir::types::ReactiveTerminalTargetKind::Labeled,
+                                    id: crate::hir::types::make_instruction_id(1),
+                                    loc: explicit_break_loc,
+                                },
+                                label: None,
+                            },
+                        )]),
+                    },
+                ],
+                id: crate::hir::types::make_instruction_id(2),
+                loc: switch_loc,
+            },
+        )
+        .expect("expected switch statement");
+
+        assert!(rendered.contains("case zero:\n"));
+        assert!(!rendered.contains("case zero: {\n    break bb7;\n  }"));
+        assert!(rendered.contains("case one: {\n    break bb7;\n  }"));
+    }
+
+    #[test]
+    fn renders_labeled_switch_body_shape_without_block_wrapper() {
+        let body_shape = super::GeneratedBodyShape::Labeled {
+            label: "bb0".to_string(),
+            inner: Box::new(super::GeneratedBodyShape::Switch {
+                discriminant: "value".to_string(),
+                cases: vec![super::GeneratedSwitchCase {
+                    test: Some("zero".to_string()),
+                    consequent: super::GeneratedBodyShape::Break(Some("bb0".to_string())),
+                }],
+            }),
+        };
+
+        let rendered = render_function_expression_ast(&FunctionExpressionRenderSpec {
+            body: FunctionBodyRenderSpec {
+                params: &[Argument::Place(named_place(0, 0, "value"))],
+                param_names: &["value".to_string()],
+                body_shape: &body_shape,
+                directives: &[],
+                cache_prologue: None,
+                needs_function_hook_guard_wrapper: false,
+                is_async: false,
+                is_generator: false,
+            },
+            name: None,
+            fn_type: &FunctionExpressionType::FunctionExpression,
+            anonymous_name_hint: None,
+        })
+        .expect("expected labeled switch render");
+
+        assert!(rendered.contains("bb0: switch (value) {"));
+        assert!(!rendered.contains("bb0: {\n  switch"));
     }
 
     #[test]
