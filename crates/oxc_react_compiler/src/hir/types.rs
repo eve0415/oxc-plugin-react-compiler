@@ -1319,6 +1319,7 @@ pub enum ReactiveTerminal {
         init: ReactiveBlock,
         test: Place,
         update: Option<ReactiveBlock>,
+        update_value: Option<Box<InstructionValue>>,
         loop_block: ReactiveBlock,
         id: InstructionId,
         loc: SourceLocation,

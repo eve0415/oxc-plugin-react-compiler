@@ -6962,6 +6962,7 @@ fn try_build_generated_body_shape_from_reactive_terminal(
             init,
             test,
             update,
+            update_value,
             loop_block,
             ..
         } => {
@@ -6969,7 +6970,7 @@ fn try_build_generated_body_shape_from_reactive_terminal(
             let test_expr = codegen_place_to_expression(cx, test);
             let update_code = update
                 .as_ref()
-                .map(|block| codegen_for_update(cx, block))
+                .map(|block| codegen_for_update(cx, block, update_value.as_deref()))
                 .unwrap_or_default();
             if let Some(filled_init) =
                 maybe_fill_for_header_initializer_from_update(&init_code, &update_code)
@@ -12844,19 +12845,6 @@ fn codegen_block_no_reset_with_options(
             && current.end.column >= prefix.end.column
     }
 
-    fn assignment_expression_rhs(expr: &str) -> Option<String> {
-        let allocator = Allocator::default();
-        let expression = parse_rendered_expression_ast(&allocator, expr)?;
-        let ast::Expression::AssignmentExpression(assignment) = expression.without_parentheses()
-        else {
-            return None;
-        };
-        if assignment.operator != AssignmentOperator::Assign {
-            return None;
-        }
-        Some(codegen_expression_with_flow_cast_restore(&assignment.right))
-    }
-
     fn combine_assignment_statement_with_sequence_prefix(
         stmt: &str,
         prefix_expr: &str,
@@ -12955,22 +12943,8 @@ fn codegen_block_no_reset_with_options(
                 let logical_prec = logical_operator_precedence(operator);
                 let left_expr = codegen_logical_operand(cx, left, logical_prec);
                 let right_expr = codegen_logical_operand(cx, right, logical_prec);
-                let left_from_prefix = pending.exprs.last().and_then(|expr| {
-                    assignment_expression_rhs(expr).map(|rhs| normalize_fusion_match_text(&rhs))
-                });
-                let normalized_left_expr = normalize_fusion_match_text(&left_expr);
-                let combined_left = if left_from_prefix
-                    .as_ref()
-                    .is_some_and(|rhs| rhs == &normalized_left_expr)
-                {
-                    if pending.exprs.len() == 1 {
-                        prefix_expr
-                    } else {
-                        format!("({prefix_expr})")
-                    }
-                } else {
-                    format!("({prefix_expr}, {left_expr})")
-                };
+                let combined_left = render_sequence_expression_ast(&pending.exprs, &left_expr)
+                    .expect("pending logical sequence should stay on AST path");
                 render_reactive_expression_statement_ast(
                     &render_logical_expression_ast(&combined_left, *operator, &right_expr)
                         .expect("pending logical expression should stay on AST path"),
@@ -17823,17 +17797,11 @@ fn maybe_codegen_fused_reassign_stmt_into_following_logical(
                             .expect("fused logical reassign should stay on AST path")
                     }
                 } else {
-                    let combined_left = if normalize_fusion_match_text(&assign_rhs)
-                        == normalize_fusion_match_text(&left_expr)
-                    {
-                        assign_expr.clone()
-                    } else {
-                        render_sequence_expression_ast(
-                            std::slice::from_ref(&assign_expr),
-                            &left_expr,
-                        )
-                        .expect("fused logical left sequence should stay on AST path")
-                    };
+                    let combined_left = render_sequence_expression_ast(
+                        std::slice::from_ref(&assign_expr),
+                        &left_expr,
+                    )
+                    .expect("fused logical left sequence should stay on AST path");
                     render_logical_expression_ast(&combined_left, *operator, &right_expr)
                         .expect("fused logical reassign should stay on AST path")
                 };
@@ -24499,6 +24467,7 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
             init,
             test,
             update,
+            update_value,
             loop_block,
             loc,
             ..
@@ -24506,7 +24475,7 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
             let mut init_code = codegen_for_init(cx, init);
             let test_expr = codegen_place_to_expression(cx, test);
             let update_code = if let Some(upd) = update {
-                codegen_for_update(cx, upd)
+                codegen_for_update(cx, upd, update_value.as_deref())
             } else {
                 String::new()
             };
@@ -35814,7 +35783,79 @@ fn codegen_for_init(cx: &mut Context, init_block: &ReactiveBlock) -> String {
     trimmed.to_string()
 }
 
-fn codegen_for_update(cx: &mut Context, update_block: &ReactiveBlock) -> String {
+fn for_update_block_produces_declaration(
+    update_block: &ReactiveBlock,
+    declaration_id: DeclarationId,
+) -> bool {
+    update_block.iter().any(|stmt| match stmt {
+        ReactiveStatement::Instruction(instr) => {
+            instr
+                .lvalue
+                .as_ref()
+                .is_some_and(|lvalue| lvalue.identifier.declaration_id == declaration_id)
+                || match &instr.value {
+                    InstructionValue::StoreLocal { lvalue, .. }
+                    | InstructionValue::StoreContext { lvalue, .. }
+                    | InstructionValue::DeclareLocal { lvalue, .. }
+                    | InstructionValue::DeclareContext { lvalue, .. } => {
+                        lvalue.place.identifier.declaration_id == declaration_id
+                    }
+                    InstructionValue::Destructure { lvalue, .. } => {
+                        pattern_operands(&lvalue.pattern)
+                            .iter()
+                            .any(|place| place.identifier.declaration_id == declaration_id)
+                    }
+                    _ => false,
+                }
+        }
+        ReactiveStatement::Scope(scope) => {
+            for_update_block_produces_declaration(&scope.instructions, declaration_id)
+        }
+        ReactiveStatement::PrunedScope(scope) => {
+            for_update_block_produces_declaration(&scope.instructions, declaration_id)
+        }
+        ReactiveStatement::Terminal(_) => false,
+    })
+}
+
+fn codegen_for_update_value_expr(
+    cx: &mut Context,
+    update_block: &ReactiveBlock,
+    value: &InstructionValue,
+) -> Option<String> {
+    match value {
+        InstructionValue::LoadLocal { place, .. } | InstructionValue::LoadContext { place, .. } => {
+            if !for_update_block_produces_declaration(update_block, place.identifier.declaration_id)
+            {
+                return None;
+            }
+            Some(if place.identifier.name.is_some() {
+                identifier_name_with_cx(cx, &place.identifier)
+            } else {
+                codegen_place_to_expression(cx, place)
+            })
+        }
+        InstructionValue::StoreLocal { lvalue, value, .. }
+        | InstructionValue::StoreContext { lvalue, value, .. } => {
+            let lhs = codegen_place_to_expression(cx, &lvalue.place);
+            let rhs = codegen_place_to_expression(cx, value);
+            render_assignment_expression_ast(&lhs, &rhs)
+        }
+        InstructionValue::DeclareLocal { .. }
+        | InstructionValue::DeclareContext { .. }
+        | InstructionValue::Destructure { .. }
+        | InstructionValue::StartMemoize { .. }
+        | InstructionValue::FinishMemoize { .. }
+        | InstructionValue::Debugger { .. } => None,
+        _ => Some(codegen_instruction_value_ev(cx, value).expr),
+    }
+}
+
+fn codegen_for_update(
+    cx: &mut Context,
+    update_block: &ReactiveBlock,
+    update_value: Option<&InstructionValue>,
+) -> String {
     fn collapse_statement_lines_to_sequence_expr(raw: &str) -> String {
         let fallback = raw.trim().trim_end_matches(';').to_string();
         let allocator = Allocator::default();
@@ -35846,10 +35887,53 @@ fn codegen_for_update(cx: &mut Context, update_block: &ReactiveBlock) -> String 
     cx.block_scope_output_names.push(HashSet::new());
     cx.block_scope_declared_temp_names.push(HashSet::new());
     cx.preserve_loop_header_inits = true;
-    let code = codegen_block_no_reset(cx, update_block);
+    let (code, final_expr) = if let Some(update_value) = update_value {
+        if let Some((ReactiveStatement::Instruction(final_instr), prefix)) =
+            update_block.split_last()
+        {
+            let prefix_code = if prefix.is_empty() {
+                String::new()
+            } else {
+                let prefix_block: ReactiveBlock = prefix.to_vec();
+                codegen_block_no_reset(cx, &prefix_block)
+            };
+            let final_expr = codegen_for_update_value_expr(cx, update_block, update_value);
+            let final_stmt = codegen_instruction_nullable(cx, final_instr);
+            (
+                if final_expr.is_some() {
+                    prefix_code
+                } else {
+                    format!("{}{}", prefix_code, final_stmt.unwrap_or_default())
+                },
+                final_expr,
+            )
+        } else {
+            (
+                codegen_block_no_reset(cx, update_block),
+                codegen_for_update_value_expr(cx, update_block, update_value),
+            )
+        }
+    } else {
+        (codegen_block_no_reset(cx, update_block), None)
+    };
     let mut trimmed = code.trim().trim_end_matches(';').to_string();
-
-    if trimmed.is_empty()
+    if trimmed.contains('\n') {
+        trimmed = collapse_statement_lines_to_sequence_expr(&trimmed);
+    }
+    if let Some(final_expr) = final_expr {
+        let normalized_trimmed = normalize_fusion_match_text(&trimmed);
+        let normalized_final = normalize_fusion_match_text(&final_expr);
+        if trimmed.is_empty() {
+            trimmed = final_expr;
+        } else if normalized_trimmed != normalized_final {
+            let prefix_expr = trimmed.clone();
+            trimmed =
+                render_sequence_expression_ast(std::slice::from_ref(&prefix_expr), &final_expr)
+                    .unwrap_or_else(|| format!("{prefix_expr}, {final_expr}"));
+        } else {
+            trimmed = final_expr;
+        }
+    } else if trimmed.is_empty()
         && let Some(last_lvalue_decl) = update_block.iter().rev().find_map(|stmt| match stmt {
             ReactiveStatement::Instruction(instr) => instr
                 .lvalue
@@ -35863,9 +35947,6 @@ fn codegen_for_update(cx: &mut Context, update_block: &ReactiveBlock) -> String 
             .and_then(|expr| expr.as_ref())
     {
         trimmed = expr.expr.clone();
-    }
-    if trimmed.contains('\n') {
-        trimmed = collapse_statement_lines_to_sequence_expr(&trimmed);
     }
 
     let _ = cx.block_scope_declared_temp_names.pop();
@@ -36336,6 +36417,7 @@ mod tests {
                 init: vec![],
                 test: named_place(0, 0, "flag"),
                 update: None,
+                update_value: None,
                 loop_block: vec![ReactiveStatement::Terminal(ReactiveTerminalStatement {
                     terminal: ReactiveTerminal::Continue {
                         target: crate::hir::types::BlockId(1),

@@ -921,15 +921,15 @@ impl Driver {
                     test_result.place = place;
                 }
 
-                let update_block = if let Some(upd) = update {
+                let (update_block, update_value) = if let Some(upd) = update {
                     let upd_result = self.visit_value_block(upd, &loc);
                     let mut stmts: ReactiveBlock = Vec::new();
                     for instr in upd_result.instructions {
                         stmts.push(ReactiveStatement::Instruction(Box::new(instr)));
                     }
-                    Some(stmts)
+                    (Some(stmts), Some(Box::new(upd_result.value)))
                 } else {
-                    None
+                    (None, None)
                 };
 
                 let loop_body = if let Some(lid) = loop_id {
@@ -958,6 +958,7 @@ impl Driver {
                         init: init_block,
                         test: test_place,
                         update: update_block,
+                        update_value,
                         loop_block: loop_body,
                         id,
                         loc,
