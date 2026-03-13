@@ -4015,13 +4015,9 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
         }
     }
     if !scope.reassignments.is_empty() {
-        let mut reassignments = scope.reassignments.clone();
-        reassignments.sort_by(|a, b| {
-            identifier_name_static(a)
-                .cmp(&identifier_name_static(b))
-                .then_with(|| a.declaration_id.0.cmp(&b.declaration_id.0))
-        });
-        for reassignment in &reassignments {
+        // Preserve reassignments in scope traversal order so the direct-body
+        // fast path matches the generic cache-slot assignment path.
+        for reassignment in &scope.reassignments {
             if !seen_output_decls.insert(reassignment.declaration_id) {
                 continue;
             }

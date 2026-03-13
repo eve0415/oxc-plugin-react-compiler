@@ -1,6 +1,6 @@
-# React Compiler Conformance — 95.1% parity rate
+# React Compiler Conformance — 95.3% parity rate
 
-**1667** parity_success, **85** parity_failure, **0** skipped
+**1669** parity_success, **83** parity_failure, **0** skipped
 
 ## Failed
 
@@ -33,8 +33,6 @@
 - `memoize-value-block-value-sequence`: Output mismatch
 - `meta-isms/repro-cx-assigned-to-temporary`: Output mismatch
 - `meta-isms/repro-cx-namespace-assigned-to-temporary`: Output mismatch
-- `mutation-within-jsx`: Output mismatch
-- `mutation-within-jsx-and-break`: Output mismatch
 - `nested-optional-member-expr`: Output mismatch
 - `new-mutability/ssa-renaming-ternary-destruction`: Output mismatch
 - `nullable-objects/array-map-simple`: Output mismatch
@@ -946,6 +944,8 @@
 - `mutate-outer-scope-within-value-block`
 - `mutation-during-jsx-construction`
 - `mutation-within-capture-and-mutablerange`
+- `mutation-within-jsx`
+- `mutation-within-jsx-and-break`
 - `name-anonymous-functions`
 - `name-anonymous-functions-outline`
 - `nested-function-shadowed-identifiers`
