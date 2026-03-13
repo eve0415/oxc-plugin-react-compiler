@@ -7969,13 +7969,34 @@ fn move_leading_comment_to_import_trailing(code: &str) -> String {
         return code.to_string();
     }
 
-    // Check if the line after the last import is a comment
+    // Check if the line after the last import is a comment (line or block)
     let comment_idx = last_import_idx + 1;
-    if comment_idx >= lines.len() || !lines[comment_idx].starts_with("//") {
+    if comment_idx >= lines.len() {
+        return code.to_string();
+    }
+    let is_line_comment = lines[comment_idx].starts_with("//");
+    let is_block_comment =
+        lines[comment_idx].starts_with("/**") || lines[comment_idx].starts_with("/*");
+    if !is_line_comment && !is_block_comment {
         return code.to_string();
     }
 
-    // Build the result: everything up to last import, then import + comment, then rest
+    // For block comments, find the end line (the line containing */)
+    let comment_end_idx = if is_block_comment {
+        let mut end = comment_idx;
+        for (j, line) in lines.iter().enumerate().skip(comment_idx) {
+            if line.contains("*/") {
+                end = j;
+                break;
+            }
+        }
+        end
+    } else {
+        comment_idx
+    };
+
+    // Build the result: everything up to last import, then import + first comment line,
+    // then remaining comment lines, then rest
     let mut result = String::with_capacity(code.len());
     for (i, line) in lines.iter().enumerate() {
         if i == last_import_idx {
@@ -7995,6 +8016,7 @@ fn move_leading_comment_to_import_trailing(code: &str) -> String {
     if !code.ends_with('\n') && result.ends_with('\n') {
         result.pop();
     }
+    let _ = comment_end_idx; // block comment lines after first are kept in place
     result
 }
 
