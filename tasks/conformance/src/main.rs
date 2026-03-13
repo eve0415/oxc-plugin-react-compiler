@@ -2549,7 +2549,7 @@ fn normalize_bailout_text(code: &str) -> String {
 
 fn normalize_shared_cosmetic_equivalences(code: &str) -> String {
     let mut normalized = code.to_string();
-    let steps: [fn(&str) -> String; 13] = [
+    let steps: [fn(&str) -> String; 14] = [
         normalize_compare_multiline_brace_literals,
         normalize_compare_multiline_imports,
         normalize_import_region_comments,
@@ -2563,6 +2563,7 @@ fn normalize_shared_cosmetic_equivalences(code: &str) -> String {
         normalize_compare_unicode_escapes,
         normalize_fixture_entrypoint_array_spacing,
         normalize_scope_body_blank_lines,
+        normalize_top_level_statement_blank_lines,
     ];
     for step in steps {
         normalized = step(&normalized);
@@ -2590,16 +2591,11 @@ fn normalize_scope_body_blank_lines(code: &str) -> String {
     let mut function_brace_depth: i32 = 0;
     let mut prev_trimmed = "";
 
-    for line in &lines {
+    for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
 
         // Track whether we're inside a function body
-        if !in_function_body
-            && (trimmed.starts_with("function ")
-                || trimmed.contains("function(")
-                || trimmed.contains("function ("))
-            && trimmed.ends_with('{')
-        {
+        if !in_function_body && is_function_body_start(trimmed) {
             in_function_body = true;
             function_brace_depth = 1;
         } else if in_function_body {
@@ -2658,7 +2654,7 @@ fn normalize_scope_body_blank_lines(code: &str) -> String {
             && prev_trimmed == "*/"
             && lines
                 .iter()
-                .skip(result.len() + 1)
+                .skip(i + 1)
                 .find(|l| !l.trim().is_empty())
                 .is_some_and(|next| next.trim().starts_with("function "))
         {
@@ -2671,7 +2667,7 @@ fn normalize_scope_body_blank_lines(code: &str) -> String {
             && prev_trimmed.starts_with("import ")
             && lines
                 .iter()
-                .skip(result.len() + 1)
+                .skip(i + 1)
                 .find(|l| !l.trim().is_empty())
                 .is_some_and(|next| next.trim().starts_with("import "))
         {
@@ -2684,6 +2680,72 @@ fn normalize_scope_body_blank_lines(code: &str) -> String {
     }
 
     result.join("\n")
+}
+
+fn is_function_body_start(trimmed: &str) -> bool {
+    trimmed.ends_with('{')
+        && (trimmed.starts_with("function ")
+            || trimmed.contains(" function ")
+            || trimmed.contains("function(")
+            || trimmed.contains("function (")
+            || trimmed.contains("=> {"))
+}
+
+/// Collapse blank lines between completed top-level statements and the next
+/// top-level binding/export statement. This keeps blank-line-only retainLines
+/// artifacts from failing strict output without disturbing import-region
+/// handling or blank lines inside nested blocks.
+fn normalize_top_level_statement_blank_lines(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut result: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut top_level_brace_depth: i32 = 0;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() && top_level_brace_depth == 0 {
+            let prev_trimmed = result
+                .iter()
+                .rev()
+                .copied()
+                .find(|line| !line.trim().is_empty())
+                .map(str::trim)
+                .unwrap_or("");
+            let next_trimmed = lines
+                .iter()
+                .skip(i + 1)
+                .find(|line| !line.trim().is_empty())
+                .map(|line| line.trim())
+                .unwrap_or("");
+
+            if ends_top_level_statement(prev_trimmed)
+                && starts_top_level_binding_or_export(next_trimmed)
+            {
+                continue;
+            }
+        }
+
+        result.push(*line);
+
+        if !trimmed.is_empty() {
+            let opens = trimmed.chars().filter(|&c| c == '{').count() as i32;
+            let closes = trimmed.chars().filter(|&c| c == '}').count() as i32;
+            top_level_brace_depth += opens - closes;
+        }
+    }
+
+    result.join("\n")
+}
+
+fn ends_top_level_statement(trimmed: &str) -> bool {
+    trimmed.ends_with(';') || trimmed.ends_with('}')
+}
+
+fn starts_top_level_binding_or_export(trimmed: &str) -> bool {
+    trimmed.starts_with("export ")
+        || trimmed.starts_with("const ")
+        || trimmed.starts_with("let ")
+        || trimmed.starts_with("var ")
 }
 
 /// Normalize comment placement in the import region at the top of the file.
@@ -8535,6 +8597,36 @@ mod tests {
     fn normalize_shared_cosmetic_equivalences_drops_multiline_trailing_enum_commas() {
         let actual = "enum Bool {\nTrue = \"true\",\nFalse = \"false\"\n}";
         let expected = "enum Bool {\nTrue = \"true\",\nFalse = \"false\",\n}";
+        assert_eq!(
+            normalize_shared_cosmetic_equivalences(actual),
+            normalize_shared_cosmetic_equivalences(expected)
+        );
+    }
+
+    #[test]
+    fn normalize_shared_cosmetic_equivalences_strips_blank_lines_in_gated_function_bodies() {
+        let actual = "const Foo = isForgetEnabled_Fixtures()\n? function Foo(props) {\n\"use forget\";\nconst $ = _c(3);\nif (props.bar < 0) {\nreturn props.children\n}\nreturn props.bar\n}\n: function Foo(props) {\nreturn props.bar\n};";
+        let expected = "const Foo = isForgetEnabled_Fixtures()\n? function Foo(props) {\n\"use forget\";\nconst $ = _c(3);\n\nif (props.bar < 0) {\nreturn props.children\n}\nreturn props.bar\n}\n: function Foo(props) {\nreturn props.bar\n};";
+        assert_eq!(
+            normalize_shared_cosmetic_equivalences(actual),
+            normalize_shared_cosmetic_equivalences(expected)
+        );
+    }
+
+    #[test]
+    fn normalize_shared_cosmetic_equivalences_strips_blank_lines_before_top_level_exports() {
+        let actual = "const Renderer = isForgetEnabled_Fixtures()\n? (props) => {\nconst $ = _c(1);\nreturn props\n}\n: (props) => props;\n\nexport default Renderer;\n\nexport const FIXTURE_ENTRYPOINT = { fn: eval(\"Renderer\"), params: [{}] };";
+        let expected = "const Renderer = isForgetEnabled_Fixtures()\n? (props) => {\nconst $ = _c(1);\nreturn props\n}\n: (props) => props;\nexport default Renderer;\n\nexport const FIXTURE_ENTRYPOINT = { fn: eval(\"Renderer\"), params: [{}] };";
+        assert_eq!(
+            normalize_shared_cosmetic_equivalences(actual),
+            normalize_shared_cosmetic_equivalences(expected)
+        );
+    }
+
+    #[test]
+    fn normalize_shared_cosmetic_equivalences_strips_blank_lines_before_top_level_consts() {
+        let actual = "const _ = { useHook: isForgetEnabled_Fixtures() ? () => {} : () => {} };\nidentity(_.useHook);\n\nconst useHook = isForgetEnabled_Fixtures()\n? function useHook() {\nconst $ = _c(1);\nreturn null\n}\n: function useHook() {\nreturn null\n};";
+        let expected = "const _ = { useHook: isForgetEnabled_Fixtures() ? () => {} : () => {} };\nidentity(_.useHook);\nconst useHook = isForgetEnabled_Fixtures()\n? function useHook() {\nconst $ = _c(1);\nreturn null\n}\n: function useHook() {\nreturn null\n};";
         assert_eq!(
             normalize_shared_cosmetic_equivalences(actual),
             normalize_shared_cosmetic_equivalences(expected)
