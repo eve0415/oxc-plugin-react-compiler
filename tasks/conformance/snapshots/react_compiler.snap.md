@@ -1,6 +1,6 @@
 # React Compiler Conformance — 95.1% parity rate
 
-**1666** parity_success, **86** parity_failure, **0** skipped
+**1667** parity_success, **85** parity_failure, **0** skipped
 
 ## Failed
 
@@ -18,7 +18,6 @@
 - `change-detect-reassign`: Output mismatch
 - `codegen-inline-iife-reassign`: Output mismatch
 - `computed-call-evaluation-order`: Output mismatch
-- `console-readonly`: Output mismatch
 - `createElement-freeze`: Output mismatch
 - `destructure-array-declaration-to-context-var`: Output mismatch
 - `destructure-object-declaration-to-context-var`: Output mismatch
@@ -291,6 +290,7 @@
 - `conflict-codegen-instrument-forget`
 - `conflicting-dollar-sign-variable`
 - `consecutive-use-memo`
+- `console-readonly`
 - `const-propagation-into-function-expression-global`
 - `const-propagation-into-function-expression-primitive`
 - `const-propagation-phi-nodes`

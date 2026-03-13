@@ -4046,9 +4046,24 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
     }
     let primary_output_name = output_names.first()?.clone();
     let primary_output_decl_id = *output_decl_ids.first()?;
+    let output_name_set: HashSet<String> = output_names.iter().cloned().collect();
+    let block_is_flat_instructions = instructions
+        .iter()
+        .all(|stmt| matches!(stmt, ReactiveStatement::Instruction(_)));
     if let Some(early_return) = scope.early_return_value.as_ref() {
         let setup_statements =
             try_render_statement_sources_from_generated_body_shape(&computation_shape)?;
+        if setup_statements.is_empty() {
+            return None;
+        }
+        let (setup_statements, deferred_post_scope_expressions) = if block_is_flat_instructions {
+            split_deferred_readonly_output_calls_from_setup_statements(
+                setup_statements,
+                &output_name_set,
+            )?
+        } else {
+            (setup_statements, Vec::new())
+        };
         if setup_statements.is_empty() {
             return None;
         }
@@ -4098,6 +4113,16 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
             sentinel_name,
             final_return: None,
             fallback_body: None,
+        };
+        let inner = if deferred_post_scope_expressions.is_empty() {
+            inner
+        } else {
+            GeneratedBodyShape::Sequential {
+                prefix: Box::new(inner),
+                inner: Box::new(GeneratedBodyShape::ExpressionStatements(
+                    deferred_post_scope_expressions,
+                )),
+            }
         };
         return if declarations.is_empty() {
             Some(inner)
@@ -4198,6 +4223,17 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
             return None;
         }
     }
+    let (setup_statements, deferred_post_scope_expressions) = if block_is_flat_instructions {
+        split_deferred_readonly_output_calls_from_setup_statements(
+            setup_statements,
+            &output_name_set,
+        )?
+    } else {
+        (setup_statements, Vec::new())
+    };
+    if setup_statements.is_empty() {
+        return None;
+    }
     let inner = if dep_exprs.is_empty() {
         let mut cached_values = Vec::with_capacity(output_names.len());
         let mut outer_slots = Vec::with_capacity(output_names.len());
@@ -4257,6 +4293,16 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
             setup_statements,
             cached_values,
             restored_values,
+        }
+    };
+    let inner = if deferred_post_scope_expressions.is_empty() {
+        inner
+    } else {
+        GeneratedBodyShape::Sequential {
+            prefix: Box::new(inner),
+            inner: Box::new(GeneratedBodyShape::ExpressionStatements(
+                deferred_post_scope_expressions,
+            )),
         }
     };
     if declarations.is_empty() {
@@ -21902,6 +21948,44 @@ fn split_deferred_readonly_output_calls(
     (retained_lines.concat(), deferred_calls)
 }
 
+fn parse_expression_statement_source(statement_source: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let statement = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        statement_source,
+    )
+    .ok()?;
+    let ast::Statement::ExpressionStatement(expression_statement) = statement else {
+        return None;
+    };
+    Some(codegen_expression_with_flow_cast_restore(
+        &expression_statement.expression,
+    ))
+}
+
+fn split_deferred_readonly_output_calls_from_setup_statements(
+    setup_statements: Vec<String>,
+    output_names: &HashSet<String>,
+) -> Option<(Vec<String>, Vec<String>)> {
+    if output_names.is_empty() || setup_statements.is_empty() {
+        return Some((setup_statements, Vec::new()));
+    }
+
+    let mut retained_statements = Vec::with_capacity(setup_statements.len());
+    let mut deferred_expressions = Vec::new();
+
+    for statement_source in setup_statements {
+        if is_readonly_output_call_line(&statement_source, output_names) {
+            deferred_expressions.push(parse_expression_statement_source(&statement_source)?);
+        } else {
+            retained_statements.push(statement_source);
+        }
+    }
+
+    Some((retained_statements, deferred_expressions))
+}
+
 /// Generate a reactive scope (memoization block).
 ///
 /// Emits: `if ($[n] !== dep || ...) { ...compute... $[n] = dep; $[m] = output; } else { output = $[m]; }`
@@ -35840,6 +35924,33 @@ mod tests {
         let other = parse_rendered_expression_ast(&allocator, "logger.info")
             .expect("expected other callee");
         assert!(!is_readonly_console_callee(&other));
+    }
+
+    #[test]
+    fn splits_readonly_output_calls_from_scope_setup_statements() {
+        let output_names = HashSet::from(["x".to_string()]);
+        let (setup_statements, deferred_expressions) =
+            super::split_deferred_readonly_output_calls_from_setup_statements(
+                vec![
+                    "x = shallowCopy(props);".to_string(),
+                    "console.log(x);".to_string(),
+                    "global.console.warn(x);".to_string(),
+                ],
+                &output_names,
+            )
+            .expect("expected readonly output split");
+
+        assert_eq!(
+            setup_statements,
+            vec!["x = shallowCopy(props);".to_string()]
+        );
+        assert_eq!(
+            deferred_expressions,
+            vec![
+                "console.log(x)".to_string(),
+                "global.console.warn(x)".to_string(),
+            ]
+        );
     }
 
     #[test]
