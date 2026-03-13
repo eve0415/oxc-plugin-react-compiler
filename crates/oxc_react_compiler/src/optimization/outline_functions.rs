@@ -610,7 +610,7 @@ fn generate_temp_name(counter: &mut u32, used: &HashSet<String>) -> String {
         let name = if *counter == 0 {
             "_temp".to_string()
         } else {
-            format!("_temp{}", counter)
+            format!("_temp{}", counter.saturating_add(1))
         };
         *counter += 1;
         if !used.contains(&name) {
@@ -643,5 +643,20 @@ fn collect_used_names(func: &HIRFunction, names: &mut HashSet<String>) {
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    #[test]
+    fn generate_temp_name_matches_babel_uid_suffixes() {
+        let mut counter = 0;
+        let used = HashSet::new();
+
+        assert_eq!(super::generate_temp_name(&mut counter, &used), "_temp");
+        assert_eq!(super::generate_temp_name(&mut counter, &used), "_temp2");
+        assert_eq!(super::generate_temp_name(&mut counter, &used), "_temp3");
     }
 }

@@ -5057,6 +5057,82 @@ fn preserve_scope_setup_statement_blank_lines(
 }
 
 fn rewrite_generated_setup_statements(mut setup_statements: Vec<String>) -> Vec<String> {
+    fn parse_assignment_target_name(stmt: &str) -> Option<String> {
+        let allocator = Allocator::default();
+        let statement = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            stmt.trim(),
+        )
+        .ok()?;
+        match statement {
+            ast::Statement::VariableDeclaration(declaration) => {
+                if declaration.declarations.len() != 1 {
+                    return None;
+                }
+                let declarator = declaration.declarations.first()?;
+                let _ = declarator.init.as_ref()?;
+                let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id else {
+                    return None;
+                };
+                Some(identifier.name.to_string())
+            }
+            ast::Statement::ExpressionStatement(expression_statement) => {
+                let ast::Expression::AssignmentExpression(assignment) =
+                    expression_statement.expression.without_parentheses()
+                else {
+                    return None;
+                };
+                if assignment.operator != AssignmentOperator::Assign {
+                    return None;
+                }
+                let ast::AssignmentTarget::AssignmentTargetIdentifier(identifier) =
+                    &assignment.left
+                else {
+                    return None;
+                };
+                Some(identifier.name.to_string())
+            }
+            _ => None,
+        }
+    }
+
+    fn parse_identifier_expression_name(stmt: &str) -> Option<String> {
+        let allocator = Allocator::default();
+        let statement = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            stmt.trim(),
+        )
+        .ok()?;
+        let ast::Statement::ExpressionStatement(expression_statement) = statement else {
+            return None;
+        };
+        let ast::Expression::Identifier(identifier) =
+            expression_statement.expression.without_parentheses()
+        else {
+            return None;
+        };
+        Some(identifier.name.to_string())
+    }
+
+    fn drop_redundant_assignment_tail_identifier_reads(
+        setup_statements: Vec<String>,
+    ) -> Vec<String> {
+        let mut rewritten: Vec<String> = Vec::with_capacity(setup_statements.len());
+        for statement in setup_statements {
+            let current_name = parse_identifier_expression_name(&statement);
+            let previous_target = rewritten
+                .last()
+                .and_then(|previous| parse_assignment_target_name(previous));
+            if current_name.is_some() && current_name == previous_target {
+                continue;
+            }
+            rewritten.push(statement);
+        }
+        rewritten
+    }
+
     if setup_statements.is_empty() {
         return setup_statements;
     }
@@ -5065,15 +5141,97 @@ fn rewrite_generated_setup_statements(mut setup_statements: Vec<String>) -> Vec<
     let rewritten = rewrite_named_test_reassign_ternary_in_scope_computation(&computation);
     let rewritten = rewrite_named_temp_ternary_in_scope_computation(&rewritten);
     if rewritten == computation {
-        return setup_statements;
+        return drop_redundant_assignment_tail_identifier_reads(setup_statements);
     }
     match split_statement_sources_preserving_blank_lines(&rewritten) {
         Some(statements) => {
             setup_statements = statements;
-            setup_statements
+            drop_redundant_assignment_tail_identifier_reads(setup_statements)
         }
-        None => original,
+        None => drop_redundant_assignment_tail_identifier_reads(original),
     }
+}
+
+fn drop_redundant_assignment_tail_identifier_read_lines(source: String) -> String {
+    fn parse_assignment_target_name(stmt: &str) -> Option<String> {
+        let allocator = Allocator::default();
+        let statement = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            stmt.trim(),
+        )
+        .ok()?;
+        match statement {
+            ast::Statement::VariableDeclaration(declaration) => {
+                if declaration.declarations.len() != 1 {
+                    return None;
+                }
+                let declarator = declaration.declarations.first()?;
+                let _ = declarator.init.as_ref()?;
+                let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id else {
+                    return None;
+                };
+                Some(identifier.name.to_string())
+            }
+            ast::Statement::ExpressionStatement(expression_statement) => {
+                let ast::Expression::AssignmentExpression(assignment) =
+                    expression_statement.expression.without_parentheses()
+                else {
+                    return None;
+                };
+                if assignment.operator != AssignmentOperator::Assign {
+                    return None;
+                }
+                let ast::AssignmentTarget::AssignmentTargetIdentifier(identifier) =
+                    &assignment.left
+                else {
+                    return None;
+                };
+                Some(identifier.name.to_string())
+            }
+            _ => None,
+        }
+    }
+
+    fn parse_identifier_expression_name(stmt: &str) -> Option<String> {
+        let allocator = Allocator::default();
+        let statement = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            stmt.trim(),
+        )
+        .ok()?;
+        let ast::Statement::ExpressionStatement(expression_statement) = statement else {
+            return None;
+        };
+        let ast::Expression::Identifier(identifier) =
+            expression_statement.expression.without_parentheses()
+        else {
+            return None;
+        };
+        Some(identifier.name.to_string())
+    }
+
+    let had_trailing_newline = source.ends_with('\n');
+    let mut retained: Vec<String> = source.lines().map(|line| line.to_string()).collect();
+    let last_non_empty_index = retained.iter().rposition(|line| !line.trim().is_empty());
+    if let Some(last_index) = last_non_empty_index {
+        let previous_non_empty = retained[..last_index]
+            .iter()
+            .rev()
+            .find(|line| !line.trim().is_empty());
+        let current_name = parse_identifier_expression_name(&retained[last_index]);
+        let previous_target =
+            previous_non_empty.and_then(|line| parse_assignment_target_name(line));
+        if current_name.is_some() && current_name == previous_target {
+            retained.remove(last_index);
+        }
+    }
+    let mut rewritten = retained.join("\n");
+    if had_trailing_newline && !rewritten.is_empty() {
+        rewritten.push('\n');
+    }
+    rewritten
 }
 
 fn try_build_simple_scope_setup_statements(
@@ -6734,6 +6892,11 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
         InstructionValue::Destructure { lvalue, value, .. } => {
             let pattern = codegen_pattern(cx, &lvalue.pattern);
             let expression = codegen_place_to_expression(cx, value);
+            let declaration_kind = reactive_destructure_declaration_kind(
+                cx,
+                lvalue.kind,
+                value.identifier.declaration_id,
+            );
             match lvalue.kind {
                 InstructionKind::Reassign => Some(GeneratedBodyShape::PrefixedAssignments {
                     assignments: vec![GeneratedAssignment {
@@ -6744,7 +6907,7 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
                 }),
                 _ => Some(GeneratedBodyShape::PrefixedBindings {
                     bindings: vec![GeneratedBinding {
-                        kind: variable_declaration_kind(lvalue.kind)?,
+                        kind: declaration_kind,
                         pattern,
                         expression,
                         promote_to_function_declaration: false,
@@ -19994,10 +20157,12 @@ fn codegen_scope_computation_no_reset(
             &render_reactive_assignment_statement_ast(&target_name, &rhs_expr)
                 .expect("reactive assignment should stay on AST path"),
         );
-        return output;
+        return drop_redundant_assignment_tail_identifier_read_lines(output);
     }
 
-    codegen_block_no_reset_with_options(cx, block, true)
+    drop_redundant_assignment_tail_identifier_read_lines(codegen_block_no_reset_with_options(
+        cx, block, true,
+    ))
 }
 
 fn should_drop_trailing_scope_temp_declare(scope: &ReactiveScope, block: &ReactiveBlock) -> bool {
@@ -25860,12 +26025,6 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
                 ),
             );
 
-            let bridge_declaration_kind = match kind {
-                InstructionKind::Const
-                | InstructionKind::HoistedConst
-                | InstructionKind::Function => ast::VariableDeclarationKind::Const,
-                _ => ast::VariableDeclarationKind::Let,
-            };
             let declaration_kind =
                 reactive_destructure_declaration_kind(cx, kind, value.identifier.declaration_id);
             if let Some(bridged) = maybe_codegen_captured_context_destructure_bridge(
@@ -25873,7 +26032,7 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
                 &pattern,
                 &rhs,
                 all_declared,
-                bridge_declaration_kind,
+                declaration_kind,
             ) {
                 return Some(bridged);
             }
@@ -30555,14 +30714,12 @@ fn render_reactive_pattern_assignment_expression_ast(
 }
 
 fn reactive_destructure_declaration_kind(
-    cx: &Context,
+    _cx: &Context,
     kind: InstructionKind,
-    source_decl_id: DeclarationId,
+    _source_decl_id: DeclarationId,
 ) -> ast::VariableDeclarationKind {
     match kind {
-        InstructionKind::Const | InstructionKind::HoistedConst | InstructionKind::Function
-            if !cx.mutable_destructure_sources.contains(&source_decl_id) =>
-        {
+        InstructionKind::Const | InstructionKind::HoistedConst | InstructionKind::Function => {
             ast::VariableDeclarationKind::Const
         }
         _ => ast::VariableDeclarationKind::Let,
@@ -36909,9 +37066,9 @@ mod tests {
     use crate::hir::types::{
         Argument, ArrayElement, ArrayPattern, DeclarationId, DependencyPathEntry, Effect,
         Identifier, IdentifierId, IdentifierName, InstructionKind, InstructionValue, JsxAttribute,
-        JsxTag, LValue, MutableRange, ObjectPattern, ObjectProperty, ObjectPropertyKey,
-        ObjectPropertyOrSpread, ObjectPropertyType, Pattern, Place, PrimitiveValue,
-        PropertyLiteral, ReactiveInstruction, ReactiveScope, ReactiveScopeBlock,
+        JsxTag, LValue, LValuePattern, MutableRange, ObjectPattern, ObjectProperty,
+        ObjectPropertyKey, ObjectPropertyOrSpread, ObjectPropertyType, Pattern, Place,
+        PrimitiveValue, PropertyLiteral, ReactiveInstruction, ReactiveScope, ReactiveScopeBlock,
         ReactiveScopeDependency, ReactiveStatement, ReactiveTerminal, ReactiveTerminalStatement,
         ScopeId, SourceLocation, TemplateQuasi, Type, TypeAnnotationKind,
     };
@@ -37219,6 +37376,85 @@ mod tests {
                 }],
                 inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
                     "value".to_string()
+                )),
+            }
+        );
+    }
+
+    #[test]
+    fn renders_const_destructure_statement_even_when_source_marked_mutable() {
+        let mut cx = test_context();
+        cx.mutable_destructure_sources.insert(DeclarationId::new(1));
+        let target = named_place(0, 0, "t0");
+        let source = named_place(1, 1, "input");
+        let instr = ReactiveInstruction {
+            id: crate::hir::types::make_instruction_id(0),
+            lvalue: None,
+            value: InstructionValue::Destructure {
+                lvalue: LValuePattern {
+                    pattern: Pattern::Array(ArrayPattern {
+                        items: vec![ArrayElement::Place(target)],
+                    }),
+                    kind: InstructionKind::Const,
+                },
+                value: source,
+                loc: SourceLocation::Generated,
+            },
+            loc: SourceLocation::Generated,
+        };
+
+        let rendered = super::codegen_instruction_nullable(&mut cx, &instr)
+            .expect("expected destructure statement");
+
+        assert_eq!(rendered, "const [t0] = input;\n");
+    }
+
+    #[test]
+    fn directly_lowers_const_destructure_prefix_even_when_source_marked_mutable() {
+        let mut cx = test_context();
+        cx.mutable_destructure_sources.insert(DeclarationId::new(1));
+        let target = named_place(0, 0, "t0");
+        let source = named_place(1, 1, "input");
+        let block = vec![
+            ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                id: crate::hir::types::make_instruction_id(0),
+                lvalue: None,
+                value: InstructionValue::Destructure {
+                    lvalue: LValuePattern {
+                        pattern: Pattern::Array(ArrayPattern {
+                            items: vec![ArrayElement::Place(target.clone())],
+                        }),
+                        kind: InstructionKind::Const,
+                    },
+                    value: source,
+                    loc: SourceLocation::Generated,
+                },
+                loc: SourceLocation::Generated,
+            })),
+            ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                terminal: ReactiveTerminal::Return {
+                    value: target,
+                    id: crate::hir::types::make_instruction_id(1),
+                    loc: SourceLocation::Generated,
+                },
+                label: None,
+            }),
+        ];
+
+        let shape = super::try_build_generated_body_shape_from_reactive_block(&mut cx, &block)
+            .expect("expected direct body shape");
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::PrefixedBindings {
+                bindings: vec![super::GeneratedBinding {
+                    kind: ast::VariableDeclarationKind::Const,
+                    pattern: "[t0]".to_string(),
+                    expression: "input".to_string(),
+                    promote_to_function_declaration: false,
+                }],
+                inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                    "t0".to_string()
                 )),
             }
         );
@@ -39855,6 +40091,16 @@ mod tests {
                 .any(|statement| statement.contains("y = foo()")),
             "expected rewritten assignment in setup statements, got {setup_statements:?}"
         );
+    }
+
+    #[test]
+    fn rewrites_generated_setup_statements_drop_redundant_identifier_tail_reads() {
+        let rewritten = super::rewrite_generated_setup_statements(vec![
+            "y = x.concat(arr2);".to_string(),
+            "y;".to_string(),
+        ]);
+
+        assert_eq!(rewritten, vec!["y = x.concat(arr2);".to_string()]);
     }
 
     #[test]

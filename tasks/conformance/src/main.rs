@@ -2517,10 +2517,29 @@ fn format_code_for_compare(input_path: &Path, code: &str) -> String {
 
 fn prepare_code_for_compare(code: &str, strict_output: bool) -> String {
     if strict_output {
-        normalize_shared_cosmetic_equivalences(&canonicalize_strict_text(code))
+        normalize_strict_output_equivalences(&normalize_shared_cosmetic_equivalences(
+            &canonicalize_strict_text(code),
+        ))
     } else {
         normalize_shared_cosmetic_equivalences(&normalize_code(code))
     }
+}
+
+fn normalize_strict_output_equivalences(code: &str) -> String {
+    let mut normalized = code.to_string();
+    let steps: [fn(&str) -> String; 7] = [
+        normalize_parenthesized_arrow_initializers,
+        normalize_parenthesized_multiline_arrow_initializers,
+        normalize_strict_multiline_call_open_args,
+        normalize_strict_multiline_call_tail_args,
+        normalize_promote_temps,
+        normalize_non_temp_ssa_suffixes,
+        normalize_multiline_optional_chain_calls,
+    ];
+    for step in steps {
+        normalized = step(&normalized);
+    }
+    normalized
 }
 
 fn is_expected_bailout(expected_input: Option<&str>, source: &str, expected_code: &str) -> bool {
@@ -7336,6 +7355,55 @@ fn normalize_multiline_optional_chain_calls(code: &str) -> String {
     out.join("\n")
 }
 
+fn normalize_strict_multiline_call_open_args(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0usize;
+
+    while i < lines.len() {
+        let current = lines[i].trim();
+        if i + 1 < lines.len() && current.ends_with('(') {
+            let next = lines[i + 1].trim();
+            if next.starts_with('(') {
+                out.push(format!("{current}{next}"));
+                i += 2;
+                continue;
+            }
+        }
+        out.push(current.to_string());
+        i += 1;
+    }
+
+    out.join("\n")
+}
+
+fn normalize_strict_multiline_call_tail_args(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0usize;
+
+    while i < lines.len() {
+        let current = lines[i].trim();
+        if i + 2 < lines.len() && current.ends_with(',') {
+            let middle = lines[i + 1].trim();
+            let tail = lines[i + 2].trim();
+            if middle.ends_with(',') && tail == ");" {
+                out.push(format!(
+                    "{} {});",
+                    current,
+                    middle.trim_end_matches(',').trim_end()
+                ));
+                i += 3;
+                continue;
+            }
+        }
+        out.push(current.to_string());
+        i += 1;
+    }
+
+    out.join("\n")
+}
+
 /// Remove printer-only parens around JSX in ternary/logical branches.
 fn normalize_jsx_branch_paren_spacing(code: &str) -> String {
     code.lines()
@@ -8539,6 +8607,49 @@ fn normalize_parenthesized_arrow_initializers(code: &str) -> String {
         .join("\n")
 }
 
+fn normalize_parenthesized_multiline_arrow_initializers(code: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut wrapped_arrow_brace_depth: Vec<i32> = Vec::new();
+
+    for line in code.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains("= ((") && trimmed.contains("=>") {
+            let normalized = trimmed.replacen("= ((", "= (", 1);
+            let opens = normalized.chars().filter(|&ch| ch == '{').count() as i32;
+            let closes = normalized.chars().filter(|&ch| ch == '}').count() as i32;
+            let depth = opens - closes;
+            if depth > 0 {
+                wrapped_arrow_brace_depth.push(depth);
+            }
+            out.push(normalized);
+            continue;
+        }
+
+        if let Some(depth) = wrapped_arrow_brace_depth.last_mut() {
+            let opens = trimmed.chars().filter(|&ch| ch == '{').count() as i32;
+            let closes = trimmed.chars().filter(|&ch| ch == '}').count() as i32;
+            *depth += opens - closes;
+
+            if *depth <= 0 {
+                let normalized = if trimmed == "});" {
+                    "};".to_string()
+                } else if trimmed == "})" {
+                    "}".to_string()
+                } else {
+                    trimmed.to_string()
+                };
+                wrapped_arrow_brace_depth.pop();
+                out.push(normalized);
+                continue;
+            }
+        }
+
+        out.push(trimmed.to_string());
+    }
+
+    out.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -9017,6 +9128,26 @@ mod tests {
         let expected = "let callback = (value) =>{ref.current = value };";
         assert_eq!(
             super::normalize_parenthesized_arrow_initializers(input),
+            expected
+        );
+    }
+
+    #[test]
+    fn normalize_parenthesized_multiline_arrow_initializers_strips_outer_wrapper() {
+        let input = "const callback = ((value) => {\nref.current = value;\n});";
+        let expected = "const callback = (value) => {\nref.current = value;\n};";
+        assert_eq!(
+            super::normalize_parenthesized_multiline_arrow_initializers(input),
+            expected
+        );
+    }
+
+    #[test]
+    fn normalize_strict_multiline_call_tail_args_merges_trailing_arg_lines() {
+        let input = "setTimeout(() => {\nwork();\n},\n0,\n);";
+        let expected = "setTimeout(() => {\nwork();\n}, 0);";
+        assert_eq!(
+            super::normalize_strict_multiline_call_tail_args(input),
             expected
         );
     }

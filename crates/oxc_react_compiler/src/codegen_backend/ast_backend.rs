@@ -889,7 +889,7 @@ fn try_rewrite_compiled_statement_ast<'a>(
 
     let mut statements = builder.vec1(rewritten_stmt);
     let mut emitted_hir_outlined_names = HashSet::new();
-    for outlined in outlined_functions {
+    for outlined in outlined_functions.into_iter().rev() {
         emitted_hir_outlined_names.insert(outlined.name.clone());
         statements.push(build_rendered_outlined_function_statement(
             builder,
@@ -900,7 +900,7 @@ fn try_rewrite_compiled_statement_ast<'a>(
         )?);
     }
     for cf in compiled {
-        for (name, hir_function) in &cf.hir_outlined_functions {
+        for (name, hir_function) in cf.hir_outlined_functions.iter().rev() {
             if !emitted_hir_outlined_names.insert(name.clone()) {
                 continue;
             }
@@ -6895,7 +6895,7 @@ fn try_lower_compiled_statement_ast<'a>(
     if !cf.outlined_functions.is_empty() {
         return None;
     }
-    for (_, hir_function) in &cf.hir_outlined_functions {
+    for (_, hir_function) in cf.hir_outlined_functions.iter().rev() {
         statements.push(super::hir_to_ast::try_lower_function_declaration_ast(
             builder,
             hir_function,
