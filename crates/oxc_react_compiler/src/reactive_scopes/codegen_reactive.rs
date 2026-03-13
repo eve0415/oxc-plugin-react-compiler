@@ -30,6 +30,7 @@ use crate::hir::visitors;
 pub const MEMO_CACHE_SENTINEL: &str = "react.memo_cache_sentinel";
 pub const EARLY_RETURN_SENTINEL: &str = "react.early_return_sentinel";
 pub const HOOK_GUARD_IDENT: &str = "$dispatcherGuard";
+pub(crate) const INTERNAL_BLANK_LINE_MARKER: &str = "__REACT_COMPILER_INTERNAL_BLANK_LINE_MARKER__";
 pub(crate) const HOOK_GUARD_PUSH: u8 = 0;
 pub(crate) const HOOK_GUARD_POP: u8 = 1;
 const HOOK_GUARD_ALLOW: u8 = 2;
@@ -577,6 +578,364 @@ fn generated_body_shape_returned_identifier(shape: &GeneratedBodyShape) -> Optio
         GeneratedBodyShape::WrappedReturnExpression { .. } => None,
         GeneratedBodyShape::AssignedAliasReturn { alias_name, .. }
         | GeneratedBodyShape::AliasedReturn { alias_name, .. } => Some(alias_name),
+    }
+}
+
+fn strip_generated_body_shape_blank_line_markers(shape: GeneratedBodyShape) -> GeneratedBodyShape {
+    fn strip_statement_markers(statements: Vec<String>) -> Vec<String> {
+        statements
+            .into_iter()
+            .map(|statement| strip_statement_blank_line_marker(&statement).to_string())
+            .collect()
+    }
+
+    match shape {
+        GeneratedBodyShape::Unknown
+        | GeneratedBodyShape::DebuggerStatements(_)
+        | GeneratedBodyShape::Break(_)
+        | GeneratedBodyShape::Continue(_)
+        | GeneratedBodyShape::ReturnVoid
+        | GeneratedBodyShape::ReturnIdentifier(_)
+        | GeneratedBodyShape::ReturnExpression(_)
+        | GeneratedBodyShape::ThrowExpression(_)
+        | GeneratedBodyShape::BoundExpressionReturn { .. }
+        | GeneratedBodyShape::AssignedExpressionReturn { .. }
+        | GeneratedBodyShape::SingleSlotMemoizedReturn { .. } => shape,
+        GeneratedBodyShape::Block { inner } => GeneratedBodyShape::Block {
+            inner: Box::new(strip_generated_body_shape_blank_line_markers(*inner)),
+        },
+        GeneratedBodyShape::Labeled { label, inner } => GeneratedBodyShape::Labeled {
+            label,
+            inner: Box::new(strip_generated_body_shape_blank_line_markers(*inner)),
+        },
+        GeneratedBodyShape::Switch {
+            discriminant,
+            cases,
+        } => GeneratedBodyShape::Switch {
+            discriminant,
+            cases: cases
+                .into_iter()
+                .map(|case| GeneratedSwitchCase {
+                    test: case.test,
+                    consequent: strip_generated_body_shape_blank_line_markers(case.consequent),
+                })
+                .collect(),
+        },
+        GeneratedBodyShape::ExpressionStatements(expressions) => {
+            GeneratedBodyShape::ExpressionStatements(strip_statement_markers(expressions))
+        }
+        GeneratedBodyShape::AssignmentStatements(assignments) => {
+            GeneratedBodyShape::AssignmentStatements(assignments)
+        }
+        GeneratedBodyShape::GuardedBody { test, inner } => GeneratedBodyShape::GuardedBody {
+            test,
+            inner: Box::new(strip_generated_body_shape_blank_line_markers(*inner)),
+        },
+        GeneratedBodyShape::GuardedExpressionStatements { test, expressions } => {
+            GeneratedBodyShape::GuardedExpressionStatements {
+                test,
+                expressions: strip_statement_markers(expressions),
+            }
+        }
+        GeneratedBodyShape::GuardedReturnPrefix {
+            test,
+            consequent,
+            inner,
+        } => GeneratedBodyShape::GuardedReturnPrefix {
+            test,
+            consequent,
+            inner: Box::new(strip_generated_body_shape_blank_line_markers(*inner)),
+        },
+        GeneratedBodyShape::ConditionalBranches {
+            test,
+            consequent,
+            alternate,
+        } => GeneratedBodyShape::ConditionalBranches {
+            test,
+            consequent: Box::new(strip_generated_body_shape_blank_line_markers(*consequent)),
+            alternate: Box::new(strip_generated_body_shape_blank_line_markers(*alternate)),
+        },
+        GeneratedBodyShape::GuardedAssignments { test, assignments } => {
+            GeneratedBodyShape::GuardedAssignments { test, assignments }
+        }
+        GeneratedBodyShape::WhileLoop { test, body } => GeneratedBodyShape::WhileLoop {
+            test,
+            body: Box::new(strip_generated_body_shape_blank_line_markers(*body)),
+        },
+        GeneratedBodyShape::DoWhileLoop { test, body } => GeneratedBodyShape::DoWhileLoop {
+            test,
+            body: Box::new(strip_generated_body_shape_blank_line_markers(*body)),
+        },
+        GeneratedBodyShape::ForLoop {
+            init,
+            test,
+            update,
+            body,
+        } => GeneratedBodyShape::ForLoop {
+            init,
+            test,
+            update,
+            body: Box::new(strip_generated_body_shape_blank_line_markers(*body)),
+        },
+        GeneratedBodyShape::ForInLoop { left, right, body } => GeneratedBodyShape::ForInLoop {
+            left,
+            right,
+            body: Box::new(strip_generated_body_shape_blank_line_markers(*body)),
+        },
+        GeneratedBodyShape::ForOfLoop { left, right, body } => GeneratedBodyShape::ForOfLoop {
+            left,
+            right,
+            body: Box::new(strip_generated_body_shape_blank_line_markers(*body)),
+        },
+        GeneratedBodyShape::GuardedAssignmentExpressions {
+            test,
+            assignments,
+            expressions,
+        } => GeneratedBodyShape::GuardedAssignmentExpressions {
+            test,
+            assignments,
+            expressions: strip_statement_markers(expressions),
+        },
+        GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+            sentinel_slot,
+            setup_statements,
+            cached_values,
+            restored_values,
+        } => GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+            sentinel_slot,
+            setup_statements: strip_statement_markers(setup_statements),
+            cached_values,
+            restored_values,
+        },
+        GeneratedBodyShape::MemoizedCachedValues {
+            deps,
+            setup_statements,
+            cached_values,
+            restored_values,
+        } => GeneratedBodyShape::MemoizedCachedValues {
+            deps,
+            setup_statements: strip_statement_markers(setup_statements),
+            cached_values,
+            restored_values,
+        },
+        GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+            deps,
+            setup_statements,
+            cached_values,
+            restored_values,
+            sentinel_name,
+            final_return,
+            fallback_body,
+        } => GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+            deps,
+            setup_statements: strip_statement_markers(setup_statements),
+            cached_values,
+            restored_values,
+            sentinel_name,
+            final_return,
+            fallback_body: fallback_body
+                .map(|body| Box::new(strip_generated_body_shape_blank_line_markers(*body))),
+        },
+        GeneratedBodyShape::TryCatch {
+            catch_param,
+            try_body,
+            catch_body,
+        } => GeneratedBodyShape::TryCatch {
+            catch_param,
+            try_body: Box::new(strip_generated_body_shape_blank_line_markers(*try_body)),
+            catch_body: Box::new(strip_generated_body_shape_blank_line_markers(*catch_body)),
+        },
+        GeneratedBodyShape::ZeroDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::ZeroDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions: strip_statement_markers(memoized_expressions),
+            memoized_setup_statements: strip_statement_markers(memoized_setup_statements),
+            memoized_expr,
+        },
+        GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+            value_name,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+            value_name,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions: strip_statement_markers(memoized_expressions),
+            memoized_setup_statements: strip_statement_markers(memoized_setup_statements),
+            memoized_expr,
+        },
+        GeneratedBodyShape::SingleDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            dep_slot,
+            dep_expr,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::SingleDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            dep_slot,
+            dep_expr,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions: strip_statement_markers(memoized_expressions),
+            memoized_setup_statements: strip_statement_markers(memoized_setup_statements),
+            memoized_expr,
+        },
+        GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+            value_name,
+            dep_slot,
+            dep_expr,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+            value_name,
+            dep_slot,
+            dep_expr,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions: strip_statement_markers(memoized_expressions),
+            memoized_setup_statements: strip_statement_markers(memoized_setup_statements),
+            memoized_expr,
+        },
+        GeneratedBodyShape::MultiDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            deps,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::MultiDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            deps,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions: strip_statement_markers(memoized_expressions),
+            memoized_setup_statements: strip_statement_markers(memoized_setup_statements),
+            memoized_expr,
+        },
+        GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+            value_name,
+            deps,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+            value_name,
+            deps,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions: strip_statement_markers(memoized_expressions),
+            memoized_setup_statements: strip_statement_markers(memoized_setup_statements),
+            memoized_expr,
+        },
+        GeneratedBodyShape::MemoizedComputedReturn {
+            value_name,
+            value_kind,
+            deps,
+            value_slot,
+            computation,
+        } => GeneratedBodyShape::MemoizedComputedReturn {
+            value_name,
+            value_kind,
+            deps,
+            value_slot,
+            computation: Box::new(strip_generated_body_shape_blank_line_markers(*computation)),
+        },
+        GeneratedBodyShape::WrappedReturnExpression {
+            source_name,
+            expression,
+            inner,
+        } => GeneratedBodyShape::WrappedReturnExpression {
+            source_name,
+            expression,
+            inner: Box::new(strip_generated_body_shape_blank_line_markers(*inner)),
+        },
+        GeneratedBodyShape::AssignedAliasReturn {
+            alias_name,
+            source_name,
+            inner,
+        } => GeneratedBodyShape::AssignedAliasReturn {
+            alias_name,
+            source_name,
+            inner: Box::new(strip_generated_body_shape_blank_line_markers(*inner)),
+        },
+        GeneratedBodyShape::AliasedReturn {
+            alias_name,
+            alias_kind,
+            source_name,
+            inner,
+        } => GeneratedBodyShape::AliasedReturn {
+            alias_name,
+            alias_kind,
+            source_name,
+            inner: Box::new(strip_generated_body_shape_blank_line_markers(*inner)),
+        },
+        GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } => GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner: Box::new(strip_generated_body_shape_blank_line_markers(*inner)),
+        },
+        GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
+            GeneratedBodyShape::PrefixedBindings {
+                bindings,
+                inner: Box::new(strip_generated_body_shape_blank_line_markers(*inner)),
+            }
+        }
+        GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
+            GeneratedBodyShape::PrefixedExpressionStatements {
+                expressions: strip_statement_markers(expressions),
+                inner: Box::new(strip_generated_body_shape_blank_line_markers(*inner)),
+            }
+        }
+        GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
+            GeneratedBodyShape::PrefixedAssignments {
+                assignments,
+                inner: Box::new(strip_generated_body_shape_blank_line_markers(*inner)),
+            }
+        }
+        GeneratedBodyShape::Sequential { prefix, inner } => GeneratedBodyShape::Sequential {
+            prefix: Box::new(strip_generated_body_shape_blank_line_markers(*prefix)),
+            inner: Box::new(strip_generated_body_shape_blank_line_markers(*inner)),
+        },
     }
 }
 
@@ -1268,6 +1627,8 @@ fn rebase_nested_cache_slots_after_memoized_return(
 }
 
 fn canonicalize_generated_statement_source(statement_source: String) -> String {
+    let has_blank_line_before = statement_has_blank_line_marker(&statement_source);
+    let statement_source = strip_statement_blank_line_marker(&statement_source).to_string();
     let allocator = Allocator::default();
     let Ok(mut statement) = parse_single_statement_for_ast_codegen(
         &allocator,
@@ -1297,7 +1658,12 @@ fn canonicalize_generated_statement_source(statement_source: String) -> String {
         }
         _ => {}
     }
-    codegen_statement_with_flow_cast_restore(&statement)
+    let rendered = codegen_statement_with_flow_cast_restore(&statement);
+    if has_blank_line_before {
+        add_statement_blank_line_marker(rendered)
+    } else {
+        rendered
+    }
 }
 
 fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBodyShape {
@@ -3610,8 +3976,12 @@ fn codegen_reactive_function_with_primitives(
             let direct_body_shape = fully_canonicalize_generated_body_shape(
                 strip_top_level_trailing_return_void(direct_body_shape),
             );
+            let direct_body_shape_for_compare =
+                strip_generated_body_shape_blank_line_markers(direct_body_shape.clone());
+            let analyzed_body_shape_for_compare =
+                strip_generated_body_shape_blank_line_markers(analyzed_body_shape.clone());
             let has_mismatch = !matches!(analyzed_body_shape, GeneratedBodyShape::Unknown)
-                && direct_body_shape != analyzed_body_shape;
+                && direct_body_shape_for_compare != analyzed_body_shape_for_compare;
             if std::env::var("DEBUG_DIRECT_BODY_SHAPE_MISMATCH").is_ok() && has_mismatch {
                 eprintln!(
                     "[DIRECT_BODY_SHAPE_MISMATCH] fn={:?} direct={:#?} analyzed={:#?} body=\n{}",
@@ -3971,12 +4341,21 @@ fn try_render_statement_sources_from_generated_body_shape(
             is_generator: false,
         },
     )?;
-    Some(
-        body.statements
-            .iter()
-            .map(codegen_statement_with_flow_cast_restore)
-            .collect(),
-    )
+    let mut statements = Vec::new();
+    let mut blank_line_before_next = false;
+    for statement in body.statements.iter() {
+        if is_internal_blank_line_marker_statement_ast(statement) {
+            blank_line_before_next = true;
+            continue;
+        }
+        let mut rendered = codegen_statement_with_flow_cast_restore(statement);
+        if blank_line_before_next {
+            rendered = add_statement_blank_line_marker(rendered);
+            blank_line_before_next = false;
+        }
+        statements.push(rendered);
+    }
+    Some(statements)
 }
 
 #[cfg(test)]
@@ -4300,6 +4679,13 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
         setup_statements =
             rewrite_cached_setup_statements_for_outer_declarations(setup_statements, &declarations);
     }
+    setup_statements = preserve_scope_setup_statement_blank_lines(
+        cx,
+        scope,
+        instructions,
+        &declarations,
+        setup_statements,
+    );
     if setup_statements.is_empty() {
         if let Some(Some(expr_value)) = computation_cx.temp.get(&primary_output_decl_id).cloned() {
             if is_codegen_temp_name(&primary_output_name) {
@@ -4460,37 +4846,143 @@ fn generated_body_shape_is_function_like_seed(shape: &GeneratedBodyShape) -> boo
     }
 }
 
+fn statement_has_blank_line_marker(statement: &str) -> bool {
+    statement.starts_with('\n')
+}
+
+fn strip_statement_blank_line_marker(statement: &str) -> &str {
+    statement.trim_start_matches('\n')
+}
+
+fn add_statement_blank_line_marker(mut statement: String) -> String {
+    if !statement_has_blank_line_marker(&statement) {
+        statement.insert(0, '\n');
+    }
+    statement
+}
+
+fn strip_statement_blank_line_markers(statements: &[String]) -> Vec<String> {
+    statements
+        .iter()
+        .map(|statement| strip_statement_blank_line_marker(statement).to_string())
+        .collect()
+}
+
+fn render_setup_statements_with_blank_lines(statements: &[String]) -> String {
+    let mut output = String::new();
+    for (index, statement) in statements.iter().enumerate() {
+        let has_blank_line_before = statement_has_blank_line_marker(statement);
+        let statement = strip_statement_blank_line_marker(statement);
+        if index > 0 {
+            output.push('\n');
+            if has_blank_line_before {
+                output.push('\n');
+            }
+        }
+        output.push_str(statement);
+        if !statement.ends_with('\n') {
+            output.push('\n');
+        }
+    }
+    output
+}
+
+fn split_statement_sources_preserving_blank_lines(body_source: &str) -> Option<Vec<String>> {
+    if body_source.trim().is_empty() {
+        return Some(Vec::new());
+    }
+
+    let allocator = Allocator::default();
+    let (offset, body) = parse_function_body_for_ast_codegen_with_offset(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        false,
+        false,
+        body_source,
+    )
+    .ok()?;
+
+    let mut statements = Vec::with_capacity(body.statements.len());
+    let mut previous_end = 0usize;
+    for (index, statement) in body.statements.iter().enumerate() {
+        let start = statement.span().start as usize;
+        let end = statement.span().end as usize;
+        let start = start.checked_sub(offset)?;
+        let end = end.checked_sub(offset)?;
+        if end > body_source.len() || start > end {
+            return None;
+        }
+
+        let mut statement_source = body_source[start..end].trim().to_string();
+        if statement_source.is_empty() {
+            return None;
+        }
+        if index > 0 {
+            let between = &body_source[previous_end..start];
+            let newline_count = between.chars().filter(|&ch| ch == '\n').count();
+            if newline_count >= 2 {
+                statement_source = add_statement_blank_line_marker(statement_source);
+            }
+        }
+        statements.push(statement_source);
+        previous_end = end;
+    }
+
+    Some(statements)
+}
+
+fn preserve_scope_setup_statement_blank_lines(
+    cx: &Context,
+    scope: &ReactiveScope,
+    instructions: &ReactiveBlock,
+    declarations: &[GeneratedDeclaration],
+    setup_statements: Vec<String>,
+) -> Vec<String> {
+    if setup_statements.len() < 2 {
+        return setup_statements;
+    }
+
+    let mut render_cx = cx.clone();
+    render_cx.inline_temp_zero_dep_scope_shapes = false;
+    let rendered = codegen_scope_computation_no_reset(&mut render_cx, scope, instructions);
+    let Some(mut rendered_statements) = split_statement_sources_preserving_blank_lines(&rendered)
+    else {
+        return setup_statements;
+    };
+    rendered_statements = rewrite_generated_setup_statements(rendered_statements);
+    if !declarations.is_empty() {
+        rendered_statements = rewrite_cached_setup_statements_for_outer_declarations(
+            rendered_statements,
+            declarations,
+        );
+    }
+
+    if strip_statement_blank_line_markers(&rendered_statements)
+        == strip_statement_blank_line_markers(&setup_statements)
+    {
+        rendered_statements
+    } else {
+        setup_statements
+    }
+}
+
 fn rewrite_generated_setup_statements(mut setup_statements: Vec<String>) -> Vec<String> {
     if setup_statements.is_empty() {
         return setup_statements;
     }
     let original = setup_statements.clone();
-    let mut computation = String::new();
-    for statement in &setup_statements {
-        computation.push_str(statement);
-        if !statement.ends_with('\n') {
-            computation.push('\n');
-        }
-    }
+    let computation = render_setup_statements_with_blank_lines(&setup_statements);
     let rewritten = rewrite_named_test_reassign_ternary_in_scope_computation(&computation);
     let rewritten = rewrite_named_temp_ternary_in_scope_computation(&rewritten);
     if rewritten == computation {
         return setup_statements;
     }
-    let allocator = Allocator::default();
-    match parse_statement_list_for_ast_codegen(
-        &allocator,
-        SourceType::mjs().with_jsx(true),
-        &rewritten,
-    ) {
-        Ok(statements) => {
-            setup_statements = statements
-                .iter()
-                .map(codegen_statement_with_flow_cast_restore)
-                .collect();
+    match split_statement_sources_preserving_blank_lines(&rewritten) {
+        Some(statements) => {
+            setup_statements = statements;
             setup_statements
         }
-        Err(_) => original,
+        None => original,
     }
 }
 
@@ -5543,6 +6035,13 @@ fn try_build_generated_early_return_scope_return(
         setup_statements =
             rewrite_cached_setup_statements_for_outer_declarations(setup_statements, &declarations);
     }
+    setup_statements = preserve_scope_setup_statement_blank_lines(
+        cx,
+        &scope_block.scope,
+        &scope_block.instructions,
+        &declarations,
+        setup_statements,
+    );
 
     if cached_values.is_empty() {
         if trace {
@@ -7330,15 +7829,59 @@ fn analyze_generated_body_shape_uncached(
         }
     }
 
+    fn collect_statement_sources_from_body_slice(
+        body_source: &str,
+        body_offset: usize,
+        statements: &[ast::Statement<'_>],
+    ) -> Vec<String> {
+        let mut collected = Vec::with_capacity(statements.len());
+        let mut previous_end: Option<usize> = None;
+        for statement in statements {
+            let Some(start) = (statement.span().start as usize).checked_sub(body_offset) else {
+                return statements
+                    .iter()
+                    .map(codegen_statement_with_flow_cast_restore)
+                    .collect();
+            };
+            let Some(end) = (statement.span().end as usize).checked_sub(body_offset) else {
+                return statements
+                    .iter()
+                    .map(codegen_statement_with_flow_cast_restore)
+                    .collect();
+            };
+            if end > body_source.len() || start > end {
+                return statements
+                    .iter()
+                    .map(codegen_statement_with_flow_cast_restore)
+                    .collect();
+            }
+
+            let mut statement_source = body_source[start..end].trim().to_string();
+            if let Some(previous_end) = previous_end {
+                let between = &body_source[previous_end..start];
+                if between.chars().filter(|&ch| ch == '\n').count() >= 2 {
+                    statement_source = add_statement_blank_line_marker(statement_source);
+                }
+            }
+            collected.push(statement_source);
+            previous_end = Some(end);
+        }
+        collected
+    }
+
     for source_type in [
         SourceType::mjs().with_jsx(true),
         SourceType::ts().with_jsx(true),
         SourceType::tsx(),
     ] {
         let allocator = Allocator::default();
-        let Ok(function_body) =
-            parse_function_body_for_ast_codegen(&allocator, source_type, false, false, body)
-        else {
+        let Ok((body_offset, function_body)) = parse_function_body_for_ast_codegen_with_offset(
+            &allocator,
+            source_type,
+            false,
+            false,
+            body,
+        ) else {
             continue;
         };
         let statements = &function_body.statements;
@@ -7786,10 +8329,11 @@ fn analyze_generated_body_shape_uncached(
             if !guards_match {
                 continue;
             }
-            let setup_statements = consequent_block.body[..dep_base]
-                .iter()
-                .map(codegen_statement_with_flow_cast_restore)
-                .collect::<Vec<_>>();
+            let setup_statements = collect_statement_sources_from_body_slice(
+                body,
+                body_offset,
+                &consequent_block.body[..dep_base],
+            );
             if setup_statements.is_empty() {
                 continue;
             }
@@ -7837,10 +8381,11 @@ fn analyze_generated_body_shape_uncached(
                 {
                     continue;
                 }
-                let setup_statements = consequent_block.body[..cache_base]
-                    .iter()
-                    .map(codegen_statement_with_flow_cast_restore)
-                    .collect::<Vec<_>>();
+                let setup_statements = collect_statement_sources_from_body_slice(
+                    body,
+                    body_offset,
+                    &consequent_block.body[..cache_base],
+                );
                 if setup_statements.is_empty() {
                     continue;
                 }
@@ -7903,10 +8448,11 @@ fn analyze_generated_body_shape_uncached(
             if !guards_match {
                 continue;
             }
-            let setup_statements = consequent_block.body[..dep_base]
-                .iter()
-                .map(codegen_statement_with_flow_cast_restore)
-                .collect::<Vec<_>>();
+            let setup_statements = collect_statement_sources_from_body_slice(
+                body,
+                body_offset,
+                &consequent_block.body[..dep_base],
+            );
             if setup_statements.is_empty() {
                 continue;
             }
@@ -8341,11 +8887,11 @@ fn analyze_generated_body_shape_uncached(
                 {
                     continue;
                 }
-                let memoized_setup_statements = consequent_block.body
-                    [setup_len..consequent_block.body.len() - 1]
-                    .iter()
-                    .map(codegen_statement_with_flow_cast_restore)
-                    .collect::<Vec<_>>();
+                let memoized_setup_statements = collect_statement_sources_from_body_slice(
+                    body,
+                    body_offset,
+                    &consequent_block.body[setup_len..consequent_block.body.len() - 1],
+                );
                 if memoized_setup_statements.is_empty() {
                     continue;
                 }
@@ -8562,10 +9108,11 @@ fn analyze_generated_body_shape_uncached(
                 {
                     continue;
                 }
-                let memoized_setup_statements = consequent_block.body[setup_len..dep_base]
-                    .iter()
-                    .map(codegen_statement_with_flow_cast_restore)
-                    .collect::<Vec<_>>();
+                let memoized_setup_statements = collect_statement_sources_from_body_slice(
+                    body,
+                    body_offset,
+                    &consequent_block.body[setup_len..dep_base],
+                );
                 if memoized_setup_statements.is_empty() {
                     continue;
                 }
@@ -8741,10 +9288,11 @@ fn analyze_generated_body_shape_uncached(
             {
                 continue;
             }
-            let memoized_setup_statements = consequent_block.body[setup_len..dep_base]
-                .iter()
-                .map(codegen_statement_with_flow_cast_restore)
-                .collect::<Vec<_>>();
+            let memoized_setup_statements = collect_statement_sources_from_body_slice(
+                body,
+                body_offset,
+                &consequent_block.body[setup_len..dep_base],
+            );
             if memoized_setup_statements.is_empty() {
                 continue;
             }
@@ -8906,11 +9454,11 @@ fn analyze_generated_body_shape_uncached(
                     {
                         continue;
                     }
-                    let memoized_setup_statements = consequent_block.body
-                        [setup_len..consequent_block.body.len() - 1]
-                        .iter()
-                        .map(codegen_statement_with_flow_cast_restore)
-                        .collect::<Vec<_>>();
+                    let memoized_setup_statements = collect_statement_sources_from_body_slice(
+                        body,
+                        body_offset,
+                        &consequent_block.body[setup_len..consequent_block.body.len() - 1],
+                    );
                     if memoized_setup_statements.is_empty() {
                         continue;
                     }
@@ -9137,10 +9685,11 @@ fn analyze_generated_body_shape_uncached(
                     {
                         continue;
                     }
-                    let memoized_setup_statements = consequent_block.body[setup_len..dep_base]
-                        .iter()
-                        .map(codegen_statement_with_flow_cast_restore)
-                        .collect::<Vec<_>>();
+                    let memoized_setup_statements = collect_statement_sources_from_body_slice(
+                        body,
+                        body_offset,
+                        &consequent_block.body[setup_len..dep_base],
+                    );
                     if memoized_setup_statements.is_empty() {
                         continue;
                     }
@@ -9322,10 +9871,11 @@ fn analyze_generated_body_shape_uncached(
                     {
                         continue;
                     }
-                    let memoized_setup_statements = consequent_block.body[setup_len..dep_base]
-                        .iter()
-                        .map(codegen_statement_with_flow_cast_restore)
-                        .collect::<Vec<_>>();
+                    let memoized_setup_statements = collect_statement_sources_from_body_slice(
+                        body,
+                        body_offset,
+                        &consequent_block.body[setup_len..dep_base],
+                    );
                     if memoized_setup_statements.is_empty() {
                         continue;
                     }
@@ -30556,27 +31106,42 @@ fn build_generated_expression_statements_ast<'a>(
     Some(statements)
 }
 
-fn build_generated_statement_sources_ast<'a>(
+fn build_internal_blank_line_marker_statement_ast<'a>(
     builder: AstBuilder<'a>,
+) -> ast::Statement<'a> {
+    builder.statement_expression(
+        SPAN,
+        builder.expression_string_literal(SPAN, builder.atom(INTERNAL_BLANK_LINE_MARKER), None),
+    )
+}
+
+fn is_internal_blank_line_marker_statement_ast(statement: &ast::Statement<'_>) -> bool {
+    let ast::Statement::ExpressionStatement(expression_statement) = statement else {
+        return false;
+    };
+    matches!(
+        expression_statement.expression.without_parentheses(),
+        ast::Expression::StringLiteral(literal)
+            if literal.value.as_str() == INTERNAL_BLANK_LINE_MARKER
+    )
+}
+
+fn parse_generated_statement_sources_ast<'a>(
     allocator: &'a Allocator,
-    statements: &[String],
+    statement_source: &str,
 ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
-    if statements.is_empty() {
-        return Some(builder.vec());
-    }
-    let joined = statements.join("\n");
     let source_type = SourceType::mjs().with_jsx(true);
     let ts_source_type = source_type.with_typescript(true);
     let mut attempts = vec![
-        (source_type, joined.clone()),
-        (ts_source_type, joined.clone()),
+        (source_type, statement_source.to_string()),
+        (ts_source_type, statement_source.to_string()),
     ];
-    let flow_cast_normalized = normalize_flow_cast_marker_calls(&joined);
-    if flow_cast_normalized != joined {
+    let flow_cast_normalized = normalize_flow_cast_marker_calls(statement_source);
+    if flow_cast_normalized != statement_source {
         attempts.push((ts_source_type, flow_cast_normalized.clone()));
     }
-    let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(&joined);
-    if flow_cast_rewritten != joined && flow_cast_rewritten != flow_cast_normalized {
+    let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(statement_source);
+    if flow_cast_rewritten != statement_source && flow_cast_rewritten != flow_cast_normalized {
         attempts.push((ts_source_type, flow_cast_rewritten));
     }
     for (attempt_source_type, attempt_body) in attempts {
@@ -30587,6 +31152,27 @@ fn build_generated_statement_sources_ast<'a>(
         }
     }
     None
+}
+
+fn build_generated_statement_sources_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    statements: &[String],
+) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
+    if statements.is_empty() {
+        return Some(builder.vec());
+    }
+    let mut parsed = builder.vec();
+    for statement_source in statements {
+        let has_blank_line_before = statement_has_blank_line_marker(statement_source);
+        let statement_source = strip_statement_blank_line_marker(statement_source);
+        let current = parse_generated_statement_sources_ast(allocator, statement_source)?;
+        if has_blank_line_before && !parsed.is_empty() {
+            parsed.push(build_internal_blank_line_marker_statement_ast(builder));
+        }
+        parsed.extend(current);
+    }
+    Some(parsed)
 }
 
 fn replace_final_return_expression_ast<'a>(

@@ -529,6 +529,7 @@ fn try_emit_module(
         body,
     );
     let mut code = codegen_program(&program);
+    code = apply_internal_blank_line_markers(&code);
     code = apply_blank_line_markers(state.source_type, &code, &blank_line_before);
     code = move_leading_comment_to_import_trailing(&code);
     if code.contains(FLOW_CAST_MARKER_HELPER) {
@@ -3258,27 +3259,33 @@ fn build_generated_expression_statements<'a>(
     Some(statements)
 }
 
-fn build_generated_statement_sources<'a>(
-    builder: AstBuilder<'a>,
+fn build_internal_blank_line_marker_statement<'a>(builder: AstBuilder<'a>) -> ast::Statement<'a> {
+    builder.statement_expression(
+        SPAN,
+        builder.expression_string_literal(
+            SPAN,
+            builder.atom(crate::reactive_scopes::codegen_reactive::INTERNAL_BLANK_LINE_MARKER),
+            None,
+        ),
+    )
+}
+
+fn parse_generated_statement_sources<'a>(
     allocator: &'a Allocator,
     source_type: SourceType,
-    statements: &[String],
+    statement_source: &str,
 ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
-    if statements.is_empty() {
-        return Some(builder.vec());
-    }
-    let joined = statements.join("\n");
     let ts_source_type = source_type.with_typescript(true);
     let mut attempts = vec![
-        (source_type, joined.clone()),
-        (ts_source_type, joined.clone()),
+        (source_type, statement_source.to_string()),
+        (ts_source_type, statement_source.to_string()),
     ];
-    let flow_cast_normalized = normalize_generated_body_flow_cast_marker_calls(&joined);
-    if flow_cast_normalized != joined {
+    let flow_cast_normalized = normalize_generated_body_flow_cast_marker_calls(statement_source);
+    if flow_cast_normalized != statement_source {
         attempts.push((ts_source_type, flow_cast_normalized.clone()));
     }
-    let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(&joined);
-    if flow_cast_rewritten != joined && flow_cast_rewritten != flow_cast_normalized {
+    let flow_cast_rewritten = crate::pipeline::rewrite_flow_cast_expressions(statement_source);
+    if flow_cast_rewritten != statement_source && flow_cast_rewritten != flow_cast_normalized {
         attempts.push((ts_source_type, flow_cast_rewritten));
     }
     for (attempt_source_type, attempt_body) in attempts {
@@ -3292,6 +3299,28 @@ fn build_generated_statement_sources<'a>(
         }
     }
     None
+}
+
+fn build_generated_statement_sources<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    statements: &[String],
+) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
+    if statements.is_empty() {
+        return Some(builder.vec());
+    }
+    let mut parsed = builder.vec();
+    for statement_source in statements {
+        let has_blank_line_before = statement_source.starts_with('\n');
+        let statement_source = statement_source.trim_start_matches('\n');
+        let current = parse_generated_statement_sources(allocator, source_type, statement_source)?;
+        if has_blank_line_before && !parsed.is_empty() {
+            parsed.push(build_internal_blank_line_marker_statement(builder));
+        }
+        parsed.extend(current);
+    }
+    Some(parsed)
 }
 
 fn build_generated_switch_cases<'a>(
@@ -4348,17 +4377,17 @@ fn try_build_function_body_from_shape<'a>(
                 source_type,
                 memoized_assignments,
             )?);
-            consequent.extend(build_generated_statement_sources(
-                builder,
-                allocator,
-                source_type,
-                memoized_setup_statements,
-            )?);
             consequent.extend(build_generated_expression_statements(
                 builder,
                 allocator,
                 source_type,
                 memoized_expressions,
+            )?);
+            consequent.extend(build_generated_statement_sources(
+                builder,
+                allocator,
+                source_type,
+                memoized_setup_statements,
             )?);
             if let Some(memoized_expr) = memoized_expr {
                 let memoized_expr =
@@ -4445,17 +4474,17 @@ fn try_build_function_body_from_shape<'a>(
                 source_type,
                 memoized_assignments,
             )?);
-            consequent.extend(build_generated_statement_sources(
-                builder,
-                allocator,
-                source_type,
-                memoized_setup_statements,
-            )?);
             consequent.extend(build_generated_expression_statements(
                 builder,
                 allocator,
                 source_type,
                 memoized_expressions,
+            )?);
+            consequent.extend(build_generated_statement_sources(
+                builder,
+                allocator,
+                source_type,
+                memoized_setup_statements,
             )?);
             if let Some(memoized_expr) = memoized_expr {
                 let memoized_expr =
@@ -4530,17 +4559,17 @@ fn try_build_function_body_from_shape<'a>(
                 source_type,
                 memoized_assignments,
             )?);
-            consequent.extend(build_generated_statement_sources(
-                builder,
-                allocator,
-                source_type,
-                memoized_setup_statements,
-            )?);
             consequent.extend(build_generated_expression_statements(
                 builder,
                 allocator,
                 source_type,
                 memoized_expressions,
+            )?);
+            consequent.extend(build_generated_statement_sources(
+                builder,
+                allocator,
+                source_type,
+                memoized_setup_statements,
             )?);
             if let Some(memoized_expr) = memoized_expr {
                 let memoized_expr =
@@ -4636,17 +4665,17 @@ fn try_build_function_body_from_shape<'a>(
                 source_type,
                 memoized_assignments,
             )?);
-            consequent.extend(build_generated_statement_sources(
-                builder,
-                allocator,
-                source_type,
-                memoized_setup_statements,
-            )?);
             consequent.extend(build_generated_expression_statements(
                 builder,
                 allocator,
                 source_type,
                 memoized_expressions,
+            )?);
+            consequent.extend(build_generated_statement_sources(
+                builder,
+                allocator,
+                source_type,
+                memoized_setup_statements,
             )?);
             if let Some(memoized_expr) = memoized_expr {
                 let memoized_expr =
@@ -4746,17 +4775,17 @@ fn try_build_function_body_from_shape<'a>(
                 source_type,
                 memoized_assignments,
             )?);
-            consequent.extend(build_generated_statement_sources(
-                builder,
-                allocator,
-                source_type,
-                memoized_setup_statements,
-            )?);
             consequent.extend(build_generated_expression_statements(
                 builder,
                 allocator,
                 source_type,
                 memoized_expressions,
+            )?);
+            consequent.extend(build_generated_statement_sources(
+                builder,
+                allocator,
+                source_type,
+                memoized_setup_statements,
             )?);
             if let Some(memoized_expr) = memoized_expr {
                 let memoized_expr =
@@ -4857,17 +4886,17 @@ fn try_build_function_body_from_shape<'a>(
                 source_type,
                 memoized_assignments,
             )?);
-            consequent.extend(build_generated_statement_sources(
-                builder,
-                allocator,
-                source_type,
-                memoized_setup_statements,
-            )?);
             consequent.extend(build_generated_expression_statements(
                 builder,
                 allocator,
                 source_type,
                 memoized_expressions,
+            )?);
+            consequent.extend(build_generated_statement_sources(
+                builder,
+                allocator,
+                source_type,
+                memoized_setup_statements,
             )?);
             if let Some(memoized_expr) = memoized_expr {
                 let memoized_expr =
@@ -7945,6 +7974,37 @@ fn move_leading_comment_to_import_trailing(code: &str) -> String {
     result
 }
 
+fn apply_internal_blank_line_markers(code: &str) -> String {
+    let marker_line = format!(
+        "\"{}\";",
+        crate::reactive_scopes::codegen_reactive::INTERNAL_BLANK_LINE_MARKER
+    );
+    if !code.lines().any(|line| line.trim() == marker_line) {
+        return code.to_string();
+    }
+
+    let mut result = String::with_capacity(code.len());
+    for line in code.split_inclusive('\n') {
+        if line.trim_end_matches('\n').trim() == marker_line {
+            result.push('\n');
+        } else {
+            result.push_str(line);
+        }
+    }
+
+    if !code.ends_with('\n') && result.ends_with('\n') {
+        let last_line_is_marker = code
+            .lines()
+            .last()
+            .is_some_and(|line| line.trim() == marker_line);
+        if !last_line_is_marker {
+            result.pop();
+        }
+    }
+
+    result
+}
+
 /// Apply blank line markers to the generated code.
 ///
 /// `blank_line_before[i]` indicates that the i-th top-level statement in the output
@@ -8159,11 +8219,12 @@ mod tests {
     use super::{
         AstRenderState, CompiledBindingPattern, CompiledBodyPayload, CompiledFunction,
         CompiledInitializer, CompiledObjectPattern, CompiledParam, CompiledParamPrefixStatement,
-        CompiledPropertyKey, codegen_statement_source, compute_transform_state,
-        maybe_gate_entrypoint_source, normalize_compiled_body_for_hir_match,
-        normalize_generated_body_flow_cast_marker_calls, normalize_use_fire_binding_temps_ast,
-        parse_rendered_function_body, parse_statements, restore_flow_cast_marker_calls,
-        source_type_for_filename, try_rewrite_compiled_statement_ast,
+        CompiledPropertyKey, apply_internal_blank_line_markers, codegen_statement_source,
+        compute_transform_state, maybe_gate_entrypoint_source,
+        normalize_compiled_body_for_hir_match, normalize_generated_body_flow_cast_marker_calls,
+        normalize_use_fire_binding_temps_ast, parse_rendered_function_body, parse_statements,
+        restore_flow_cast_marker_calls, source_type_for_filename,
+        try_rewrite_compiled_statement_ast,
     };
     use crate::codegen_backend::CompiledObjectPatternProperty;
     use crate::codegen_backend::ast_backend::apply_emit_freeze_to_cache_stores_ast;
@@ -8204,6 +8265,18 @@ const z = __REACT_COMPILER_FLOW_CAST__<Array<number>>([]);"#;
         let restored = restore_flow_cast_marker_calls(source);
         assert!(restored.contains("const y = (x: Foo);"));
         assert!(restored.contains("const z = ([]: Array<number>);"));
+    }
+
+    #[test]
+    fn applies_internal_blank_line_markers_inside_blocks() {
+        let marker = crate::reactive_scopes::codegen_reactive::INTERNAL_BLANK_LINE_MARKER;
+        let source =
+            format!("function component() {{\nconst y = {{}};\n\"{marker}\";\ny.x = x.a;\n}}\n");
+        let rewritten = apply_internal_blank_line_markers(&source);
+        assert_eq!(
+            rewritten,
+            "function component() {\nconst y = {};\n\ny.x = x.a;\n}\n"
+        );
     }
 
     #[test]
