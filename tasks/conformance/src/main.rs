@@ -2569,21 +2569,46 @@ fn normalize_shared_cosmetic_equivalences(code: &str) -> String {
     normalized
 }
 
-/// Remove blank lines inside scope check bodies (`if ($[N] ...)`).
+/// Remove blank lines caused by Babel's `retainLines: true + compact: true`.
 ///
-/// Babel's `retainLines: true + compact: true` creates blank lines inside
-/// scope bodies when compact mode moves a closing brace onto the same line
-/// as the last statement, leaving a gap line. Prettier preserves these.
-/// Our codegen doesn't produce them. Strip them from both sides.
+/// When compact mode fits a multi-line construct onto fewer lines, the
+/// remaining lines become blank. Prettier preserves one blank per gap.
+/// Our codegen doesn't produce these blanks. Strip them from both sides:
+///
+/// 1. Blank lines inside scope check bodies (`if ($[N] ...)`)
+/// 2. Blank lines after closing braces (`}`, `};`, `});`) inside function bodies
+/// 3. Blank lines after cache declarations (`const $ = _c(N);`)
+/// 4. Blank lines between `*/` and `function` declarations
+/// 5. Blank lines between imports
 fn normalize_scope_body_blank_lines(code: &str) -> String {
     let lines: Vec<&str> = code.lines().collect();
     let mut result = Vec::with_capacity(lines.len());
     let mut scope_depth: i32 = 0;
     let mut in_scope = false;
-    let mut skip_blank_after_cache_decl = false;
+    let mut in_function_body = false;
+    let mut function_brace_depth: i32 = 0;
+    let mut prev_trimmed = "";
 
     for line in &lines {
         let trimmed = line.trim();
+
+        // Track whether we're inside a function body
+        if !in_function_body
+            && (trimmed.starts_with("function ")
+                || trimmed.contains("function(")
+                || trimmed.contains("function ("))
+            && trimmed.ends_with('{')
+        {
+            in_function_body = true;
+            function_brace_depth = 1;
+        } else if in_function_body {
+            let opens = trimmed.chars().filter(|&c| c == '{').count() as i32;
+            let closes = trimmed.chars().filter(|&c| c == '}').count() as i32;
+            function_brace_depth += opens - closes;
+            if function_brace_depth <= 0 {
+                in_function_body = false;
+            }
+        }
 
         // Detect scope check start
         if !in_scope
@@ -2595,33 +2620,65 @@ fn normalize_scope_body_blank_lines(code: &str) -> String {
         }
 
         if in_scope {
-            // Track brace depth for this line
             let opens = trimmed.chars().filter(|&c| c == '{').count() as i32;
             let closes = trimmed.chars().filter(|&c| c == '}').count() as i32;
             scope_depth += opens - closes;
 
-            // Skip blank lines inside scope bodies (depth > 0)
+            // Skip blank lines inside scope bodies
             if trimmed.is_empty() && scope_depth > 0 {
+                prev_trimmed = trimmed;
                 continue;
             }
 
-            // End of scope body
             if scope_depth <= 0 {
                 in_scope = false;
             }
         }
 
-        // Strip blank lines after `const $ = _c(N);`
-        if skip_blank_after_cache_decl {
-            if trimmed.is_empty() {
-                continue;
-            }
-            skip_blank_after_cache_decl = false;
-        }
-        if trimmed.starts_with("const $ = _c(") && trimmed.ends_with(';') {
-            skip_blank_after_cache_decl = true;
+        // Inside function bodies, strip all blank lines (retainLines artifact).
+        // Babel's retainLines + compact creates blank lines at arbitrary positions
+        // inside function bodies when compact mode reduces multi-line constructs.
+        if in_function_body && trimmed.is_empty() {
+            prev_trimmed = trimmed;
+            continue;
         }
 
+        // At top level, strip blank lines after closing braces
+        if !in_function_body && trimmed.is_empty() {
+            let pt = prev_trimmed;
+            if pt == "}" || pt == "};" || pt == "});" || pt == "})" || pt.ends_with("};") {
+                prev_trimmed = trimmed;
+                continue;
+            }
+        }
+
+        // Strip blank between `*/` and function declaration
+        if trimmed.is_empty()
+            && prev_trimmed == "*/"
+            && lines
+                .iter()
+                .skip(result.len() + 1)
+                .find(|l| !l.trim().is_empty())
+                .is_some_and(|next| next.trim().starts_with("function "))
+        {
+            prev_trimmed = trimmed;
+            continue;
+        }
+
+        // Strip blank lines between import declarations
+        if trimmed.is_empty()
+            && prev_trimmed.starts_with("import ")
+            && lines
+                .iter()
+                .skip(result.len() + 1)
+                .find(|l| !l.trim().is_empty())
+                .is_some_and(|next| next.trim().starts_with("import "))
+        {
+            prev_trimmed = trimmed;
+            continue;
+        }
+
+        prev_trimmed = trimmed;
         result.push(*line);
     }
 
