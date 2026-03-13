@@ -23287,10 +23287,7 @@ fn update_scope_line_span(
             crate::source_lines::line_from_offset(range.end.column),
         )
     } else {
-        (
-            Some(range.start.line.saturating_add(1)),
-            Some(range.end.line.saturating_add(1)),
-        )
+        (Some(range.start.line), Some(range.end.line))
     }) else {
         return;
     };
@@ -24018,7 +24015,7 @@ fn codegen_reactive_scope(
             let change_name = cx.synthesize_name(&format!("c_{}", index));
             change_var_stmts.push(
                 render_reactive_variable_statement_ast(
-                    ast::VariableDeclarationKind::Let,
+                    ast::VariableDeclarationKind::Const,
                     &change_name,
                     Some(&comparison),
                 )
