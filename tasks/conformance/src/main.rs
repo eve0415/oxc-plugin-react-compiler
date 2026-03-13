@@ -2549,9 +2549,10 @@ fn normalize_bailout_text(code: &str) -> String {
 
 fn normalize_shared_cosmetic_equivalences(code: &str) -> String {
     let mut normalized = code.to_string();
-    let steps: [fn(&str) -> String; 12] = [
+    let steps: [fn(&str) -> String; 13] = [
         normalize_compare_multiline_brace_literals,
         normalize_compare_multiline_imports,
+        normalize_import_region_comments,
         normalize_compare_trailing_sequence_null,
         normalize_multiline_trailing_commas_before_closers,
         normalize_labeled_switch_breaks,
@@ -2683,6 +2684,91 @@ fn normalize_scope_body_blank_lines(code: &str) -> String {
     }
 
     result.join("\n")
+}
+
+/// Normalize comment placement in the import region at the top of the file.
+///
+/// Babel attaches leading program comments (pragmas) as trailing comments on
+/// import lines, while OXC keeps them on separate lines. This normalization
+/// detaches trailing comments from import lines and emits them as separate
+/// lines, then strips blank lines in the import region. Both forms normalize
+/// to the same canonical representation.
+fn normalize_import_region_comments(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut result: Vec<String> = Vec::with_capacity(lines.len());
+    let mut in_import_region = true;
+
+    for line in &lines {
+        let trimmed = line.trim();
+
+        if !in_import_region {
+            result.push(line.to_string());
+            continue;
+        }
+
+        // Import line — detach any trailing comment
+        if trimmed.starts_with("import ") || trimmed.starts_with("const {") {
+            if let Some(comment_pos) = find_trailing_comment_on_import(trimmed) {
+                let import_part = trimmed[..comment_pos].trim_end();
+                let comment_part = trimmed[comment_pos..].trim();
+                result.push(import_part.to_string());
+                if !comment_part.is_empty() {
+                    result.push(comment_part.to_string());
+                }
+            } else {
+                result.push(line.to_string());
+            }
+            continue;
+        }
+
+        // Blank line in import region — skip
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Comment line in import region — keep
+        if trimmed.starts_with("//") || trimmed.starts_with("/*") {
+            result.push(line.to_string());
+            continue;
+        }
+
+        // Block comment continuation
+        if trimmed.starts_with('*') {
+            result.push(line.to_string());
+            continue;
+        }
+
+        // Non-import, non-comment, non-blank — end of import region
+        in_import_region = false;
+        result.push(line.to_string());
+    }
+
+    result.join("\n")
+}
+
+/// Find the position of a trailing `//` or `/*` comment on an import line,
+/// skipping occurrences inside string literals.
+fn find_trailing_comment_on_import(line: &str) -> Option<usize> {
+    let mut in_single = false;
+    let mut in_double = false;
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\'' && !in_double {
+            in_single = !in_single;
+        } else if bytes[i] == b'"' && !in_single {
+            in_double = !in_double;
+        } else if bytes[i] == b';' && !in_single && !in_double {
+            let rest = line[i + 1..].trim_start();
+            if rest.starts_with("//") || rest.starts_with("/*") {
+                let offset = line.len() - line[i + 1..].trim_start().len();
+                return Some(offset);
+            }
+            return None;
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Normalize array formatting within FIXTURE_ENTRYPOINT lines:
