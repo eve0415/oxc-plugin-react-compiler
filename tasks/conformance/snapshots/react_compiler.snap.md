@@ -1,6 +1,6 @@
-# React Compiler Conformance — 95.0% parity rate
+# React Compiler Conformance — 95.1% parity rate
 
-**1665** parity_success, **87** parity_failure, **0** skipped
+**1666** parity_success, **86** parity_failure, **0** skipped
 
 ## Failed
 
@@ -57,7 +57,6 @@
 - `propagate-scope-deps-hir-fork/switch-non-final-default`: Output mismatch
 - `property-call-evaluation-order`: Output mismatch
 - `reassignment-separate-scopes`: Output mismatch
-- `recursive-function-expression`: Output mismatch
 - `rename-source-variables`: Output mismatch
 - `rename-source-variables-nested-function`: Output mismatch
 - `rename-source-variables-nested-object-method`: Output mismatch
@@ -1266,6 +1265,7 @@
 - `reassignment`
 - `reassignment-conditional`
 - `recursive-function`
+- `recursive-function-expression`
 - `reduce-reactive-cond-deps-break-in-scope`
 - `reduce-reactive-cond-deps-cfg-nested-testifelse`
 - `reduce-reactive-cond-deps-return-in-scope`

@@ -3127,6 +3127,15 @@ fn build_generated_binding_statements<'a>(
 ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
     let mut statements = builder.vec();
     for binding in bindings {
+        if let Some(function_declaration) = try_build_generated_function_declaration_statement(
+            builder,
+            allocator,
+            source_type,
+            binding,
+        ) {
+            statements.push(function_declaration);
+            continue;
+        }
         let expression =
             parse_expression_source(allocator, source_type, &binding.expression).ok()?;
         let pattern =
@@ -3148,6 +3157,43 @@ fn build_generated_binding_statements<'a>(
         ));
     }
     Some(statements)
+}
+
+fn try_build_generated_function_declaration_statement<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    source_type: SourceType,
+    binding: &crate::reactive_scopes::codegen_reactive::GeneratedBinding,
+) -> Option<ast::Statement<'a>> {
+    if !binding.promote_to_function_declaration {
+        return None;
+    }
+
+    let binding_name = binding.pattern.trim();
+    if !is_identifier_name(binding_name) {
+        return None;
+    }
+
+    let mut expression =
+        parse_expression_source(allocator, source_type, &binding.expression).ok()?;
+    let function = loop {
+        match expression {
+            ast::Expression::FunctionExpression(function) => break function,
+            ast::Expression::ParenthesizedExpression(parenthesized) => {
+                expression = parenthesized.unbox().expression;
+            }
+            _ => return None,
+        }
+    };
+
+    let mut function = function.unbox();
+    let function_name = function.id.as_ref()?.name.as_str();
+    if function_name != binding_name {
+        return None;
+    }
+
+    function.r#type = ast::FunctionType::FunctionDeclaration;
+    Some(ast::Statement::FunctionDeclaration(builder.alloc(function)))
 }
 
 fn build_generated_declaration_statements<'a>(
@@ -9871,6 +9917,7 @@ export const FIXTURE_ENTRYPOINT = {
                         kind: ast::VariableDeclarationKind::Const,
                         pattern: "f".to_string(),
                         expression: "_temp".to_string(),
+                        promote_to_function_declaration: false,
                     },
                 ],
                 inner: Box::new(
@@ -9929,6 +9976,7 @@ export const FIXTURE_ENTRYPOINT = {
                         kind: ast::VariableDeclarationKind::Let,
                         pattern: "c".to_string(),
                         expression: "$0[0] !== props.value".to_string(),
+                        promote_to_function_declaration: false,
                     },
                 ],
                 inner: Box::new(
@@ -10011,6 +10059,7 @@ export const FIXTURE_ENTRYPOINT = {
                                 kind: ast::VariableDeclarationKind::Const,
                                 pattern: "mapped".to_string(),
                                 expression: "t0".to_string(),
+                                promote_to_function_declaration: false,
                             },
                         ],
                         inner: Box::new(
@@ -10073,6 +10122,7 @@ export const FIXTURE_ENTRYPOINT = {
                     kind: ast::VariableDeclarationKind::Const,
                     pattern: "mapped".to_string(),
                     expression: "props.items".to_string(),
+                    promote_to_function_declaration: false,
                 }],
                 inner: Box::new(
                     crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedAssignments {
@@ -10124,6 +10174,7 @@ export const FIXTURE_ENTRYPOINT = {
                     kind: ast::VariableDeclarationKind::Const,
                     pattern: "{ id }".to_string(),
                     expression: "props".to_string(),
+                    promote_to_function_declaration: false,
                 }],
                 inner: Box::new(
                     crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(
@@ -10223,6 +10274,59 @@ export const FIXTURE_ENTRYPOINT = {
     }
 
     #[test]
+    fn promotes_flagged_recursive_function_binding_in_memoized_scope() {
+        let source = "function Foo(props) { return null; }";
+        let allocator = Allocator::default();
+        let mut statements =
+            parse_statements(&allocator, source_type_for_filename("fixture.jsx"), source).unwrap();
+        let statement = statements.pop().unwrap();
+        let ast::Statement::FunctionDeclaration(function) = statement else {
+            panic!("expected function declaration");
+        };
+
+        let mut compiled_function = make_test_compiled_function(
+            "Foo",
+            function.span.start,
+            function.span.end,
+            "let t0; if ($[0] !== props.value) { let callback = function callback(x) { return callback(x - 1); }; t0 = callback(10); $[0] = props.value; $[1] = t0; } else { t0 = $[1]; } return t0;",
+            &["props"],
+            false,
+        );
+        compiled_function.generated_body_shape =
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleDependencyMemoizedReturn {
+                value_name: "t0".to_string(),
+                value_kind: ast::VariableDeclarationKind::Let,
+                dep_slot: 0,
+                dep_expr: "props.value".to_string(),
+                value_slot: 1,
+                memoized_bindings: vec![crate::reactive_scopes::codegen_reactive::GeneratedBinding {
+                    kind: ast::VariableDeclarationKind::Let,
+                    pattern: "callback".to_string(),
+                    expression:
+                        "function callback(x) { return callback(x - 1); }".to_string(),
+                    promote_to_function_declaration: true,
+                }],
+                memoized_assignments: vec![],
+                memoized_expressions: vec![],
+                memoized_setup_statements: vec![],
+                memoized_expr: Some("callback(10)".to_string()),
+            };
+        compiled_function.needs_cache_import = true;
+        compiled_function.cache_prologue =
+            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+                binding_name: "$".to_string(),
+                size: 2,
+                fast_refresh: None,
+            });
+
+        let rewritten =
+            rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
+
+        assert!(rewritten.contains("function callback(x) {"));
+        assert!(!rewritten.contains("let callback = function callback(x) {"));
+    }
+
+    #[test]
     fn builds_memoized_branch_assignments_from_shape_without_generated_source() {
         let allocator = Allocator::default();
         let builder = AstBuilder::new(&allocator);
@@ -10236,11 +10340,13 @@ export const FIXTURE_ENTRYPOINT = {
                         kind: ast::VariableDeclarationKind::Const,
                         pattern: "x".to_string(),
                         expression: "[{}]".to_string(),
+                        promote_to_function_declaration: false,
                     },
                     crate::reactive_scopes::codegen_reactive::GeneratedBinding {
                         kind: ast::VariableDeclarationKind::Const,
                         pattern: "y".to_string(),
                         expression: "x.map(_temp)".to_string(),
+                        promote_to_function_declaration: false,
                     },
                 ],
                 memoized_assignments: vec![
@@ -10299,6 +10405,7 @@ export const FIXTURE_ENTRYPOINT = {
                     kind: ast::VariableDeclarationKind::Const,
                     pattern: "x".to_string(),
                     expression: "[]".to_string(),
+                    promote_to_function_declaration: false,
                 }],
                 memoized_assignments: vec![],
                 memoized_expressions: vec!["x.push(a)".to_string()],
@@ -10404,6 +10511,7 @@ export const FIXTURE_ENTRYPOINT = {
                     kind: ast::VariableDeclarationKind::Const,
                     pattern: "x".to_string(),
                     expression: "{}".to_string(),
+                    promote_to_function_declaration: false,
                 }],
                 memoized_assignments: vec![],
                 memoized_expressions: vec!["setProperty(x, props.a)".to_string()],

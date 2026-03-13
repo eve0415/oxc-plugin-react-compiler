@@ -449,6 +449,7 @@ pub struct GeneratedBinding {
     pub kind: ast::VariableDeclarationKind,
     pub pattern: String,
     pub expression: String,
+    pub promote_to_function_declaration: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1058,6 +1059,7 @@ fn extract_leading_generated_bindings_from_setup_statements(
                     kind: declaration.kind,
                     pattern: codegen_binding_pattern_with_flow_cast_restore(&declarator.id),
                     expression: codegen_expression_with_flow_cast_restore(init),
+                    promote_to_function_declaration: false,
                 });
                 continue;
             }
@@ -1075,6 +1077,7 @@ fn canonicalize_generated_bindings(bindings: Vec<GeneratedBinding>) -> Vec<Gener
             kind: binding.kind,
             pattern: binding.pattern,
             expression: canonicalize_generated_expression(binding.expression),
+            promote_to_function_declaration: binding.promote_to_function_declaration,
         })
         .collect()
 }
@@ -2010,6 +2013,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     kind: binding.kind,
                     pattern: binding.pattern,
                     expression: canonicalize_generated_expression(binding.expression),
+                    promote_to_function_declaration: binding.promote_to_function_declaration,
                 })
                 .collect();
             let inner = canonicalize_generated_body_shape(*inner);
@@ -4896,6 +4900,9 @@ fn try_build_direct_fused_zero_dep_literal_store_prefix(
                 kind,
                 pattern: target_name,
                 expression: source_expr,
+                promote_to_function_declaration: cx
+                    .function_decl_decls
+                    .contains(&target_ident.declaration_id),
             }],
             inner: Box::new(GeneratedBodyShape::ExpressionStatements(vec![])),
         }
@@ -5709,6 +5716,13 @@ fn render_generated_declaration_statement(declaration: &GeneratedDeclaration) ->
 }
 
 fn render_generated_binding_statement(binding: &GeneratedBinding) -> Option<String> {
+    if binding.promote_to_function_declaration
+        && let Some(statement) =
+            function_expr_as_declaration(binding.pattern.trim(), &binding.expression)
+    {
+        return Some(statement.trim_end().to_string());
+    }
+
     render_reactive_variable_statement_ast(
         binding.kind,
         &binding.pattern,
@@ -5892,6 +5906,9 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
                         kind: variable_declaration_kind(lvalue.kind)?,
                         pattern,
                         expression,
+                        promote_to_function_declaration: cx
+                            .function_decl_decls
+                            .contains(&lvalue.place.identifier.declaration_id),
                     }],
                     inner: Box::new(inner),
                 })
@@ -5927,6 +5944,7 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
                         kind: variable_declaration_kind(lvalue.kind)?,
                         pattern,
                         expression,
+                        promote_to_function_declaration: false,
                     }],
                     inner: Box::new(inner),
                 }),
@@ -5983,6 +6001,7 @@ fn rendered_single_statement_prefix(
                         kind: declaration.kind,
                         pattern,
                         expression,
+                        promote_to_function_declaration: false,
                     }],
                     inner: Box::new(inner),
                 })
@@ -6736,6 +6755,7 @@ fn analyze_generated_body_shape_uncached(
                 expression: strip_top_level_parenthesized_expression(
                     codegen_expression_with_flow_cast_restore(init),
                 ),
+                promote_to_function_declaration: false,
             });
             prefix_len += 1;
         }
@@ -34314,6 +34334,13 @@ fn function_expr_as_declaration(name: &str, rhs: &str) -> Option<String> {
     };
     let builder = AstBuilder::new(&allocator);
     let mut function = function.unbox();
+    if function
+        .id
+        .as_ref()
+        .is_some_and(|binding_identifier| binding_identifier.name.as_str() != name)
+    {
+        return None;
+    }
     function.r#type = ast::FunctionType::FunctionDeclaration;
     if function.id.is_none() {
         function.id = Some(builder.binding_identifier(SPAN, builder.atom(name)));
@@ -35034,6 +35061,7 @@ mod tests {
                     kind: ast::VariableDeclarationKind::Const,
                     pattern: "value".to_string(),
                     expression: "props.value".to_string(),
+                    promote_to_function_declaration: false,
                 }],
                 inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
                     "value".to_string()
@@ -35077,6 +35105,7 @@ mod tests {
                     kind: ast::VariableDeclarationKind::Const,
                     pattern: "value".to_string(),
                     expression: "props.value".to_string(),
+                    promote_to_function_declaration: false,
                 }],
                 inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
                     "value".to_string()
@@ -35153,6 +35182,7 @@ mod tests {
                     kind: ast::VariableDeclarationKind::Const,
                     pattern: "ref".to_string(),
                     expression: "useRef(null)".to_string(),
+                    promote_to_function_declaration: false,
                 }],
                 inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
                     "ref".to_string()
@@ -35909,6 +35939,7 @@ mod tests {
                     kind: ast::VariableDeclarationKind::Const,
                     pattern: "t1".to_string(),
                     expression: "identity([props.value])".to_string(),
+                    promote_to_function_declaration: false,
                 }],
                 inner: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![])),
             },
@@ -37359,6 +37390,7 @@ mod tests {
                         kind: ast::VariableDeclarationKind::Const,
                         pattern: "dep".to_string(),
                         expression: "props.value".to_string(),
+                        promote_to_function_declaration: false,
                     }],
                     inner: Box::new(super::GeneratedBodyShape::MemoizedCachedValues {
                         deps: vec![(0, "dep".to_string())],
@@ -37385,6 +37417,7 @@ mod tests {
                     kind: ast::VariableDeclarationKind::Const,
                     pattern: "dep".to_string(),
                     expression: "props.value".to_string(),
+                    promote_to_function_declaration: false,
                 }],
                 inner: Box::new(
                     super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
@@ -37396,6 +37429,7 @@ mod tests {
                             kind: ast::VariableDeclarationKind::Const,
                             pattern: "t0".to_string(),
                             expression: "foo(dep)".to_string(),
+                            promote_to_function_declaration: false,
                         }],
                         memoized_assignments: vec![],
                         memoized_expressions: vec![],
@@ -37498,6 +37532,7 @@ mod tests {
                         kind: ast::VariableDeclarationKind::Const,
                         pattern: "x".to_string(),
                         expression: "makeObject()".to_string(),
+                        promote_to_function_declaration: false,
                     }],
                     inner: Box::new(super::GeneratedBodyShape::PrefixedDeclarations {
                         declarations: vec![super::GeneratedDeclaration {
@@ -37530,6 +37565,7 @@ mod tests {
                         kind: ast::VariableDeclarationKind::Const,
                         pattern: "count".to_string(),
                         expression: "posts.length".to_string(),
+                        promote_to_function_declaration: false,
                     }],
                     inner: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![
                         "foo(count)".to_string(),
@@ -37544,6 +37580,7 @@ mod tests {
                     kind: ast::VariableDeclarationKind::Const,
                     pattern: "x".to_string(),
                     expression: "makeObject()".to_string(),
+                    promote_to_function_declaration: false,
                 }],
                 inner: Box::new(super::GeneratedBodyShape::PrefixedDeclarations {
                     declarations: vec![super::GeneratedDeclaration {
@@ -37572,6 +37609,7 @@ mod tests {
                                     kind: ast::VariableDeclarationKind::Const,
                                     pattern: "count".to_string(),
                                     expression: "posts.length".to_string(),
+                                    promote_to_function_declaration: false,
                                 }],
                                 inner: Box::new(super::GeneratedBodyShape::ExpressionStatements(
                                     vec!["foo(count)".to_string()],
@@ -37886,6 +37924,7 @@ mod tests {
                     kind: ast::VariableDeclarationKind::Const,
                     pattern: "inner".to_string(),
                     expression: "makeInner()".to_string(),
+                    promote_to_function_declaration: false,
                 }],
                 inner: Box::new(super::GeneratedBodyShape::WrappedReturnExpression {
                     source_name: "innerIdentity".to_string(),
@@ -37906,6 +37945,7 @@ mod tests {
                         kind: ast::VariableDeclarationKind::Const,
                         pattern: "inner".to_string(),
                         expression: "makeInner()".to_string(),
+                        promote_to_function_declaration: false,
                     }],
                     inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
                         "innerIdentity".to_string(),
@@ -37926,12 +37966,14 @@ mod tests {
                         kind: ast::VariableDeclarationKind::Const,
                         pattern: "inner".to_string(),
                         expression: "makeInner()".to_string(),
+                        promote_to_function_declaration: false,
                     }],
                     inner: Box::new(super::GeneratedBodyShape::PrefixedBindings {
                         bindings: vec![super::GeneratedBinding {
                             kind: ast::VariableDeclarationKind::Const,
                             pattern: "innerIdentity".to_string(),
                             expression: "identity(inner)".to_string(),
+                            promote_to_function_declaration: false,
                         }],
                         inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
                             "innerIdentity".to_string(),
@@ -37952,11 +37994,13 @@ mod tests {
                             kind: ast::VariableDeclarationKind::Const,
                             pattern: "inner".to_string(),
                             expression: "makeInner()".to_string(),
+                            promote_to_function_declaration: false,
                         },
                         super::GeneratedBinding {
                             kind: ast::VariableDeclarationKind::Const,
                             pattern: "innerIdentity".to_string(),
                             expression: "identity(inner)".to_string(),
+                            promote_to_function_declaration: false,
                         },
                     ],
                     inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
@@ -37975,6 +38019,7 @@ mod tests {
                     kind: ast::VariableDeclarationKind::Const,
                     pattern: "it".to_string(),
                     expression: "new Set([1, 2]).values()".to_string(),
+                    promote_to_function_declaration: false,
                 }],
                 inner: Box::new(super::GeneratedBodyShape::PrefixedExpressionStatements {
                     expressions: vec!["useIdentity()".to_string()],
@@ -37994,6 +38039,7 @@ mod tests {
                         kind: ast::VariableDeclarationKind::Const,
                         pattern: "it".to_string(),
                         expression: "new Set([1, 2]).values()".to_string(),
+                        promote_to_function_declaration: false,
                     }],
                     inner: Box::new(super::GeneratedBodyShape::PrefixedExpressionStatements {
                         expressions: vec!["useIdentity()".to_string()],
@@ -38868,6 +38914,7 @@ mod tests {
                     kind: ast::VariableDeclarationKind::Const,
                     pattern: "foo".to_string(),
                     expression: "() => {\n  x = {};\n}".to_string(),
+                    promote_to_function_declaration: false,
                 }]
                 && memoized_expressions == vec!["foo()".to_string()]
                 && memoized_expr.is_none()
@@ -39028,16 +39075,19 @@ mod tests {
                     kind: ast::VariableDeclarationKind::Const,
                     pattern: "key".to_string(),
                     expression: "({ a: \"key\" })".to_string(),
+                    promote_to_function_declaration: false,
                 },
                 super::GeneratedBinding {
                     kind: ast::VariableDeclarationKind::Const,
                     pattern: "t0".to_string(),
                     expression: "key.a".to_string(),
+                    promote_to_function_declaration: false,
                 },
                 super::GeneratedBinding {
                     kind: ast::VariableDeclarationKind::Const,
                     pattern: "t1".to_string(),
                     expression: "identity([props.value])".to_string(),
+                    promote_to_function_declaration: false,
                 },
             ]
             .as_slice()
@@ -39070,6 +39120,7 @@ mod tests {
                 kind: ast::VariableDeclarationKind::Const,
                 pattern: "newSelected".to_string(),
                 expression: "new Set(selected)".to_string(),
+                promote_to_function_declaration: false,
             }]
             .as_slice()
         );
