@@ -6300,7 +6300,7 @@ fn try_compile_function<'a>(
 
     // Compute parameter destructuring (reactive codegen inlines these in body).
     let mut temp_counter = 0;
-    let params_result =
+    let mut params_result =
         params_to_result(&func.params, source, semantic, options, &mut temp_counter);
 
     // Run the shared HIR pipeline (all passes from pruneMaybeThrows through codegen)
@@ -6331,6 +6331,7 @@ fn try_compile_function<'a>(
     }
 
     let codegen_result = pipeline_output.codegen_result;
+    align_params_result_with_codegen(&mut params_result, &codegen_result.param_names);
     let PreparedGeneratedBody {
         synthesized_default_param_cache,
         synthesized_hir_outlined_functions,
@@ -6512,7 +6513,7 @@ fn try_compile_function_with_name<'a>(
 
     // Compute parameter destructuring (reactive codegen inlines these in body).
     let mut temp_counter = 0;
-    let params_result =
+    let mut params_result =
         params_to_result(&func.params, source, semantic, options, &mut temp_counter);
 
     // Run the shared HIR pipeline
@@ -6543,6 +6544,7 @@ fn try_compile_function_with_name<'a>(
     }
 
     let codegen_result = pipeline_output.codegen_result;
+    align_params_result_with_codegen(&mut params_result, &codegen_result.param_names);
     let PreparedGeneratedBody {
         synthesized_default_param_cache,
         synthesized_hir_outlined_functions,
@@ -6732,7 +6734,7 @@ fn try_compile_arrow<'a>(
 
     // Compute parameter destructuring (reactive codegen inlines these in body).
     let mut temp_counter = 0;
-    let params_result =
+    let mut params_result =
         params_to_result(&arrow.params, source, semantic, options, &mut temp_counter);
 
     // Run the shared HIR pipeline
@@ -6763,6 +6765,7 @@ fn try_compile_arrow<'a>(
     }
 
     let codegen_result = pipeline_output.codegen_result;
+    align_params_result_with_codegen(&mut params_result, &codegen_result.param_names);
     let PreparedGeneratedBody {
         synthesized_default_param_cache,
         synthesized_hir_outlined_functions,
@@ -6930,6 +6933,129 @@ fn is_valid_binding_identifier(name: &str) -> bool {
         && name
             .chars()
             .all(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphanumeric())
+}
+
+fn is_identifier_token_char(ch: char) -> bool {
+    ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()
+}
+
+fn replace_identifier_tokens_for_params(input: &str, from: &str, to: &str) -> String {
+    if from.is_empty() || from == to {
+        return input.to_string();
+    }
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0usize;
+    while i < input.len() {
+        let rest = &input[i..];
+        if let Some(found) = rest.find(from) {
+            let start = i + found;
+            let end = start + from.len();
+            let before_ok = if start == 0 {
+                true
+            } else {
+                !is_identifier_token_char(input.as_bytes()[start - 1] as char)
+            };
+            let after_ok = if end >= input.len() {
+                true
+            } else {
+                !is_identifier_token_char(input.as_bytes()[end] as char)
+            };
+            out.push_str(&input[i..start]);
+            if before_ok && after_ok {
+                out.push_str(to);
+            } else {
+                out.push_str(from);
+            }
+            i = end;
+        } else {
+            out.push_str(rest);
+            break;
+        }
+    }
+    out
+}
+
+fn rename_compiled_binding_pattern(pattern: &mut CompiledBindingPattern, from: &str, to: &str) {
+    match pattern {
+        CompiledBindingPattern::Identifier(name) => {
+            if name == from {
+                *name = to.to_string();
+            }
+        }
+        CompiledBindingPattern::Object(object) => {
+            for property in &mut object.properties {
+                if let CompiledPropertyKey::Source(source) = &mut property.key {
+                    *source = replace_identifier_tokens_for_params(source, from, to);
+                }
+                rename_compiled_binding_pattern(&mut property.value, from, to);
+            }
+            if let Some(rest) = &mut object.rest {
+                rename_compiled_binding_pattern(rest, from, to);
+            }
+        }
+        CompiledBindingPattern::Array(array) => {
+            for element in array.elements.iter_mut().flatten() {
+                rename_compiled_binding_pattern(element, from, to);
+            }
+            if let Some(rest) = &mut array.rest {
+                rename_compiled_binding_pattern(rest, from, to);
+            }
+        }
+        CompiledBindingPattern::Assignment { left, default_expr } => {
+            rename_compiled_binding_pattern(left, from, to);
+            *default_expr = replace_identifier_tokens_for_params(default_expr, from, to);
+        }
+    }
+}
+
+fn rename_compiled_initializer(init: &mut CompiledInitializer, from: &str, to: &str) {
+    match init {
+        CompiledInitializer::Identifier(name) => {
+            if name == from {
+                *name = to.to_string();
+            }
+        }
+        CompiledInitializer::UndefinedFallback {
+            temp_name,
+            default_expr,
+        } => {
+            if temp_name == from {
+                *temp_name = to.to_string();
+            }
+            *default_expr = replace_identifier_tokens_for_params(default_expr, from, to);
+        }
+    }
+}
+
+fn rename_compiled_param_prefix_statement(
+    statement: &mut CompiledParamPrefixStatement,
+    from: &str,
+    to: &str,
+) {
+    rename_compiled_binding_pattern(&mut statement.pattern, from, to);
+    rename_compiled_initializer(&mut statement.init, from, to);
+}
+
+fn align_params_result_with_codegen(params_result: &mut ParamsResult, param_names: &[String]) {
+    let Some(compiled_params) = params_result.compiled_params.as_mut() else {
+        return;
+    };
+    if compiled_params.len() != param_names.len() {
+        return;
+    }
+
+    // The emitted parameter list must follow the final HIR/codegen names, which
+    // can differ from the source AST for lowered rest/default/destructured params.
+    for (compiled_param, emitted_name) in compiled_params.iter_mut().zip(param_names) {
+        if compiled_param.name == *emitted_name {
+            continue;
+        }
+        let original_name = compiled_param.name.clone();
+        for statement in &mut params_result.prefix_statements {
+            rename_compiled_param_prefix_statement(statement, &original_name, emitted_name);
+        }
+        compiled_param.name = emitted_name.clone();
+    }
 }
 
 fn is_outlined_temp_expr(expr: &str) -> bool {
@@ -8354,8 +8480,9 @@ mod tests {
     use crate::options::PluginOptions;
 
     use super::{
-        extract_emitted_directives, generated_body_shape_is_nonmemoized_hir_lowerable,
-        params_to_result, rewrite_inline_empty_arrow_callback,
+        align_params_result_with_codegen, extract_emitted_directives,
+        generated_body_shape_is_nonmemoized_hir_lowerable, params_to_result,
+        rewrite_inline_empty_arrow_callback,
     };
 
     #[test]
@@ -8390,6 +8517,85 @@ mod tests {
             params_result.hir_outlined_functions[0].1.id.as_deref(),
             Some("_temp")
         );
+    }
+
+    #[test]
+    fn align_params_result_with_codegen_renames_rest_identifier_params() {
+        let allocator = Allocator::default();
+        let source = "function Component(foo, ...bar) { return [foo, bar]; }";
+        let parser_ret = Parser::new(&allocator, source, SourceType::mjs()).parse();
+        assert!(
+            parser_ret.errors.is_empty(),
+            "parse errors: {:?}",
+            parser_ret.errors
+        );
+        let program = parser_ret.program;
+        let semantic_ret = SemanticBuilder::new().build(&program);
+        let semantic = semantic_ret.semantic;
+        let ast::Statement::FunctionDeclaration(function) = &program.body[0] else {
+            panic!("expected function declaration");
+        };
+
+        let mut temp_counter = 0;
+        let mut params_result = params_to_result(
+            &function.params,
+            source,
+            &semantic,
+            &PluginOptions::default(),
+            &mut temp_counter,
+        );
+        align_params_result_with_codegen(
+            &mut params_result,
+            &["foo".to_string(), "t0".to_string()],
+        );
+
+        let compiled_params = params_result
+            .compiled_params
+            .expect("expected compiled params");
+        assert_eq!(compiled_params[0].name, "foo");
+        assert_eq!(compiled_params[1].name, "t0");
+        assert!(compiled_params[1].is_rest);
+    }
+
+    #[test]
+    fn align_params_result_with_codegen_rewrites_prefix_statement_temps() {
+        let allocator = Allocator::default();
+        let source = "function Component({x}) { return x; }";
+        let parser_ret = Parser::new(&allocator, source, SourceType::mjs()).parse();
+        assert!(
+            parser_ret.errors.is_empty(),
+            "parse errors: {:?}",
+            parser_ret.errors
+        );
+        let program = parser_ret.program;
+        let semantic_ret = SemanticBuilder::new().build(&program);
+        let semantic = semantic_ret.semantic;
+        let ast::Statement::FunctionDeclaration(function) = &program.body[0] else {
+            panic!("expected function declaration");
+        };
+
+        let mut temp_counter = 0;
+        let mut params_result = params_to_result(
+            &function.params,
+            source,
+            &semantic,
+            &PluginOptions::default(),
+            &mut temp_counter,
+        );
+        align_params_result_with_codegen(&mut params_result, &["t1".to_string()]);
+
+        let compiled_params = params_result
+            .compiled_params
+            .as_ref()
+            .expect("expected compiled params");
+        assert_eq!(compiled_params[0].name, "t1");
+        assert_eq!(params_result.prefix_statements.len(), 1);
+        match &params_result.prefix_statements[0].init {
+            crate::codegen_backend::CompiledInitializer::Identifier(name) => {
+                assert_eq!(name, "t1");
+            }
+            other => panic!("expected identifier initializer, got {other:?}"),
+        }
     }
 
     #[test]

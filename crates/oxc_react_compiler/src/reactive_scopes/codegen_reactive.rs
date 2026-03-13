@@ -3510,6 +3510,9 @@ struct Context {
     manual_memo_dep_roots_by_decl: HashMap<DeclarationId, HashSet<DeclarationId>>,
     /// Declaration IDs produced by pruned FinishMemoize markers.
     pruned_manual_memo_decls: HashSet<DeclarationId>,
+    /// Reassigned declarations whose source-level `= null` initializer is never
+    /// observed outside the reactive scopes that overwrite them.
+    elidable_null_initializer_decls: HashSet<DeclarationId>,
     /// Declarations produced by dependency-free scopes. These values are
     /// sentinel-initialized once and then stable across renders.
     stable_zero_dep_decls: HashSet<DeclarationId>,
@@ -3748,6 +3751,8 @@ fn codegen_reactive_function_with_primitives(
     let mut reassigned_decls = collect_reassigned_declarations(&func.body);
     reassigned_decls.extend(mutable_captured_in_child_functions.iter().copied());
     let read_declarations = collect_read_declarations(&func.body);
+    let elidable_null_initializer_decls =
+        collect_elidable_null_initializer_declarations(&func.body);
     let manual_memo_root_decls = collect_manual_memo_root_declarations(&func.body);
     let function_decl_decls = collect_function_declarations(&func.body);
     let jsx_only_component_tag_decls = collect_jsx_only_component_tag_declarations(&func.body);
@@ -3821,6 +3826,7 @@ fn codegen_reactive_function_with_primitives(
         manual_memo_dep_roots_by_id: HashMap::new(),
         manual_memo_dep_roots_by_decl: HashMap::new(),
         pruned_manual_memo_decls: HashSet::new(),
+        elidable_null_initializer_decls,
         stable_zero_dep_decls: HashSet::new(),
         scope_dependency_decls,
         scope_dependency_overrides: HashMap::new(),
@@ -6624,10 +6630,24 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
         | InstructionValue::DeclareContext { lvalue, .. } => {
             if let Some(kind) = variable_declaration_kind(lvalue.kind) {
                 let pattern = identifier_name_with_cx(cx, &lvalue.place.identifier);
-                Some(GeneratedBodyShape::PrefixedDeclarations {
-                    declarations: vec![GeneratedDeclaration { kind, pattern }],
-                    inner: Box::new(inner),
-                })
+                if kind == ast::VariableDeclarationKind::Let
+                    && let Some(expression) = crate::optimization::dead_code_elimination::preserved_top_level_let_initializer_for_decl(lvalue.place.identifier.declaration_id)
+                {
+                    Some(GeneratedBodyShape::PrefixedBindings {
+                        bindings: vec![GeneratedBinding {
+                            kind,
+                            pattern,
+                            expression,
+                            promote_to_function_declaration: false,
+                        }],
+                        inner: Box::new(inner),
+                    })
+                } else {
+                    Some(GeneratedBodyShape::PrefixedDeclarations {
+                        declarations: vec![GeneratedDeclaration { kind, pattern }],
+                        inner: Box::new(inner),
+                    })
+                }
             } else {
                 rendered_single_statement_prefix(
                     codegen_instruction_nullable(cx, instr)?.as_str(),
@@ -10823,6 +10843,386 @@ fn collect_reassigned_declarations(block: &ReactiveBlock) -> HashSet<Declaration
     let mut reassigned = HashSet::new();
     collect_reassigned_declarations_in_block(block, &mut reassigned);
     reassigned
+}
+
+fn collect_elidable_null_initializer_declarations(block: &ReactiveBlock) -> HashSet<DeclarationId> {
+    let mut reassigning_scope_ids: HashMap<DeclarationId, HashSet<ScopeId>> = HashMap::new();
+    collect_reassigning_scope_ids_in_block(block, &mut reassigning_scope_ids);
+    if reassigning_scope_ids.is_empty() {
+        return HashSet::new();
+    }
+
+    let mut required_initializers = HashSet::new();
+    let mut active_scope_ids = Vec::new();
+    collect_reads_outside_reassigning_scopes_in_block(
+        block,
+        &reassigning_scope_ids,
+        &mut active_scope_ids,
+        &mut required_initializers,
+    );
+
+    reassigning_scope_ids
+        .into_keys()
+        .filter(|decl_id| !required_initializers.contains(decl_id))
+        .collect()
+}
+
+fn collect_reassigning_scope_ids_in_block(
+    block: &ReactiveBlock,
+    out: &mut HashMap<DeclarationId, HashSet<ScopeId>>,
+) {
+    for stmt in block {
+        match stmt {
+            ReactiveStatement::Instruction(_) => {}
+            ReactiveStatement::Scope(scope) => {
+                for reassignment in &scope.scope.reassignments {
+                    out.entry(reassignment.declaration_id)
+                        .or_default()
+                        .insert(scope.scope.id);
+                }
+                collect_reassigning_scope_ids_in_block(&scope.instructions, out);
+            }
+            ReactiveStatement::PrunedScope(scope) => {
+                for reassignment in &scope.scope.reassignments {
+                    out.entry(reassignment.declaration_id)
+                        .or_default()
+                        .insert(scope.scope.id);
+                }
+                collect_reassigning_scope_ids_in_block(&scope.instructions, out);
+            }
+            ReactiveStatement::Terminal(term_stmt) => {
+                collect_reassigning_scope_ids_in_terminal(&term_stmt.terminal, out);
+            }
+        }
+    }
+}
+
+fn collect_reassigning_scope_ids_in_terminal(
+    terminal: &ReactiveTerminal,
+    out: &mut HashMap<DeclarationId, HashSet<ScopeId>>,
+) {
+    match terminal {
+        ReactiveTerminal::Break { .. } | ReactiveTerminal::Continue { .. } => {}
+        ReactiveTerminal::Return { .. } | ReactiveTerminal::Throw { .. } => {}
+        ReactiveTerminal::Switch { cases, .. } => {
+            for case in cases {
+                if let Some(block) = &case.block {
+                    collect_reassigning_scope_ids_in_block(block, out);
+                }
+            }
+        }
+        ReactiveTerminal::DoWhile { loop_block, .. }
+        | ReactiveTerminal::While { loop_block, .. } => {
+            collect_reassigning_scope_ids_in_block(loop_block, out);
+        }
+        ReactiveTerminal::For {
+            init,
+            update,
+            loop_block,
+            ..
+        } => {
+            collect_reassigning_scope_ids_in_block(init, out);
+            if let Some(update) = update {
+                collect_reassigning_scope_ids_in_block(update, out);
+            }
+            collect_reassigning_scope_ids_in_block(loop_block, out);
+        }
+        ReactiveTerminal::ForOf {
+            init, loop_block, ..
+        }
+        | ReactiveTerminal::ForIn {
+            init, loop_block, ..
+        } => {
+            collect_reassigning_scope_ids_in_block(init, out);
+            collect_reassigning_scope_ids_in_block(loop_block, out);
+        }
+        ReactiveTerminal::If {
+            consequent,
+            alternate,
+            ..
+        } => {
+            collect_reassigning_scope_ids_in_block(consequent, out);
+            if let Some(alt) = alternate {
+                collect_reassigning_scope_ids_in_block(alt, out);
+            }
+        }
+        ReactiveTerminal::Label { block, .. } => {
+            collect_reassigning_scope_ids_in_block(block, out);
+        }
+        ReactiveTerminal::Try { block, handler, .. } => {
+            collect_reassigning_scope_ids_in_block(block, out);
+            collect_reassigning_scope_ids_in_block(handler, out);
+        }
+    }
+}
+
+fn collect_reads_outside_reassigning_scopes_in_block(
+    block: &ReactiveBlock,
+    reassigning_scope_ids: &HashMap<DeclarationId, HashSet<ScopeId>>,
+    active_scope_ids: &mut Vec<ScopeId>,
+    out: &mut HashSet<DeclarationId>,
+) {
+    for stmt in block {
+        match stmt {
+            ReactiveStatement::Instruction(instr) => {
+                visitors::for_each_instruction_value_operand(&instr.value, |place| {
+                    mark_initializer_required_if_read_outside_reassigning_scope(
+                        place.identifier.declaration_id,
+                        reassigning_scope_ids,
+                        active_scope_ids,
+                        out,
+                    );
+                });
+            }
+            ReactiveStatement::Scope(scope) => {
+                active_scope_ids.push(scope.scope.id);
+                collect_reads_outside_reassigning_scopes_in_block(
+                    &scope.instructions,
+                    reassigning_scope_ids,
+                    active_scope_ids,
+                    out,
+                );
+                active_scope_ids.pop();
+            }
+            ReactiveStatement::PrunedScope(scope) => {
+                active_scope_ids.push(scope.scope.id);
+                collect_reads_outside_reassigning_scopes_in_block(
+                    &scope.instructions,
+                    reassigning_scope_ids,
+                    active_scope_ids,
+                    out,
+                );
+                active_scope_ids.pop();
+            }
+            ReactiveStatement::Terminal(term_stmt) => {
+                collect_reads_outside_reassigning_scopes_in_terminal(
+                    &term_stmt.terminal,
+                    reassigning_scope_ids,
+                    active_scope_ids,
+                    out,
+                );
+            }
+        }
+    }
+}
+
+fn collect_reads_outside_reassigning_scopes_in_terminal(
+    terminal: &ReactiveTerminal,
+    reassigning_scope_ids: &HashMap<DeclarationId, HashSet<ScopeId>>,
+    active_scope_ids: &mut Vec<ScopeId>,
+    out: &mut HashSet<DeclarationId>,
+) {
+    match terminal {
+        ReactiveTerminal::Break { .. } | ReactiveTerminal::Continue { .. } => {}
+        ReactiveTerminal::Return { value, .. } | ReactiveTerminal::Throw { value, .. } => {
+            mark_initializer_required_if_read_outside_reassigning_scope(
+                value.identifier.declaration_id,
+                reassigning_scope_ids,
+                active_scope_ids,
+                out,
+            );
+        }
+        ReactiveTerminal::Switch { test, cases, .. } => {
+            mark_initializer_required_if_read_outside_reassigning_scope(
+                test.identifier.declaration_id,
+                reassigning_scope_ids,
+                active_scope_ids,
+                out,
+            );
+            for case in cases {
+                if let Some(test) = &case.test {
+                    mark_initializer_required_if_read_outside_reassigning_scope(
+                        test.identifier.declaration_id,
+                        reassigning_scope_ids,
+                        active_scope_ids,
+                        out,
+                    );
+                }
+                if let Some(block) = &case.block {
+                    collect_reads_outside_reassigning_scopes_in_block(
+                        block,
+                        reassigning_scope_ids,
+                        active_scope_ids,
+                        out,
+                    );
+                }
+            }
+        }
+        ReactiveTerminal::DoWhile {
+            loop_block, test, ..
+        }
+        | ReactiveTerminal::While {
+            test, loop_block, ..
+        } => {
+            mark_initializer_required_if_read_outside_reassigning_scope(
+                test.identifier.declaration_id,
+                reassigning_scope_ids,
+                active_scope_ids,
+                out,
+            );
+            collect_reads_outside_reassigning_scopes_in_block(
+                loop_block,
+                reassigning_scope_ids,
+                active_scope_ids,
+                out,
+            );
+        }
+        ReactiveTerminal::For {
+            init,
+            test,
+            update,
+            loop_block,
+            ..
+        } => {
+            collect_reads_outside_reassigning_scopes_in_block(
+                init,
+                reassigning_scope_ids,
+                active_scope_ids,
+                out,
+            );
+            mark_initializer_required_if_read_outside_reassigning_scope(
+                test.identifier.declaration_id,
+                reassigning_scope_ids,
+                active_scope_ids,
+                out,
+            );
+            if let Some(update) = update {
+                collect_reads_outside_reassigning_scopes_in_block(
+                    update,
+                    reassigning_scope_ids,
+                    active_scope_ids,
+                    out,
+                );
+            }
+            collect_reads_outside_reassigning_scopes_in_block(
+                loop_block,
+                reassigning_scope_ids,
+                active_scope_ids,
+                out,
+            );
+        }
+        ReactiveTerminal::ForOf {
+            init,
+            test,
+            loop_block,
+            ..
+        } => {
+            collect_reads_outside_reassigning_scopes_in_block(
+                init,
+                reassigning_scope_ids,
+                active_scope_ids,
+                out,
+            );
+            mark_initializer_required_if_read_outside_reassigning_scope(
+                test.identifier.declaration_id,
+                reassigning_scope_ids,
+                active_scope_ids,
+                out,
+            );
+            collect_reads_outside_reassigning_scopes_in_block(
+                loop_block,
+                reassigning_scope_ids,
+                active_scope_ids,
+                out,
+            );
+        }
+        ReactiveTerminal::ForIn {
+            init, loop_block, ..
+        } => {
+            collect_reads_outside_reassigning_scopes_in_block(
+                init,
+                reassigning_scope_ids,
+                active_scope_ids,
+                out,
+            );
+            collect_reads_outside_reassigning_scopes_in_block(
+                loop_block,
+                reassigning_scope_ids,
+                active_scope_ids,
+                out,
+            );
+        }
+        ReactiveTerminal::If {
+            test,
+            consequent,
+            alternate,
+            ..
+        } => {
+            mark_initializer_required_if_read_outside_reassigning_scope(
+                test.identifier.declaration_id,
+                reassigning_scope_ids,
+                active_scope_ids,
+                out,
+            );
+            collect_reads_outside_reassigning_scopes_in_block(
+                consequent,
+                reassigning_scope_ids,
+                active_scope_ids,
+                out,
+            );
+            if let Some(alt) = alternate {
+                collect_reads_outside_reassigning_scopes_in_block(
+                    alt,
+                    reassigning_scope_ids,
+                    active_scope_ids,
+                    out,
+                );
+            }
+        }
+        ReactiveTerminal::Label { block, .. } => {
+            collect_reads_outside_reassigning_scopes_in_block(
+                block,
+                reassigning_scope_ids,
+                active_scope_ids,
+                out,
+            );
+        }
+        ReactiveTerminal::Try {
+            block,
+            handler_binding,
+            handler,
+            ..
+        } => {
+            if let Some(binding) = handler_binding {
+                mark_initializer_required_if_read_outside_reassigning_scope(
+                    binding.identifier.declaration_id,
+                    reassigning_scope_ids,
+                    active_scope_ids,
+                    out,
+                );
+            }
+            collect_reads_outside_reassigning_scopes_in_block(
+                block,
+                reassigning_scope_ids,
+                active_scope_ids,
+                out,
+            );
+            collect_reads_outside_reassigning_scopes_in_block(
+                handler,
+                reassigning_scope_ids,
+                active_scope_ids,
+                out,
+            );
+        }
+    }
+}
+
+fn mark_initializer_required_if_read_outside_reassigning_scope(
+    decl_id: DeclarationId,
+    reassigning_scope_ids: &HashMap<DeclarationId, HashSet<ScopeId>>,
+    active_scope_ids: &[ScopeId],
+    out: &mut HashSet<DeclarationId>,
+) {
+    let Some(scope_ids) = reassigning_scope_ids.get(&decl_id) else {
+        return;
+    };
+    if active_scope_ids
+        .iter()
+        .any(|active_scope_id| scope_ids.contains(active_scope_id))
+    {
+        return;
+    }
+    out.insert(decl_id);
 }
 
 fn collect_reassigned_declarations_in_block(
@@ -24905,6 +25305,15 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
             cx.inline_identifier_aliases.remove(&decl_id);
             cx.elided_named_declarations.remove(&decl_id);
             cx.mark_decl_runtime_emitted(decl_id);
+            if lvalue.kind == InstructionKind::Let
+                && let Some(init) = crate::optimization::dead_code_elimination::preserved_top_level_let_initializer_for_decl(decl_id)
+            {
+                return render_reactive_variable_statement_ast(
+                    ast::VariableDeclarationKind::Let,
+                    &name,
+                    Some(&init),
+                );
+            }
             render_reactive_declare_local_statement_ast(&name)
         }
         InstructionValue::Destructure { lvalue, value, .. } => {
@@ -25449,21 +25858,6 @@ fn codegen_store(
                 cx.declare(&place.identifier);
                 return None;
             }
-            if kind == InstructionKind::Const
-                && instr.lvalue.is_none()
-                && cx.manual_memo_root_decls.contains(&decl_id)
-                && is_inlineable_primitive_literal_expression(rhs)
-            {
-                // Upstream preserves manual-memo dependency roots as placeholder
-                // declarations even when their initializer is constant-propagated away.
-                cx.declare(&place.identifier);
-                cx.mark_decl_runtime_emitted(decl_id);
-                return render_reactive_variable_statement_ast(
-                    ast::VariableDeclarationKind::Let,
-                    &name,
-                    None,
-                );
-            }
             let should_emit_fn_decl =
                 kind == InstructionKind::Function || cx.function_decl_decls.contains(&decl_id);
             if should_emit_fn_decl && let Some(fn_decl) = function_expr_as_declaration(&name, rhs) {
@@ -25490,7 +25884,12 @@ fn codegen_store(
             }
             cx.declare(&place.identifier);
             cx.mark_decl_runtime_emitted(decl_id);
-            if rhs == "undefined" {
+            let omit_initializer = rhs == "undefined"
+                || (rhs == "null"
+                    && cx.elidable_null_initializer_decls.contains(&decl_id)
+                    && !cx.captured_in_child_functions.contains(&decl_id)
+                    && !cx.mutable_captured_in_child_functions.contains(&decl_id));
+            if omit_initializer {
                 render_reactive_variable_statement_ast(
                     ast::VariableDeclarationKind::Let,
                     &name,
@@ -35813,6 +36212,7 @@ mod tests {
             manual_memo_dep_roots_by_id: HashMap::new(),
             manual_memo_dep_roots_by_decl: HashMap::new(),
             pruned_manual_memo_decls: HashSet::new(),
+            elidable_null_initializer_decls: HashSet::new(),
             stable_zero_dep_decls: HashSet::new(),
             scope_dependency_decls: HashSet::new(),
             scope_dependency_overrides: HashMap::new(),

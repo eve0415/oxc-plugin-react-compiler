@@ -25,6 +25,7 @@ pub mod validation;
 /// Compile a single file. Returns the transformed code and source map if compilation
 /// was applied, or `None` if the file was not transformed (e.g., no components/hooks found).
 pub fn compile(filename: &str, source: &str, options: &options::PluginOptions) -> CompileResult {
+    crate::optimization::dead_code_elimination::clear_preserved_top_level_let_initializers();
     pipeline::compile(filename, source, options)
 }
 
