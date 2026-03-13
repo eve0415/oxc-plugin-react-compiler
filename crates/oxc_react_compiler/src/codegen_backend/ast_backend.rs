@@ -387,6 +387,30 @@ fn try_emit_module(
     // Precompute which original statements have a blank line before them in the source
     let original_stmts = &args.program.body;
     let mut original_has_blank_before: Vec<bool> = vec![false; original_stmts.len()];
+    if let Some(first_stmt) = original_stmts.first() {
+        let first_stmt_start = first_stmt.span().start;
+        let leading_comment_end = args
+            .program
+            .comments
+            .iter()
+            .filter(|comment| comment.span.end <= first_stmt_start)
+            .filter(|comment| {
+                !original_stmts.iter().any(|stmt| {
+                    let span = stmt.span();
+                    comment.span.start >= span.start && comment.span.end <= span.end
+                })
+            })
+            .map(|comment| comment.span.end as usize)
+            .max()
+            .unwrap_or(0);
+        if leading_comment_end > 0 {
+            let between = &args.source[leading_comment_end..first_stmt_start as usize];
+            let newline_count = between.chars().filter(|&c| c == '\n').count();
+            if newline_count >= 2 {
+                original_has_blank_before[0] = true;
+            }
+        }
+    }
     for i in 1..original_stmts.len() {
         let prev_end = original_stmts[i - 1].span().end as usize;
         let curr_start = original_stmts[i].span().start as usize;
@@ -8026,18 +8050,56 @@ fn apply_blank_line_markers(
     }
 
     let stmts = &parsed.program.body;
+    let top_level_comments = parsed
+        .program
+        .comments
+        .iter()
+        .filter(|comment| {
+            !stmts.iter().any(|stmt| {
+                let span = stmt.span();
+                comment.span.start >= span.start && comment.span.end <= span.end
+            })
+        })
+        .collect::<Vec<_>>();
     let mut insert_positions = Vec::new();
     for (i, stmt) in stmts.iter().enumerate() {
-        if i < blank_line_before.len() && blank_line_before[i] && i > 0 {
+        if i >= blank_line_before.len() || !blank_line_before[i] {
+            continue;
+        }
+        let gap_start = if i == 0 {
+            top_level_comments
+                .iter()
+                .filter(|comment| comment.span.end <= stmt.span().start)
+                .map(|comment| comment.span.end as usize)
+                .max()
+        } else {
             let prev_end = stmts[i - 1].span().end as usize;
-            let curr_start = stmt.span().start as usize;
-            let between = &code[prev_end..curr_start];
-            let newline_count = between.chars().filter(|&c| c == '\n').count();
-            if newline_count < 2
-                && let Some(nl_pos) = between.find('\n')
-            {
-                insert_positions.push(prev_end + nl_pos + 1);
+            top_level_comments
+                .iter()
+                .filter(|comment| comment.span.start >= prev_end as u32)
+                .filter(|comment| comment.span.end <= stmt.span().start)
+                .map(|comment| comment.span.end as usize)
+                .max()
+                .or(Some(prev_end))
+        };
+        let Some(gap_start) = gap_start else {
+            continue;
+        };
+        let curr_start = stmt.span().start as usize;
+        let between = &code[gap_start..curr_start];
+        let newline_count = between.chars().filter(|&c| c == '\n').count();
+        if i == 0 {
+            if newline_count < 2 {
+                if let Some(nl_pos) = between.find('\n') {
+                    insert_positions.push(gap_start + nl_pos + 1);
+                } else {
+                    insert_positions.push(gap_start);
+                }
             }
+        } else if newline_count < 2
+            && let Some(nl_pos) = between.find('\n')
+        {
+            insert_positions.push(gap_start + nl_pos + 1);
         }
     }
 
