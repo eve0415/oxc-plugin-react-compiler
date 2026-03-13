@@ -2549,7 +2549,7 @@ fn normalize_bailout_text(code: &str) -> String {
 
 fn normalize_shared_cosmetic_equivalences(code: &str) -> String {
     let mut normalized = code.to_string();
-    let steps: [fn(&str) -> String; 11] = [
+    let steps: [fn(&str) -> String; 12] = [
         normalize_compare_multiline_brace_literals,
         normalize_compare_multiline_imports,
         normalize_compare_trailing_sequence_null,
@@ -2561,11 +2561,71 @@ fn normalize_shared_cosmetic_equivalences(code: &str) -> String {
         normalize_numeric_exponent_literals,
         normalize_compare_unicode_escapes,
         normalize_fixture_entrypoint_array_spacing,
+        normalize_scope_body_blank_lines,
     ];
     for step in steps {
         normalized = step(&normalized);
     }
     normalized
+}
+
+/// Remove blank lines inside scope check bodies (`if ($[N] ...)`).
+///
+/// Babel's `retainLines: true + compact: true` creates blank lines inside
+/// scope bodies when compact mode moves a closing brace onto the same line
+/// as the last statement, leaving a gap line. Prettier preserves these.
+/// Our codegen doesn't produce them. Strip them from both sides.
+fn normalize_scope_body_blank_lines(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut result = Vec::with_capacity(lines.len());
+    let mut scope_depth: i32 = 0;
+    let mut in_scope = false;
+    let mut skip_blank_after_cache_decl = false;
+
+    for line in &lines {
+        let trimmed = line.trim();
+
+        // Detect scope check start
+        if !in_scope
+            && (trimmed.starts_with("if ($[") || trimmed.starts_with("if (($["))
+            && (trimmed.contains("Symbol.for") || trimmed.contains("!=="))
+        {
+            in_scope = true;
+            scope_depth = 0;
+        }
+
+        if in_scope {
+            // Track brace depth for this line
+            let opens = trimmed.chars().filter(|&c| c == '{').count() as i32;
+            let closes = trimmed.chars().filter(|&c| c == '}').count() as i32;
+            scope_depth += opens - closes;
+
+            // Skip blank lines inside scope bodies (depth > 0)
+            if trimmed.is_empty() && scope_depth > 0 {
+                continue;
+            }
+
+            // End of scope body
+            if scope_depth <= 0 {
+                in_scope = false;
+            }
+        }
+
+        // Strip blank lines after `const $ = _c(N);`
+        if skip_blank_after_cache_decl {
+            if trimmed.is_empty() {
+                continue;
+            }
+            skip_blank_after_cache_decl = false;
+        }
+        if trimmed.starts_with("const $ = _c(") && trimmed.ends_with(';') {
+            skip_blank_after_cache_decl = true;
+        }
+
+        result.push(*line);
+    }
+
+    result.join("\n")
 }
 
 /// Normalize array formatting within FIXTURE_ENTRYPOINT lines:
