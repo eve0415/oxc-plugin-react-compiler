@@ -2549,7 +2549,7 @@ fn normalize_bailout_text(code: &str) -> String {
 
 fn normalize_shared_cosmetic_equivalences(code: &str) -> String {
     let mut normalized = code.to_string();
-    let steps: [fn(&str) -> String; 10] = [
+    let steps: [fn(&str) -> String; 11] = [
         normalize_compare_multiline_brace_literals,
         normalize_compare_multiline_imports,
         normalize_compare_trailing_sequence_null,
@@ -2560,11 +2560,44 @@ fn normalize_shared_cosmetic_equivalences(code: &str) -> String {
         normalize_ts_object_type_semicolons,
         normalize_numeric_exponent_literals,
         normalize_compare_unicode_escapes,
+        normalize_fixture_entrypoint_array_spacing,
     ];
     for step in steps {
         normalized = step(&normalized);
     }
     normalized
+}
+
+/// Normalize array formatting within FIXTURE_ENTRYPOINT lines:
+/// `[ { ... }, ]` → `[{ ... }]` and `[ ... ]` → `[...]` for single-line arrays.
+fn normalize_fixture_entrypoint_array_spacing(code: &str) -> String {
+    code.lines()
+        .map(|line| {
+            if line.contains("FIXTURE_ENTRYPOINT") {
+                // Normalize `[ {` → `[{` and `}, ]` → `}]` and `, ]` → `]`
+                let mut s = line.to_string();
+                // Remove trailing comma before ] (single-line)
+                while let Some(pos) = s.find(", ]") {
+                    s.replace_range(pos..pos + 3, "]");
+                }
+                // Remove space after [ before {
+                while let Some(pos) = s.find("[ {") {
+                    s.replace_range(pos..pos + 3, "[{");
+                }
+                // Remove space after [ before other content (but not before ])
+                while let Some(pos) = s.find("[ ") {
+                    if s[pos + 2..].starts_with(']') {
+                        break;
+                    }
+                    s.replace_range(pos..pos + 2, "[");
+                }
+                s
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn normalize_multiline_trailing_commas_before_closers(code: &str) -> String {
