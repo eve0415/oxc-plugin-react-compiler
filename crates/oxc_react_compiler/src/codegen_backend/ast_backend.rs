@@ -555,6 +555,8 @@ fn try_emit_module(
     let mut code = codegen_program(&program);
     code = apply_internal_blank_line_markers(&code);
     code = apply_blank_line_markers(state.source_type, &code, &blank_line_before);
+    code = transfer_blank_lines_from_string_bodies(&code, compiled);
+    code = transfer_blank_lines_from_original_source(&code, args.source, compiled);
     code = move_leading_comment_to_import_trailing(&code);
     if code.contains(FLOW_CAST_MARKER_HELPER) {
         code = restore_flow_cast_marker_calls(&code);
@@ -8020,6 +8022,297 @@ fn move_leading_comment_to_import_trailing(code: &str) -> String {
     result
 }
 
+/// Transfer blank lines from string codegen bodies into the AST-generated output.
+///
+/// The string codegen already produces correct blank lines within memoized scope
+/// bodies. When the AST codegen produces the same code without blank lines, this
+/// function transfers them by matching non-blank lines between the reference
+/// (string body) and the output code.
+fn transfer_blank_lines_from_string_bodies(code: &str, compiled: &[CompiledFunction]) -> String {
+    let string_bodies: Vec<&str> = compiled
+        .iter()
+        .filter(|cf| !cf.string_body.is_empty())
+        .map(|cf| cf.string_body.as_str())
+        .collect();
+    if string_bodies.is_empty() {
+        return code.to_string();
+    }
+
+    let marker_quoted = format!(
+        "\"{}\"",
+        crate::reactive_scopes::codegen_reactive::INTERNAL_BLANK_LINE_MARKER
+    );
+
+    // A line is a "blank-like" line if it is empty/whitespace-only or is
+    // a blank-line marker expression statement.
+    let is_blank_or_marker = |line: &str| -> bool {
+        let t = line.trim();
+        t.is_empty() || t == format!("{};", marker_quoted) || t == marker_quoted
+    };
+
+    // Collect all blank-line positions from string bodies as sets of
+    // (line_before_trimmed, line_after_trimmed) pairs. A blank line (or
+    // marker statement) in the string body between lines A and B means we
+    // want a blank line in the output between lines matching A and B.
+    let mut blank_line_pairs: HashSet<(String, String)> = HashSet::new();
+    for body in &string_bodies {
+        let lines: Vec<&str> = body.lines().collect();
+        for i in 0..lines.len() {
+            if !is_blank_or_marker(lines[i]) {
+                continue;
+            }
+            // Find the non-blank/non-marker line before and after
+            let before = (0..i)
+                .rev()
+                .find(|&j| !is_blank_or_marker(lines[j]))
+                .map(|j| lines[j].trim().to_string());
+            let after = ((i + 1)..lines.len())
+                .find(|&j| !is_blank_or_marker(lines[j]))
+                .map(|j| lines[j].trim().to_string());
+            if let (Some(before), Some(after)) = (before, after) {
+                blank_line_pairs.insert((before, after));
+            }
+        }
+    }
+
+    if std::env::var("DEBUG_TRANSFER_BLANK").is_ok() {
+        eprintln!("=== transfer_blank_lines ===");
+        eprintln!("string_bodies count: {}", string_bodies.len());
+        for (i, body) in string_bodies.iter().enumerate() {
+            eprintln!(
+                "--- string_body[{}] ({} lines) ---",
+                i,
+                body.lines().count()
+            );
+            for line in body.lines().take(50) {
+                eprintln!("  |{}", line);
+            }
+        }
+        eprintln!("blank_line_pairs ({}):", blank_line_pairs.len());
+        for (before, after) in &blank_line_pairs {
+            eprintln!("  ({:?}, {:?})", before, after);
+        }
+    }
+
+    if blank_line_pairs.is_empty() {
+        return code.to_string();
+    }
+
+    let code_lines: Vec<&str> = code.lines().collect();
+    let mut result = String::with_capacity(code.len() + blank_line_pairs.len() * 2);
+    let mut i = 0;
+    while i < code_lines.len() {
+        result.push_str(code_lines[i]);
+        result.push('\n');
+
+        // Check if a blank line should follow this line
+        let current_trimmed = code_lines[i].trim();
+        if !current_trimmed.is_empty() {
+            // Find next non-blank line
+            let next_non_blank =
+                ((i + 1)..code_lines.len()).find(|&j| !code_lines[j].trim().is_empty());
+            if let Some(next_idx) = next_non_blank {
+                let next_trimmed = code_lines[next_idx].trim();
+                // Check if there should be a blank line here but isn't
+                let has_blank_between = (i + 1..next_idx).any(|j| code_lines[j].trim().is_empty());
+                if !has_blank_between
+                    && blank_line_pairs
+                        .contains(&(current_trimmed.to_string(), next_trimmed.to_string()))
+                {
+                    result.push('\n');
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // Handle trailing newline
+    if !code.ends_with('\n') && result.ends_with('\n') {
+        result.pop();
+    }
+
+    result
+}
+
+/// Insert blank lines in the output based on blank line positions in the original source.
+///
+/// When the original source has a blank line between two statements, and both of those
+/// statements appear (by text match) in the compiled output, we insert a blank line in
+/// the output between them. This mirrors Babel's behavior of preserving source-location-
+/// based blank lines.
+fn transfer_blank_lines_from_original_source(
+    code: &str,
+    source: &str,
+    compiled: &[CompiledFunction],
+) -> String {
+    if compiled.is_empty() {
+        return code.to_string();
+    }
+
+    // Collect blank-line pairs from the original source of each compiled function.
+    let mut blank_line_pairs: HashSet<(String, String)> = HashSet::new();
+
+    for cf in compiled {
+        let start = cf.start as usize;
+        let end = cf.end as usize;
+        if start >= source.len() || end > source.len() || start >= end {
+            continue;
+        }
+        let func_source = &source[start..end];
+        let lines: Vec<&str> = func_source.lines().collect();
+        for i in 0..lines.len() {
+            if !lines[i].trim().is_empty() {
+                continue;
+            }
+            // This is a blank line. Find non-blank, non-comment lines before and after.
+            // Comments are stripped from compiled output, so matching on them
+            // would never produce a hit.
+            let is_code_line = |s: &str| -> bool {
+                let t = s.trim();
+                !t.is_empty()
+                    && !t.starts_with("//")
+                    && !t.starts_with("/*")
+                    && !t.starts_with("* ")
+                    && !t.starts_with("*/")
+            };
+            let before = (0..i)
+                .rev()
+                .find(|&j| is_code_line(lines[j]))
+                .map(|j| lines[j].trim().to_string());
+            let after = ((i + 1)..lines.len())
+                .find(|&j| is_code_line(lines[j]))
+                .map(|j| lines[j].trim().to_string());
+            if let (Some(before), Some(after)) = (before, after) {
+                blank_line_pairs.insert((before, after));
+            }
+        }
+    }
+
+    if std::env::var("DEBUG_TRANSFER_BLANK_SRC").is_ok() {
+        eprintln!("=== transfer_blank_lines_from_original_source ===");
+        eprintln!("blank_line_pairs ({}):", blank_line_pairs.len());
+        for (before, after) in &blank_line_pairs {
+            eprintln!("  ({:?}, {:?})", before, after);
+        }
+    }
+
+    if blank_line_pairs.is_empty() {
+        return code.to_string();
+    }
+
+    // Normalize a trimmed line for pair matching:
+    // - Strip let/const/var prefixes (compiler may change declaration kinds)
+    // - Strip `return ` prefix (return values become temp assignments)
+    // - Strip `tN = ` prefix (temp assignment targets, where N is digits)
+    // - Trim trailing semicolons (codegen may omit them)
+    let normalize_for_match = |s: &str| -> String {
+        let s = s
+            .strip_prefix("let ")
+            .or_else(|| s.strip_prefix("const "))
+            .or_else(|| s.strip_prefix("var "))
+            .unwrap_or(s);
+        let s = s.strip_prefix("return ").unwrap_or(s);
+        // Strip `tN = ` where N is one or more digits
+        let s = if let Some(rest) = s.strip_prefix('t') {
+            if let Some(eq_pos) = rest.find(" = ") {
+                if !rest[..eq_pos].is_empty() && rest[..eq_pos].chars().all(|c| c.is_ascii_digit())
+                {
+                    &rest[eq_pos + 3..]
+                } else {
+                    s
+                }
+            } else {
+                s
+            }
+        } else {
+            s
+        };
+        let s = s.strip_suffix(';').unwrap_or(s);
+        s.to_string()
+    };
+
+    // Re-index pairs with normalized keys.
+    // Each original pair can produce multiple normalizations because the
+    // `return expr` → `tN = expr` transform means either side might be
+    // a return or a temp assignment.  We store all normalizations so a
+    // match on the compiled output side works regardless of which form
+    // appears.
+    let normalized_pairs: HashSet<(String, String)> = blank_line_pairs
+        .iter()
+        .map(|(before, after)| (normalize_for_match(before), normalize_for_match(after)))
+        .collect();
+
+    // Track whether we're inside a scope computation body (if/else block that
+    // tests cache slots). We only want to insert blank lines inside these blocks,
+    // not at the top level of the function body, to avoid false positives.
+    let is_scope_test_line = |line: &str| -> bool {
+        let t = line.trim();
+        // Match patterns like: if ($[0] === Symbol... or if ($[0] !== ...
+        (t.starts_with("if ($[") || t.starts_with("if (($["))
+            && (t.contains("Symbol.for") || t.contains("!=="))
+    };
+
+    let code_lines: Vec<&str> = code.lines().collect();
+    let mut result = String::with_capacity(code.len() + blank_line_pairs.len() * 2);
+    let mut scope_body_depth: i32 = 0;
+    let mut in_scope_body = false;
+    let mut i = 0;
+    while i < code_lines.len() {
+        let current_trimmed = code_lines[i].trim();
+
+        // Track scope body state
+        if is_scope_test_line(code_lines[i]) {
+            in_scope_body = true;
+            scope_body_depth = 0;
+        }
+        if in_scope_body {
+            for ch in current_trimmed.chars() {
+                match ch {
+                    '{' => scope_body_depth += 1,
+                    '}' => {
+                        scope_body_depth -= 1;
+                        if scope_body_depth <= 0 {
+                            in_scope_body = false;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        result.push_str(code_lines[i]);
+        result.push('\n');
+
+        // Only insert blank lines when we're inside a scope computation body
+        if in_scope_body && scope_body_depth > 0 && !current_trimmed.is_empty() {
+            // Find next non-blank line
+            let next_non_blank =
+                ((i + 1)..code_lines.len()).find(|&j| !code_lines[j].trim().is_empty());
+            if let Some(next_idx) = next_non_blank {
+                let next_trimmed = code_lines[next_idx].trim();
+                // Check if there should be a blank line here but isn't
+                let has_blank_between = (i + 1..next_idx).any(|j| code_lines[j].trim().is_empty());
+                if !has_blank_between
+                    && normalized_pairs.contains(&(
+                        normalize_for_match(current_trimmed),
+                        normalize_for_match(next_trimmed),
+                    ))
+                {
+                    result.push('\n');
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // Handle trailing newline
+    if !code.ends_with('\n') && result.ends_with('\n') {
+        result.pop();
+    }
+
+    result
+}
+
 fn apply_internal_blank_line_markers(code: &str) -> String {
     let marker_line = format!(
         "\"{}\";",
@@ -8088,29 +8381,18 @@ fn apply_blank_line_markers(
         if i >= blank_line_before.len() || !blank_line_before[i] {
             continue;
         }
-        let gap_start = if i == 0 {
-            top_level_comments
-                .iter()
-                .filter(|comment| comment.span.end <= stmt.span().start)
-                .map(|comment| comment.span.end as usize)
-                .max()
-        } else {
-            let prev_end = stmts[i - 1].span().end as usize;
-            top_level_comments
-                .iter()
-                .filter(|comment| comment.span.start >= prev_end as u32)
-                .filter(|comment| comment.span.end <= stmt.span().start)
-                .map(|comment| comment.span.end as usize)
-                .max()
-                .or(Some(prev_end))
-        };
-        let Some(gap_start) = gap_start else {
-            continue;
-        };
-        let curr_start = stmt.span().start as usize;
-        let between = &code[gap_start..curr_start];
-        let newline_count = between.chars().filter(|&c| c == '\n').count();
         if i == 0 {
+            let gap_start = top_level_comments
+                .iter()
+                .filter(|comment| comment.span.end <= stmt.span().start)
+                .map(|comment| comment.span.end as usize)
+                .max();
+            let Some(gap_start) = gap_start else {
+                continue;
+            };
+            let curr_start = stmt.span().start as usize;
+            let between = &code[gap_start..curr_start];
+            let newline_count = between.chars().filter(|&c| c == '\n').count();
             if newline_count < 2 {
                 if let Some(nl_pos) = between.find('\n') {
                     insert_positions.push(gap_start + nl_pos + 1);
@@ -8118,10 +8400,46 @@ fn apply_blank_line_markers(
                     insert_positions.push(gap_start);
                 }
             }
-        } else if newline_count < 2
-            && let Some(nl_pos) = between.find('\n')
-        {
-            insert_positions.push(gap_start + nl_pos + 1);
+        } else {
+            let prev_end = stmts[i - 1].span().end as usize;
+            let curr_start = stmt.span().start as usize;
+
+            // When there are comments between the previous statement and the
+            // current one, the blank line from the original source is
+            // typically between the previous statement and the FIRST comment
+            // — not between the last comment and the current statement. Check
+            // the gap from prev_end first.
+            let comments_between: Vec<_> = top_level_comments
+                .iter()
+                .filter(|comment| {
+                    comment.span.start >= prev_end as u32 && comment.span.end <= stmt.span().start
+                })
+                .collect();
+
+            if !comments_between.is_empty() {
+                // Check for blank between prev_end and first comment
+                let first_comment_start = comments_between
+                    .iter()
+                    .map(|c| c.span.start as usize)
+                    .min()
+                    .unwrap();
+                let before_first_comment = &code[prev_end..first_comment_start];
+                let nl_before = before_first_comment.chars().filter(|&c| c == '\n').count();
+                if nl_before < 2
+                    && let Some(nl_pos) = before_first_comment.find('\n')
+                {
+                    insert_positions.push(prev_end + nl_pos + 1);
+                }
+            } else {
+                // No comments between — simple case
+                let between = &code[prev_end..curr_start];
+                let newline_count = between.chars().filter(|&c| c == '\n').count();
+                if newline_count < 2
+                    && let Some(nl_pos) = between.find('\n')
+                {
+                    insert_positions.push(prev_end + nl_pos + 1);
+                }
+            }
         }
     }
 
@@ -9070,6 +9388,7 @@ export const FIXTURE_ENTRYPOINT = {
             needs_hook_guards: false,
             needs_structural_check_import: false,
             needs_lower_context_access: false,
+            string_body: body_source.to_string(),
         }
     }
 

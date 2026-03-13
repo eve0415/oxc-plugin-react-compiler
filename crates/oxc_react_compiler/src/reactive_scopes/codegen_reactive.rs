@@ -507,6 +507,8 @@ pub struct CodegenResult {
     pub cache_prologue: Option<CachePrologue>,
     /// Deferred codegen error (upstream invariant parity).
     pub error: Option<CompilerError>,
+    /// Raw string codegen body output for blank line transfer to AST codegen.
+    pub string_body: String,
 }
 
 fn generated_body_shape_returned_identifier(shape: &GeneratedBodyShape) -> Option<&str> {
@@ -4027,6 +4029,7 @@ fn codegen_reactive_function_with_primitives(
         needs_structural_check_import: cx.needs_structural_check_import,
         cache_prologue,
         error: cx.codegen_error,
+        string_body: body,
     }
 }
 
@@ -4436,6 +4439,32 @@ fn generated_body_shape_reanalyzes_equivalent(
     &reparsed == analyzed
 }
 
+/// Check if a reactive block has source line gaps > 1 between consecutive
+/// instructions.  When true, the scope computation will produce blank lines
+/// that must flow through `preserve_scope_setup_statement_blank_lines`.
+fn reactive_block_has_source_line_gaps(block: &[ReactiveStatement]) -> bool {
+    let mut last_end_line: Option<u32> = None;
+    for stmt in block {
+        let loc = match stmt {
+            ReactiveStatement::Instruction(instr) => &instr.loc,
+            ReactiveStatement::Terminal(term_stmt) => reactive_terminal_loc(&term_stmt.terminal),
+            ReactiveStatement::Scope(_) | ReactiveStatement::PrunedScope(_) => {
+                last_end_line = None;
+                continue;
+            }
+        };
+        if let SourceLocation::Source(range) = loc {
+            if let Some(prev_end) = last_end_line
+                && range.start.line > prev_end + 1
+            {
+                return true;
+            }
+            last_end_line = Some(range.end.line);
+        }
+    }
+    false
+}
+
 fn maybe_mark_direct_zero_dep_scope_outputs_stable(
     cx: &mut Context,
     scope: &ReactiveScope,
@@ -4638,6 +4667,7 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
         && dep_exprs.is_empty()
         && output_names.iter().all(|name| is_codegen_temp_name(name))
         && !generated_body_shape_is_function_like_seed(&computation_shape)
+        && !reactive_block_has_source_line_gaps(instructions)
     {
         let inline_shape = if declarations.is_empty() {
             computation_shape
@@ -4938,15 +4968,35 @@ fn preserve_scope_setup_statement_blank_lines(
     declarations: &[GeneratedDeclaration],
     setup_statements: Vec<String>,
 ) -> Vec<String> {
+    let debug = std::env::var("DEBUG_BLANK_LINE_PRESERVE").is_ok();
     if setup_statements.len() < 2 {
+        if debug {
+            eprintln!(
+                "[BLANK_LINE_PRESERVE] scope={} skip: <2 setup_statements (len={})",
+                scope.id.0,
+                setup_statements.len()
+            );
+        }
         return setup_statements;
     }
 
     let mut render_cx = cx.clone();
     render_cx.inline_temp_zero_dep_scope_shapes = false;
     let rendered = codegen_scope_computation_no_reset(&mut render_cx, scope, instructions);
+    if debug {
+        eprintln!(
+            "[BLANK_LINE_PRESERVE] scope={} rendered:\n{}",
+            scope.id.0, rendered
+        );
+    }
     let Some(mut rendered_statements) = split_statement_sources_preserving_blank_lines(&rendered)
     else {
+        if debug {
+            eprintln!(
+                "[BLANK_LINE_PRESERVE] scope={} skip: split failed",
+                scope.id.0
+            );
+        }
         return setup_statements;
     };
     rendered_statements = rewrite_generated_setup_statements(rendered_statements);
@@ -4957,11 +5007,28 @@ fn preserve_scope_setup_statement_blank_lines(
         );
     }
 
-    if strip_statement_blank_line_markers(&rendered_statements)
-        == strip_statement_blank_line_markers(&setup_statements)
-    {
+    let stripped_rendered = strip_statement_blank_line_markers(&rendered_statements);
+    let stripped_setup = strip_statement_blank_line_markers(&setup_statements);
+    if stripped_rendered == stripped_setup {
+        if debug {
+            let has_markers = rendered_statements.iter().any(|s| s.starts_with('\n'));
+            eprintln!(
+                "[BLANK_LINE_PRESERVE] scope={} MATCH has_markers={}",
+                scope.id.0, has_markers
+            );
+            if has_markers {
+                for (i, s) in rendered_statements.iter().enumerate() {
+                    eprintln!("[BLANK_LINE_PRESERVE]   [{}] {:?}", i, s);
+                }
+            }
+        }
         rendered_statements
     } else {
+        if debug {
+            eprintln!("[BLANK_LINE_PRESERVE] scope={} MISMATCH", scope.id.0);
+            eprintln!("[BLANK_LINE_PRESERVE]   rendered: {:?}", stripped_rendered);
+            eprintln!("[BLANK_LINE_PRESERVE]   setup:    {:?}", stripped_setup);
+        }
         setup_statements
     }
 }
@@ -19024,23 +19091,51 @@ fn codegen_scope_computation_no_reset(
     block: &ReactiveBlock,
 ) -> String {
     if should_drop_trailing_scope_temp_declare(scope, block) {
+        if std::env::var("DEBUG_SCOPE_BLANK").is_ok() {
+            eprintln!("[SCOPE_BLANK] path=1 (drop trailing temp declare)");
+        }
         return codegen_block_no_reset_with_options(cx, &block[..block.len() - 1], true);
     }
 
     if let Some((target_ident, rhs_place)) = scope_tail_sequence_reassign(scope, block) {
+        let debug_scope_blank = std::env::var("DEBUG_SCOPE_BLANK").is_ok();
         let mut output = String::new();
+        let mut last_end_line: Option<u32> = None;
         for stmt in &block[..block.len().saturating_sub(1)] {
             match stmt {
                 ReactiveStatement::Instruction(instr) => {
                     if let Some(stmt_text) = codegen_instruction_nullable(cx, instr) {
+                        if debug_scope_blank {
+                            eprintln!(
+                                "[SCOPE_BLANK] stmt={:?} loc={:?} last_end={:?}",
+                                stmt_text.trim(),
+                                &instr.loc,
+                                last_end_line
+                            );
+                        }
+                        // Insert blank line if source locations have a gap > 1 line
+                        if let SourceLocation::Source(range) = &instr.loc
+                            && let Some(prev_end) = last_end_line
+                            && range.start.line > prev_end + 1
+                            && !output.ends_with("\n\n")
+                        {
+                            if !output.ends_with('\n') {
+                                output.push('\n');
+                            }
+                            output.push('\n');
+                        }
                         output.push_str(&stmt_text);
                         if !stmt_text.ends_with('\n') {
                             output.push('\n');
+                        }
+                        if let SourceLocation::Source(range) = &instr.loc {
+                            last_end_line = Some(range.end.line);
                         }
                     }
                 }
                 ReactiveStatement::PrunedScope(pruned) => {
                     output.push_str(&codegen_block_no_reset(cx, &pruned.instructions));
+                    last_end_line = None;
                 }
                 ReactiveStatement::Scope(scope_block) => {
                     let temp_snapshot = cx.snapshot_temps();
@@ -19051,12 +19146,27 @@ fn codegen_scope_computation_no_reset(
                         &scope_block.instructions,
                     );
                     cx.restore_temps(temp_snapshot);
+                    last_end_line = None;
                 }
                 ReactiveStatement::Terminal(term_stmt) => {
                     if let Some(stmt_text) = codegen_terminal(cx, &term_stmt.terminal) {
+                        let term_loc = reactive_terminal_loc(&term_stmt.terminal);
+                        if let SourceLocation::Source(range) = term_loc
+                            && let Some(prev_end) = last_end_line
+                            && range.start.line > prev_end + 1
+                            && !output.ends_with("\n\n")
+                        {
+                            if !output.ends_with('\n') {
+                                output.push('\n');
+                            }
+                            output.push('\n');
+                        }
                         output.push_str(&stmt_text);
                         if !stmt_text.ends_with('\n') {
                             output.push('\n');
+                        }
+                        if let SourceLocation::Source(range) = term_loc {
+                            last_end_line = Some(range.end.line);
                         }
                     }
                 }
@@ -23258,6 +23368,13 @@ fn codegen_reactive_scope(
         }
     }
 
+    // Note: we intentionally do NOT insert blank-line markers into the
+    // computation here. Blank lines inside scope bodies flow through the
+    // body-shape → memoized_setup_statements path instead (via
+    // preserve_scope_setup_statement_blank_lines).  Marker insertion here
+    // would create false-positive (before,after) pair matches in
+    // transfer_blank_lines_from_string_bodies.
+
     // Build cache store statements for outputs
     for (name, index) in &cache_loads {
         cache_store_stmts.push(
@@ -23559,6 +23676,24 @@ fn codegen_reactive_scope(
             "{}\n",
             codegen_statement_with_flow_cast_restore(&statement)
         ));
+    }
+}
+
+fn reactive_terminal_loc(terminal: &ReactiveTerminal) -> &SourceLocation {
+    match terminal {
+        ReactiveTerminal::Break { loc, .. }
+        | ReactiveTerminal::Continue { loc, .. }
+        | ReactiveTerminal::Return { loc, .. }
+        | ReactiveTerminal::Throw { loc, .. }
+        | ReactiveTerminal::Switch { loc, .. }
+        | ReactiveTerminal::DoWhile { loc, .. }
+        | ReactiveTerminal::While { loc, .. }
+        | ReactiveTerminal::For { loc, .. }
+        | ReactiveTerminal::ForOf { loc, .. }
+        | ReactiveTerminal::ForIn { loc, .. }
+        | ReactiveTerminal::If { loc, .. }
+        | ReactiveTerminal::Try { loc, .. }
+        | ReactiveTerminal::Label { loc, .. } => loc,
     }
 }
 
@@ -31126,6 +31261,7 @@ fn is_internal_blank_line_marker_statement_ast(statement: &ast::Statement<'_>) -
     )
 }
 
+/// Convert `\n\n` blank lines in a scope computation string into marker
 fn parse_generated_statement_sources_ast<'a>(
     allocator: &'a Allocator,
     statement_source: &str,

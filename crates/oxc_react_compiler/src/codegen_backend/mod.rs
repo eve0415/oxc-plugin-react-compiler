@@ -118,6 +118,7 @@ pub(crate) struct CompiledFunction {
     pub(crate) needs_hook_guards: bool,
     pub(crate) needs_structural_check_import: bool,
     pub(crate) needs_lower_context_access: bool,
+    pub(crate) string_body: String,
 }
 
 #[derive(Clone, Copy)]
