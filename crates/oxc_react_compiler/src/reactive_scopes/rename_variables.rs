@@ -1052,10 +1052,8 @@ impl Scopes {
                 name = format!("T{id}");
                 id += 1;
             } else {
-                // Upstream uses `$` in RenameVariables.ts:159, but Babel's printer
-                // outputs `_` as the separator (e.g., `a_0`, `z_0`). Since we bypass
-                // Babel, emit `_` directly to match expected fixture output.
-                name = format!("{}_{id}", original_name.value());
+                // Upstream uses `$` in RenameVariables.ts:159.
+                name = format!("{}${id}", original_name.value());
                 id += 1;
             }
         }
