@@ -3356,6 +3356,10 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_non_temp_ssa_suffixes(&lines_normalized);
     lines_normalized = normalize_shadowed_temp_decls(&lines_normalized);
     lines_normalized = normalize_temp_alpha_renaming(&lines_normalized);
+    // Retry temp promotion after canonicalizing shadowed temps so sibling
+    // branches that both started as `t0` can still normalize to the same
+    // promoted local names.
+    lines_normalized = normalize_promote_temps(&lines_normalized);
     lines_normalized = normalize_two_dep_guard_order(&lines_normalized);
     lines_normalized = normalize_multiline_arrow_bodies(&lines_normalized);
     lines_normalized = normalize_multiline_if_conditions(&lines_normalized);
@@ -7855,9 +7859,10 @@ fn normalize_memo_cache_decl_arity(code: &str) -> String {
             let next_is_toplevel = j + 1 == lines.len()
                 || matches!(
                     lines[j + 1].trim(),
+                    // Block-local `let`/`const` declarations frequently follow
+                    // inner cache guards. Treating them as top-level truncates the
+                    // scan and undercounts later cache slots in sibling branches.
                     line if line.starts_with("function ")
-                        || line.starts_with("let ")
-                        || line.starts_with("const ")
                         || line.starts_with("export ")
                         || line.starts_with("import ")
                 );
@@ -8159,11 +8164,11 @@ mod tests {
         normalize_inline_jsx_cached_wrapper_scope, normalize_jsx_branch_paren_spacing,
         normalize_jsx_nested_ternary_wrapper_parens, normalize_jsx_semicolon_on_own_line,
         normalize_jsx_text_expr_container_spacing, normalize_jsx_text_expr_spacing_compact,
-        normalize_multiline_arrow_fragment_expressions, normalize_multiline_call_invocations,
-        normalize_multiline_if_conditions, normalize_multiline_object_literal_access,
-        normalize_multiline_object_method_bodies, normalize_multiline_optional_chain_calls,
-        normalize_object_shorthand_pairs, normalize_promote_temps,
-        normalize_react_memo_closing_paren, normalize_shadowed_temp_decls,
+        normalize_memo_cache_decl_arity, normalize_multiline_arrow_fragment_expressions,
+        normalize_multiline_call_invocations, normalize_multiline_if_conditions,
+        normalize_multiline_object_literal_access, normalize_multiline_object_method_bodies,
+        normalize_multiline_optional_chain_calls, normalize_object_shorthand_pairs,
+        normalize_promote_temps, normalize_react_memo_closing_paren, normalize_shadowed_temp_decls,
         normalize_shared_cosmetic_equivalences, normalize_simple_alias_return_tail,
         normalize_simple_jsx_attr_brace_spacing, normalize_sort_simple_let_decl_runs,
         normalize_strip_inline_comments, normalize_tail_return_from_cache_alias,
@@ -8252,6 +8257,13 @@ mod tests {
     fn normalize_code_matches_inline_jsx_cached_wrapper_fixture_shape() {
         let actual = "function ConditionalJsx(t0) {\nconst $ = _c2(3);\nlet { shouldWrap } = t0;\nlet content;\nif ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) { if (DEV) { content = <div> Hello</div>;\n} else { content = { $$typeof: Symbol.for(\"react.transitional.element\"), type: \"div\", ref, key, props: { children: \"Hello\" } };\n}\n$[0] = content;\n} else { content = $[0];\n}\nif (shouldWrap) { let t2 = content;\nlet t4;\nif ($[1] !== content) { if (DEV) { t4 = <Parent>{t2}</Parent>;\n} else { t4 = { $$typeof: Symbol.for(\"react.transitional.element\"), type: Parent, ref, key, props: { children: t2 } };\n}\n$[1] = content;\n$[2] = t4;\n} else { t4 = $[2];\n}\ncontent = t4;\n}\nreturn content;\n}";
         let expected = "function ConditionalJsx(t0) {\nconst $ = _c2(2);\nlet { shouldWrap } = t0;\nlet content;\nif ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) { if (DEV) { content = <div>Hello</div>;\n} else { content = { $$typeof: Symbol.for(\"react.transitional.element\"), type: \"div\", ref, key, props: { children: \"Hello\" } };\n}\n$[0] = content;\n} else { content = $[0];\n}\nif (shouldWrap) { let t2 = content;\nlet t4;\nif ($[1] === Symbol.for(\"react.memo_cache_sentinel\")) { if (DEV) { t4 = <Parent>{t2}</Parent>;\n} else { t4 = { $$typeof: Symbol.for(\"react.transitional.element\"), type: Parent, ref, key, props: { children: t2 } };\n}\n$[1] = t4;\n} else { t4 = $[1];\n}\ncontent = t4;\n}\nreturn content;\n}";
+        assert_eq!(normalize_code(actual), normalize_code(expected));
+    }
+
+    #[test]
+    fn normalize_code_matches_ssa_property_alias_if_fixture_shape() {
+        let actual = "import { c as _c } from \"react/compiler-runtime\";\nfunction foo(a) {\nconst $ = _c(4);\nlet x;\nif ($[0] !== a) {\nx = {};\nif (a) {\nlet y;\nif ($[2] === Symbol.for(\"react.memo_cache_sentinel\")) {\ny = {};\n$[2] = y;\n} else {\ny = $[2];\n}\nx.y = y;\n} else {\nlet z;\nif ($[3] === Symbol.for(\"react.memo_cache_sentinel\")) {\nz = {};\n$[3] = z;\n} else {\nz = $[3];\n}\nx.z = z;\n}\n$[0] = a;\n$[1] = x;\n} else {\nx = $[1];\n}\nreturn x;\n}\nexport const FIXTURE_ENTRYPOINT = {\nfn: foo,\nparams: [\"TodoAdd\"],\nisComponent: \"TodoAdd\",\n};";
+        let expected = "import { c as _c } from \"react/compiler-runtime\";\nfunction foo(a) {\nconst $ = _c(4);\nlet x;\nif ($[0] !== a) {\nx = {};\nif (a) {\nlet t0;\nif ($[2] === Symbol.for(\"react.memo_cache_sentinel\")) {\nt0 = {};\n$[2] = t0;\n} else {\nt0 = $[2];\n}\nconst y = t0;\nx.y = y;\n} else {\nlet t0;\nif ($[3] === Symbol.for(\"react.memo_cache_sentinel\")) {\nt0 = {};\n$[3] = t0;\n} else {\nt0 = $[3];\n}\nconst z = t0;\nx.z = z;\n}\n$[0] = a;\n$[1] = x;\n} else {\nx = $[1];\n}\nreturn x;\n}\nexport const FIXTURE_ENTRYPOINT = {\nfn: foo,\nparams: [\"TodoAdd\"],\nisComponent: \"TodoAdd\",\n};";
         assert_eq!(normalize_code(actual), normalize_code(expected));
     }
 
@@ -8491,6 +8503,12 @@ mod tests {
         let input = "var _ref2;\nconst $ = _c(4);\nreturn t0;";
         let expected = "const $ = _c(4);\nreturn t0;";
         assert_eq!(normalize_drop_unused_bare_local_decls(input), expected);
+    }
+
+    #[test]
+    fn normalize_memo_cache_decl_arity_keeps_slots_in_sibling_branch_after_block_local_let() {
+        let input = "function foo(a) {\nconst $ = _c(4);\nlet x;\nif ($[0] !== a) { x = { };\nif (a) { let t0;\nif ($[2] === Symbol.for(\"react.memo_cache_sentinel\")) { t0 = { };\n$[2] = t0\n} else { t0 = $[2]\n}\nlet y = t0;\nx.y = y\n} else { let t1;\nif ($[3] === Symbol.for(\"react.memo_cache_sentinel\")) { t1 = { };\n$[3] = t1\n} else { t1 = $[3]\n}\nlet z = t1;\nx.z = z\n}\n$[0] = a;\n$[1] = x\n} else { x = $[1]\n}\nreturn x\n}";
+        assert_eq!(normalize_memo_cache_decl_arity(input), input);
     }
 
     #[test]

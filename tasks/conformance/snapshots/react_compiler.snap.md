@@ -1,6 +1,6 @@
 # React Compiler Conformance — 95.3% parity rate
 
-**1669** parity_success, **83** parity_failure, **0** skipped
+**1670** parity_success, **82** parity_failure, **0** skipped
 
 ## Failed
 
@@ -69,7 +69,6 @@
 - `repro-scope-missing-mutable-range`: Output mismatch
 - `repro-separate-memoization-due-to-callback-capturing`: Output mismatch
 - `sequence-expression`: Output mismatch
-- `ssa-property-alias-if`: Output mismatch
 - `ssa-renaming-ternary-destruction`: Output mismatch
 - `ssa-renaming-ternary-destruction-with-mutation`: Output mismatch
 - `ssa-renaming-ternary-with-mutation`: Output mismatch
@@ -1530,6 +1529,7 @@
 - `ssa-objectexpression-phi`
 - `ssa-property`
 - `ssa-property-alias-alias-mutate-if`
+- `ssa-property-alias-if`
 - `ssa-property-alias-mutate`
 - `ssa-property-alias-mutate-if`
 - `ssa-property-alias-mutate-inside-if`
