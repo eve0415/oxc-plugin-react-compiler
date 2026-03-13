@@ -1157,16 +1157,17 @@ fn rebase_nested_cache_slots_for_outer_wrapper(
     if outer_slots.is_empty() {
         return setup_statements;
     }
-    let inner_slots = collect_cache_slots_in_statement_sources(&setup_statements);
-    let Some(&last_inner_slot) = inner_slots.last() else {
+    let mut inner_slots = collect_cache_slots_in_statement_sources(&setup_statements);
+    if inner_slots.is_empty() {
         return setup_statements;
-    };
-    let inner_slot_count = last_inner_slot + 1;
+    }
+    inner_slots.sort_unstable();
+    inner_slots.dedup();
+    let inner_start = inner_slots[0];
     if !inner_slots
         .iter()
-        .copied()
         .enumerate()
-        .all(|(index, slot)| slot == index as u32)
+        .all(|(index, slot)| *slot == inner_start + index as u32)
     {
         return setup_statements;
     }
@@ -1174,13 +1175,16 @@ fn rebase_nested_cache_slots_for_outer_wrapper(
     sorted_outer_slots.sort_unstable();
     if !sorted_outer_slots
         .iter()
-        .copied()
         .enumerate()
-        .all(|(index, slot)| slot == inner_slot_count + index as u32)
+        .all(|(index, slot)| *slot == sorted_outer_slots[0] + index as u32)
     {
         return setup_statements;
     }
+    if sorted_outer_slots[0] != inner_start + inner_slots.len() as u32 {
+        return setup_statements;
+    }
 
+    let inner_slot_count = inner_slots.len() as u32;
     for slot in outer_slots {
         *slot -= inner_slot_count;
     }
@@ -2823,7 +2827,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             if value_kind.is_none()
                 && let Some(parts) = existing_parts
             {
-                return match deps.as_slice() {
+                let inner = match deps.as_slice() {
                     [] => GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
                         value_name,
                         value_slot,
@@ -2857,6 +2861,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                         memoized_expr: parts.memoized_expr,
                     },
                 };
+                return canonicalize_generated_body_shape(inner);
             }
 
             GeneratedBodyShape::MemoizedComputedReturn {
@@ -37553,6 +37558,114 @@ mod tests {
     }
 
     #[test]
+    fn canonicalizes_cached_prefix_return_with_nested_helper_after_prior_slots() {
+        let shape =
+            super::canonicalize_generated_body_shape(super::GeneratedBodyShape::Sequential {
+                prefix: Box::new(super::GeneratedBodyShape::PrefixedDeclarations {
+                    declarations: vec![super::GeneratedDeclaration {
+                        kind: ast::VariableDeclarationKind::Let,
+                        pattern: "t0".to_string(),
+                    }],
+                    inner: Box::new(super::GeneratedBodyShape::MemoizedCachedValues {
+                        deps: vec![(3, "childProps".to_string())],
+                        setup_statements: vec![
+                            "let t1;".to_string(),
+                            "if ($[2] === Symbol.for(\"react.memo_cache_sentinel\")) {\n  t1 = [\"hello world\"];\n  $[2] = t1;\n} else {\n  t1 = $[2];\n}".to_string(),
+                            "t0 = React.createElement(\"div\", childProps, t1);".to_string(),
+                        ],
+                        cached_values: vec![super::GeneratedCachedValue {
+                            name: "t0".to_string(),
+                            slot: 4,
+                        }],
+                        restored_values: vec![super::GeneratedCachedValue {
+                            name: "t0".to_string(),
+                            slot: 4,
+                        }],
+                    }),
+                }),
+                inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                    "t0".to_string(),
+                )),
+            });
+
+        let super::GeneratedBodyShape::PrefixedDeclarations { inner, .. } = shape else {
+            panic!("expected prefixed declarations, got {shape:?}");
+        };
+        let super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+            dep_slot,
+            value_slot,
+            memoized_setup_statements,
+            ..
+        } = inner.as_ref()
+        else {
+            panic!("expected single dependency existing return, got {inner:?}");
+        };
+        assert_eq!(*dep_slot, 2);
+        assert_eq!(*value_slot, 3);
+        assert!(memoized_setup_statements.iter().any(|statement| {
+            statement.contains("$[4] === Symbol.for(\"react.memo_cache_sentinel\")")
+                && statement.contains("$[4] = t1;")
+                && statement.contains("t1 = $[4];")
+        }));
+    }
+
+    #[test]
+    fn canonicalizes_multi_dep_cached_prefix_return_with_nested_helper_after_prior_slots() {
+        let shape =
+            super::canonicalize_generated_body_shape(super::GeneratedBodyShape::Sequential {
+                prefix: Box::new(super::GeneratedBodyShape::PrefixedDeclarations {
+                    declarations: vec![super::GeneratedDeclaration {
+                        kind: ast::VariableDeclarationKind::Let,
+                        pattern: "t0".to_string(),
+                    }],
+                    inner: Box::new(super::GeneratedBodyShape::MemoizedCachedValues {
+                        deps: vec![(6, "arr1".to_string()), (7, "arr2".to_string())],
+                        setup_statements: vec![
+                            "let t1;".to_string(),
+                            "if ($[4] !== arr2) {\n  t1 = (e) => arr2[0].value + e.value;\n  $[4] = arr2;\n  $[5] = t1;\n} else {\n  t1 = $[5];\n}".to_string(),
+                            "t0 = arr1.map(t1);".to_string(),
+                        ],
+                        cached_values: vec![super::GeneratedCachedValue {
+                            name: "t0".to_string(),
+                            slot: 8,
+                        }],
+                        restored_values: vec![super::GeneratedCachedValue {
+                            name: "t0".to_string(),
+                            slot: 8,
+                        }],
+                    }),
+                }),
+                inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                    "t0".to_string(),
+                )),
+            });
+
+        let super::GeneratedBodyShape::PrefixedDeclarations { inner, .. } = shape else {
+            panic!("expected prefixed declarations, got {shape:?}");
+        };
+        let super::GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+            deps,
+            value_slot,
+            memoized_setup_statements,
+            ..
+        } = inner.as_ref()
+        else {
+            panic!("expected multi dependency existing return, got {inner:?}");
+        };
+        assert_eq!(
+            deps.as_slice(),
+            vec![(4, "arr1".to_string()), (5, "arr2".to_string())].as_slice()
+        );
+        assert_eq!(*value_slot, 6);
+        assert!(memoized_setup_statements.iter().any(|statement| {
+            statement.contains("$[7] !== arr2")
+                && statement.contains("$[7] = arr2;")
+                && statement.contains("$[8] = t1;")
+                && statement.contains("t1 = $[8];")
+        }));
+    }
+
+    #[test]
     fn canonicalizes_sequential_existing_return_prefix_body_shape() {
         let shape = super::canonicalize_generated_body_shape(
             super::GeneratedBodyShape::MemoizedComputedReturn {
@@ -37804,6 +37917,118 @@ mod tests {
             ]
             .as_slice()
         );
+    }
+
+    #[test]
+    fn canonicalizes_nested_cached_helper_slots_inside_existing_memoized_computed_return() {
+        let shape = super::canonicalize_generated_body_shape(
+            super::GeneratedBodyShape::MemoizedComputedReturn {
+                value_name: "element".to_string(),
+                value_kind: None,
+                deps: vec![(3, "childProps".to_string())],
+                value_slot: 4,
+                computation: Box::new(super::GeneratedBodyShape::Sequential {
+                    prefix: Box::new(super::GeneratedBodyShape::PrefixedDeclarations {
+                        declarations: vec![super::GeneratedDeclaration {
+                            kind: ast::VariableDeclarationKind::Let,
+                            pattern: "t0".to_string(),
+                        }],
+                        inner: Box::new(
+                            super::GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+                                value_name: "t0".to_string(),
+                                value_slot: 2,
+                                memoized_bindings: vec![],
+                                memoized_assignments: vec![],
+                                memoized_expressions: vec![],
+                                memoized_setup_statements: vec![],
+                                memoized_expr: Some("[\"hello world\"]".to_string()),
+                            },
+                        ),
+                    }),
+                    inner: Box::new(super::GeneratedBodyShape::AssignedExpressionReturn {
+                        value_name: "element".to_string(),
+                        value_kind: ast::VariableDeclarationKind::Let,
+                        expression: "React.createElement(\"div\", childProps, t0)".to_string(),
+                    }),
+                }),
+            },
+        );
+
+        let super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+            dep_slot,
+            value_slot,
+            memoized_setup_statements,
+            ..
+        } = shape
+        else {
+            panic!("expected single dependency existing return, got {shape:?}");
+        };
+        assert_eq!(dep_slot, 2);
+        assert_eq!(value_slot, 3);
+        assert!(memoized_setup_statements.iter().any(|statement| {
+            statement.contains("$[4] === Symbol.for(\"react.memo_cache_sentinel\")")
+                && statement.contains("$[4] = t0;")
+                && statement.contains("t0 = $[4];")
+        }));
+    }
+
+    #[test]
+    fn canonicalizes_nested_multi_slot_helper_inside_existing_memoized_computed_return() {
+        let shape = super::canonicalize_generated_body_shape(
+            super::GeneratedBodyShape::MemoizedComputedReturn {
+                value_name: "y".to_string(),
+                value_kind: None,
+                deps: vec![(6, "arr1".to_string()), (7, "arr2".to_string())],
+                value_slot: 8,
+                computation: Box::new(super::GeneratedBodyShape::Sequential {
+                    prefix: Box::new(super::GeneratedBodyShape::PrefixedDeclarations {
+                        declarations: vec![super::GeneratedDeclaration {
+                            kind: ast::VariableDeclarationKind::Let,
+                            pattern: "t1".to_string(),
+                        }],
+                        inner: Box::new(
+                            super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+                                value_name: "t1".to_string(),
+                                dep_slot: 4,
+                                dep_expr: "arr2".to_string(),
+                                value_slot: 5,
+                                memoized_bindings: vec![],
+                                memoized_assignments: vec![],
+                                memoized_expressions: vec![],
+                                memoized_setup_statements: vec![],
+                                memoized_expr: Some("(e) => arr2[0].value + e.value".to_string()),
+                            },
+                        ),
+                    }),
+                    inner: Box::new(super::GeneratedBodyShape::AssignedExpressionReturn {
+                        value_name: "y".to_string(),
+                        value_kind: ast::VariableDeclarationKind::Let,
+                        expression: "arr1.map(t1)".to_string(),
+                    }),
+                }),
+            },
+        );
+
+        let super::GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+            deps,
+            value_slot,
+            memoized_setup_statements,
+            ..
+        } = shape
+        else {
+            panic!("expected multi dependency existing return, got {shape:?}");
+        };
+        assert_eq!(
+            deps.as_slice(),
+            vec![(4, "arr1".to_string()), (5, "arr2".to_string())].as_slice()
+        );
+        assert_eq!(value_slot, 6);
+        assert!(memoized_setup_statements.iter().any(|statement| {
+            statement.contains("$[7] !== arr2")
+                && statement.contains("$[7] = arr2;")
+                && statement.contains("$[8] = t1;")
+                && statement.contains("t1 = $[8];")
+        }));
     }
 
     #[test]

@@ -1,6 +1,6 @@
-# React Compiler Conformance — 95.4% parity rate
+# React Compiler Conformance — 95.7% parity rate
 
-**1672** parity_success, **80** parity_failure, **0** skipped
+**1676** parity_success, **76** parity_failure, **0** skipped
 
 ## Failed
 
@@ -18,7 +18,6 @@
 - `change-detect-reassign`: Output mismatch
 - `codegen-inline-iife-reassign`: Output mismatch
 - `computed-call-evaluation-order`: Output mismatch
-- `createElement-freeze`: Output mismatch
 - `destructure-array-declaration-to-context-var`: Output mismatch
 - `destructure-object-declaration-to-context-var`: Output mismatch
 - `destructuring-mixed-scope-and-local-variables-with-default`: Expected transformed output, but compiler bailed out/skipped
@@ -35,13 +34,11 @@
 - `meta-isms/repro-cx-namespace-assigned-to-temporary`: Output mismatch
 - `nested-optional-member-expr`: Output mismatch
 - `new-mutability/ssa-renaming-ternary-destruction`: Output mismatch
-- `nullable-objects/array-map-simple`: Output mismatch
 - `option-enable-change-variable-codegen`: Output mismatch
 - `partial-early-return-within-reactive-scope`: Output mismatch
 - `preserve-memo-validation/useMemo-conditional-access-alloc`: Output mismatch
 - `preserve-memo-validation/useMemo-conditional-access-noAlloc`: Output mismatch
 - `propagate-scope-deps-hir-fork/early-return-nested-early-return-within-reactive-scope`: Output mismatch
-- `propagate-scope-deps-hir-fork/infer-non-null-destructure`: Output mismatch
 - `propagate-scope-deps-hir-fork/partial-early-return-within-reactive-scope`: Output mismatch
 - `propagate-scope-deps-hir-fork/repro-invariant`: Output mismatch
 - `propagate-scope-deps-hir-fork/repro-scope-missing-mutable-range`: Output mismatch
@@ -63,7 +60,6 @@
 - `repro-no-declarations-in-reactive-scope-with-early-return`: Output mismatch
 - `repro-no-value-for-temporary-reactive-scope-with-early-return`: Expected transformed output, but compiler bailed out/skipped
 - `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`: Output mismatch
-- `repro-reassign-to-variable-without-mutable-range`: Output mismatch
 - `repro-renaming-conflicting-decls`: Output mismatch
 - `repro-scope-missing-mutable-range`: Output mismatch
 - `repro-separate-memoization-due-to-callback-capturing`: Output mismatch
@@ -314,6 +310,7 @@
 - `context-variable-reassigned-reactive-capture`
 - `context-variable-reassigned-two-lambdas`
 - `controlled-input`
+- `createElement-freeze`
 - `custom-opt-out-directive`
 - `dce-loop`
 - `dce-unused-const`
@@ -1025,6 +1022,7 @@
 - `nullable-objects/array-map-named-callback`
 - `nullable-objects/array-map-named-callback-cross-context`
 - `nullable-objects/array-map-named-chained-callbacks`
+- `nullable-objects/array-map-simple`
 - `nullable-objects/bug-invalid-array-map-manual`
 - `nullable-objects/return-object-of-functions`
 - `numeric-literal-as-object-property-key`
@@ -1174,6 +1172,7 @@
 - `propagate-scope-deps-hir-fork/error.todo-optional-member-expression-with-conditional-optional`
 - `propagate-scope-deps-hir-fork/iife-return-modified-later-phi`
 - `propagate-scope-deps-hir-fork/infer-component-props-non-null`
+- `propagate-scope-deps-hir-fork/infer-non-null-destructure`
 - `propagate-scope-deps-hir-fork/infer-sequential-optional-chain-nonnull`
 - `propagate-scope-deps-hir-fork/nested-optional-chains`
 - `propagate-scope-deps-hir-fork/object-mutated-in-consequent-alternate-both-return`
@@ -1378,6 +1377,7 @@
 - `repro-propagate-type-of-ternary-jsx`
 - `repro-propagate-type-of-ternary-nested`
 - `repro-reassign-props`
+- `repro-reassign-to-variable-without-mutable-range`
 - `repro-ref-mutable-range`
 - `repro-retain-source-when-bailout`
 - `repro-returned-inner-fn-mutates-context`
