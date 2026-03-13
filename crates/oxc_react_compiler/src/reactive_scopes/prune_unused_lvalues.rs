@@ -713,13 +713,21 @@ fn should_drop_pruned_instruction(
 
     match &instr.value {
         InstructionValue::LoadLocal { place, .. } | InstructionValue::LoadContext { place, .. } => {
+            let preserve_reassign_result_load =
+                should_preserve_reassign_result_load(stmts, index, place.identifier.declaration_id);
             let preserve_named_scope_bridge = place.identifier.name.is_some()
                 && (should_preserve_named_scope_bridge_load(stmts, index)
                     || has_prior_hoisted_let_declaration(
                         &stmts[..index],
                         place.identifier.declaration_id,
                     ));
-            !preserve_named_scope_bridge
+            !preserve_reassign_result_load
+                && !preserve_named_scope_bridge
+                && !should_preserve_manual_memo_leading_root_load(
+                    stmts,
+                    index,
+                    place.identifier.declaration_id,
+                )
                 && !should_preserve_manual_memo_tail_root_load(
                     stmts,
                     index,
@@ -731,11 +739,57 @@ fn should_drop_pruned_instruction(
     }
 }
 
+fn should_preserve_reassign_result_load(
+    stmts: &[ReactiveStatement],
+    index: usize,
+    declaration_id: DeclarationId,
+) -> bool {
+    let Some(ReactiveStatement::Instruction(prev_instr)) = index
+        .checked_sub(1)
+        .and_then(|prev_index| stmts.get(prev_index))
+    else {
+        return false;
+    };
+
+    matches!(
+        &prev_instr.value,
+        InstructionValue::StoreLocal { lvalue, .. }
+            | InstructionValue::StoreContext { lvalue, .. }
+            if lvalue.kind == InstructionKind::Reassign
+                && lvalue.place.identifier.declaration_id == declaration_id
+    )
+}
+
 fn should_preserve_named_scope_bridge_load(stmts: &[ReactiveStatement], index: usize) -> bool {
     matches!(
         stmts.get(index + 1),
         Some(ReactiveStatement::Scope(_) | ReactiveStatement::PrunedScope(_))
     )
+}
+
+fn should_preserve_manual_memo_leading_root_load(
+    stmts: &[ReactiveStatement],
+    index: usize,
+    root_decl: DeclarationId,
+) -> bool {
+    let Some(ReactiveStatement::Instruction(prev_instr)) = index
+        .checked_sub(1)
+        .and_then(|prev_index| stmts.get(prev_index))
+    else {
+        return false;
+    };
+
+    match &prev_instr.value {
+        InstructionValue::StartMemoize { deps, .. } => deps.iter().flatten().any(|dep| {
+            dep.path.is_empty()
+                && matches!(
+                    &dep.root,
+                    ManualMemoRoot::NamedLocal(place)
+                        if place.identifier.declaration_id == root_decl
+                )
+        }),
+        _ => false,
+    }
 }
 
 fn has_prior_hoisted_let_declaration(
@@ -1258,6 +1312,92 @@ mod tests {
                 );
             }
             other => panic!("expected preserved load instruction, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_preserve_manual_memo_leading_root_load_for_non_function_result() {
+        let source = make_place(1, Some(IdentifierName::Named("input".into())));
+        let temp = make_place(2, None);
+        let memo_decl = make_place(3, None);
+
+        let mut func = ReactiveFunction {
+            loc: SourceLocation::Generated,
+            id: None,
+            name_hint: None,
+            params: vec![],
+            generator: false,
+            async_: false,
+            body: vec![
+                ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                    id: InstructionId(0),
+                    lvalue: None,
+                    value: InstructionValue::StartMemoize {
+                        manual_memo_id: 0,
+                        deps: Some(vec![ManualMemoDependency {
+                            root: ManualMemoRoot::NamedLocal(source.clone()),
+                            path: vec![],
+                        }]),
+                        loc: SourceLocation::Generated,
+                    },
+                    loc: SourceLocation::Generated,
+                })),
+                ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                    id: InstructionId(1),
+                    lvalue: Some(temp),
+                    value: InstructionValue::LoadLocal {
+                        place: source,
+                        loc: SourceLocation::Generated,
+                    },
+                    loc: SourceLocation::Generated,
+                })),
+                ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                    id: InstructionId(2),
+                    lvalue: Some(memo_decl.clone()),
+                    value: InstructionValue::Primitive {
+                        value: PrimitiveValue::Number(1.0),
+                        loc: SourceLocation::Generated,
+                    },
+                    loc: SourceLocation::Generated,
+                })),
+                ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                    id: InstructionId(3),
+                    lvalue: None,
+                    value: InstructionValue::FinishMemoize {
+                        manual_memo_id: 0,
+                        decl: memo_decl.clone(),
+                        pruned: false,
+                        loc: SourceLocation::Generated,
+                    },
+                    loc: SourceLocation::Generated,
+                })),
+                ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                    terminal: ReactiveTerminal::Return {
+                        value: memo_decl,
+                        id: InstructionId(4),
+                        loc: SourceLocation::Generated,
+                    },
+                    label: None,
+                }),
+            ],
+            directives: vec![],
+        };
+
+        prune_unused_lvalues(&mut func);
+
+        assert_eq!(func.body.len(), 5);
+        match &func.body[1] {
+            ReactiveStatement::Instruction(instr) => {
+                assert_eq!(instr.id, InstructionId(1));
+                assert!(
+                    instr.lvalue.is_none(),
+                    "leading manual memo root load should become bare expr"
+                );
+            }
+            other => panic!(
+                "expected preserved leading load instruction, got {:?}",
+                other
+            ),
         }
     }
 

@@ -5749,7 +5749,9 @@ fn normalize_compare_multiline_imports(code: &str) -> String {
                 while j < lines.len() && depth > 0 {
                     let t = lines[j].trim();
                     depth += t.matches('{').count() as i32 - t.matches('}').count() as i32;
-                    parts.push(t.to_string());
+                    if !is_comment_only_import_line(t) {
+                        parts.push(t.to_string());
+                    }
                     j += 1;
                 }
                 let joined = parts.join(" ");
@@ -5765,6 +5767,13 @@ fn normalize_compare_multiline_imports(code: &str) -> String {
         i += 1;
     }
     result.join("\n")
+}
+
+fn is_comment_only_import_line(trimmed: &str) -> bool {
+    trimmed.starts_with("//")
+        || trimmed.starts_with("/*")
+        || trimmed.starts_with('*')
+        || trimmed.starts_with("*/")
 }
 
 fn normalize_compare_trailing_sequence_null(code: &str) -> String {
@@ -8716,6 +8725,16 @@ mod tests {
     fn normalize_shared_cosmetic_equivalences_strips_top_level_comment_trivia() {
         let actual = "import { c as _c } from \"react/compiler-runtime\";\nfunction foo() {}";
         let expected = "import { c as _c } from \"react/compiler-runtime\";\n// @Pass runMutableRangeAnalysis\n// Fixture note\nfunction foo() {}";
+        assert_eq!(
+            normalize_shared_cosmetic_equivalences(actual),
+            normalize_shared_cosmetic_equivalences(expected)
+        );
+    }
+
+    #[test]
+    fn normalize_shared_cosmetic_equivalences_strips_comment_only_lines_in_multiline_imports() {
+        let actual = "import { useEffect, useRef, experimental_useEffectEvent as useEffectEvent } from \"react\";";
+        let expected = "import {\n  useEffect,\n  useRef,\n  // @ts-expect-error\n  experimental_useEffectEvent as useEffectEvent,\n} from \"react\";";
         assert_eq!(
             normalize_shared_cosmetic_equivalences(actual),
             normalize_shared_cosmetic_equivalences(expected)

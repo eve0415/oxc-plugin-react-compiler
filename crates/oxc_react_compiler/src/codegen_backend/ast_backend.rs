@@ -561,6 +561,7 @@ fn try_emit_module(
     if code.contains(FLOW_CAST_MARKER_HELPER) {
         code = restore_flow_cast_marker_calls(&code);
     }
+    code = compact_simple_jsx_object_attributes(&code);
     Ok(CompileResult {
         transformed: true,
         code,
@@ -7933,6 +7934,69 @@ fn codegen_program(program: &ast::Program<'_>) -> String {
         ..CodegenOptions::default()
     };
     Codegen::new().with_options(options).build(program).code
+}
+
+fn compact_simple_jsx_object_attributes(code: &str) -> String {
+    let mut result = String::with_capacity(code.len());
+    let mut cursor = 0usize;
+
+    while let Some(relative_eq) = code[cursor..].find("={{") {
+        let eq_index = cursor + relative_eq;
+        result.push_str(&code[cursor..eq_index]);
+
+        let mut depth = 0usize;
+        let mut end_index: Option<usize> = None;
+        for (offset, ch) in code[eq_index + 1..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        end_index = Some(eq_index + 1 + offset);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let Some(end_index) = end_index else {
+            result.push_str(&code[eq_index..]);
+            return result;
+        };
+
+        let object_expr = &code[eq_index + 2..end_index];
+        let inner = &object_expr[1..object_expr.len().saturating_sub(1)];
+        if object_expr.contains('\n') && !inner.contains('{') && !inner.contains('}') {
+            result.push('=');
+            result.push('{');
+            result.push_str(&compact_single_statement(object_expr));
+            result.push('}');
+        } else {
+            result.push_str(&code[eq_index..=end_index]);
+        }
+        cursor = end_index + 1;
+    }
+
+    result.push_str(&code[cursor..]);
+    result
+}
+
+fn compact_single_statement(code: &str) -> String {
+    let mut out = String::new();
+    let mut prev_space = false;
+    for line in code.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !out.is_empty() && !prev_space {
+            out.push(' ');
+        }
+        out.push_str(trimmed);
+        prev_space = out.ends_with(' ');
+    }
+    out
 }
 
 /// Move leading file comment(s) to be trailing on the last import line in the import block.

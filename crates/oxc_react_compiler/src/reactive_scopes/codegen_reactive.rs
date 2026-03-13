@@ -3452,6 +3452,9 @@ struct Context {
     reassigned_decls: HashSet<DeclarationId>,
     /// Declaration ids that are read somewhere in the reactive function body.
     read_declarations: HashSet<DeclarationId>,
+    /// Declaration ids read directly by this function body, excluding nested
+    /// lowered-function context captures.
+    direct_read_declarations: HashSet<DeclarationId>,
     /// Primitive literals inherited from parent lexical scopes and safe to inline.
     inline_primitive_literals: HashMap<DeclarationId, String>,
     /// Primitive literals discovered in this function and safe to pass to child scopes.
@@ -3756,6 +3759,7 @@ fn codegen_reactive_function_with_primitives(
     let mutable_destructure_sources =
         collect_mutable_destructure_sources(&func.body, &reassigned_decls);
     let read_declarations = collect_read_declarations(&func.body);
+    let direct_read_declarations = collect_direct_read_declarations(&func.body);
     let elidable_null_initializer_decls =
         collect_elidable_null_initializer_declarations(&func.body);
     let manual_memo_root_decls = collect_manual_memo_root_declarations(&func.body);
@@ -3804,6 +3808,7 @@ fn codegen_reactive_function_with_primitives(
         mutable_captured_in_child_functions,
         reassigned_decls,
         read_declarations,
+        direct_read_declarations,
         inline_primitive_literals,
         capturable_primitive_literals: HashMap::new(),
         non_local_binding_decls: HashSet::new(),
@@ -4269,6 +4274,12 @@ fn try_build_generated_body_shape_from_reactive_block(
             }
             let should_wrap = apply_direct_prefix_codegen_state(cx, instr);
             let inner = try_build_generated_body_shape_from_reactive_block(cx, rest)?;
+            if let Some(expression) = unused_temp_named_load_expression(cx, rest, instr) {
+                return Some(GeneratedBodyShape::PrefixedExpressionStatements {
+                    expressions: vec![expression],
+                    inner: Box::new(inner),
+                });
+            }
             if !should_wrap
                 && (matches!(inner, GeneratedBodyShape::ReturnVoid)
                     || generated_body_shape_is_empty(&inner))
@@ -11708,6 +11719,12 @@ fn collect_read_declarations(block: &ReactiveBlock) -> HashSet<DeclarationId> {
     reads
 }
 
+fn collect_direct_read_declarations(block: &ReactiveBlock) -> HashSet<DeclarationId> {
+    let mut reads = HashSet::new();
+    collect_direct_read_declarations_in_block(block, &mut reads);
+    reads
+}
+
 fn collect_scope_dependency_declarations(block: &ReactiveBlock) -> HashSet<DeclarationId> {
     let mut deps = HashSet::new();
     collect_scope_dependency_declarations_in_block(block, &mut deps);
@@ -12433,6 +12450,34 @@ fn collect_read_declarations_in_block(block: &ReactiveBlock, out: &mut HashSet<D
             }
             ReactiveStatement::PrunedScope(scope) => {
                 collect_read_declarations_in_block(&scope.instructions, out);
+            }
+            ReactiveStatement::Terminal(term_stmt) => {
+                collect_read_declarations_in_terminal(&term_stmt.terminal, out);
+            }
+        }
+    }
+}
+
+fn collect_direct_read_declarations_in_block(
+    block: &ReactiveBlock,
+    out: &mut HashSet<DeclarationId>,
+) {
+    for stmt in block {
+        match stmt {
+            ReactiveStatement::Instruction(instr) => match &instr.value {
+                InstructionValue::FunctionExpression { .. }
+                | InstructionValue::ObjectMethod { .. } => {}
+                value => {
+                    visitors::for_each_instruction_value_operand(value, |place| {
+                        out.insert(place.identifier.declaration_id);
+                    });
+                }
+            },
+            ReactiveStatement::Scope(scope) => {
+                collect_direct_read_declarations_in_block(&scope.instructions, out);
+            }
+            ReactiveStatement::PrunedScope(scope) => {
+                collect_direct_read_declarations_in_block(&scope.instructions, out);
             }
             ReactiveStatement::Terminal(term_stmt) => {
                 collect_read_declarations_in_terminal(&term_stmt.terminal, out);
@@ -13677,26 +13722,7 @@ fn codegen_block_no_reset_with_options(
         idx: usize,
         instr: &ReactiveInstruction,
     ) -> Option<String> {
-        let lvalue = instr.lvalue.as_ref()?;
-        if lvalue.identifier.name.is_some() {
-            return None;
-        }
-        let place = match &instr.value {
-            InstructionValue::LoadLocal { place, .. }
-            | InstructionValue::LoadContext { place, .. } => place,
-            _ => return None,
-        };
-        if place.identifier.name.is_none()
-            || !cx
-                .reassigned_decls
-                .contains(&place.identifier.declaration_id)
-        {
-            return None;
-        }
-        if reactive_block_uses_declaration(&block[idx + 1..], lvalue.identifier.declaration_id) {
-            return None;
-        }
-        let expr = codegen_place_to_expression(cx, place);
+        let expr = unused_temp_named_load_expression(cx, &block[idx + 1..], instr)?;
         render_reactive_expression_statement_ast(&expr)
     }
 
@@ -19502,6 +19528,32 @@ fn reactive_block_writes_declaration(
         }
     }
     false
+}
+
+fn unused_temp_named_load_expression(
+    cx: &mut Context,
+    following_stmts: &[ReactiveStatement],
+    instr: &ReactiveInstruction,
+) -> Option<String> {
+    let lvalue = instr.lvalue.as_ref()?;
+    if lvalue.identifier.name.is_some() {
+        return None;
+    }
+    let place = match &instr.value {
+        InstructionValue::LoadLocal { place, .. } | InstructionValue::LoadContext { place, .. } => {
+            place
+        }
+        _ => return None,
+    };
+    if place.identifier.name.is_none()
+        || !cx
+            .reassigned_decls
+            .contains(&place.identifier.declaration_id)
+        || reactive_block_uses_declaration(following_stmts, lvalue.identifier.declaration_id)
+    {
+        return None;
+    }
+    Some(codegen_place_to_expression(cx, place))
 }
 
 fn reactive_statement_uses_declaration(
@@ -25475,6 +25527,19 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
                 cx.elided_named_declarations.remove(&decl_id);
                 return None;
             }
+            if lvalue.kind == InstructionKind::Const
+                && can_elide_captured_const_alias_declaration(
+                    cx,
+                    &lvalue.place.identifier,
+                    value.identifier.declaration_id,
+                    &rhs,
+                )
+            {
+                cx.inline_identifier_aliases.insert(decl_id, rhs);
+                cx.declare(&lvalue.place.identifier);
+                cx.elided_named_declarations.insert(decl_id);
+                return None;
+            }
             if can_inline_jsx_component_tag_alias(
                 cx,
                 &lvalue.place.identifier,
@@ -25615,6 +25680,19 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
             if can_inline_generated_undefined_alias(cx, lvalue, value, &rhs) {
                 cx.inline_identifier_aliases.insert(decl_id, rhs);
                 cx.elided_named_declarations.remove(&decl_id);
+                return None;
+            }
+            if lvalue.kind == InstructionKind::Const
+                && can_elide_captured_const_alias_declaration(
+                    cx,
+                    &lvalue.place.identifier,
+                    value.identifier.declaration_id,
+                    &rhs,
+                )
+            {
+                cx.inline_identifier_aliases.insert(decl_id, rhs);
+                cx.declare(&lvalue.place.identifier);
+                cx.elided_named_declarations.insert(decl_id);
                 return None;
             }
             let mut emitted = String::new();
@@ -26201,6 +26279,26 @@ fn can_inline_generated_undefined_alias(
             .contains(&lvalue.place.identifier.declaration_id)
 }
 
+fn can_elide_captured_const_alias_declaration(
+    cx: &Context,
+    target_identifier: &Identifier,
+    source_decl: DeclarationId,
+    rhs: &str,
+) -> bool {
+    let decl_id = target_identifier.declaration_id;
+    !matches!(target_identifier.type_, Type::Function { .. })
+        && !cx.direct_read_declarations.contains(&decl_id)
+        && cx.captured_in_child_functions.contains(&decl_id)
+        && !cx.mutable_captured_in_child_functions.contains(&decl_id)
+        && !cx.reassigned_decls.contains(&decl_id)
+        && !cx.manual_memo_root_decls.contains(&decl_id)
+        && !cx.function_decl_decls.contains(&decl_id)
+        && !cx.preserve_loop_header_inits
+        && (is_inlineable_primitive_literal_expression(rhs)
+            || (is_simple_identifier_expression(rhs)
+                && cx.non_local_binding_decls.contains(&source_decl)))
+}
+
 fn maybe_materialize_elided_named_declaration(cx: &mut Context, id: &Identifier) -> Option<String> {
     if !cx.elided_named_declarations.contains(&id.declaration_id) {
         return None;
@@ -26384,6 +26482,26 @@ fn codegen_instruction_expr_with_prec_kind(
 ) -> Option<String> {
     if let Some(lvalue) = &instr.lvalue {
         if is_temp_like_identifier(cx, &lvalue.identifier) {
+            if let InstructionValue::LoadLocal { place, .. }
+            | InstructionValue::LoadContext { place, .. } = &instr.value
+                && place.identifier.name.is_some()
+            {
+                let source_decl = place.identifier.declaration_id;
+                let temp_decl = lvalue.identifier.declaration_id;
+                let has_pending = cx.pending_manual_memo_reads.contains(&source_decl);
+                let is_reassigned = cx.reassigned_decls.contains(&source_decl);
+                let temp_is_read = cx.read_declarations.contains(&temp_decl);
+                if is_reassigned && !temp_is_read {
+                    if has_pending {
+                        cx.pending_manual_memo_reads.remove(&source_decl);
+                    }
+                    debug_codegen_expr(
+                        "stmt-expr-emit-unused-temp-load",
+                        format!("source_decl={} expr={}", source_decl.0, value),
+                    );
+                    return render_reactive_expression_statement_ast(value);
+                }
+            }
             // Temporary - store for later
             if std::env::var("DEBUG_CODEGEN_EXPR").is_ok() {
                 eprintln!(
@@ -30844,7 +30962,9 @@ fn render_jsx_expression_ast(
         jsx_children,
         closing_element,
     );
-    Some(codegen_expression_with_flow_cast_restore(&expression))
+    Some(compact_simple_jsx_object_attributes(
+        codegen_expression_with_flow_cast_restore(&expression),
+    ))
 }
 
 fn render_jsx_fragment_ast(cx: &mut Context, children: &[Place]) -> Option<String> {
@@ -30899,6 +31019,52 @@ fn render_jsx_child_ast<'a>(
             builder.jsx_child_expression_container(SPAN, ast::JSXExpression::from(expression))
         }
     })
+}
+
+fn compact_simple_jsx_object_attributes(rendered: String) -> String {
+    let mut result = String::with_capacity(rendered.len());
+    let mut cursor = 0usize;
+
+    while let Some(relative_eq) = rendered[cursor..].find("={{") {
+        let eq_index = cursor + relative_eq;
+        result.push_str(&rendered[cursor..eq_index]);
+
+        let mut depth = 0usize;
+        let mut end_index: Option<usize> = None;
+        for (offset, ch) in rendered[eq_index + 1..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        end_index = Some(eq_index + 1 + offset);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let Some(end_index) = end_index else {
+            result.push_str(&rendered[eq_index..]);
+            return result;
+        };
+
+        let object_expr = &rendered[eq_index + 2..end_index];
+        let inner = &object_expr[1..object_expr.len().saturating_sub(1)];
+        if object_expr.contains('\n') && !inner.contains('{') && !inner.contains('}') {
+            result.push('=');
+            result.push('{');
+            result.push_str(&compact_single_statement(object_expr));
+            result.push('}');
+        } else {
+            result.push_str(&rendered[eq_index..=end_index]);
+        }
+        cursor = end_index + 1;
+    }
+
+    result.push_str(&rendered[cursor..]);
+    result
 }
 
 fn render_jsx_element_name_ast<'a>(
@@ -31078,6 +31244,17 @@ fn render_jsx_attribute_value_ast<'a>(
     expression: ast::Expression<'a>,
 ) -> Option<Option<ast::JSXAttributeValue<'a>>> {
     let is_fbt_operand = cx.fbt_operands.contains(&place.identifier.id);
+    let expression = match expression {
+        ast::Expression::ParenthesizedExpression(parenthesized)
+            if matches!(
+                parenthesized.expression,
+                ast::Expression::ObjectExpression(_)
+            ) =>
+        {
+            parenthesized.unbox().expression
+        }
+        expression => expression,
+    };
     Some(match expression {
         ast::Expression::StringLiteral(literal) => {
             let inner = rendered_expr
@@ -31895,11 +32072,15 @@ fn skip_quoted(source: &str, start_idx: usize) -> Option<usize> {
 }
 
 fn codegen_expression_with_flow_cast_restore(expression: &ast::Expression) -> String {
-    restore_flow_cast_marker_calls(&codegen_expression_with_oxc(expression))
+    compact_simple_jsx_object_attributes(restore_flow_cast_marker_calls(
+        &codegen_expression_with_oxc(expression),
+    ))
 }
 
 fn codegen_statement_with_flow_cast_restore(statement: &ast::Statement) -> String {
-    restore_flow_cast_marker_calls(&codegen_statement_with_oxc(statement))
+    compact_simple_jsx_object_attributes(restore_flow_cast_marker_calls(
+        &codegen_statement_with_oxc(statement),
+    ))
 }
 
 fn codegen_assignment_target_with_flow_cast_restore(target: &ast::AssignmentTarget) -> String {
@@ -31917,7 +32098,9 @@ fn codegen_array_expression_element_with_flow_cast_restore(
 }
 
 fn codegen_statements_with_flow_cast_restore(statements: &[ast::Statement]) -> String {
-    restore_flow_cast_marker_calls(&codegen_statements_with_oxc(statements))
+    compact_simple_jsx_object_attributes(restore_flow_cast_marker_calls(
+        &codegen_statements_with_oxc(statements),
+    ))
 }
 
 fn build_generated_binding_statements_ast<'a>(
@@ -34919,7 +35102,35 @@ fn render_object_expression_ast(
         lowered.push(property);
     }
     let expression = builder.expression_object(SPAN, lowered);
-    Some(codegen_expression_with_flow_cast_restore(&expression))
+    let rendered = codegen_expression_with_flow_cast_restore(&expression);
+    if rendered.contains('\n') && object_expression_prefers_compact_single_line(cx, properties) {
+        Some(compact_single_statement(&rendered))
+    } else {
+        Some(rendered)
+    }
+}
+
+fn object_expression_prefers_compact_single_line(
+    cx: &mut Context,
+    properties: &[ObjectPropertyOrSpread],
+) -> bool {
+    properties.iter().all(|property| match property {
+        ObjectPropertyOrSpread::Spread(place) => {
+            !codegen_place_to_expression(cx, place).contains('\n')
+        }
+        ObjectPropertyOrSpread::Property(property) => {
+            let value = codegen_place_to_expression(cx, &property.place);
+            if value.contains('\n') {
+                return false;
+            }
+            match &property.key {
+                ObjectPropertyKey::Computed(place) => {
+                    !codegen_place_to_expression(cx, place).contains('\n')
+                }
+                _ => true,
+            }
+        }
+    })
 }
 
 fn codegen_expression_with_oxc(expression: &ast::Expression<'_>) -> String {
@@ -36743,6 +36954,7 @@ mod tests {
             mutable_captured_in_child_functions: HashSet::new(),
             reassigned_decls: HashSet::new(),
             read_declarations: HashSet::new(),
+            direct_read_declarations: HashSet::new(),
             inline_primitive_literals: HashMap::new(),
             capturable_primitive_literals: HashMap::new(),
             non_local_binding_decls: HashSet::new(),
@@ -37010,6 +37222,44 @@ mod tests {
                 }],
                 inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
                     "value".to_string()
+                )),
+            }
+        );
+    }
+
+    #[test]
+    fn directly_preserves_unused_temp_named_load_as_expression_prefix() {
+        let mut cx = test_context();
+        cx.reassigned_decls.insert(DeclarationId::new(1));
+        let block = vec![
+            ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                id: crate::hir::types::make_instruction_id(0),
+                lvalue: Some(temp_place(0, 2)),
+                value: InstructionValue::LoadContext {
+                    place: named_place(1, 1, "input"),
+                    loc: SourceLocation::Generated,
+                },
+                loc: SourceLocation::Generated,
+            })),
+            ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                terminal: ReactiveTerminal::Return {
+                    value: named_place(2, 3, "output"),
+                    id: crate::hir::types::make_instruction_id(1),
+                    loc: SourceLocation::Generated,
+                },
+                label: None,
+            }),
+        ];
+
+        let shape = super::try_build_generated_body_shape_from_reactive_block(&mut cx, &block)
+            .expect("expected direct body shape");
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::PrefixedExpressionStatements {
+                expressions: vec!["input".to_string()],
+                inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                    "output".to_string()
                 )),
             }
         );
@@ -38194,6 +38444,37 @@ mod tests {
     }
 
     #[test]
+    fn compacts_simple_object_expression_via_ast() {
+        let mut cx = test_context();
+        let label_place = temp_place(11, 11);
+        cx.set_temp_expr(
+            &label_place.identifier,
+            Some(super::ExprValue::primary("identity(\"label\")".to_string())),
+        );
+        let rendered = render_object_expression_ast(
+            &mut cx,
+            &[
+                ObjectPropertyOrSpread::Property(ObjectProperty {
+                    key: ObjectPropertyKey::Identifier("label".to_string()),
+                    place: label_place,
+                    type_: ObjectPropertyType::Property,
+                }),
+                ObjectPropertyOrSpread::Property(ObjectProperty {
+                    key: ObjectPropertyKey::Identifier("onPress".to_string()),
+                    place: named_place(12, 12, "onClose"),
+                    type_: ObjectPropertyType::Property,
+                }),
+            ],
+        )
+        .expect("expected object expression");
+
+        assert_eq!(
+            rendered,
+            "({ label: identity(\"label\"), onPress: onClose })"
+        );
+    }
+
+    #[test]
     fn reconstructs_for_init_declaration_via_ast() {
         let rendered = reconstruct_for_init_declaration("let value;\nvalue = 1;")
             .expect("expected reconstructed header");
@@ -38512,6 +38793,33 @@ mod tests {
         .expect("expected jsx element");
 
         assert_eq!(rendered, "<div slot={<span />} />");
+    }
+
+    #[test]
+    fn renders_jsx_object_attribute_from_parenthesized_temp_via_ast() {
+        let mut cx = test_context();
+        let place = temp_place(4, 4);
+        cx.set_temp_expr(
+            &place.identifier,
+            Some(super::ExprValue::primary(
+                "({ label: identity(\"label\"), onPress: onClose })".to_string(),
+            )),
+        );
+        let rendered = render_jsx_expression_ast(
+            &mut cx,
+            &JsxTag::BuiltinTag("div".to_string()),
+            &[JsxAttribute::Attribute {
+                name: "primary".to_string(),
+                place,
+            }],
+            &None,
+        )
+        .expect("expected jsx element");
+
+        assert_eq!(
+            rendered,
+            "<div primary={{ label: identity(\"label\"), onPress: onClose }} />"
+        );
     }
 
     #[test]
