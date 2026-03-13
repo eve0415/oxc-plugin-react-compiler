@@ -2246,7 +2246,7 @@ fn run_fixture(
             &filename,
             language,
             source_type,
-            strict_output,
+            false,
         );
         let postprocessed = normalize_post_babel_export_spacing(&postprocessed);
         let actual_source = format_code_for_compare(&fixture.input_path, &postprocessed);
