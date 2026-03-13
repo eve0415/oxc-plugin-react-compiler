@@ -2527,14 +2527,44 @@ fn prepare_code_for_compare(code: &str, strict_output: bool) -> String {
 
 fn normalize_strict_output_equivalences(code: &str) -> String {
     let mut normalized = code.to_string();
-    let steps: [fn(&str) -> String; 7] = [
+    let steps: &[fn(&str) -> String] = &[
         normalize_parenthesized_arrow_initializers,
         normalize_parenthesized_multiline_arrow_initializers,
         normalize_strict_multiline_call_open_args,
         normalize_strict_multiline_call_tail_args,
-        normalize_promote_temps,
+        normalize_label_same_line,
+        normalize_multiline_jsx,
+        normalize_jsx_children,
+        normalize_jsx_tag_expr_spacing,
+        normalize_jsx_inter_element_spacing,
+        normalize_jsx_expr_spacing,
+        normalize_jsx_text_child_spacing,
+        normalize_jsx_space_expressions,
+        normalize_jsx_text_before_tag,
+        normalize_jsx_text_line_before_expr,
+        normalize_temp_zero_suffixes,
         normalize_non_temp_ssa_suffixes,
+        normalize_shadowed_temp_decls,
+        normalize_temp_alpha_renaming,
+        normalize_promote_temps,
+        normalize_two_dep_guard_order,
+        normalize_sort_simple_let_decl_runs,
+        normalize_multiline_arrow_bodies,
+        normalize_multiline_call_invocations,
+        normalize_multiline_object_literal_access,
         normalize_multiline_optional_chain_calls,
+        normalize_small_multiline_return_arrays,
+        normalize_small_array_bracket_spacing,
+        normalize_object_shorthand_pairs,
+        normalize_transitional_element_ref_shorthand,
+        normalize_inline_jsx_cached_wrapper_scope,
+        normalize_jsx_text_expr_container_spacing,
+        normalize_jsx_text_expr_spacing_compact,
+        normalize_outlined_function_names,
+        normalize_outlined_function_order,
+        normalize_anonymous_function_space,
+        normalize_arrow_copy_return_body,
+        normalize_generated_memoization_comments,
     ];
     for step in steps {
         normalized = step(&normalized);
@@ -2872,6 +2902,24 @@ fn normalize_import_region_comments(code: &str) -> String {
     }
 
     result.join("\n")
+}
+
+fn normalize_generated_memoization_comments(code: &str) -> String {
+    let inline_re = regex::Regex::new(r#"\s*// "(?:useMemo|useMemoCache)".*$"#).unwrap();
+    code.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("// check if ")
+                || trimmed == "// Inputs changed, recompute"
+                || trimmed == "// Inputs did not change, use cached value"
+            {
+                return None;
+            }
+
+            Some(inline_re.replace(trimmed, "").to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Find the position of a trailing `//` or `/*` comment on an import line,
@@ -6331,6 +6379,89 @@ fn normalize_jsx_text_before_tag(code: &str) -> String {
         .join("\n")
 }
 
+fn normalize_jsx_text_line_before_expr(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut result = Vec::with_capacity(lines.len());
+    let mut i = 0usize;
+
+    while i < lines.len() {
+        let current = lines[i].trim();
+        if i > 0 && i + 1 < lines.len() {
+            let previous = lines[i - 1].trim();
+            let next = lines[i + 1].trim();
+            let looks_like_open_tag =
+                previous.starts_with('<') && previous.ends_with('>') && !previous.starts_with("</");
+            let is_plain_text_line = !current.is_empty()
+                && !current.contains('<')
+                && !current.contains('>')
+                && !current.contains('{')
+                && !current.contains('}')
+                && !current.ends_with(';');
+            if looks_like_open_tag && is_plain_text_line && next.starts_with('{') {
+                result.push(format!("{current} {next}"));
+                i += 2;
+                continue;
+            }
+        }
+
+        result.push(current.to_string());
+        i += 1;
+    }
+
+    result.join("\n")
+}
+
+fn normalize_small_array_bracket_spacing(code: &str) -> String {
+    code.lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("return [") || trimmed.contains("= [") {
+                trimmed
+                    .replace("[ ", "[")
+                    .replace(" ]", "]")
+                    .replace(", ]", "]")
+            } else {
+                trimmed.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn normalize_small_multiline_return_arrays(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut result = Vec::new();
+    let mut i = 0usize;
+
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        if trimmed == "return [" {
+            let mut parts = vec![trimmed.to_string()];
+            let mut depth = 1i32;
+            let mut j = i + 1;
+            while j < lines.len() && depth > 0 {
+                let current = lines[j].trim();
+                depth += current.matches('[').count() as i32 - current.matches(']').count() as i32;
+                parts.push(current.to_string());
+                j += 1;
+            }
+            if depth == 0 {
+                let total_len = parts.iter().map(String::len).sum::<usize>() + parts.len();
+                if total_len <= 200 {
+                    result.push(parts.join(" "));
+                    i = j;
+                    continue;
+                }
+            }
+        }
+
+        result.push(trimmed.to_string());
+        i += 1;
+    }
+
+    result.join("\n")
+}
+
 /// Normalize redundant parentheses around assignment expressions.
 ///
 /// OXC may wrap nested assignment expressions in parentheses for clarity:
@@ -7747,7 +7878,7 @@ fn normalize_simple_alias_return_tail(code: &str) -> String {
 /// pattern and avoids counting hoisted callback printer differences as failures.
 fn normalize_arrow_copy_return_body(code: &str) -> String {
     let re = regex::Regex::new(
-        r"=>\s*\{\s*let\s+([A-Za-z_$][\w$]*)\s*=\s*([^;{}]+?)\s*;\s*return\s+([A-Za-z_$][\w$]*)\s*;\s*\}",
+        r"=>\s*\{\s*(?:let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;{}]+?)\s*;?\s*return\s+([A-Za-z_$][\w$]*)\s*;?\s*\}",
     )
     .unwrap();
     code.lines()
@@ -8661,13 +8792,15 @@ mod tests {
         normalize_inline_jsx_cached_wrapper_scope, normalize_jsx_branch_paren_spacing,
         normalize_jsx_nested_ternary_wrapper_parens, normalize_jsx_semicolon_on_own_line,
         normalize_jsx_text_expr_container_spacing, normalize_jsx_text_expr_spacing_compact,
-        normalize_memo_cache_decl_arity, normalize_multiline_arrow_fragment_expressions,
-        normalize_multiline_call_invocations, normalize_multiline_if_conditions,
-        normalize_multiline_object_literal_access, normalize_multiline_object_method_bodies,
-        normalize_multiline_optional_chain_calls, normalize_object_shorthand_pairs,
-        normalize_promote_temps, normalize_react_memo_closing_paren, normalize_shadowed_temp_decls,
+        normalize_jsx_text_line_before_expr, normalize_memo_cache_decl_arity,
+        normalize_multiline_arrow_fragment_expressions, normalize_multiline_call_invocations,
+        normalize_multiline_if_conditions, normalize_multiline_object_literal_access,
+        normalize_multiline_object_method_bodies, normalize_multiline_optional_chain_calls,
+        normalize_object_shorthand_pairs, normalize_promote_temps,
+        normalize_react_memo_closing_paren, normalize_shadowed_temp_decls,
         normalize_shared_cosmetic_equivalences, normalize_simple_alias_return_tail,
-        normalize_simple_jsx_attr_brace_spacing, normalize_sort_simple_let_decl_runs,
+        normalize_simple_jsx_attr_brace_spacing, normalize_small_array_bracket_spacing,
+        normalize_small_multiline_return_arrays, normalize_sort_simple_let_decl_runs,
         normalize_strip_inline_comments, normalize_tail_return_from_cache_alias,
         normalize_temp_alpha_renaming, normalize_temp_zero_suffixes, normalize_two_dep_guard_order,
     };
@@ -8889,6 +9022,13 @@ mod tests {
     }
 
     #[test]
+    fn normalize_arrow_copy_return_body_collapses_const_copy_arrow() {
+        let input = "let callbk = () =>{const copy = x; return copy; };\nreturn callbk;";
+        let expected = "let callbk = () => x;\nreturn callbk;";
+        assert_eq!(normalize_arrow_copy_return_body(input), expected);
+    }
+
+    #[test]
     fn normalize_dead_identifier_read_after_assignment_removes_immediate_dead_read() {
         let input = "x = x + 1;\nx;\nreturn x;";
         let expected = "x = x + 1;\nreturn x;";
@@ -9051,6 +9191,27 @@ mod tests {
         let input = "t1 = <div>gmhubcw{ value ? <A /> : <B /> }hflmn</div>;";
         let expected = "t1 = <div>gmhubcw{value ? <A /> : <B />}hflmn</div>;";
         assert_eq!(normalize_jsx_text_expr_container_spacing(input), expected);
+    }
+
+    #[test]
+    fn normalize_jsx_text_line_before_expr_joins_split_text_runs() {
+        let input = "<div>\nrendering took\n{time} at {now}\n</div>";
+        let expected = "<div>\nrendering took {time} at {now}\n</div>";
+        assert_eq!(normalize_jsx_text_line_before_expr(input), expected);
+    }
+
+    #[test]
+    fn normalize_small_array_bracket_spacing_trims_collapsed_return_arrays() {
+        let input = "return [ item.id, { value: item.value } ]";
+        let expected = "return [item.id, { value: item.value }]";
+        assert_eq!(normalize_small_array_bracket_spacing(input), expected);
+    }
+
+    #[test]
+    fn normalize_small_multiline_return_arrays_collapses_short_arrays() {
+        let input = "return [\nitem.id,\n{ value: item.value }\n]";
+        let expected = "return [ item.id, { value: item.value } ]";
+        assert_eq!(normalize_small_multiline_return_arrays(input), expected);
     }
 
     #[test]

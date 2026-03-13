@@ -30714,12 +30714,14 @@ fn render_reactive_pattern_assignment_expression_ast(
 }
 
 fn reactive_destructure_declaration_kind(
-    _cx: &Context,
+    cx: &Context,
     kind: InstructionKind,
-    _source_decl_id: DeclarationId,
+    source_decl_id: DeclarationId,
 ) -> ast::VariableDeclarationKind {
     match kind {
-        InstructionKind::Const | InstructionKind::HoistedConst | InstructionKind::Function => {
+        InstructionKind::Const | InstructionKind::HoistedConst | InstructionKind::Function
+            if !cx.mutable_destructure_sources.contains(&source_decl_id) =>
+        {
             ast::VariableDeclarationKind::Const
         }
         _ => ast::VariableDeclarationKind::Let,
@@ -37382,7 +37384,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_const_destructure_statement_even_when_source_marked_mutable() {
+    fn renders_let_destructure_statement_when_source_marked_mutable() {
         let mut cx = test_context();
         cx.mutable_destructure_sources.insert(DeclarationId::new(1));
         let target = named_place(0, 0, "t0");
@@ -37406,11 +37408,11 @@ mod tests {
         let rendered = super::codegen_instruction_nullable(&mut cx, &instr)
             .expect("expected destructure statement");
 
-        assert_eq!(rendered, "const [t0] = input;\n");
+        assert_eq!(rendered, "let [t0] = input;\n");
     }
 
     #[test]
-    fn directly_lowers_const_destructure_prefix_even_when_source_marked_mutable() {
+    fn directly_lowers_let_destructure_prefix_when_source_marked_mutable() {
         let mut cx = test_context();
         cx.mutable_destructure_sources.insert(DeclarationId::new(1));
         let target = named_place(0, 0, "t0");
@@ -37448,7 +37450,7 @@ mod tests {
             shape,
             super::GeneratedBodyShape::PrefixedBindings {
                 bindings: vec![super::GeneratedBinding {
-                    kind: ast::VariableDeclarationKind::Const,
+                    kind: ast::VariableDeclarationKind::Let,
                     pattern: "[t0]".to_string(),
                     expression: "input".to_string(),
                     promote_to_function_declaration: false,
