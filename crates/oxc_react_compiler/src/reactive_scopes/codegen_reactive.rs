@@ -6193,6 +6193,10 @@ fn try_build_generated_body_shape_from_reactive_terminal(
                             &mut case_cx,
                             block,
                         )?;
+                        // Keep branch-local temps isolated, but memo slots must
+                        // remain globally unique across switch arms to match
+                        // upstream cache layout.
+                        cx.next_cache_index = case_cx.next_cache_index;
                         if matches!(&inner, GeneratedBodyShape::ExpressionStatements(expressions) if expressions.is_empty())
                         {
                             inner

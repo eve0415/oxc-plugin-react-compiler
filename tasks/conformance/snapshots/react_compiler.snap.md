@@ -1,6 +1,6 @@
-# React Compiler Conformance — 95.3% parity rate
+# React Compiler Conformance — 95.4% parity rate
 
-**1670** parity_success, **82** parity_failure, **0** skipped
+**1672** parity_success, **80** parity_failure, **0** skipped
 
 ## Failed
 
@@ -53,7 +53,6 @@
 - `propagate-scope-deps-hir-fork/switch`: Output mismatch
 - `propagate-scope-deps-hir-fork/switch-non-final-default`: Output mismatch
 - `property-call-evaluation-order`: Output mismatch
-- `reassignment-separate-scopes`: Output mismatch
 - `rename-source-variables`: Output mismatch
 - `rename-source-variables-nested-function`: Output mismatch
 - `rename-source-variables-nested-object-method`: Output mismatch
@@ -85,7 +84,6 @@
 - `useState-and-other-hook-unpruned-dependency`: Output mismatch
 - `useState-pruned-dependency-change-detect`: Output mismatch
 - `useState-unpruned-dependency`: Output mismatch
-- `validate-no-set-state-in-render-uncalled-function-with-mutable-range-is-valid`: Output mismatch
 
 ## Passed
 
@@ -1263,6 +1261,7 @@
 - `reassigned-phi-in-returned-function-expression`
 - `reassignment`
 - `reassignment-conditional`
+- `reassignment-separate-scopes`
 - `recursive-function`
 - `recursive-function-expression`
 - `reduce-reactive-cond-deps-break-in-scope`
@@ -1750,6 +1749,7 @@
 - `valid-setState-in-useEffect-listener`
 - `valid-setState-in-useEffect-listener-transitive`
 - `valid-setState-in-useLayoutEffect-from-ref`
+- `validate-no-set-state-in-render-uncalled-function-with-mutable-range-is-valid`
 - `validate-no-set-state-in-render-unconditional-lambda-which-conditionally-sets-state-ok`
 - `value-block-mutates-outer-value`
 - `weakmap-constructor`
