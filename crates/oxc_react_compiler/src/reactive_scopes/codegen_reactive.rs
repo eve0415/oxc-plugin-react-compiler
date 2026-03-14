@@ -6988,6 +6988,51 @@ struct DirectMemoizedExistingReturnParts {
     memoized_expr: Option<String>,
 }
 
+fn rendered_memo_parts_score(parts: &DirectMemoizedExistingReturnParts) -> (usize, usize) {
+    (
+        parts.bindings.len()
+            + parts.assignments.len()
+            + parts.expressions.len()
+            + usize::from(parts.memoized_expr.is_some()),
+        parts.setup_statements.len(),
+    )
+}
+
+fn prefer_rendered_memo_parts(
+    direct_parts: Option<DirectMemoizedExistingReturnParts>,
+    rendered_parts: Option<DirectMemoizedExistingReturnParts>,
+) -> Option<DirectMemoizedExistingReturnParts> {
+    match (direct_parts, rendered_parts) {
+        (None, None) => None,
+        (Some(parts), None) | (None, Some(parts)) => Some(parts),
+        (Some(direct_parts), Some(rendered_parts)) => {
+            let direct_score = rendered_memo_parts_score(&direct_parts);
+            let rendered_score = rendered_memo_parts_score(&rendered_parts);
+            if rendered_score.0 > direct_score.0
+                || (rendered_score.0 == direct_score.0 && rendered_score.1 < direct_score.1)
+            {
+                Some(rendered_parts)
+            } else {
+                Some(direct_parts)
+            }
+        }
+    }
+}
+
+fn analyze_rendered_scope_computation_shape(
+    cx: &Context,
+    scope: &ReactiveScope,
+    block: &ReactiveBlock,
+) -> Option<GeneratedBodyShape> {
+    let mut render_cx = cx.clone();
+    render_cx.inline_temp_zero_dep_scope_shapes = false;
+    analyze_rendered_generated_body_shape_source(&codegen_scope_computation_no_reset(
+        &mut render_cx,
+        scope,
+        block,
+    ))
+}
+
 struct InlineLiteralInitScopeMatch<'a> {
     source_instr: &'a ReactiveInstruction,
     store_instr: &'a ReactiveInstruction,
@@ -7638,6 +7683,8 @@ fn try_build_generated_body_shape_from_reactive_scope_return(
     computation_cx.inline_temp_zero_dep_scope_shapes = true;
     let computation_shape =
         try_build_generated_body_shape_from_reactive_block(&mut computation_cx, &full_scope_body)?;
+    let rendered_computation_shape =
+        analyze_rendered_scope_computation_shape(cx, &scope_block.scope, &full_scope_body);
     cx.next_cache_index = computation_cx.next_cache_index;
     let dep_exprs =
         collect_direct_scope_dependency_exprs(cx, &scope_block.scope, &scope_block.instructions)?;
@@ -7647,10 +7694,16 @@ fn try_build_generated_body_shape_from_reactive_scope_return(
             return None;
         }
         let value_name = identifier_name_with_cx(cx, output_ident);
-        if let Some(parts) = try_decompose_direct_memoized_existing_return_shape(
-            computation_shape.clone(),
-            &value_name,
-        ) {
+        let parts = prefer_rendered_memo_parts(
+            try_decompose_direct_memoized_existing_return_shape(
+                computation_shape.clone(),
+                &value_name,
+            ),
+            rendered_computation_shape.clone().and_then(|shape| {
+                try_decompose_direct_memoized_existing_return_shape(shape, &value_name)
+            }),
+        );
+        if let Some(parts) = parts {
             return build_direct_existing_memoized_return_shape(
                 cx,
                 value_name,
@@ -7677,10 +7730,16 @@ fn try_build_generated_body_shape_from_reactive_scope_return(
             return None;
         }
         let value_name = identifier_name_with_cx(cx, &output_decl.identifier);
-        if let Some(parts) = try_decompose_direct_memoized_declared_return_shape(
-            computation_shape.clone(),
-            &value_name,
-        ) {
+        let parts = prefer_rendered_memo_parts(
+            try_decompose_direct_memoized_declared_return_shape(
+                computation_shape.clone(),
+                &value_name,
+            ),
+            rendered_computation_shape.and_then(|shape| {
+                try_decompose_direct_memoized_declared_return_shape(shape, &value_name)
+            }),
+        );
+        if let Some(parts) = parts {
             return build_direct_declared_memoized_return_shape(
                 cx,
                 value_name,
