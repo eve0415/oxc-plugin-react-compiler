@@ -5824,9 +5824,7 @@ fn replace_undeclared_generated_temps_with_placeholder(statements: &mut [String]
     }
 }
 
-fn hoist_uninitialized_generated_declarations_for_fallback_accounting(
-    statements: &mut [String],
-) {
+fn hoist_uninitialized_generated_declarations_for_fallback_accounting(statements: &mut [String]) {
     loop {
         let mut changed = false;
         for index in 1..statements.len() {
