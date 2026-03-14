@@ -6312,12 +6312,23 @@ fn preserve_scope_setup_statement_blank_lines(
 
     let stripped_rendered = strip_statement_blank_line_markers(&rendered_statements);
     let stripped_setup = strip_statement_blank_line_markers(&setup_statements);
-    if stripped_rendered == stripped_setup {
+    let should_prefer_rendered = stripped_rendered == stripped_setup
+        || statement_sources_are_sequence_recomposition_candidate(
+            &stripped_rendered,
+            &stripped_setup,
+        );
+    if should_prefer_rendered {
         if debug {
             let has_markers = rendered_statements.iter().any(|s| s.starts_with('\n'));
             eprintln!(
-                "[BLANK_LINE_PRESERVE] scope={} MATCH has_markers={}",
-                scope.id.0, has_markers
+                "[BLANK_LINE_PRESERVE] scope={} {} has_markers={}",
+                scope.id.0,
+                if stripped_rendered == stripped_setup {
+                    "MATCH"
+                } else {
+                    "SEQUENCE_MATCH"
+                },
+                has_markers
             );
             if has_markers {
                 for (i, s) in rendered_statements.iter().enumerate() {
@@ -6334,6 +6345,73 @@ fn preserve_scope_setup_statement_blank_lines(
         }
         setup_statements
     }
+}
+
+fn statement_sources_are_sequence_recomposition_candidate(
+    rendered_statements: &[String],
+    setup_statements: &[String],
+) -> bool {
+    if rendered_statements.len() >= setup_statements.len() {
+        return false;
+    }
+    statement_sources_contain_sequence_expression(rendered_statements)
+        && !statement_sources_contain_sequence_expression(setup_statements)
+        && statement_sources_are_sequence_recomposition_friendly(setup_statements)
+}
+
+fn statement_sources_contain_sequence_expression(statement_sources: &[String]) -> bool {
+    struct SequenceDetector {
+        found: bool,
+    }
+
+    impl<'a> Visit<'a> for SequenceDetector {
+        fn visit_expression(&mut self, expression: &ast::Expression<'a>) {
+            if matches!(
+                expression.without_parentheses(),
+                ast::Expression::SequenceExpression(_)
+            ) {
+                self.found = true;
+                return;
+            }
+            walk::walk_expression(self, expression);
+        }
+    }
+
+    let allocator = Allocator::default();
+    let mut detector = SequenceDetector { found: false };
+    for statement_source in statement_sources {
+        let Ok(statement) = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            statement_source.trim(),
+        ) else {
+            continue;
+        };
+        detector.visit_statement(&statement);
+        if detector.found {
+            return true;
+        }
+    }
+    false
+}
+
+fn statement_sources_are_sequence_recomposition_friendly(statement_sources: &[String]) -> bool {
+    let allocator = Allocator::default();
+    statement_sources.iter().all(|statement_source| {
+        let Ok(statement) = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            statement_source.trim(),
+        ) else {
+            return false;
+        };
+        matches!(
+            statement,
+            ast::Statement::ExpressionStatement(_)
+                | ast::Statement::VariableDeclaration(_)
+                | ast::Statement::WhileStatement(_)
+        )
+    })
 }
 
 fn rewrite_generated_setup_statements(mut setup_statements: Vec<String>) -> Vec<String> {
