@@ -5689,6 +5689,141 @@ fn statement_lenient_alias_binding(statement_source: &str) -> Option<(String, St
     })
 }
 
+fn statement_generated_assignment_result_binding(
+    statement_source: &str,
+) -> Option<(String, String)> {
+    let allocator = Allocator::default();
+    let Ok(statement) = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        statement_source,
+    ) else {
+        return None;
+    };
+    let ast::Statement::VariableDeclaration(declaration) = statement else {
+        return None;
+    };
+    if declaration.declarations.len() != 1 {
+        return None;
+    }
+    let declarator = declaration.declarations.first()?;
+    let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id else {
+        return None;
+    };
+    if !generated_binding_name_is_lenient_alias(identifier.name.as_str()) {
+        return None;
+    }
+    let init = declarator.init.as_ref()?;
+    let ast::Expression::AssignmentExpression(_) = init.without_parentheses() else {
+        return None;
+    };
+    Some((
+        identifier.name.to_string(),
+        format!("{};", codegen_expression_with_flow_cast_restore(init)),
+    ))
+}
+
+fn collect_declared_identifier_names(statement_source: &str) -> Vec<String> {
+    let allocator = Allocator::default();
+    let Ok(statement) = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        statement_source,
+    ) else {
+        return Vec::new();
+    };
+    match statement {
+        ast::Statement::VariableDeclaration(declaration) => declaration
+            .declarations
+            .iter()
+            .filter_map(|declarator| match &declarator.id {
+                ast::BindingPattern::BindingIdentifier(identifier) => {
+                    Some(identifier.name.to_string())
+                }
+                _ => None,
+            })
+            .collect(),
+        ast::Statement::FunctionDeclaration(function) => function
+            .id
+            .as_ref()
+            .map(|id| vec![id.name.to_string()])
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+fn collect_generated_temp_names(statement_source: &str) -> Vec<String> {
+    let chars: Vec<char> = statement_source.chars().collect();
+    let mut names = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == 't' && (i == 0 || (!chars[i - 1].is_alphanumeric() && chars[i - 1] != '_')) {
+            let start = i;
+            i += 1;
+            if i < chars.len() && chars[i].is_ascii_digit() {
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+                if i >= chars.len() || (!chars[i].is_alphanumeric() && chars[i] != '_') {
+                    names.push(chars[start..i].iter().collect());
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    names
+}
+
+fn rewrite_generated_assignment_result_bindings(statements: &mut Vec<String>) {
+    const GENERATED_VALUE_PLACEHOLDER: &str = "__generated_assignment_result__";
+
+    loop {
+        let mut changed = false;
+        for index in 0..statements.len() {
+            let Some((name, assignment_statement)) =
+                statement_generated_assignment_result_binding(&statements[index])
+            else {
+                continue;
+            };
+            let mut new_statements = Vec::with_capacity(statements.len());
+            for (inner_index, statement) in statements.iter().enumerate() {
+                if inner_index == index {
+                    new_statements.push(assignment_statement.clone());
+                    continue;
+                }
+                new_statements.push(replace_word(statement, &name, GENERATED_VALUE_PLACEHOLDER));
+            }
+            *statements = new_statements;
+            changed = true;
+            break;
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+fn replace_undeclared_generated_temps_with_placeholder(statements: &mut [String]) {
+    const GENERATED_VALUE_PLACEHOLDER: &str = "__generated_assignment_result__";
+
+    let declared: HashSet<String> = statements
+        .iter()
+        .flat_map(|statement| collect_declared_identifier_names(statement))
+        .collect();
+
+    for statement in statements.iter_mut() {
+        let temp_names = collect_generated_temp_names(statement);
+        let mut rewritten = statement.clone();
+        for temp_name in temp_names {
+            if !declared.contains(&temp_name) {
+                rewritten = replace_word(&rewritten, &temp_name, GENERATED_VALUE_PLACEHOLDER);
+            }
+        }
+        *statement = rewritten;
+    }
+}
+
 fn inline_lenient_alias_bindings(statements: &mut Vec<String>) {
     loop {
         let mut changed = false;
@@ -5739,6 +5874,8 @@ fn normalize_for_fallback_accounting_compare(source: &str) -> String {
     let mut statements = statement_sources_for_lenient_normalization(source);
     statements.retain(|statement| !statement_is_leniently_ignorable(statement));
     inline_lenient_alias_bindings(&mut statements);
+    rewrite_generated_assignment_result_bindings(&mut statements);
+    replace_undeclared_generated_temps_with_placeholder(&mut statements);
     statements.retain(|statement| !statement_is_leniently_ignorable(statement));
 
     let joined = normalize_labeled_blocks(&statements.join("\n"));
@@ -7307,22 +7444,22 @@ fn rewrite_generated_setup_statements(setup_statements: Vec<String>) -> Vec<Stri
     let rewritten = rewrite_named_temp_ternary_in_scope_computation(&rewritten);
     if rewritten == computation {
         return recompose_split_call_argument_setup_statements(
-            recompose_true_while_sequence_prefixes(drop_redundant_assignment_tail_identifier_reads(
-                setup_statements,
-            )),
+            recompose_true_while_sequence_prefixes(
+                drop_redundant_assignment_tail_identifier_reads(setup_statements),
+            ),
         );
     }
     match split_statement_sources_preserving_blank_lines(&rewritten) {
-        Some(statements) => recompose_split_call_argument_setup_statements(
-            recompose_true_while_sequence_prefixes(
+        Some(statements) => {
+            recompose_split_call_argument_setup_statements(recompose_true_while_sequence_prefixes(
                 drop_redundant_assignment_tail_identifier_reads(statements),
-            ),
-        ),
-        None => recompose_split_call_argument_setup_statements(
-            recompose_true_while_sequence_prefixes(
+            ))
+        }
+        None => {
+            recompose_split_call_argument_setup_statements(recompose_true_while_sequence_prefixes(
                 drop_redundant_assignment_tail_identifier_reads(original),
-            ),
-        ),
+            ))
+        }
     }
 }
 
