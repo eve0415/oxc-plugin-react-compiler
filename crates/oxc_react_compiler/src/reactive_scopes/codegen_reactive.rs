@@ -4008,7 +4008,9 @@ fn codegen_reactive_function_with_primitives(
     let body_shape = match direct_body_shape {
         Some(direct_body_shape) => {
             let direct_body_shape = fully_canonicalize_generated_body_shape(
-                strip_top_level_trailing_return_void(direct_body_shape),
+                hoist_guard_alias_bindings_outside_declarations(
+                    strip_top_level_trailing_return_void(direct_body_shape),
+                ),
             );
             let direct_body_shape_for_compare =
                 strip_generated_body_shape_blank_line_markers(direct_body_shape.clone());
@@ -7145,6 +7147,193 @@ fn render_generated_assignment_statement(assignment: &GeneratedAssignment) -> Op
 fn render_generated_expression_statement(expression: &str) -> Option<String> {
     render_reactive_expression_statement_ast(expression)
         .map(|statement| statement.trim_end().to_string())
+}
+
+fn is_simple_generated_identifier_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first == '$' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphanumeric())
+}
+
+fn generated_body_shape_supports_guard_aliases(shape: &GeneratedBodyShape) -> bool {
+    matches!(
+        shape,
+        GeneratedBodyShape::MemoizedCachedValues { deps, .. } if !deps.is_empty()
+    ) || matches!(
+        shape,
+        GeneratedBodyShape::SingleDependencyMemoizedReturn { .. }
+            | GeneratedBodyShape::SingleDependencyMemoizedExistingReturn { .. }
+            | GeneratedBodyShape::MultiDependencyMemoizedReturn { .. }
+            | GeneratedBodyShape::MultiDependencyMemoizedExistingReturn { .. }
+    )
+}
+
+fn hoist_guard_alias_bindings_outside_declarations(
+    shape: GeneratedBodyShape,
+) -> GeneratedBodyShape {
+    match shape {
+        GeneratedBodyShape::Block { inner } => GeneratedBodyShape::Block {
+            inner: Box::new(hoist_guard_alias_bindings_outside_declarations(*inner)),
+        },
+        GeneratedBodyShape::Labeled { label, inner } => GeneratedBodyShape::Labeled {
+            label,
+            inner: Box::new(hoist_guard_alias_bindings_outside_declarations(*inner)),
+        },
+        GeneratedBodyShape::GuardedBody { test, inner } => GeneratedBodyShape::GuardedBody {
+            test,
+            inner: Box::new(hoist_guard_alias_bindings_outside_declarations(*inner)),
+        },
+        GeneratedBodyShape::GuardedReturnPrefix {
+            test,
+            consequent,
+            inner,
+        } => GeneratedBodyShape::GuardedReturnPrefix {
+            test,
+            consequent,
+            inner: Box::new(hoist_guard_alias_bindings_outside_declarations(*inner)),
+        },
+        GeneratedBodyShape::ConditionalBranches {
+            test,
+            consequent,
+            alternate,
+        } => GeneratedBodyShape::ConditionalBranches {
+            test,
+            consequent: Box::new(hoist_guard_alias_bindings_outside_declarations(*consequent)),
+            alternate: Box::new(hoist_guard_alias_bindings_outside_declarations(*alternate)),
+        },
+        GeneratedBodyShape::WhileLoop { test, body } => GeneratedBodyShape::WhileLoop {
+            test,
+            body: Box::new(hoist_guard_alias_bindings_outside_declarations(*body)),
+        },
+        GeneratedBodyShape::DoWhileLoop { test, body } => GeneratedBodyShape::DoWhileLoop {
+            test,
+            body: Box::new(hoist_guard_alias_bindings_outside_declarations(*body)),
+        },
+        GeneratedBodyShape::ForLoop {
+            init,
+            test,
+            update,
+            body,
+        } => GeneratedBodyShape::ForLoop {
+            init,
+            test,
+            update,
+            body: Box::new(hoist_guard_alias_bindings_outside_declarations(*body)),
+        },
+        GeneratedBodyShape::ForInLoop { left, right, body } => GeneratedBodyShape::ForInLoop {
+            left,
+            right,
+            body: Box::new(hoist_guard_alias_bindings_outside_declarations(*body)),
+        },
+        GeneratedBodyShape::ForOfLoop { left, right, body } => GeneratedBodyShape::ForOfLoop {
+            left,
+            right,
+            body: Box::new(hoist_guard_alias_bindings_outside_declarations(*body)),
+        },
+        GeneratedBodyShape::TryCatch {
+            catch_param,
+            try_body,
+            catch_body,
+        } => GeneratedBodyShape::TryCatch {
+            catch_param,
+            try_body: Box::new(hoist_guard_alias_bindings_outside_declarations(*try_body)),
+            catch_body: Box::new(hoist_guard_alias_bindings_outside_declarations(*catch_body)),
+        },
+        GeneratedBodyShape::WrappedReturnExpression {
+            source_name,
+            expression,
+            inner,
+        } => GeneratedBodyShape::WrappedReturnExpression {
+            source_name,
+            expression,
+            inner: Box::new(hoist_guard_alias_bindings_outside_declarations(*inner)),
+        },
+        GeneratedBodyShape::AssignedAliasReturn {
+            alias_name,
+            source_name,
+            inner,
+        } => GeneratedBodyShape::AssignedAliasReturn {
+            alias_name,
+            source_name,
+            inner: Box::new(hoist_guard_alias_bindings_outside_declarations(*inner)),
+        },
+        GeneratedBodyShape::AliasedReturn {
+            alias_name,
+            alias_kind,
+            source_name,
+            inner,
+        } => GeneratedBodyShape::AliasedReturn {
+            alias_name,
+            alias_kind,
+            source_name,
+            inner: Box::new(hoist_guard_alias_bindings_outside_declarations(*inner)),
+        },
+        GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } => {
+            let inner = hoist_guard_alias_bindings_outside_declarations(*inner);
+            if let GeneratedBodyShape::PrefixedBindings { bindings, inner } = inner {
+                let declaration_names: Vec<String> = declarations
+                    .iter()
+                    .map(|declaration| declaration.pattern.clone())
+                    .filter(|pattern| is_simple_generated_identifier_name(pattern))
+                    .collect();
+                let can_swap = !declaration_names.is_empty()
+                    && !bindings.is_empty()
+                    && bindings.iter().all(|binding| {
+                        is_simple_generated_identifier_name(&binding.pattern)
+                            && declaration_names
+                                .iter()
+                                .all(|name| !contains_word(&binding.expression, name))
+                    })
+                    && generated_body_shape_supports_guard_aliases(inner.as_ref());
+                if can_swap {
+                    return GeneratedBodyShape::PrefixedBindings {
+                        bindings,
+                        inner: Box::new(GeneratedBodyShape::PrefixedDeclarations {
+                            declarations,
+                            inner,
+                        }),
+                    };
+                }
+                return GeneratedBodyShape::PrefixedDeclarations {
+                    declarations,
+                    inner: Box::new(GeneratedBodyShape::PrefixedBindings { bindings, inner }),
+                };
+            }
+            GeneratedBodyShape::PrefixedDeclarations {
+                declarations,
+                inner: Box::new(inner),
+            }
+        }
+        GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
+            GeneratedBodyShape::PrefixedBindings {
+                bindings,
+                inner: Box::new(hoist_guard_alias_bindings_outside_declarations(*inner)),
+            }
+        }
+        GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
+            GeneratedBodyShape::PrefixedExpressionStatements {
+                expressions,
+                inner: Box::new(hoist_guard_alias_bindings_outside_declarations(*inner)),
+            }
+        }
+        GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
+            GeneratedBodyShape::PrefixedAssignments {
+                assignments,
+                inner: Box::new(hoist_guard_alias_bindings_outside_declarations(*inner)),
+            }
+        }
+        GeneratedBodyShape::Sequential { prefix, inner } => GeneratedBodyShape::Sequential {
+            prefix: Box::new(hoist_guard_alias_bindings_outside_declarations(*prefix)),
+            inner: Box::new(hoist_guard_alias_bindings_outside_declarations(*inner)),
+        },
+        other => other,
+    }
 }
 
 fn analyze_rendered_generated_body_shape_source(source: &str) -> Option<GeneratedBodyShape> {
