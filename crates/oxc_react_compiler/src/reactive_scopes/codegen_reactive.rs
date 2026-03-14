@@ -5764,18 +5764,21 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
             })
         };
     }
-    let mut setup_statements =
-        try_build_simple_scope_setup_statements(&primary_output_name, &computation_shape).or_else(
-            || {
-                if std::env::var("DEBUG_SCOPE_STATEMENT_FALLBACK").is_ok() {
-                    eprintln!(
-                        "[SCOPE_STATEMENT_FALLBACK] outputs={:?} deps={:?} shape={:#?}",
-                        output_names, dep_exprs, computation_shape
-                    );
-                }
-                try_render_statement_sources_from_generated_body_shape(&computation_shape)
-            },
-        )?;
+    let cache_binding_name = cx.synthesize_name("$");
+    let mut setup_statements = try_build_simple_scope_setup_statements(
+        &primary_output_name,
+        &computation_shape,
+        &cache_binding_name,
+    )
+    .or_else(|| {
+        if std::env::var("DEBUG_SCOPE_STATEMENT_FALLBACK").is_ok() {
+            eprintln!(
+                "[SCOPE_STATEMENT_FALLBACK] outputs={:?} deps={:?} shape={:#?}",
+                output_names, dep_exprs, computation_shape
+            );
+        }
+        try_render_statement_sources_from_generated_body_shape(&computation_shape)
+    })?;
     if trace {
         eprintln!(
             "[DIRECT_SCOPE_STATEMENT_TRACE] scope={} output={} deps={:?} shape={:#?} setup={:#?}",
@@ -6314,6 +6317,7 @@ fn drop_redundant_assignment_tail_identifier_read_lines(source: String) -> Strin
 fn try_build_simple_scope_setup_statements(
     output_name: &str,
     computation_shape: &GeneratedBodyShape,
+    cache_binding_name: &str,
 ) -> Option<Vec<String>> {
     match computation_shape {
         GeneratedBodyShape::PrefixedBindings { bindings, inner }
@@ -6339,7 +6343,11 @@ fn try_build_simple_scope_setup_statements(
                     .to_string(),
                 );
             }
-            statements.extend(try_build_simple_scope_setup_statements(output_name, inner)?);
+            statements.extend(try_build_simple_scope_setup_statements(
+                output_name,
+                inner,
+                cache_binding_name,
+            )?);
             Some(statements)
         }
         GeneratedBodyShape::PrefixedDeclarations {
@@ -6358,7 +6366,11 @@ fn try_build_simple_scope_setup_statements(
                     .to_string(),
                 );
             }
-            statements.extend(try_build_simple_scope_setup_statements(output_name, inner)?);
+            statements.extend(try_build_simple_scope_setup_statements(
+                output_name,
+                inner,
+                cache_binding_name,
+            )?);
             Some(statements)
         }
         GeneratedBodyShape::PrefixedAssignments { assignments, inner }
@@ -6383,7 +6395,11 @@ fn try_build_simple_scope_setup_statements(
                     .to_string(),
                 );
             }
-            statements.extend(try_build_simple_scope_setup_statements(output_name, inner)?);
+            statements.extend(try_build_simple_scope_setup_statements(
+                output_name,
+                inner,
+                cache_binding_name,
+            )?);
             Some(statements)
         }
         GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
@@ -6395,7 +6411,11 @@ fn try_build_simple_scope_setup_statements(
                         .to_string(),
                 );
             }
-            statements.extend(try_build_simple_scope_setup_statements(output_name, inner)?);
+            statements.extend(try_build_simple_scope_setup_statements(
+                output_name,
+                inner,
+                cache_binding_name,
+            )?);
             Some(statements)
         }
         GeneratedBodyShape::ExpressionStatements(expressions) => {
@@ -6465,21 +6485,32 @@ fn try_build_simple_scope_setup_statements(
                 }
             }
             for (dep_slot, dep_expr) in deps {
+                let cache_access =
+                    render_cache_slot_access_expression_ast(cache_binding_name, *dep_slot)?;
                 consequent.push_str(&render_reactive_assignment_statement_ast(
-                    &format!("$[{dep_slot}]"),
+                    &cache_access,
                     dep_expr,
                 )?);
             }
+            let value_cache_access =
+                render_cache_slot_access_expression_ast(cache_binding_name, value_slot)?;
             consequent.push_str(&render_reactive_assignment_statement_ast(
-                &format!("$[{value_slot}]"),
+                &value_cache_access,
                 value_name,
             )?);
             let alternate =
-                render_reactive_assignment_statement_ast(value_name, &format!("$[{value_slot}]"))?;
+                render_reactive_assignment_statement_ast(value_name, &value_cache_access)?;
             let test = deps
                 .iter()
-                .map(|(dep_slot, dep_expr)| format!("$[{dep_slot}] !== {dep_expr}"))
-                .collect::<Vec<_>>()
+                .map(|(dep_slot, dep_expr)| {
+                    render_cache_slot_comparison_expression_ast(
+                        cache_binding_name,
+                        *dep_slot,
+                        BinaryOperator::StrictNotEq,
+                        dep_expr,
+                    )
+                })
+                .collect::<Option<Vec<_>>>()?
                 .join(" || ");
             Some(vec![
                 render_reactive_if_statement_ast_with_context(
@@ -6511,17 +6542,22 @@ fn try_build_simple_scope_setup_statements(
                     consequent.push('\n');
                 }
             }
+            let sentinel_cache_access =
+                render_cache_slot_access_expression_ast(cache_binding_name, *sentinel_slot)?;
             consequent.push_str(&render_reactive_assignment_statement_ast(
-                &format!("$[{sentinel_slot}]"),
+                &sentinel_cache_access,
                 value_name,
             )?);
-            let alternate = render_reactive_assignment_statement_ast(
-                value_name,
-                &format!("$[{sentinel_slot}]"),
-            )?;
+            let alternate =
+                render_reactive_assignment_statement_ast(value_name, &sentinel_cache_access)?;
             Some(vec![
                 render_reactive_if_statement_ast_with_context(
-                    &format!("$[{sentinel_slot}] === Symbol.for(\"{MEMO_CACHE_SENTINEL}\")"),
+                    &render_cache_slot_comparison_expression_ast(
+                        cache_binding_name,
+                        *sentinel_slot,
+                        BinaryOperator::StrictEq,
+                        &render_symbol_for_call_expression_source(MEMO_CACHE_SENTINEL),
+                    )?,
                     &consequent,
                     Some(&alternate),
                     false,
@@ -6532,8 +6568,13 @@ fn try_build_simple_scope_setup_statements(
             ])
         }
         GeneratedBodyShape::Sequential { prefix, inner } => {
-            let mut statements = try_build_simple_scope_setup_statements(output_name, prefix)?;
-            statements.extend(try_build_simple_scope_setup_statements(output_name, inner)?);
+            let mut statements =
+                try_build_simple_scope_setup_statements(output_name, prefix, cache_binding_name)?;
+            statements.extend(try_build_simple_scope_setup_statements(
+                output_name,
+                inner,
+                cache_binding_name,
+            )?);
             Some(statements)
         }
         _ => None,
@@ -8816,10 +8857,11 @@ fn render_memo_guard_test_source(
     deps: &[(u32, String)],
     zero_dep_sentinel_slot: Option<u32>,
 ) -> Option<(Vec<String>, String)> {
+    let cache_binding_name = cx.synthesize_name("$");
     if deps.is_empty() {
         let sentinel_slot = zero_dep_sentinel_slot?;
         let mut test = render_cache_slot_comparison_expression_ast(
-            "$",
+            &cache_binding_name,
             sentinel_slot,
             BinaryOperator::StrictEq,
             &render_symbol_for_call_expression_source(MEMO_CACHE_SENTINEL),
@@ -8834,7 +8876,7 @@ fn render_memo_guard_test_source(
     let mut guard_terms = Vec::with_capacity(deps.len());
     for (slot, dep_expr) in deps {
         let comparison = render_cache_slot_comparison_expression_ast(
-            "$",
+            &cache_binding_name,
             *slot,
             BinaryOperator::StrictNotEq,
             dep_expr,
@@ -8865,11 +8907,12 @@ fn render_memo_guard_test_source(
 
 fn render_cached_value_store_sources(
     cached_values: &[GeneratedCachedValue],
+    cache_binding_name: &str,
 ) -> Option<Vec<String>> {
     let mut stores = Vec::with_capacity(cached_values.len());
     for value in cached_values {
         stores.push(
-            render_cache_slot_store_statement_ast("$", value.slot, &value.name)?
+            render_cache_slot_store_statement_ast(cache_binding_name, value.slot, &value.name)?
                 .trim_end()
                 .to_string(),
         );
@@ -8879,23 +8922,31 @@ fn render_cached_value_store_sources(
 
 fn render_cached_value_restore_sources(
     restored_values: &[GeneratedCachedValue],
+    cache_binding_name: &str,
 ) -> Option<Vec<String>> {
     let mut restores = Vec::with_capacity(restored_values.len());
     for value in restored_values {
         restores.push(
-            render_cache_slot_load_assignment_statement_ast(&value.name, "$", value.slot)?
-                .trim_end()
-                .to_string(),
+            render_cache_slot_load_assignment_statement_ast(
+                &value.name,
+                cache_binding_name,
+                value.slot,
+            )?
+            .trim_end()
+            .to_string(),
         );
     }
     Some(restores)
 }
 
-fn render_dependency_store_sources(deps: &[(u32, String)]) -> Option<Vec<String>> {
+fn render_dependency_store_sources(
+    deps: &[(u32, String)],
+    cache_binding_name: &str,
+) -> Option<Vec<String>> {
     let mut stores = Vec::with_capacity(deps.len());
     for (slot, dep_expr) in deps {
         stores.push(
-            render_cache_slot_store_statement_ast("$", *slot, dep_expr)?
+            render_cache_slot_store_statement_ast(cache_binding_name, *slot, dep_expr)?
                 .trim_end()
                 .to_string(),
         );
@@ -8973,11 +9024,14 @@ fn build_option_sensitive_cached_values_shape(
         return None;
     }
 
+    let cache_binding_name = cx.synthesize_name("$");
     let (guard_prefix, test) =
         render_memo_guard_test_source(cx, spec.deps, spec.zero_dep_sentinel_slot)?;
-    let dep_store_sources = render_dependency_store_sources(spec.deps)?;
-    let cached_value_store_sources = render_cached_value_store_sources(spec.cached_values)?;
-    let restored_sources = render_cached_value_restore_sources(spec.restored_values)?;
+    let dep_store_sources = render_dependency_store_sources(spec.deps, &cache_binding_name)?;
+    let cached_value_store_sources =
+        render_cached_value_store_sources(spec.cached_values, &cache_binding_name)?;
+    let restored_sources =
+        render_cached_value_restore_sources(spec.restored_values, &cache_binding_name)?;
     let mut lines = guard_prefix;
 
     if cx.enable_change_detection_for_debugging && !spec.deps.is_empty() {
@@ -8991,7 +9045,7 @@ fn build_option_sensitive_cached_values_shape(
             let old_name = cx.synthesize_name(&format!("old${}", value.name));
             lines.push(format!(
                 "    let {old_name} = {};",
-                render_cache_slot_access_expression_ast("$", value.slot)?
+                render_cache_slot_access_expression_ast(&cache_binding_name, value.slot)?
             ));
             lines.push(format!(
                 "    {}",
@@ -9011,7 +9065,8 @@ fn build_option_sensitive_cached_values_shape(
         lines.push(format!("  if ({condition_name}) {{"));
         push_indented_statement_sources(&mut lines, spec.setup_statements, 4);
         for value in spec.cached_values {
-            let cached_access = render_cache_slot_access_expression_ast("$", value.slot)?;
+            let cached_access =
+                render_cache_slot_access_expression_ast(&cache_binding_name, value.slot)?;
             lines.push(format!(
                 "    {}",
                 render_structural_check_call_source(
@@ -9073,18 +9128,25 @@ fn build_option_sensitive_memoized_return_shape(
         return None;
     }
 
+    let cache_binding_name = cx.synthesize_name("$");
     let (guard_prefix, test) =
         render_memo_guard_test_source(cx, spec.deps, spec.zero_dep_sentinel_slot)?;
     let setup_sources = render_direct_memoized_setup_sources(spec.value_name, spec.parts)?;
-    let dep_store_sources = render_dependency_store_sources(spec.deps)?;
-    let restore_source =
-        render_cache_slot_load_assignment_statement_ast(spec.value_name, "$", spec.value_slot)?
-            .trim_end()
-            .to_string();
-    let value_store_source =
-        render_cache_slot_store_statement_ast("$", spec.value_slot, spec.value_name)?
-            .trim_end()
-            .to_string();
+    let dep_store_sources = render_dependency_store_sources(spec.deps, &cache_binding_name)?;
+    let restore_source = render_cache_slot_load_assignment_statement_ast(
+        spec.value_name,
+        &cache_binding_name,
+        spec.value_slot,
+    )?
+    .trim_end()
+    .to_string();
+    let value_store_source = render_cache_slot_store_statement_ast(
+        &cache_binding_name,
+        spec.value_slot,
+        spec.value_name,
+    )?
+    .trim_end()
+    .to_string();
 
     let mut lines = guard_prefix;
     if let Some(value_kind) = spec.declare_value_kind {
@@ -9107,7 +9169,7 @@ fn build_option_sensitive_memoized_return_shape(
         let old_name = cx.synthesize_name(&format!("old${}", spec.value_name));
         lines.push(format!(
             "    let {old_name} = {};",
-            render_cache_slot_access_expression_ast("$", spec.value_slot)?
+            render_cache_slot_access_expression_ast(&cache_binding_name, spec.value_slot)?
         ));
         lines.push(format!(
             "    {}",
@@ -9125,7 +9187,8 @@ fn build_option_sensitive_memoized_return_shape(
         push_indented_source_lines(&mut lines, &value_store_source, 2);
         lines.push(format!("  if ({condition_name}) {{"));
         push_indented_statement_sources(&mut lines, &setup_sources, 4);
-        let cached_access = render_cache_slot_access_expression_ast("$", spec.value_slot)?;
+        let cached_access =
+            render_cache_slot_access_expression_ast(&cache_binding_name, spec.value_slot)?;
         lines.push(format!(
             "    {}",
             render_structural_check_call_source(
@@ -41377,6 +41440,7 @@ mod tests {
                 }],
                 inner: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![])),
             },
+            "$",
         );
 
         assert_eq!(
@@ -41396,9 +41460,38 @@ mod tests {
                 }],
                 inner: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![])),
             },
+            "$",
         );
 
         assert_eq!(statements, Some(vec!["t2 = { [t0]: t1 };".to_string()]));
+    }
+
+    #[test]
+    fn builds_simple_scope_setup_statement_with_custom_cache_binding() {
+        let statements = super::try_build_simple_scope_setup_statements(
+            "t1",
+            &super::GeneratedBodyShape::MemoizedCachedValues {
+                deps: vec![(0, "props.value".to_string())],
+                setup_statements: vec!["t1 = identity(props.value);".to_string()],
+                cached_values: vec![super::GeneratedCachedValue {
+                    name: "t1".to_string(),
+                    slot: 1,
+                }],
+                restored_values: vec![super::GeneratedCachedValue {
+                    name: "t1".to_string(),
+                    slot: 1,
+                }],
+            },
+            "$0",
+        );
+
+        assert_eq!(
+            statements,
+            Some(vec![
+                "if ($0[0] !== props.value) {\n  t1 = identity(props.value);\n  $0[0] = props.value;\n  $0[1] = t1;\n} else {\n  t1 = $0[1];\n}"
+                    .to_string()
+            ])
+        );
     }
 
     #[test]
