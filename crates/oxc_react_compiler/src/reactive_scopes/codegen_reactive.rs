@@ -1653,7 +1653,10 @@ fn canonicalize_generated_statement_source(statement_source: String) -> String {
         ast::Statement::LabeledStatement(labeled) => {
             if let ast::Statement::BlockStatement(block) = &mut labeled.body
                 && block.body.len() == 1
-                && matches!(block.body.first(), Some(ast::Statement::SwitchStatement(_)))
+                && matches!(
+                    block.body.first(),
+                    Some(ast::Statement::SwitchStatement(_) | ast::Statement::TryStatement(_))
+                )
             {
                 labeled.body = block.body.remove(0);
             }
@@ -4000,6 +4003,10 @@ fn codegen_reactive_function_with_primitives(
         );
     }
 
+    let cache_binding_name = cache_prologue
+        .as_ref()
+        .map_or("$", |prologue| prologue.binding_name.as_str());
+
     let analyzed_body_shape = {
         let body = strip_trailing_bare_return(&body, func.async_, func.generator);
         let body = prune_unused_const_literal_decls(&body, func.async_, func.generator);
@@ -4057,6 +4064,7 @@ fn codegen_reactive_function_with_primitives(
             analyzed_body_shape
         }
     };
+    let body_shape = apply_generated_body_shape_cache_binding_name(body_shape, cache_binding_name);
     CodegenResult {
         body_shape,
         cache_size,
@@ -4070,6 +4078,753 @@ fn codegen_reactive_function_with_primitives(
         cache_prologue,
         error: cx.codegen_error,
         string_body: body,
+    }
+}
+
+#[cfg(test)]
+fn normalize_generated_body_shape_cache_binding_name(
+    shape: GeneratedBodyShape,
+    cache_binding_name: &str,
+) -> GeneratedBodyShape {
+    if cache_binding_name == "$" {
+        return shape;
+    }
+
+    fn normalize_cache_binding_name_in_expression(
+        expression: String,
+        cache_binding_name: &str,
+    ) -> String {
+        expression.replace(&format!("{cache_binding_name}["), "$[")
+    }
+
+    fn normalize_cache_binding_name_in_statement_source(
+        statement_source: String,
+        cache_binding_name: &str,
+    ) -> String {
+        statement_source.replace(&format!("{cache_binding_name}["), "$[")
+    }
+
+    fn normalize_bindings(
+        bindings: Vec<GeneratedBinding>,
+        cache_binding_name: &str,
+    ) -> Vec<GeneratedBinding> {
+        bindings
+            .into_iter()
+            .map(|binding| GeneratedBinding {
+                expression: normalize_cache_binding_name_in_expression(
+                    binding.expression,
+                    cache_binding_name,
+                ),
+                ..binding
+            })
+            .collect()
+    }
+
+    fn normalize_assignments(
+        assignments: Vec<GeneratedAssignment>,
+        cache_binding_name: &str,
+    ) -> Vec<GeneratedAssignment> {
+        assignments
+            .into_iter()
+            .map(|assignment| GeneratedAssignment {
+                target: normalize_cache_binding_name_in_expression(
+                    assignment.target,
+                    cache_binding_name,
+                ),
+                value: normalize_cache_binding_name_in_expression(
+                    assignment.value,
+                    cache_binding_name,
+                ),
+            })
+            .collect()
+    }
+
+    fn normalize_cached_values(
+        values: Vec<GeneratedCachedValue>,
+        cache_binding_name: &str,
+    ) -> Vec<GeneratedCachedValue> {
+        values
+            .into_iter()
+            .map(|value| GeneratedCachedValue {
+                name: normalize_cache_binding_name_in_expression(value.name, cache_binding_name),
+                slot: value.slot,
+            })
+            .collect()
+    }
+
+    match shape {
+        GeneratedBodyShape::Unknown
+        | GeneratedBodyShape::DebuggerStatements(_)
+        | GeneratedBodyShape::Break(_)
+        | GeneratedBodyShape::Continue(_)
+        | GeneratedBodyShape::ReturnVoid => shape,
+        GeneratedBodyShape::Block { inner } => GeneratedBodyShape::Block {
+            inner: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *inner,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::Labeled { label, inner } => GeneratedBodyShape::Labeled {
+            label,
+            inner: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *inner,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::Switch {
+            discriminant,
+            cases,
+        } => GeneratedBodyShape::Switch {
+            discriminant: normalize_cache_binding_name_in_expression(
+                discriminant,
+                cache_binding_name,
+            ),
+            cases: cases
+                .into_iter()
+                .map(|case| GeneratedSwitchCase {
+                    test: case.test.map(|test| {
+                        normalize_cache_binding_name_in_expression(test, cache_binding_name)
+                    }),
+                    consequent: normalize_generated_body_shape_cache_binding_name(
+                        case.consequent,
+                        cache_binding_name,
+                    ),
+                })
+                .collect(),
+        },
+        GeneratedBodyShape::ExpressionStatements(expressions) => {
+            GeneratedBodyShape::ExpressionStatements(
+                expressions
+                    .into_iter()
+                    .map(|expression| {
+                        normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+                    })
+                    .collect(),
+            )
+        }
+        GeneratedBodyShape::AssignmentStatements(assignments) => {
+            GeneratedBodyShape::AssignmentStatements(normalize_assignments(
+                assignments,
+                cache_binding_name,
+            ))
+        }
+        GeneratedBodyShape::GuardedBody { test, inner } => GeneratedBodyShape::GuardedBody {
+            test: normalize_cache_binding_name_in_expression(test, cache_binding_name),
+            inner: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *inner,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::GuardedExpressionStatements { test, expressions } => {
+            GeneratedBodyShape::GuardedExpressionStatements {
+                test: normalize_cache_binding_name_in_expression(test, cache_binding_name),
+                expressions: expressions
+                    .into_iter()
+                    .map(|expression| {
+                        normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+                    })
+                    .collect(),
+            }
+        }
+        GeneratedBodyShape::GuardedReturnPrefix {
+            test,
+            consequent,
+            inner,
+        } => GeneratedBodyShape::GuardedReturnPrefix {
+            test: normalize_cache_binding_name_in_expression(test, cache_binding_name),
+            consequent: consequent.map(|expression| {
+                normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+            }),
+            inner: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *inner,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::ConditionalBranches {
+            test,
+            consequent,
+            alternate,
+        } => GeneratedBodyShape::ConditionalBranches {
+            test: normalize_cache_binding_name_in_expression(test, cache_binding_name),
+            consequent: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *consequent,
+                cache_binding_name,
+            )),
+            alternate: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *alternate,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::GuardedAssignments { test, assignments } => {
+            GeneratedBodyShape::GuardedAssignments {
+                test: normalize_cache_binding_name_in_expression(test, cache_binding_name),
+                assignments: normalize_assignments(assignments, cache_binding_name),
+            }
+        }
+        GeneratedBodyShape::WhileLoop { test, body } => GeneratedBodyShape::WhileLoop {
+            test: normalize_cache_binding_name_in_expression(test, cache_binding_name),
+            body: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *body,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::DoWhileLoop { test, body } => GeneratedBodyShape::DoWhileLoop {
+            test: normalize_cache_binding_name_in_expression(test, cache_binding_name),
+            body: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *body,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::ForLoop {
+            init,
+            test,
+            update,
+            body,
+        } => GeneratedBodyShape::ForLoop {
+            init: init.map(|source| {
+                normalize_cache_binding_name_in_expression(source, cache_binding_name)
+            }),
+            test: test.map(|expression| {
+                normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+            }),
+            update: update.map(|expression| {
+                normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+            }),
+            body: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *body,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::ForInLoop { left, right, body } => GeneratedBodyShape::ForInLoop {
+            left: normalize_cache_binding_name_in_expression(left, cache_binding_name),
+            right: normalize_cache_binding_name_in_expression(right, cache_binding_name),
+            body: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *body,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::ForOfLoop { left, right, body } => GeneratedBodyShape::ForOfLoop {
+            left: normalize_cache_binding_name_in_expression(left, cache_binding_name),
+            right: normalize_cache_binding_name_in_expression(right, cache_binding_name),
+            body: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *body,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::GuardedAssignmentExpressions {
+            test,
+            assignments,
+            expressions,
+        } => GeneratedBodyShape::GuardedAssignmentExpressions {
+            test: normalize_cache_binding_name_in_expression(test, cache_binding_name),
+            assignments: normalize_assignments(assignments, cache_binding_name),
+            expressions: expressions
+                .into_iter()
+                .map(|expression| {
+                    normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+                })
+                .collect(),
+        },
+        GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+            sentinel_slot,
+            setup_statements,
+            cached_values,
+            restored_values,
+        } => GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+            sentinel_slot,
+            setup_statements: setup_statements
+                .into_iter()
+                .map(|statement_source| {
+                    normalize_cache_binding_name_in_statement_source(
+                        statement_source,
+                        cache_binding_name,
+                    )
+                })
+                .collect(),
+            cached_values: normalize_cached_values(cached_values, cache_binding_name),
+            restored_values: normalize_cached_values(restored_values, cache_binding_name),
+        },
+        GeneratedBodyShape::MemoizedCachedValues {
+            deps,
+            setup_statements,
+            cached_values,
+            restored_values,
+        } => GeneratedBodyShape::MemoizedCachedValues {
+            deps: deps
+                .into_iter()
+                .map(|(slot, expression)| {
+                    (
+                        slot,
+                        normalize_cache_binding_name_in_expression(expression, cache_binding_name),
+                    )
+                })
+                .collect(),
+            setup_statements: setup_statements
+                .into_iter()
+                .map(|statement_source| {
+                    normalize_cache_binding_name_in_statement_source(
+                        statement_source,
+                        cache_binding_name,
+                    )
+                })
+                .collect(),
+            cached_values: normalize_cached_values(cached_values, cache_binding_name),
+            restored_values: normalize_cached_values(restored_values, cache_binding_name),
+        },
+        GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+            deps,
+            setup_statements,
+            cached_values,
+            restored_values,
+            sentinel_name,
+            final_return,
+            fallback_body,
+        } => GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+            deps: deps
+                .into_iter()
+                .map(|(slot, expression)| {
+                    (
+                        slot,
+                        normalize_cache_binding_name_in_expression(expression, cache_binding_name),
+                    )
+                })
+                .collect(),
+            setup_statements: setup_statements
+                .into_iter()
+                .map(|statement_source| {
+                    normalize_cache_binding_name_in_statement_source(
+                        statement_source,
+                        cache_binding_name,
+                    )
+                })
+                .collect(),
+            cached_values: normalize_cached_values(cached_values, cache_binding_name),
+            restored_values: normalize_cached_values(restored_values, cache_binding_name),
+            sentinel_name,
+            final_return: final_return.map(|expression| {
+                normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+            }),
+            fallback_body: fallback_body.map(|body| {
+                Box::new(normalize_generated_body_shape_cache_binding_name(
+                    *body,
+                    cache_binding_name,
+                ))
+            }),
+        },
+        GeneratedBodyShape::TryCatch {
+            catch_param,
+            try_body,
+            catch_body,
+        } => GeneratedBodyShape::TryCatch {
+            catch_param,
+            try_body: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *try_body,
+                cache_binding_name,
+            )),
+            catch_body: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *catch_body,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::ReturnIdentifier(name) => GeneratedBodyShape::ReturnIdentifier(name),
+        GeneratedBodyShape::ReturnExpression(expression) => GeneratedBodyShape::ReturnExpression(
+            normalize_cache_binding_name_in_expression(expression, cache_binding_name),
+        ),
+        GeneratedBodyShape::ThrowExpression(expression) => GeneratedBodyShape::ThrowExpression(
+            normalize_cache_binding_name_in_expression(expression, cache_binding_name),
+        ),
+        GeneratedBodyShape::BoundExpressionReturn {
+            value_name,
+            value_kind,
+            expression,
+        } => GeneratedBodyShape::BoundExpressionReturn {
+            value_name,
+            value_kind,
+            expression: normalize_cache_binding_name_in_expression(expression, cache_binding_name),
+        },
+        GeneratedBodyShape::AssignedExpressionReturn {
+            value_name,
+            value_kind,
+            expression,
+        } => GeneratedBodyShape::AssignedExpressionReturn {
+            value_name,
+            value_kind,
+            expression: normalize_cache_binding_name_in_expression(expression, cache_binding_name),
+        },
+        GeneratedBodyShape::ZeroDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::ZeroDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            value_slot,
+            memoized_bindings: normalize_bindings(memoized_bindings, cache_binding_name),
+            memoized_assignments: normalize_assignments(memoized_assignments, cache_binding_name),
+            memoized_expressions: memoized_expressions
+                .into_iter()
+                .map(|expression| {
+                    normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+                })
+                .collect(),
+            memoized_setup_statements: memoized_setup_statements
+                .into_iter()
+                .map(|statement_source| {
+                    normalize_cache_binding_name_in_statement_source(
+                        statement_source,
+                        cache_binding_name,
+                    )
+                })
+                .collect(),
+            memoized_expr: memoized_expr.map(|expression| {
+                normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+            }),
+        },
+        GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+            value_name,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+            value_name,
+            value_slot,
+            memoized_bindings: normalize_bindings(memoized_bindings, cache_binding_name),
+            memoized_assignments: normalize_assignments(memoized_assignments, cache_binding_name),
+            memoized_expressions: memoized_expressions
+                .into_iter()
+                .map(|expression| {
+                    normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+                })
+                .collect(),
+            memoized_setup_statements: memoized_setup_statements
+                .into_iter()
+                .map(|statement_source| {
+                    normalize_cache_binding_name_in_statement_source(
+                        statement_source,
+                        cache_binding_name,
+                    )
+                })
+                .collect(),
+            memoized_expr: memoized_expr.map(|expression| {
+                normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+            }),
+        },
+        GeneratedBodyShape::SingleDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            dep_slot,
+            dep_expr,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::SingleDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            dep_slot,
+            dep_expr: normalize_cache_binding_name_in_expression(dep_expr, cache_binding_name),
+            value_slot,
+            memoized_bindings: normalize_bindings(memoized_bindings, cache_binding_name),
+            memoized_assignments: normalize_assignments(memoized_assignments, cache_binding_name),
+            memoized_expressions: memoized_expressions
+                .into_iter()
+                .map(|expression| {
+                    normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+                })
+                .collect(),
+            memoized_setup_statements: memoized_setup_statements
+                .into_iter()
+                .map(|statement_source| {
+                    normalize_cache_binding_name_in_statement_source(
+                        statement_source,
+                        cache_binding_name,
+                    )
+                })
+                .collect(),
+            memoized_expr: memoized_expr.map(|expression| {
+                normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+            }),
+        },
+        GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+            value_name,
+            dep_slot,
+            dep_expr,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+            value_name,
+            dep_slot,
+            dep_expr: normalize_cache_binding_name_in_expression(dep_expr, cache_binding_name),
+            value_slot,
+            memoized_bindings: normalize_bindings(memoized_bindings, cache_binding_name),
+            memoized_assignments: normalize_assignments(memoized_assignments, cache_binding_name),
+            memoized_expressions: memoized_expressions
+                .into_iter()
+                .map(|expression| {
+                    normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+                })
+                .collect(),
+            memoized_setup_statements: memoized_setup_statements
+                .into_iter()
+                .map(|statement_source| {
+                    normalize_cache_binding_name_in_statement_source(
+                        statement_source,
+                        cache_binding_name,
+                    )
+                })
+                .collect(),
+            memoized_expr: memoized_expr.map(|expression| {
+                normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+            }),
+        },
+        GeneratedBodyShape::MultiDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            deps,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::MultiDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            deps: deps
+                .into_iter()
+                .map(|(slot, expression)| {
+                    (
+                        slot,
+                        normalize_cache_binding_name_in_expression(expression, cache_binding_name),
+                    )
+                })
+                .collect(),
+            value_slot,
+            memoized_bindings: normalize_bindings(memoized_bindings, cache_binding_name),
+            memoized_assignments: normalize_assignments(memoized_assignments, cache_binding_name),
+            memoized_expressions: memoized_expressions
+                .into_iter()
+                .map(|expression| {
+                    normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+                })
+                .collect(),
+            memoized_setup_statements: memoized_setup_statements
+                .into_iter()
+                .map(|statement_source| {
+                    normalize_cache_binding_name_in_statement_source(
+                        statement_source,
+                        cache_binding_name,
+                    )
+                })
+                .collect(),
+            memoized_expr: memoized_expr.map(|expression| {
+                normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+            }),
+        },
+        GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+            value_name,
+            deps,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+            value_name,
+            deps: deps
+                .into_iter()
+                .map(|(slot, expression)| {
+                    (
+                        slot,
+                        normalize_cache_binding_name_in_expression(expression, cache_binding_name),
+                    )
+                })
+                .collect(),
+            value_slot,
+            memoized_bindings: normalize_bindings(memoized_bindings, cache_binding_name),
+            memoized_assignments: normalize_assignments(memoized_assignments, cache_binding_name),
+            memoized_expressions: memoized_expressions
+                .into_iter()
+                .map(|expression| {
+                    normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+                })
+                .collect(),
+            memoized_setup_statements: memoized_setup_statements
+                .into_iter()
+                .map(|statement_source| {
+                    normalize_cache_binding_name_in_statement_source(
+                        statement_source,
+                        cache_binding_name,
+                    )
+                })
+                .collect(),
+            memoized_expr: memoized_expr.map(|expression| {
+                normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+            }),
+        },
+        GeneratedBodyShape::MemoizedComputedReturn {
+            value_name,
+            value_kind,
+            deps,
+            value_slot,
+            computation,
+        } => GeneratedBodyShape::MemoizedComputedReturn {
+            value_name,
+            value_kind,
+            deps: deps
+                .into_iter()
+                .map(|(slot, expression)| {
+                    (
+                        slot,
+                        normalize_cache_binding_name_in_expression(expression, cache_binding_name),
+                    )
+                })
+                .collect(),
+            value_slot,
+            computation: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *computation,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::SingleSlotMemoizedReturn {
+            value_name,
+            value_kind,
+            temp_name,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_expr,
+        } => GeneratedBodyShape::SingleSlotMemoizedReturn {
+            value_name,
+            value_kind,
+            temp_name,
+            memoized_bindings: normalize_bindings(memoized_bindings, cache_binding_name),
+            memoized_assignments: normalize_assignments(memoized_assignments, cache_binding_name),
+            memoized_expressions: memoized_expressions
+                .into_iter()
+                .map(|expression| {
+                    normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+                })
+                .collect(),
+            memoized_expr: normalize_cache_binding_name_in_expression(
+                memoized_expr,
+                cache_binding_name,
+            ),
+        },
+        GeneratedBodyShape::WrappedReturnExpression {
+            source_name,
+            expression,
+            inner,
+        } => GeneratedBodyShape::WrappedReturnExpression {
+            source_name: normalize_cache_binding_name_in_expression(
+                source_name,
+                cache_binding_name,
+            ),
+            expression: normalize_cache_binding_name_in_expression(expression, cache_binding_name),
+            inner: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *inner,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::AssignedAliasReturn {
+            alias_name,
+            source_name,
+            inner,
+        } => GeneratedBodyShape::AssignedAliasReturn {
+            alias_name,
+            source_name: normalize_cache_binding_name_in_expression(
+                source_name,
+                cache_binding_name,
+            ),
+            inner: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *inner,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::AliasedReturn {
+            alias_name,
+            alias_kind,
+            source_name,
+            inner,
+        } => GeneratedBodyShape::AliasedReturn {
+            alias_name,
+            alias_kind,
+            source_name: normalize_cache_binding_name_in_expression(
+                source_name,
+                cache_binding_name,
+            ),
+            inner: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *inner,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } => GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *inner,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
+            GeneratedBodyShape::PrefixedBindings {
+                bindings: normalize_bindings(bindings, cache_binding_name),
+                inner: Box::new(normalize_generated_body_shape_cache_binding_name(
+                    *inner,
+                    cache_binding_name,
+                )),
+            }
+        }
+        GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
+            GeneratedBodyShape::PrefixedExpressionStatements {
+                expressions: expressions
+                    .into_iter()
+                    .map(|expression| {
+                        normalize_cache_binding_name_in_expression(expression, cache_binding_name)
+                    })
+                    .collect(),
+                inner: Box::new(normalize_generated_body_shape_cache_binding_name(
+                    *inner,
+                    cache_binding_name,
+                )),
+            }
+        }
+        GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
+            GeneratedBodyShape::PrefixedAssignments {
+                assignments: normalize_assignments(assignments, cache_binding_name),
+                inner: Box::new(normalize_generated_body_shape_cache_binding_name(
+                    *inner,
+                    cache_binding_name,
+                )),
+            }
+        }
+        GeneratedBodyShape::Sequential { prefix, inner } => GeneratedBodyShape::Sequential {
+            prefix: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *prefix,
+                cache_binding_name,
+            )),
+            inner: Box::new(normalize_generated_body_shape_cache_binding_name(
+                *inner,
+                cache_binding_name,
+            )),
+        },
     }
 }
 
@@ -4366,13 +5121,14 @@ fn try_build_generated_body_shape_from_reactive_block(
     }
 }
 
-fn try_render_statement_sources_from_generated_body_shape(
+fn try_render_statement_sources_from_generated_body_shape_with_cache_binding(
     shape: &GeneratedBodyShape,
+    cache_binding_name: &str,
 ) -> Option<Vec<String>> {
     let allocator = Allocator::default();
     let builder = AstBuilder::new(&allocator);
     let cache_prologue = CachePrologue {
-        binding_name: "$".to_string(),
+        binding_name: cache_binding_name.to_string(),
         size: 64,
         fast_refresh: None,
     };
@@ -4405,6 +5161,12 @@ fn try_render_statement_sources_from_generated_body_shape(
         statements.push(rendered);
     }
     Some(statements)
+}
+
+fn try_render_statement_sources_from_generated_body_shape(
+    shape: &GeneratedBodyShape,
+) -> Option<Vec<String>> {
+    try_render_statement_sources_from_generated_body_shape_with_cache_binding(shape, "$")
 }
 
 fn normalize_rendered_generated_body_source(source: &str) -> String {
@@ -7336,6 +8098,701 @@ fn hoist_guard_alias_bindings_outside_declarations(
     }
 }
 
+fn apply_generated_body_shape_cache_binding_name(
+    shape: GeneratedBodyShape,
+    cache_binding_name: &str,
+) -> GeneratedBodyShape {
+    if cache_binding_name == "$" {
+        return shape;
+    }
+
+    fn apply_cache_binding_name_in_expression(
+        expression: String,
+        cache_binding_name: &str,
+    ) -> String {
+        expression.replace("$[", &format!("{cache_binding_name}["))
+    }
+
+    fn apply_cache_binding_name_in_statement_source(
+        statement_source: String,
+        cache_binding_name: &str,
+    ) -> String {
+        statement_source.replace("$[", &format!("{cache_binding_name}["))
+    }
+
+    fn apply_bindings(
+        bindings: Vec<GeneratedBinding>,
+        cache_binding_name: &str,
+    ) -> Vec<GeneratedBinding> {
+        bindings
+            .into_iter()
+            .map(|binding| GeneratedBinding {
+                expression: apply_cache_binding_name_in_expression(
+                    binding.expression,
+                    cache_binding_name,
+                ),
+                ..binding
+            })
+            .collect()
+    }
+
+    fn apply_assignments(
+        assignments: Vec<GeneratedAssignment>,
+        cache_binding_name: &str,
+    ) -> Vec<GeneratedAssignment> {
+        assignments
+            .into_iter()
+            .map(|assignment| GeneratedAssignment {
+                target: apply_cache_binding_name_in_expression(
+                    assignment.target,
+                    cache_binding_name,
+                ),
+                value: apply_cache_binding_name_in_expression(assignment.value, cache_binding_name),
+            })
+            .collect()
+    }
+
+    match shape {
+        GeneratedBodyShape::Unknown => GeneratedBodyShape::Unknown,
+        GeneratedBodyShape::Block { inner } => GeneratedBodyShape::Block {
+            inner: Box::new(apply_generated_body_shape_cache_binding_name(
+                *inner,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::Labeled { label, inner } => GeneratedBodyShape::Labeled {
+            label,
+            inner: Box::new(apply_generated_body_shape_cache_binding_name(
+                *inner,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::Switch {
+            discriminant,
+            cases,
+        } => GeneratedBodyShape::Switch {
+            discriminant: apply_cache_binding_name_in_expression(discriminant, cache_binding_name),
+            cases: cases
+                .into_iter()
+                .map(|case| GeneratedSwitchCase {
+                    test: case.test.map(|test| {
+                        apply_cache_binding_name_in_expression(test, cache_binding_name)
+                    }),
+                    consequent: apply_generated_body_shape_cache_binding_name(
+                        case.consequent,
+                        cache_binding_name,
+                    ),
+                })
+                .collect(),
+        },
+        GeneratedBodyShape::DebuggerStatements(count) => {
+            GeneratedBodyShape::DebuggerStatements(count)
+        }
+        GeneratedBodyShape::ExpressionStatements(expressions) => {
+            GeneratedBodyShape::ExpressionStatements(
+                expressions
+                    .into_iter()
+                    .map(|expression| {
+                        apply_cache_binding_name_in_expression(expression, cache_binding_name)
+                    })
+                    .collect(),
+            )
+        }
+        GeneratedBodyShape::AssignmentStatements(assignments) => {
+            GeneratedBodyShape::AssignmentStatements(apply_assignments(
+                assignments,
+                cache_binding_name,
+            ))
+        }
+        GeneratedBodyShape::GuardedBody { test, inner } => GeneratedBodyShape::GuardedBody {
+            test: apply_cache_binding_name_in_expression(test, cache_binding_name),
+            inner: Box::new(apply_generated_body_shape_cache_binding_name(
+                *inner,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::GuardedExpressionStatements { test, expressions } => {
+            GeneratedBodyShape::GuardedExpressionStatements {
+                test: apply_cache_binding_name_in_expression(test, cache_binding_name),
+                expressions: expressions
+                    .into_iter()
+                    .map(|expression| {
+                        apply_cache_binding_name_in_expression(expression, cache_binding_name)
+                    })
+                    .collect(),
+            }
+        }
+        GeneratedBodyShape::GuardedReturnPrefix {
+            test,
+            consequent,
+            inner,
+        } => GeneratedBodyShape::GuardedReturnPrefix {
+            test: apply_cache_binding_name_in_expression(test, cache_binding_name),
+            consequent: consequent.map(|expression| {
+                apply_cache_binding_name_in_expression(expression, cache_binding_name)
+            }),
+            inner: Box::new(apply_generated_body_shape_cache_binding_name(
+                *inner,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::ConditionalBranches {
+            test,
+            consequent,
+            alternate,
+        } => GeneratedBodyShape::ConditionalBranches {
+            test: apply_cache_binding_name_in_expression(test, cache_binding_name),
+            consequent: Box::new(apply_generated_body_shape_cache_binding_name(
+                *consequent,
+                cache_binding_name,
+            )),
+            alternate: Box::new(apply_generated_body_shape_cache_binding_name(
+                *alternate,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::GuardedAssignments { test, assignments } => {
+            GeneratedBodyShape::GuardedAssignments {
+                test: apply_cache_binding_name_in_expression(test, cache_binding_name),
+                assignments: apply_assignments(assignments, cache_binding_name),
+            }
+        }
+        GeneratedBodyShape::WhileLoop { test, body } => GeneratedBodyShape::WhileLoop {
+            test: apply_cache_binding_name_in_expression(test, cache_binding_name),
+            body: Box::new(apply_generated_body_shape_cache_binding_name(
+                *body,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::DoWhileLoop { test, body } => GeneratedBodyShape::DoWhileLoop {
+            test: apply_cache_binding_name_in_expression(test, cache_binding_name),
+            body: Box::new(apply_generated_body_shape_cache_binding_name(
+                *body,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::ForLoop {
+            init,
+            test,
+            update,
+            body,
+        } => GeneratedBodyShape::ForLoop {
+            init: init
+                .map(|source| apply_cache_binding_name_in_expression(source, cache_binding_name)),
+            test: test
+                .map(|source| apply_cache_binding_name_in_expression(source, cache_binding_name)),
+            update: update
+                .map(|source| apply_cache_binding_name_in_expression(source, cache_binding_name)),
+            body: Box::new(apply_generated_body_shape_cache_binding_name(
+                *body,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::ForInLoop { left, right, body } => GeneratedBodyShape::ForInLoop {
+            left,
+            right: apply_cache_binding_name_in_expression(right, cache_binding_name),
+            body: Box::new(apply_generated_body_shape_cache_binding_name(
+                *body,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::ForOfLoop { left, right, body } => GeneratedBodyShape::ForOfLoop {
+            left,
+            right: apply_cache_binding_name_in_expression(right, cache_binding_name),
+            body: Box::new(apply_generated_body_shape_cache_binding_name(
+                *body,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::GuardedAssignmentExpressions {
+            test,
+            assignments,
+            expressions,
+        } => GeneratedBodyShape::GuardedAssignmentExpressions {
+            test: apply_cache_binding_name_in_expression(test, cache_binding_name),
+            assignments: apply_assignments(assignments, cache_binding_name),
+            expressions: expressions
+                .into_iter()
+                .map(|expression| {
+                    apply_cache_binding_name_in_expression(expression, cache_binding_name)
+                })
+                .collect(),
+        },
+        GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+            sentinel_slot,
+            setup_statements,
+            cached_values,
+            restored_values,
+        } => GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+            sentinel_slot,
+            setup_statements: setup_statements
+                .into_iter()
+                .map(|source| {
+                    apply_cache_binding_name_in_statement_source(source, cache_binding_name)
+                })
+                .collect(),
+            cached_values,
+            restored_values,
+        },
+        GeneratedBodyShape::MemoizedCachedValues {
+            deps,
+            setup_statements,
+            cached_values,
+            restored_values,
+        } => GeneratedBodyShape::MemoizedCachedValues {
+            deps: deps
+                .into_iter()
+                .map(|(slot, expression)| {
+                    (
+                        slot,
+                        apply_cache_binding_name_in_expression(expression, cache_binding_name),
+                    )
+                })
+                .collect(),
+            setup_statements: setup_statements
+                .into_iter()
+                .map(|source| {
+                    apply_cache_binding_name_in_statement_source(source, cache_binding_name)
+                })
+                .collect(),
+            cached_values,
+            restored_values,
+        },
+        GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+            deps,
+            setup_statements,
+            cached_values,
+            restored_values,
+            sentinel_name,
+            final_return,
+            fallback_body,
+        } => GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+            deps: deps
+                .into_iter()
+                .map(|(slot, expression)| {
+                    (
+                        slot,
+                        apply_cache_binding_name_in_expression(expression, cache_binding_name),
+                    )
+                })
+                .collect(),
+            setup_statements: setup_statements
+                .into_iter()
+                .map(|source| {
+                    apply_cache_binding_name_in_statement_source(source, cache_binding_name)
+                })
+                .collect(),
+            cached_values,
+            restored_values,
+            sentinel_name: apply_cache_binding_name_in_expression(
+                sentinel_name,
+                cache_binding_name,
+            ),
+            final_return: final_return.map(|expression| {
+                apply_cache_binding_name_in_expression(expression, cache_binding_name)
+            }),
+            fallback_body: fallback_body.map(|body| {
+                Box::new(apply_generated_body_shape_cache_binding_name(
+                    *body,
+                    cache_binding_name,
+                ))
+            }),
+        },
+        GeneratedBodyShape::TryCatch {
+            catch_param,
+            try_body,
+            catch_body,
+        } => GeneratedBodyShape::TryCatch {
+            catch_param,
+            try_body: Box::new(apply_generated_body_shape_cache_binding_name(
+                *try_body,
+                cache_binding_name,
+            )),
+            catch_body: Box::new(apply_generated_body_shape_cache_binding_name(
+                *catch_body,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::Break(label) => GeneratedBodyShape::Break(label),
+        GeneratedBodyShape::Continue(label) => GeneratedBodyShape::Continue(label),
+        GeneratedBodyShape::ReturnVoid => GeneratedBodyShape::ReturnVoid,
+        GeneratedBodyShape::ReturnIdentifier(name) => GeneratedBodyShape::ReturnIdentifier(
+            apply_cache_binding_name_in_expression(name, cache_binding_name),
+        ),
+        GeneratedBodyShape::ReturnExpression(expression) => GeneratedBodyShape::ReturnExpression(
+            apply_cache_binding_name_in_expression(expression, cache_binding_name),
+        ),
+        GeneratedBodyShape::ThrowExpression(expression) => GeneratedBodyShape::ThrowExpression(
+            apply_cache_binding_name_in_expression(expression, cache_binding_name),
+        ),
+        GeneratedBodyShape::BoundExpressionReturn {
+            value_name,
+            value_kind,
+            expression,
+        } => GeneratedBodyShape::BoundExpressionReturn {
+            value_name,
+            value_kind,
+            expression: apply_cache_binding_name_in_expression(expression, cache_binding_name),
+        },
+        GeneratedBodyShape::AssignedExpressionReturn {
+            value_name,
+            value_kind,
+            expression,
+        } => GeneratedBodyShape::AssignedExpressionReturn {
+            value_name,
+            value_kind,
+            expression: apply_cache_binding_name_in_expression(expression, cache_binding_name),
+        },
+        GeneratedBodyShape::ZeroDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::ZeroDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            value_slot,
+            memoized_bindings: apply_bindings(memoized_bindings, cache_binding_name),
+            memoized_assignments: apply_assignments(memoized_assignments, cache_binding_name),
+            memoized_expressions: memoized_expressions
+                .into_iter()
+                .map(|expression| {
+                    apply_cache_binding_name_in_expression(expression, cache_binding_name)
+                })
+                .collect(),
+            memoized_setup_statements: memoized_setup_statements
+                .into_iter()
+                .map(|source| {
+                    apply_cache_binding_name_in_statement_source(source, cache_binding_name)
+                })
+                .collect(),
+            memoized_expr: memoized_expr.map(|expression| {
+                apply_cache_binding_name_in_expression(expression, cache_binding_name)
+            }),
+        },
+        GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+            value_name,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+            value_name,
+            value_slot,
+            memoized_bindings: apply_bindings(memoized_bindings, cache_binding_name),
+            memoized_assignments: apply_assignments(memoized_assignments, cache_binding_name),
+            memoized_expressions: memoized_expressions
+                .into_iter()
+                .map(|expression| {
+                    apply_cache_binding_name_in_expression(expression, cache_binding_name)
+                })
+                .collect(),
+            memoized_setup_statements: memoized_setup_statements
+                .into_iter()
+                .map(|source| {
+                    apply_cache_binding_name_in_statement_source(source, cache_binding_name)
+                })
+                .collect(),
+            memoized_expr: memoized_expr.map(|expression| {
+                apply_cache_binding_name_in_expression(expression, cache_binding_name)
+            }),
+        },
+        GeneratedBodyShape::SingleDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            dep_slot,
+            dep_expr,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::SingleDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            dep_slot,
+            dep_expr: apply_cache_binding_name_in_expression(dep_expr, cache_binding_name),
+            value_slot,
+            memoized_bindings: apply_bindings(memoized_bindings, cache_binding_name),
+            memoized_assignments: apply_assignments(memoized_assignments, cache_binding_name),
+            memoized_expressions: memoized_expressions
+                .into_iter()
+                .map(|expression| {
+                    apply_cache_binding_name_in_expression(expression, cache_binding_name)
+                })
+                .collect(),
+            memoized_setup_statements: memoized_setup_statements
+                .into_iter()
+                .map(|source| {
+                    apply_cache_binding_name_in_statement_source(source, cache_binding_name)
+                })
+                .collect(),
+            memoized_expr: memoized_expr.map(|expression| {
+                apply_cache_binding_name_in_expression(expression, cache_binding_name)
+            }),
+        },
+        GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+            value_name,
+            dep_slot,
+            dep_expr,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+            value_name,
+            dep_slot,
+            dep_expr: apply_cache_binding_name_in_expression(dep_expr, cache_binding_name),
+            value_slot,
+            memoized_bindings: apply_bindings(memoized_bindings, cache_binding_name),
+            memoized_assignments: apply_assignments(memoized_assignments, cache_binding_name),
+            memoized_expressions: memoized_expressions
+                .into_iter()
+                .map(|expression| {
+                    apply_cache_binding_name_in_expression(expression, cache_binding_name)
+                })
+                .collect(),
+            memoized_setup_statements: memoized_setup_statements
+                .into_iter()
+                .map(|source| {
+                    apply_cache_binding_name_in_statement_source(source, cache_binding_name)
+                })
+                .collect(),
+            memoized_expr: memoized_expr.map(|expression| {
+                apply_cache_binding_name_in_expression(expression, cache_binding_name)
+            }),
+        },
+        GeneratedBodyShape::MultiDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            deps,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::MultiDependencyMemoizedReturn {
+            value_name,
+            value_kind,
+            deps: deps
+                .into_iter()
+                .map(|(slot, expression)| {
+                    (
+                        slot,
+                        apply_cache_binding_name_in_expression(expression, cache_binding_name),
+                    )
+                })
+                .collect(),
+            value_slot,
+            memoized_bindings: apply_bindings(memoized_bindings, cache_binding_name),
+            memoized_assignments: apply_assignments(memoized_assignments, cache_binding_name),
+            memoized_expressions: memoized_expressions
+                .into_iter()
+                .map(|expression| {
+                    apply_cache_binding_name_in_expression(expression, cache_binding_name)
+                })
+                .collect(),
+            memoized_setup_statements: memoized_setup_statements
+                .into_iter()
+                .map(|source| {
+                    apply_cache_binding_name_in_statement_source(source, cache_binding_name)
+                })
+                .collect(),
+            memoized_expr: memoized_expr.map(|expression| {
+                apply_cache_binding_name_in_expression(expression, cache_binding_name)
+            }),
+        },
+        GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+            value_name,
+            deps,
+            value_slot,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        } => GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+            value_name,
+            deps: deps
+                .into_iter()
+                .map(|(slot, expression)| {
+                    (
+                        slot,
+                        apply_cache_binding_name_in_expression(expression, cache_binding_name),
+                    )
+                })
+                .collect(),
+            value_slot,
+            memoized_bindings: apply_bindings(memoized_bindings, cache_binding_name),
+            memoized_assignments: apply_assignments(memoized_assignments, cache_binding_name),
+            memoized_expressions: memoized_expressions
+                .into_iter()
+                .map(|expression| {
+                    apply_cache_binding_name_in_expression(expression, cache_binding_name)
+                })
+                .collect(),
+            memoized_setup_statements: memoized_setup_statements
+                .into_iter()
+                .map(|source| {
+                    apply_cache_binding_name_in_statement_source(source, cache_binding_name)
+                })
+                .collect(),
+            memoized_expr: memoized_expr.map(|expression| {
+                apply_cache_binding_name_in_expression(expression, cache_binding_name)
+            }),
+        },
+        GeneratedBodyShape::MemoizedComputedReturn {
+            value_name,
+            value_kind,
+            deps,
+            value_slot,
+            computation,
+        } => GeneratedBodyShape::MemoizedComputedReturn {
+            value_name,
+            value_kind,
+            deps: deps
+                .into_iter()
+                .map(|(slot, expression)| {
+                    (
+                        slot,
+                        apply_cache_binding_name_in_expression(expression, cache_binding_name),
+                    )
+                })
+                .collect(),
+            value_slot,
+            computation: Box::new(apply_generated_body_shape_cache_binding_name(
+                *computation,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::SingleSlotMemoizedReturn {
+            value_name,
+            value_kind,
+            temp_name,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_expr,
+        } => GeneratedBodyShape::SingleSlotMemoizedReturn {
+            value_name,
+            value_kind,
+            temp_name,
+            memoized_bindings: apply_bindings(memoized_bindings, cache_binding_name),
+            memoized_assignments: apply_assignments(memoized_assignments, cache_binding_name),
+            memoized_expressions: memoized_expressions
+                .into_iter()
+                .map(|expression| {
+                    apply_cache_binding_name_in_expression(expression, cache_binding_name)
+                })
+                .collect(),
+            memoized_expr: apply_cache_binding_name_in_expression(
+                memoized_expr,
+                cache_binding_name,
+            ),
+        },
+        GeneratedBodyShape::WrappedReturnExpression {
+            source_name,
+            expression,
+            inner,
+        } => GeneratedBodyShape::WrappedReturnExpression {
+            source_name: apply_cache_binding_name_in_expression(source_name, cache_binding_name),
+            expression: apply_cache_binding_name_in_expression(expression, cache_binding_name),
+            inner: Box::new(apply_generated_body_shape_cache_binding_name(
+                *inner,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::AssignedAliasReturn {
+            alias_name,
+            source_name,
+            inner,
+        } => GeneratedBodyShape::AssignedAliasReturn {
+            alias_name,
+            source_name: apply_cache_binding_name_in_expression(source_name, cache_binding_name),
+            inner: Box::new(apply_generated_body_shape_cache_binding_name(
+                *inner,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::AliasedReturn {
+            alias_name,
+            alias_kind,
+            source_name,
+            inner,
+        } => GeneratedBodyShape::AliasedReturn {
+            alias_name,
+            alias_kind,
+            source_name: apply_cache_binding_name_in_expression(source_name, cache_binding_name),
+            inner: Box::new(apply_generated_body_shape_cache_binding_name(
+                *inner,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } => GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner: Box::new(apply_generated_body_shape_cache_binding_name(
+                *inner,
+                cache_binding_name,
+            )),
+        },
+        GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
+            GeneratedBodyShape::PrefixedBindings {
+                bindings: apply_bindings(bindings, cache_binding_name),
+                inner: Box::new(apply_generated_body_shape_cache_binding_name(
+                    *inner,
+                    cache_binding_name,
+                )),
+            }
+        }
+        GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
+            GeneratedBodyShape::PrefixedExpressionStatements {
+                expressions: expressions
+                    .into_iter()
+                    .map(|expression| {
+                        apply_cache_binding_name_in_expression(expression, cache_binding_name)
+                    })
+                    .collect(),
+                inner: Box::new(apply_generated_body_shape_cache_binding_name(
+                    *inner,
+                    cache_binding_name,
+                )),
+            }
+        }
+        GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
+            GeneratedBodyShape::PrefixedAssignments {
+                assignments: apply_assignments(assignments, cache_binding_name),
+                inner: Box::new(apply_generated_body_shape_cache_binding_name(
+                    *inner,
+                    cache_binding_name,
+                )),
+            }
+        }
+        GeneratedBodyShape::Sequential { prefix, inner } => GeneratedBodyShape::Sequential {
+            prefix: Box::new(apply_generated_body_shape_cache_binding_name(
+                *prefix,
+                cache_binding_name,
+            )),
+            inner: Box::new(apply_generated_body_shape_cache_binding_name(
+                *inner,
+                cache_binding_name,
+            )),
+        },
+    }
+}
+
 fn analyze_rendered_generated_body_shape_source(source: &str) -> Option<GeneratedBodyShape> {
     let shape = fully_canonicalize_generated_body_shape(analyze_generated_body_shape(source));
     (!matches!(shape, GeneratedBodyShape::Unknown)).then_some(shape)
@@ -8118,19 +9575,28 @@ fn try_build_generated_body_shape_from_reactive_terminal(
             ..
         } => {
             let test = codegen_place_to_expression(cx, test);
+            let mut consequent_cx = cx.clone();
             let consequent = Box::new(try_build_generated_body_shape_from_reactive_block(
-                cx, consequent,
+                &mut consequent_cx,
+                consequent,
             )?);
             if let Some(alternate) = alternate {
+                // Branch-local temp names can be reused across mutually exclusive arms,
+                // but memo slots still need to stay globally unique.
+                cx.next_cache_index = consequent_cx.next_cache_index;
+                let mut alternate_cx = cx.clone();
                 let alternate = Box::new(try_build_generated_body_shape_from_reactive_block(
-                    cx, alternate,
+                    &mut alternate_cx,
+                    alternate,
                 )?);
+                cx.next_cache_index = alternate_cx.next_cache_index;
                 Some(GeneratedBodyShape::ConditionalBranches {
                     test,
                     consequent,
                     alternate,
                 })
             } else {
+                cx.next_cache_index = consequent_cx.next_cache_index;
                 Some(GeneratedBodyShape::GuardedBody {
                     test,
                     inner: consequent,
@@ -33557,17 +35023,33 @@ fn codegen_statements_with_flow_cast_restore(statements: &[ast::Statement]) -> S
     ))
 }
 
+fn rewrite_generated_source_with_cache_binding<'a>(
+    source: &'a str,
+    cache_prologue: Option<&CachePrologue>,
+) -> std::borrow::Cow<'a, str> {
+    let Some(cache_prologue) = cache_prologue else {
+        return std::borrow::Cow::Borrowed(source);
+    };
+    if cache_prologue.binding_name == "$" || !source.contains("$[") {
+        return std::borrow::Cow::Borrowed(source);
+    }
+    std::borrow::Cow::Owned(source.replace("$[", &format!("{}[", cache_prologue.binding_name)))
+}
+
 fn build_generated_binding_statements_ast<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
     bindings: &[GeneratedBinding],
+    cache_prologue: Option<&CachePrologue>,
 ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
     let mut statements = builder.vec();
     for binding in bindings {
+        let expression_source =
+            rewrite_generated_source_with_cache_binding(&binding.expression, cache_prologue);
         let expression = parse_expression_for_ast_codegen(
             allocator,
             SourceType::mjs().with_jsx(true),
-            &binding.expression,
+            expression_source.as_ref(),
         )
         .ok()?;
         let pattern = parse_binding_pattern_for_ast_codegen(
@@ -33631,19 +35113,24 @@ fn build_generated_assignment_statements_ast<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
     assignments: &[GeneratedAssignment],
+    cache_prologue: Option<&CachePrologue>,
 ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
     let mut statements = builder.vec();
     for assignment in assignments {
+        let target_source =
+            rewrite_generated_source_with_cache_binding(&assignment.target, cache_prologue);
         let target = parse_assignment_target_for_ast_codegen(
             allocator,
             SourceType::mjs().with_jsx(true),
-            &assignment.target,
+            target_source.as_ref(),
         )
         .ok()?;
+        let value_source =
+            rewrite_generated_source_with_cache_binding(&assignment.value, cache_prologue);
         let value = parse_expression_for_ast_codegen(
             allocator,
             SourceType::mjs().with_jsx(true),
-            &assignment.value,
+            value_source.as_ref(),
         )
         .ok()?;
         statements.push(builder.statement_expression(
@@ -33696,13 +35183,16 @@ fn build_generated_expression_statements_ast<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
     expressions: &[String],
+    cache_prologue: Option<&CachePrologue>,
 ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
     let mut statements = builder.vec();
     for expression in expressions {
+        let expression_source =
+            rewrite_generated_source_with_cache_binding(expression, cache_prologue);
         let expression = parse_expression_for_ast_codegen(
             allocator,
             SourceType::mjs().with_jsx(true),
-            expression,
+            expression_source.as_ref(),
         )
         .ok()?;
         statements.push(builder.statement_expression(SPAN, expression));
@@ -33763,6 +35253,7 @@ fn build_generated_statement_sources_ast<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
     statements: &[String],
+    cache_prologue: Option<&CachePrologue>,
 ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
     if statements.is_empty() {
         return Some(builder.vec());
@@ -33771,7 +35262,10 @@ fn build_generated_statement_sources_ast<'a>(
     for statement_source in statements {
         let has_blank_line_before = statement_has_blank_line_marker(statement_source);
         let statement_source = strip_statement_blank_line_marker(statement_source);
-        let current = parse_generated_statement_sources_ast(allocator, statement_source)?;
+        let rewritten_statement_source =
+            rewrite_generated_source_with_cache_binding(statement_source, cache_prologue);
+        let current =
+            parse_generated_statement_sources_ast(allocator, rewritten_statement_source.as_ref())?;
         if has_blank_line_before && !parsed.is_empty() {
             parsed.push(build_internal_blank_line_marker_statement_ast(builder));
         }
@@ -33818,11 +35312,20 @@ fn is_simple_generated_identifier(name: &str) -> bool {
         && chars.all(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphanumeric())
 }
 
-fn collect_guard_alias_binding_map(bindings: &[GeneratedBinding]) -> HashMap<String, String> {
+fn collect_guard_alias_binding_map(
+    bindings: &[GeneratedBinding],
+    cache_prologue: Option<&CachePrologue>,
+) -> HashMap<String, String> {
     bindings
         .iter()
         .filter(|binding| is_simple_generated_identifier(&binding.pattern))
-        .map(|binding| (binding.expression.clone(), binding.pattern.clone()))
+        .map(|binding| {
+            (
+                rewrite_generated_source_with_cache_binding(&binding.expression, cache_prologue)
+                    .into_owned(),
+                binding.pattern.clone(),
+            )
+        })
         .collect()
 }
 
@@ -34137,16 +35640,20 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                     is_generator: spec.is_generator,
                 },
             )?;
-            let labeled_body = if inner_body.statements.len() == 1
-                && matches!(
-                    inner_body.statements.first(),
-                    Some(ast::Statement::SwitchStatement(_))
-                ) {
-                inner_body
+            let labeled_body = if inner_body.statements.len() == 1 {
+                let statement = inner_body
                     .statements
                     .into_iter()
                     .next()
-                    .expect("single switch statement should exist")
+                    .expect("single labeled statement should exist");
+                if matches!(
+                    statement,
+                    ast::Statement::SwitchStatement(_) | ast::Statement::TryStatement(_)
+                ) {
+                    statement
+                } else {
+                    builder.statement_block(SPAN, builder.vec1(statement))
+                }
             } else {
                 builder.statement_block(SPAN, inner_body.statements)
             };
@@ -34198,12 +35705,22 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
         GeneratedBodyShape::ExpressionStatements(expressions) => Some(builder.function_body(
             SPAN,
             builder.vec(),
-            build_generated_expression_statements_ast(builder, allocator, expressions)?,
+            build_generated_expression_statements_ast(
+                builder,
+                allocator,
+                expressions,
+                spec.cache_prologue,
+            )?,
         )),
         GeneratedBodyShape::AssignmentStatements(assignments) => Some(builder.function_body(
             SPAN,
             builder.vec(),
-            build_generated_assignment_statements_ast(builder, allocator, assignments)?,
+            build_generated_assignment_statements_ast(
+                builder,
+                allocator,
+                assignments,
+                spec.cache_prologue,
+            )?,
         )),
         GeneratedBodyShape::GuardedBody { test, inner } => {
             let test =
@@ -34247,7 +35764,12 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                     test,
                     builder.statement_block(
                         SPAN,
-                        build_generated_expression_statements_ast(builder, allocator, expressions)?,
+                        build_generated_expression_statements_ast(
+                            builder,
+                            allocator,
+                            expressions,
+                            spec.cache_prologue,
+                        )?,
                     ),
                     None,
                 )),
@@ -34362,7 +35884,12 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                     test,
                     builder.statement_block(
                         SPAN,
-                        build_generated_assignment_statements_ast(builder, allocator, assignments)?,
+                        build_generated_assignment_statements_ast(
+                            builder,
+                            allocator,
+                            assignments,
+                            spec.cache_prologue,
+                        )?,
                     ),
                     None,
                 )),
@@ -34542,12 +36069,17 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             let test =
                 parse_expression_for_ast_codegen(allocator, SourceType::mjs().with_jsx(true), test)
                     .ok()?;
-            let mut guarded =
-                build_generated_assignment_statements_ast(builder, allocator, assignments)?;
+            let mut guarded = build_generated_assignment_statements_ast(
+                builder,
+                allocator,
+                assignments,
+                spec.cache_prologue,
+            )?;
             guarded.extend(build_generated_expression_statements_ast(
                 builder,
                 allocator,
                 expressions,
+                spec.cache_prologue,
             )?);
             Some(builder.function_body(
                 SPAN,
@@ -34567,8 +36099,12 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             restored_values,
         } => {
             let cache_binding_name = spec.cache_prologue.as_ref()?.binding_name.as_str();
-            let mut consequent =
-                build_generated_statement_sources_ast(builder, allocator, setup_statements)?;
+            let mut consequent = build_generated_statement_sources_ast(
+                builder,
+                allocator,
+                setup_statements,
+                spec.cache_prologue,
+            )?;
             for value in cached_values {
                 consequent.push(build_computed_member_assignment_statement_ast(
                     builder,
@@ -34673,8 +36209,12 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 test = builder.expression_logical(SPAN, test, AstLogicalOperator::Or, guard?);
             }
 
-            let mut consequent =
-                build_generated_statement_sources_ast(builder, allocator, setup_statements)?;
+            let mut consequent = build_generated_statement_sources_ast(
+                builder,
+                allocator,
+                setup_statements,
+                spec.cache_prologue,
+            )?;
             consequent.extend(dep_assignments);
             for value in cached_values {
                 consequent.push(build_computed_member_assignment_statement_ast(
@@ -34769,8 +36309,12 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 test = builder.expression_logical(SPAN, test, AstLogicalOperator::Or, guard?);
             }
 
-            let mut consequent =
-                build_generated_statement_sources_ast(builder, allocator, setup_statements)?;
+            let mut consequent = build_generated_statement_sources_ast(
+                builder,
+                allocator,
+                setup_statements,
+                spec.cache_prologue,
+            )?;
             consequent.extend(dep_assignments);
             for value in cached_values {
                 consequent.push(build_computed_member_assignment_statement_ast(
@@ -35066,22 +36610,29 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             memoized_expr,
         } => {
             let cache_binding_name = &spec.cache_prologue?.binding_name;
-            let mut consequent =
-                build_generated_binding_statements_ast(builder, allocator, memoized_bindings)?;
+            let mut consequent = build_generated_binding_statements_ast(
+                builder,
+                allocator,
+                memoized_bindings,
+                spec.cache_prologue,
+            )?;
             consequent.extend(build_generated_assignment_statements_ast(
                 builder,
                 allocator,
                 memoized_assignments,
+                spec.cache_prologue,
             )?);
             consequent.extend(build_generated_expression_statements_ast(
                 builder,
                 allocator,
                 memoized_expressions,
+                spec.cache_prologue,
             )?);
             consequent.extend(build_generated_statement_sources_ast(
                 builder,
                 allocator,
                 memoized_setup_statements,
+                spec.cache_prologue,
             )?);
             if let Some(memoized_expr) = memoized_expr {
                 let memoized_expr = parse_expression_for_ast_codegen(
@@ -35182,22 +36733,29 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             memoized_expr,
         } => {
             let cache_binding_name = &spec.cache_prologue?.binding_name;
-            let mut consequent =
-                build_generated_binding_statements_ast(builder, allocator, memoized_bindings)?;
+            let mut consequent = build_generated_binding_statements_ast(
+                builder,
+                allocator,
+                memoized_bindings,
+                spec.cache_prologue,
+            )?;
             consequent.extend(build_generated_assignment_statements_ast(
                 builder,
                 allocator,
                 memoized_assignments,
+                spec.cache_prologue,
             )?);
             consequent.extend(build_generated_expression_statements_ast(
                 builder,
                 allocator,
                 memoized_expressions,
+                spec.cache_prologue,
             )?);
             consequent.extend(build_generated_statement_sources_ast(
                 builder,
                 allocator,
                 memoized_setup_statements,
+                spec.cache_prologue,
             )?);
             if let Some(memoized_expr) = memoized_expr {
                 let memoized_expr = parse_expression_for_ast_codegen(
@@ -35291,22 +36849,29 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 dep_expr,
             )
             .ok()?;
-            let mut consequent =
-                build_generated_binding_statements_ast(builder, allocator, memoized_bindings)?;
+            let mut consequent = build_generated_binding_statements_ast(
+                builder,
+                allocator,
+                memoized_bindings,
+                spec.cache_prologue,
+            )?;
             consequent.extend(build_generated_assignment_statements_ast(
                 builder,
                 allocator,
                 memoized_assignments,
+                spec.cache_prologue,
             )?);
             consequent.extend(build_generated_expression_statements_ast(
                 builder,
                 allocator,
                 memoized_expressions,
+                spec.cache_prologue,
             )?);
             consequent.extend(build_generated_statement_sources_ast(
                 builder,
                 allocator,
                 memoized_setup_statements,
+                spec.cache_prologue,
             )?);
             if let Some(memoized_expr) = memoized_expr {
                 let memoized_expr = parse_expression_for_ast_codegen(
@@ -35426,22 +36991,29 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 dep_expr,
             )
             .ok()?;
-            let mut consequent =
-                build_generated_binding_statements_ast(builder, allocator, memoized_bindings)?;
+            let mut consequent = build_generated_binding_statements_ast(
+                builder,
+                allocator,
+                memoized_bindings,
+                spec.cache_prologue,
+            )?;
             consequent.extend(build_generated_assignment_statements_ast(
                 builder,
                 allocator,
                 memoized_assignments,
+                spec.cache_prologue,
             )?);
             consequent.extend(build_generated_expression_statements_ast(
                 builder,
                 allocator,
                 memoized_expressions,
+                spec.cache_prologue,
             )?);
             consequent.extend(build_generated_statement_sources_ast(
                 builder,
                 allocator,
                 memoized_setup_statements,
+                spec.cache_prologue,
             )?);
             if let Some(memoized_expr) = memoized_expr {
                 let memoized_expr = parse_expression_for_ast_codegen(
@@ -35578,22 +37150,29 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             for guard in dep_guards {
                 test = builder.expression_logical(SPAN, test, AstLogicalOperator::Or, guard?);
             }
-            let mut consequent =
-                build_generated_binding_statements_ast(builder, allocator, memoized_bindings)?;
+            let mut consequent = build_generated_binding_statements_ast(
+                builder,
+                allocator,
+                memoized_bindings,
+                spec.cache_prologue,
+            )?;
             consequent.extend(build_generated_assignment_statements_ast(
                 builder,
                 allocator,
                 memoized_assignments,
+                spec.cache_prologue,
             )?);
             consequent.extend(build_generated_expression_statements_ast(
                 builder,
                 allocator,
                 memoized_expressions,
+                spec.cache_prologue,
             )?);
             consequent.extend(build_generated_statement_sources_ast(
                 builder,
                 allocator,
                 memoized_setup_statements,
+                spec.cache_prologue,
             )?);
             if let Some(memoized_expr) = memoized_expr {
                 let memoized_expr = parse_expression_for_ast_codegen(
@@ -35721,22 +37300,29 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             for guard in dep_guards {
                 test = builder.expression_logical(SPAN, test, AstLogicalOperator::Or, guard?);
             }
-            let mut consequent =
-                build_generated_binding_statements_ast(builder, allocator, memoized_bindings)?;
+            let mut consequent = build_generated_binding_statements_ast(
+                builder,
+                allocator,
+                memoized_bindings,
+                spec.cache_prologue,
+            )?;
             consequent.extend(build_generated_assignment_statements_ast(
                 builder,
                 allocator,
                 memoized_assignments,
+                spec.cache_prologue,
             )?);
             consequent.extend(build_generated_expression_statements_ast(
                 builder,
                 allocator,
                 memoized_expressions,
+                spec.cache_prologue,
             )?);
             consequent.extend(build_generated_statement_sources_ast(
                 builder,
                 allocator,
                 memoized_setup_statements,
+                spec.cache_prologue,
             )?);
             if let Some(memoized_expr) = memoized_expr {
                 let memoized_expr = parse_expression_for_ast_codegen(
@@ -36093,14 +37679,18 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 allocator,
                 &inner_spec,
             )?;
-            let guard_aliases = collect_guard_alias_binding_map(bindings);
+            let guard_aliases = collect_guard_alias_binding_map(bindings, spec.cache_prologue);
             if !guard_aliases.is_empty() {
                 for statement in body.statements.iter_mut() {
                     rewrite_guard_aliases_in_statement_ast(builder, statement, &guard_aliases);
                 }
             }
-            let mut prefixed =
-                build_generated_binding_statements_ast(builder, allocator, bindings)?;
+            let mut prefixed = build_generated_binding_statements_ast(
+                builder,
+                allocator,
+                bindings,
+                spec.cache_prologue,
+            )?;
             prefixed.extend(body.statements);
             body.statements = prefixed;
             Some(body)
@@ -36146,8 +37736,12 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 allocator,
                 &inner_spec,
             )?;
-            let mut prefixed =
-                build_generated_expression_statements_ast(builder, allocator, expressions)?;
+            let mut prefixed = build_generated_expression_statements_ast(
+                builder,
+                allocator,
+                expressions,
+                spec.cache_prologue,
+            )?;
             prefixed.extend(body.statements);
             body.statements = prefixed;
             Some(body)
@@ -36168,8 +37762,12 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 allocator,
                 &inner_spec,
             )?;
-            let mut prefixed =
-                build_generated_assignment_statements_ast(builder, allocator, assignments)?;
+            let mut prefixed = build_generated_assignment_statements_ast(
+                builder,
+                allocator,
+                assignments,
+                spec.cache_prologue,
+            )?;
             prefixed.extend(body.statements);
             body.statements = prefixed;
             Some(body)
@@ -36242,17 +37840,23 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 builder.expression_identifier(SPAN, builder.ident(memo_name)),
                 builder.expression_identifier(SPAN, builder.ident(temp_name)),
             );
-            let mut consequent =
-                build_generated_binding_statements_ast(builder, allocator, memoized_bindings)?;
+            let mut consequent = build_generated_binding_statements_ast(
+                builder,
+                allocator,
+                memoized_bindings,
+                spec.cache_prologue,
+            )?;
             consequent.extend(build_generated_assignment_statements_ast(
                 builder,
                 allocator,
                 memoized_assignments,
+                spec.cache_prologue,
             )?);
             consequent.extend(build_generated_expression_statements_ast(
                 builder,
                 allocator,
                 memoized_expressions,
+                spec.cache_prologue,
             )?);
             consequent.push(build_identifier_assignment_statement_ast_with_expression(
                 builder, memo_name, memo_expr,
@@ -39461,6 +41065,32 @@ mod tests {
     }
 
     #[test]
+    fn renders_statement_sources_with_custom_cache_binding() {
+        let rendered =
+            super::try_render_statement_sources_from_generated_body_shape_with_cache_binding(
+                &super::GeneratedBodyShape::MemoizedCachedValues {
+                    deps: vec![(0, "props.value".to_string())],
+                    setup_statements: vec!["t0 = identity(props.value);".to_string()],
+                    cached_values: vec![super::GeneratedCachedValue {
+                        name: "t0".to_string(),
+                        slot: 1,
+                    }],
+                    restored_values: vec![super::GeneratedCachedValue {
+                        name: "t0".to_string(),
+                        slot: 1,
+                    }],
+                },
+                "$0",
+            )
+            .expect("expected rendered custom-cache setup shape")
+            .join("\n");
+
+        assert!(rendered.contains("if ($0[0] !== props.value)"));
+        assert!(rendered.contains("$0[1] = t0;"));
+        assert!(rendered.contains("t0 = $0[1];"));
+    }
+
+    #[test]
     fn renders_concise_arrow_function_via_ast() {
         let rendered = render_function_expression_ast(&FunctionExpressionRenderSpec {
             body: FunctionBodyRenderSpec {
@@ -39721,6 +41351,16 @@ mod tests {
                 "bb0: {\n  switch (identity(other)) {\n    case 1: {\n      x.a = props.a.b;\n      break bb0;\n    }\n    default: {\n      x.c = props.a.b;\n    }\n  }\n}".to_string()
             ),
             "bb0: switch (identity(other)) {\n  case 1: {\n    x.a = props.a.b;\n    break bb0;\n  }\n  default: {\n    x.c = props.a.b;\n  }\n}".to_string()
+        );
+    }
+
+    #[test]
+    fn canonicalizes_labeled_try_statement_source() {
+        assert_eq!(
+            super::canonicalize_generated_statement_source(
+                "bb0: {\n  try {\n    y.push(props.y);\n  } catch (t1) {\n    t0 = t1;\n    break bb0;\n  }\n}".to_string()
+            ),
+            "bb0: try {\n  y.push(props.y);\n} catch (t1) {\n  t0 = t1;\n  break bb0;\n}".to_string()
         );
     }
 
@@ -44144,6 +45784,92 @@ mod tests {
 
         assert!(rendered.contains("bb0: switch (value) {"));
         assert!(!rendered.contains("bb0: {\n  switch"));
+    }
+
+    #[test]
+    fn renders_labeled_try_body_shape_without_block_wrapper() {
+        let body_shape = super::GeneratedBodyShape::Labeled {
+            label: "bb0".to_string(),
+            inner: Box::new(super::GeneratedBodyShape::TryCatch {
+                catch_param: Some("error".to_string()),
+                try_body: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![
+                    "foo()".to_string(),
+                ])),
+                catch_body: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![
+                    "bar(error)".to_string(),
+                ])),
+            }),
+        };
+
+        let rendered = render_function_expression_ast(&FunctionExpressionRenderSpec {
+            body: FunctionBodyRenderSpec {
+                params: &[],
+                param_names: &[],
+                body_shape: &body_shape,
+                directives: &[],
+                cache_prologue: None,
+                needs_function_hook_guard_wrapper: false,
+                is_async: false,
+                is_generator: false,
+            },
+            name: None,
+            fn_type: &FunctionExpressionType::FunctionExpression,
+            anonymous_name_hint: None,
+        })
+        .expect("expected labeled try render");
+
+        assert!(rendered.contains("bb0: try {"));
+        assert!(!rendered.contains("bb0: {\n  try"));
+    }
+
+    #[test]
+    fn normalizes_custom_cache_binding_names_in_body_shape() {
+        let shape = super::GeneratedBodyShape::PrefixedBindings {
+            bindings: vec![super::GeneratedBinding {
+                kind: ast::VariableDeclarationKind::Const,
+                pattern: "c_00".to_string(),
+                expression: "$0[0] !== props.value".to_string(),
+                promote_to_function_declaration: false,
+            }],
+            inner: Box::new(super::GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+                deps: vec![(0, "props.value".to_string())],
+                setup_statements: vec!["$0[0] = props.value;".to_string()],
+                cached_values: vec![super::GeneratedCachedValue {
+                    name: "t0".to_string(),
+                    slot: 1,
+                }],
+                restored_values: vec![super::GeneratedCachedValue {
+                    name: "t0".to_string(),
+                    slot: 1,
+                }],
+                sentinel_name: "t0".to_string(),
+                final_return: Some("$0[1]".to_string()),
+                fallback_body: Some(Box::new(super::GeneratedBodyShape::ReturnExpression(
+                    "$0[1]".to_string(),
+                ))),
+            }),
+        };
+
+        let normalized = super::normalize_generated_body_shape_cache_binding_name(shape, "$0");
+        let super::GeneratedBodyShape::PrefixedBindings { bindings, inner } = normalized else {
+            panic!("expected prefixed bindings shape");
+        };
+        assert_eq!(bindings[0].expression, "$[0] !== props.value");
+        let super::GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+            setup_statements,
+            final_return,
+            fallback_body,
+            ..
+        } = inner.as_ref()
+        else {
+            panic!("expected memoized early-return shape");
+        };
+        assert_eq!(setup_statements[0], "$[0] = props.value;");
+        assert_eq!(final_return.as_deref(), Some("$[1]"));
+        assert!(matches!(
+            fallback_body.as_deref(),
+            Some(super::GeneratedBodyShape::ReturnExpression(expression)) if expression == "$[1]"
+        ));
     }
 
     #[test]
