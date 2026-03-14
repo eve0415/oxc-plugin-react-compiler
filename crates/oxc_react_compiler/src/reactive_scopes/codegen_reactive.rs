@@ -3913,6 +3913,22 @@ impl Context {
     }
 }
 
+fn sync_direct_body_shape_naming_state(target: &mut Context, source: &Context) {
+    // The direct body-shape builder needs to keep its own declaration/materialization
+    // state so it can reconstruct structure, but it should reuse the temp/name
+    // assignments already chosen by the real string-codegen pass.
+    target.callback_deps = source.callback_deps.clone();
+    target.hook_callback_arg_decls = source.hook_callback_arg_decls.clone();
+    target.suppressed_temp_ids = source.suppressed_temp_ids.clone();
+    target.unique_identifiers = source.unique_identifiers.clone();
+    target.synthesized_names = source.synthesized_names.clone();
+    target.next_temp_index = source.next_temp_index;
+    target.temp_remap = source.temp_remap.clone();
+    target.declared_names = source.declared_names.clone();
+    target.declaration_name_overrides = source.declaration_name_overrides.clone();
+    target.used_declaration_names = source.used_declaration_names.clone();
+}
+
 /// Generate code from a ReactiveFunction tree.
 pub fn codegen_reactive_function(
     func: &ReactiveFunction,
@@ -4170,8 +4186,7 @@ fn codegen_reactive_function_with_primitives(
 
     let mut shape_cx = cx.clone();
     let body = codegen_block(&mut cx, &func.body);
-    shape_cx.callback_deps = cx.callback_deps.clone();
-    shape_cx.hook_callback_arg_decls = cx.hook_callback_arg_decls.clone();
+    sync_direct_body_shape_naming_state(&mut shape_cx, &cx);
     let direct_body_shape =
         try_build_generated_body_shape_from_reactive_block(&mut shape_cx, &func.body);
     if std::env::var("DEBUG_DIRECT_BODY_SHAPE_STATUS").is_ok() {
