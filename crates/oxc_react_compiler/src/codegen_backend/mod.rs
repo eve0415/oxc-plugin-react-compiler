@@ -87,12 +87,13 @@ pub(crate) struct SynthesizedDefaultParamCache {
     pub(crate) value_expr: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct CompiledFunction {
     pub(crate) name: String,
     pub(crate) start: u32,
     pub(crate) end: u32,
     pub(crate) generated_body_shape: crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
+    pub(crate) reactive_function: Option<crate::hir::types::ReactiveFunction>,
     pub(crate) needs_cache_import: bool,
     pub(crate) compiled_params: Option<Vec<CompiledParam>>,
     pub(crate) param_prefix_statements: Vec<CompiledParamPrefixStatement>,

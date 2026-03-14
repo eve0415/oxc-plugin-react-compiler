@@ -2226,7 +2226,10 @@ fn single_return_expression<'a>(
     }
 }
 
-pub(crate) fn lower_primitive<'a>(builder: AstBuilder<'a>, value: &PrimitiveValue) -> ast::Expression<'a> {
+pub(crate) fn lower_primitive<'a>(
+    builder: AstBuilder<'a>,
+    value: &PrimitiveValue,
+) -> ast::Expression<'a> {
     match value {
         PrimitiveValue::Null => builder.expression_null_literal(SPAN),
         PrimitiveValue::Undefined => builder.expression_identifier(SPAN, "undefined"),

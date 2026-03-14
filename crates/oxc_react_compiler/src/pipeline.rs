@@ -2030,6 +2030,7 @@ fn dedupe_hir_outlined_functions(outlined: &mut Vec<(String, HIRFunction)>) {
 /// Result of running the HIR pipeline.
 struct PipelineOutput {
     codegen_result: codegen_reactive::CodegenResult,
+    reactive_function: crate::hir::types::ReactiveFunction,
     final_hir_snapshot: HIRFunction,
     hir_outlined: Vec<optimization::outline_functions::OutlinedFunction>,
     reserved_removed_names: std::collections::HashSet<String>,
@@ -2550,7 +2551,7 @@ fn run_hir_pipeline(
     // Old codegen fallback has been removed to keep a single implementation path.
     // Only dememoize if this specific function had a validation error that was swallowed.
     let should_dememoize = retry_no_memo_mode && had_validation_error;
-    let codegen_result = run_reactive_passes(
+    let (codegen_result, reactive_function) = run_reactive_passes(
         hir_func,
         retry_no_memo_mode,
         should_dememoize,
@@ -2561,6 +2562,7 @@ fn run_hir_pipeline(
 
     Ok(PipelineOutput {
         codegen_result,
+        reactive_function,
         final_hir_snapshot,
         hir_outlined,
         reserved_removed_names,
@@ -3361,7 +3363,13 @@ fn run_reactive_passes(
     env_config: &crate::options::EnvironmentConfig,
     reserved_names: &std::collections::HashSet<String>,
     fbt_operands: &std::collections::HashSet<crate::hir::types::IdentifierId>,
-) -> Result<codegen_reactive::CodegenResult, crate::error::CompilerError> {
+) -> Result<
+    (
+        codegen_reactive::CodegenResult,
+        crate::hir::types::ReactiveFunction,
+    ),
+    crate::error::CompilerError,
+> {
     let debug = std::env::var("DEBUG_REACTIVE").is_ok();
 
     // Build reactive function tree from HIR CFG (consumes the HIRFunction).
@@ -3486,7 +3494,7 @@ fn run_reactive_passes(
     if let Some(err) = codegen_result.error.take() {
         return Err(err);
     }
-    Ok(codegen_result)
+    Ok((codegen_result, reactive_fn))
 }
 
 fn dememoize_reactive_block(block: &mut crate::hir::types::ReactiveBlock) {
@@ -6338,6 +6346,7 @@ fn try_compile_function<'a>(
         start: func.span.start,
         end: func.span.end,
         generated_body_shape,
+        reactive_function: Some(pipeline_output.reactive_function),
         needs_cache_import,
         compiled_params,
         param_prefix_statements,
@@ -6536,6 +6545,7 @@ fn try_compile_function_with_name<'a>(
         start: func.span.start,
         end: func.span.end,
         generated_body_shape,
+        reactive_function: Some(pipeline_output.reactive_function),
         needs_cache_import,
         compiled_params,
         param_prefix_statements,
@@ -6742,6 +6752,7 @@ fn try_compile_arrow<'a>(
         start: arrow.span.start,
         end: arrow.span.end,
         generated_body_shape,
+        reactive_function: Some(pipeline_output.reactive_function),
         needs_cache_import,
         compiled_params,
         param_prefix_statements,

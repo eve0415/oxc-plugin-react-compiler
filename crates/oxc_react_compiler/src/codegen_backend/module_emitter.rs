@@ -3058,6 +3058,10 @@ fn build_compiled_function_body<'a>(
     original_body: Option<&ast::FunctionBody<'_>>,
 ) -> Option<ast::FunctionBody<'a>> {
     let mut function_body = if let Some(function_body) =
+        try_build_compiled_function_body_from_reactive_ast(builder, allocator, cf)
+    {
+        function_body
+    } else if let Some(function_body) =
         try_build_compiled_function_body_from_hir(builder, cf, state)
     {
         function_body
@@ -3102,6 +3106,33 @@ fn build_compiled_function_body<'a>(
     apply_emit_freeze_to_cache_stores_ast(builder, allocator, &mut function_body, cf, state);
     strip_redundant_trailing_void_return_from_function_body(&mut function_body);
     Some(function_body)
+}
+
+fn try_build_compiled_function_body_from_reactive_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    cf: &CompiledFunction,
+) -> Option<ast::FunctionBody<'a>> {
+    // New direct ReactiveFunction → AST codegen. Opt-in via env var until
+    // output parity with the shape-based path is achieved.
+    if std::env::var("REACT_COMPILER_AST_CODEGEN").is_err() {
+        return None;
+    }
+    let reactive_fn = cf.reactive_function.as_ref()?;
+    let options = crate::reactive_scopes::codegen_ast::CodegenOptions {
+        enable_change_variable_codegen: false,
+        enable_emit_hook_guards: false,
+        enable_change_detection_for_debugging: false,
+        enable_reset_cache_on_source_file_changes: false,
+        fast_refresh_source_hash: None,
+    };
+    let result = crate::reactive_scopes::codegen_ast::codegen_reactive_function(
+        builder,
+        allocator,
+        reactive_fn,
+        options,
+    );
+    Some(builder.function_body(SPAN, builder.vec(), result.body))
 }
 
 fn try_build_compiled_function_body_from_hir<'a>(
@@ -9323,6 +9354,7 @@ export const FIXTURE_ENTRYPOINT = {
             start,
             end,
             generated_body_shape,
+            reactive_function: None,
             needs_cache_import: false,
             compiled_params: Some(
                 params
