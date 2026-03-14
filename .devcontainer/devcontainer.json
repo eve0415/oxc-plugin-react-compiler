@@ -16,7 +16,8 @@
   "mounts": [
     "type=bind,source=${localEnv:HOME}/.claude,target=/home/node/.claude,consistency=cached",
     "type=bind,source=${localEnv:HOME}/.codex,target=/home/node/.codex,consistency=cached",
-    "type=bind,source=${localEnv:HOME}/.gemini,target=/home/node/.gemini,consistency=cached"
+    "type=bind,source=${localEnv:HOME}/.gemini,target=/home/node/.gemini,consistency=cached",
+    "type=bind,source=${localEnv:HOME}/.claude.json,target=/home/node/.claude.json,consistency=cached"
   ],
   "customizations": {
     "vscode": {
@@ -78,7 +79,6 @@
           "src/routeTree.gen.ts": true,
           "dist": true
         },
-        "javascript.updateImportsOnPaste.enabled": true,
         "oxc.fixKind": "all",
         "oxc.typeAware": true,
         "oxc.unusedDisableDirectives": "deny",
@@ -101,20 +101,21 @@
             "path": "/bin/zsh"
           }
         },
-        "typescript.experimental.useTsgo": true,
-        "typescript.inlayHints.functionLikeReturnTypes.enabled": true,
-        "typescript.inlayHints.parameterNames.enabled": "all",
-        "typescript.inlayHints.parameterTypes.enabled": true,
-        "typescript.inlayHints.variableTypes.enabled": true,
-        "typescript.preferences.autoImportFileExcludePatterns": ["vm", "node:vm"],
-        "typescript.preferences.preferTypeOnlyAutoImports": true,
-        "typescript.implementationsCodeLens.enabled": true,
-        "typescript.tsserver.watchOptions": {
+        "ts.experimental.useTsgo": true,
+        "ts.implementationsCodeLens.enabled": true,
+        "ts.inlayHints.functionLikeReturnTypes.enabled": true,
+        "ts.inlayHints.parameterNames.enabled": "all",
+        "ts.inlayHints.parameterTypes.enabled": true,
+        "ts.inlayHints.variableTypes.enabled": true,
+        "ts.preferences.autoImportFileExcludePatterns": ["vm", "node:vm"],
+        "ts.preferences.preferTypeOnlyAutoImports": true,
+        "ts.tsserver.watchOptions": {
           "fallbackPolling": "dynamicPriorityPolling",
           "watchFile": "useFsEvents",
           "synchronousWatchDirectory": true,
           "excludeDirectories": ["**/node_modules/**/*"]
         },
+        "ts.updateImportsOnPaste.enabled": true,
         "vitest.maximumConfigs": 50,
         "[css]": {
           "editor.defaultFormatter": "bradlc.vscode-tailwindcss"
