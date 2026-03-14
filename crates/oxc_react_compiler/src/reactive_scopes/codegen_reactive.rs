@@ -2062,7 +2062,17 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
         setup_statements: Vec<String>,
         memoized_expr: Option<String>,
     ) -> (Vec<String>, Option<String>) {
-        if memoized_expr.is_some() || setup_statements.len() != 1 {
+        if memoized_expr.is_some() {
+            return (setup_statements, memoized_expr);
+        }
+        if setup_statements.len() == 2 && is_trivial_null_statement(&setup_statements[1]) {
+            return canonicalize_single_target_setup_statement(
+                value_name,
+                vec![setup_statements[0].clone()],
+                memoized_expr,
+            );
+        }
+        if setup_statements.len() != 1 {
             return (setup_statements, memoized_expr);
         }
         let setup_statement = &setup_statements[0];
@@ -2117,6 +2127,25 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             }
             _ => (setup_statements, memoized_expr),
         }
+    }
+
+    fn is_trivial_null_statement(statement_source: &str) -> bool {
+        let allocator = Allocator::default();
+        let Ok(statement) = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            statement_source,
+        ) else {
+            return false;
+        };
+        matches!(
+            statement,
+            ast::Statement::ExpressionStatement(expression_statement)
+                if matches!(
+                    expression_statement.expression.without_parentheses(),
+                    ast::Expression::NullLiteral(_)
+                )
+        )
     }
 
     fn promote_memoized_expr_to_setup_statement(
@@ -44092,6 +44121,30 @@ mod tests {
                 expressions: vec!["touch(x)".to_string()],
             }
         );
+    }
+
+    #[test]
+    fn canonicalizes_trailing_null_after_single_target_setup_statement() {
+        let shape = super::canonicalize_generated_body_shape(
+            super::GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+                value_name: "x".to_string(),
+                value_slot: 0,
+                memoized_bindings: vec![],
+                memoized_assignments: vec![],
+                memoized_expressions: vec![],
+                memoized_setup_statements: vec!["x = [];".to_string(), "null;".to_string()],
+                memoized_expr: None,
+            },
+        );
+
+        assert!(matches!(
+            shape,
+            super::GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+                memoized_setup_statements,
+                memoized_expr,
+                ..
+            } if memoized_setup_statements.is_empty() && memoized_expr.as_deref() == Some("[]")
+        ));
     }
 
     #[test]
