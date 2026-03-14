@@ -5824,6 +5824,34 @@ fn replace_undeclared_generated_temps_with_placeholder(statements: &mut [String]
     }
 }
 
+fn hoist_uninitialized_generated_declarations_for_fallback_accounting(
+    statements: &mut [String],
+) {
+    loop {
+        let mut changed = false;
+        for index in 1..statements.len() {
+            let Some(name) = parse_uninitialized_declaration_name(&statements[index]) else {
+                continue;
+            };
+            if !generated_binding_name_is_lenient_alias(&name) {
+                continue;
+            }
+            if parse_uninitialized_declaration_name(&statements[index - 1]).is_some() {
+                continue;
+            }
+            if contains_word(&statements[index - 1], &name) {
+                continue;
+            }
+            statements.swap(index - 1, index);
+            changed = true;
+            break;
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
 fn inline_lenient_alias_bindings(statements: &mut Vec<String>) {
     loop {
         let mut changed = false;
@@ -5876,6 +5904,7 @@ fn normalize_for_fallback_accounting_compare(source: &str) -> String {
     inline_lenient_alias_bindings(&mut statements);
     rewrite_generated_assignment_result_bindings(&mut statements);
     replace_undeclared_generated_temps_with_placeholder(&mut statements);
+    hoist_uninitialized_generated_declarations_for_fallback_accounting(&mut statements);
     statements.retain(|statement| !statement_is_leniently_ignorable(statement));
 
     let joined = normalize_labeled_blocks(&statements.join("\n"));
@@ -6391,6 +6420,15 @@ fn generated_body_shapes_equivalent_after_stripping_memoization(
     let direct_norm = normalize_for_fallback_accounting_compare(&direct_source.join("\n"));
     let analyzed_norm = normalize_for_fallback_accounting_compare(&analyzed_source.join("\n"));
     let body_norm = normalize_for_fallback_accounting_compare(&body_source.join("\n"));
+    if std::env::var("DEBUG_FALLBACK_ACCOUNTING_COMPARE").is_ok()
+        && string_body.contains("foo.style.height")
+        && (direct_norm != analyzed_norm || analyzed_norm != body_norm)
+    {
+        eprintln!(
+            "[FALLBACK_ACCOUNTING_COMPARE] direct=\n{}\n--- analyzed ---\n{}\n--- body ---\n{}\n",
+            direct_norm, analyzed_norm, body_norm
+        );
+    }
     direct_norm == analyzed_norm && analyzed_norm == body_norm
 }
 
