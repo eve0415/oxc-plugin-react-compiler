@@ -4019,6 +4019,12 @@ fn codegen_reactive_function_with_primitives(
                     &analyzed_body_shape,
                     func.async_,
                     func.generator,
+                ) || generated_body_shapes_render_equivalent(
+                    &direct_body_shape,
+                    &analyzed_body_shape,
+                ) || generated_body_shape_renders_equivalent_to_string_body(
+                    &direct_body_shape,
+                    &body,
                 ) {
                     direct_body_shape
                 } else {
@@ -4384,8 +4390,6 @@ fn try_render_statement_sources_from_generated_body_shape(
     Some(statements)
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
 fn normalize_rendered_generated_body_source(source: &str) -> String {
     source
         .lines()
@@ -4395,8 +4399,6 @@ fn normalize_rendered_generated_body_source(source: &str) -> String {
         .join("\n")
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
 fn canonicalize_rendered_generated_body_source(source: &str) -> String {
     let allocator = Allocator::default();
     if let Ok(statements) =
@@ -4410,8 +4412,6 @@ fn canonicalize_rendered_generated_body_source(source: &str) -> String {
     }
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
 fn generated_body_shapes_render_equivalent(
     direct: &GeneratedBodyShape,
     analyzed: &GeneratedBodyShape,
@@ -4425,6 +4425,331 @@ fn generated_body_shapes_render_equivalent(
     };
     canonicalize_rendered_generated_body_source(&direct_source.join("\n"))
         == canonicalize_rendered_generated_body_source(&analyzed_source.join("\n"))
+}
+
+/// Normalize rendered output for lenient comparison.
+fn normalize_for_lenient_compare(source: &str) -> String {
+    // Step 1: Strip blank line markers and empty lines
+    let lines: Vec<&str> = source
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty()
+                && trimmed != "\"__REACT_COMPILER_INTERNAL_BLANK_LINE_MARKER__\";"
+                && trimmed != "__REACT_COMPILER_INTERNAL_BLANK_LINE_MARKER__"
+        })
+        .collect();
+
+    // Step 2: Inline const/let alias bindings (e.g., `const x = t0;` → replace t0 with x everywhere)
+    // This handles the AliasedReturn pattern difference.
+    let mut result_lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    loop {
+        let mut inlined = false;
+        for i in 0..result_lines.len() {
+            let trimmed = result_lines[i].trim();
+            // Match patterns: `const NAME = tN;` or `let NAME = tN;`
+            let binding = trimmed
+                .strip_prefix("const ")
+                .or_else(|| trimmed.strip_prefix("let "));
+            if let Some(rest) = binding {
+                // Check for `NAME = tN;` where tN is a temp variable
+                if let Some(eq_pos) = rest.find(" = ") {
+                    let name = &rest[..eq_pos];
+                    let value = rest[eq_pos + 3..].trim_end_matches(';').trim();
+                    // Only inline if value is a simple temp var (t followed by digits)
+                    if value.starts_with('t')
+                        && value.len() > 1
+                        && value[1..].chars().all(|c| c.is_ascii_digit())
+                        && name
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+                    {
+                        // Replace all occurrences of `value` with `name` (word boundary)
+                        let mut new_lines: Vec<String> = Vec::with_capacity(result_lines.len());
+                        for (j, line) in result_lines.iter().enumerate() {
+                            if j == i {
+                                // Remove this binding line
+                                continue;
+                            }
+                            new_lines.push(replace_word(line, value, name));
+                        }
+                        result_lines = new_lines;
+                        inlined = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !inlined {
+            break;
+        }
+    }
+
+    // Step 3: Also remove `let tN;` declarations for inlined temps that no longer appear
+    let snapshot = result_lines.clone();
+    result_lines.retain(|line| {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("let ") {
+            let rest = rest.trim_end_matches(';').trim();
+            if rest.starts_with('t')
+                && rest.len() > 1
+                && rest[1..].chars().all(|c| c.is_ascii_digit())
+            {
+                let temp_name = rest;
+                let appears_elsewhere = snapshot
+                    .iter()
+                    .any(|l| l.trim() != trimmed && contains_word(l, temp_name));
+                return appears_elsewhere;
+            }
+        }
+        true
+    });
+
+    // Step 4: Normalize labeled blocks: `label: { body }` → `label: body`
+    // Remove redundant block wrappers around labeled statements.
+    let joined = result_lines.join("\n");
+    let result = normalize_labeled_blocks(&joined);
+
+    // Step 5: De-shadow temp declarations. If `let tN;` appears more than once,
+    // rename later declarations to unique names.
+    let result = de_shadow_temp_decls(&result);
+
+    // Step 6: Normalize temp variable numbering
+    let mut temp_map: HashMap<String, String> = HashMap::new();
+    let mut next_temp = 0u32;
+    let mut normalized = String::with_capacity(result.len());
+    let chars: Vec<char> = result.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == 't' && (i == 0 || !chars[i - 1].is_alphanumeric() && chars[i - 1] != '_') {
+            let start = i;
+            i += 1;
+            if i < chars.len() && chars[i].is_ascii_digit() {
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+                if i >= chars.len() || (!chars[i].is_alphanumeric() && chars[i] != '_') {
+                    let original: String = chars[start..i].iter().collect();
+                    let mapped = temp_map
+                        .entry(original)
+                        .or_insert_with(|| {
+                            let name = format!("t{next_temp}");
+                            next_temp += 1;
+                            name
+                        })
+                        .clone();
+                    normalized.push_str(&mapped);
+                    continue;
+                }
+            }
+            for c in &chars[start..i] {
+                normalized.push(*c);
+            }
+        } else {
+            normalized.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    // Step 7: Final whitespace normalization
+    normalized
+        .lines()
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// De-shadow temp variable declarations: if `let tN;` appears more than once,
+/// rename subsequent declarations (and their uses until the next redeclaration)
+/// to unique temp names.
+fn de_shadow_temp_decls(source: &str) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut result_lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    let mut seen_temps: HashMap<String, u32> = HashMap::new();
+    let mut next_shadow = 900_000u32;
+
+    for i in 0..result_lines.len() {
+        let trimmed = result_lines[i].trim();
+        let Some(rest) = trimmed.strip_prefix("let ") else {
+            continue;
+        };
+        let temp_end = rest
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
+            .unwrap_or(rest.len());
+        let temp_name = &rest[..temp_end];
+        if temp_name.starts_with('t')
+            && temp_name.len() > 1
+            && temp_name[1..].chars().all(|c| c.is_ascii_digit())
+        {
+            let entry = seen_temps.entry(temp_name.to_string()).or_insert(0);
+            if *entry > 0 {
+                let shadow_name = format!("t{next_shadow}");
+                next_shadow += 1;
+                let temp_owned = temp_name.to_string();
+                result_lines[i] = replace_word(&result_lines[i], &temp_owned, &shadow_name);
+                for line in result_lines.iter_mut().skip(i + 1) {
+                    let t = line.trim();
+                    if let Some(r) = t.strip_prefix("let ") {
+                        let e = r
+                            .find(|c: char| !c.is_alphanumeric() && c != '_')
+                            .unwrap_or(r.len());
+                        if r[..e] == *temp_owned {
+                            break;
+                        }
+                    }
+                    *line = replace_word(line, &temp_owned, &shadow_name);
+                }
+            }
+            *entry += 1;
+        }
+    }
+
+    result_lines.join("\n")
+}
+
+/// Replace word-bounded occurrences of `from` with `to` in `source`.
+fn replace_word(source: &str, from: &str, to: &str) -> String {
+    let mut result = String::with_capacity(source.len());
+    let chars: Vec<char> = source.chars().collect();
+    let from_chars: Vec<char> = from.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if i + from_chars.len() <= chars.len() && chars[i..i + from_chars.len()] == from_chars[..] {
+            let before_ok = i == 0 || !chars[i - 1].is_alphanumeric() && chars[i - 1] != '_';
+            let after_ok = i + from_chars.len() >= chars.len()
+                || !chars[i + from_chars.len()].is_alphanumeric()
+                    && chars[i + from_chars.len()] != '_';
+            if before_ok && after_ok {
+                result.push_str(to);
+                i += from_chars.len();
+                continue;
+            }
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+    result
+}
+
+/// Check if `source` contains `word` as a word-bounded occurrence.
+fn contains_word(source: &str, word: &str) -> bool {
+    let chars: Vec<char> = source.chars().collect();
+    let word_chars: Vec<char> = word.chars().collect();
+    for i in 0..chars.len() {
+        if i + word_chars.len() <= chars.len() && chars[i..i + word_chars.len()] == word_chars[..] {
+            let before_ok = i == 0 || !chars[i - 1].is_alphanumeric() && chars[i - 1] != '_';
+            let after_ok = i + word_chars.len() >= chars.len()
+                || !chars[i + word_chars.len()].is_alphanumeric()
+                    && chars[i + word_chars.len()] != '_';
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Remove redundant `{ }` wrappers around labeled statement bodies.
+/// Transforms `label: { body }` to `label: body` when the block contains
+/// a single compound statement (if/while/for/switch).
+fn normalize_labeled_blocks(source: &str) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut result_lines: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        // Look for `label: {` pattern
+        if let Some(colon_pos) = trimmed.find(": {") {
+            let label_part = &trimmed[..colon_pos];
+            let after_colon = trimmed[colon_pos + 2..].trim();
+            if after_colon == "{"
+                && !label_part.is_empty()
+                && label_part.chars().all(|c| c.is_alphanumeric() || c == '_')
+            {
+                // Find the matching closing `}` by counting braces
+                let indent = lines[i].len() - lines[i].trim_start().len();
+                let indent_str = &lines[i][..indent];
+                let mut brace_depth = 1;
+                let mut close_line = None;
+                for (j, line) in lines.iter().enumerate().skip(i + 1) {
+                    for ch in line.chars() {
+                        match ch {
+                            '{' => brace_depth += 1,
+                            '}' => {
+                                brace_depth -= 1;
+                                if brace_depth == 0 {
+                                    close_line = Some(j);
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if close_line.is_some() {
+                        break;
+                    }
+                }
+                if let Some(close_j) = close_line {
+                    // Check that the closing line is just `}` (possibly with indent)
+                    if lines[close_j].trim() == "}" {
+                        // Emit `label:` without `{`, skip the closing `}`
+                        // Check if the next line after `label: {` starts with a control keyword
+                        if i + 1 < close_j {
+                            let next_trimmed = lines[i + 1].trim();
+                            let is_control = next_trimmed.starts_with("if ")
+                                || next_trimmed.starts_with("if(")
+                                || next_trimmed.starts_with("while ")
+                                || next_trimmed.starts_with("while(")
+                                || next_trimmed.starts_with("for ")
+                                || next_trimmed.starts_with("for(")
+                                || next_trimmed.starts_with("switch ");
+                            if is_control {
+                                // Emit `label: <body>` merging with next line
+                                let body_indent =
+                                    lines[i + 1].len() - lines[i + 1].trim_start().len();
+                                // Dedent body lines by the difference
+                                let dedent = body_indent.saturating_sub(indent + 2);
+                                result_lines.push(format!(
+                                    "{}{}: {}",
+                                    indent_str,
+                                    label_part,
+                                    lines[i + 1].trim()
+                                ));
+                                for line in lines.iter().take(close_j).skip(i + 2) {
+                                    let line_indent = line.len() - line.trim_start().len();
+                                    let new_indent = line_indent.saturating_sub(dedent);
+                                    result_lines.push(format!(
+                                        "{}{}",
+                                        " ".repeat(new_indent),
+                                        line.trim()
+                                    ));
+                                }
+                                i = close_j + 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        result_lines.push(lines[i].to_string());
+        i += 1;
+    }
+    result_lines.join("\n")
+}
+
+fn generated_body_shape_renders_equivalent_to_string_body(
+    shape: &GeneratedBodyShape,
+    string_body: &str,
+) -> bool {
+    let Some(rendered_shape_source) = try_render_statement_sources_from_generated_body_shape(shape)
+    else {
+        return false;
+    };
+    let rendered = rendered_shape_source.join("\n");
+    let rendered_norm = normalize_for_lenient_compare(&rendered);
+    let body_norm = normalize_for_lenient_compare(string_body);
+    rendered_norm == body_norm
 }
 
 #[cfg(test)]
@@ -4460,32 +4785,6 @@ fn generated_body_shape_reanalyzes_equivalent(
         &rendered_shape_source,
     ));
     &reparsed == analyzed
-}
-
-/// Check if a reactive block has source line gaps > 1 between consecutive
-/// instructions.  When true, the scope computation will produce blank lines
-/// that must flow through `preserve_scope_setup_statement_blank_lines`.
-fn reactive_block_has_source_line_gaps(block: &[ReactiveStatement]) -> bool {
-    let mut last_end_line: Option<u32> = None;
-    for stmt in block {
-        let loc = match stmt {
-            ReactiveStatement::Instruction(instr) => &instr.loc,
-            ReactiveStatement::Terminal(term_stmt) => reactive_terminal_loc(&term_stmt.terminal),
-            ReactiveStatement::Scope(_) | ReactiveStatement::PrunedScope(_) => {
-                last_end_line = None;
-                continue;
-            }
-        };
-        if let SourceLocation::Source(range) = loc {
-            if let Some(prev_end) = last_end_line
-                && range.start.line > prev_end + 1
-            {
-                return true;
-            }
-            last_end_line = Some(range.end.line);
-        }
-    }
-    false
 }
 
 fn maybe_mark_direct_zero_dep_scope_outputs_stable(
@@ -4527,7 +4826,7 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
     }
     let dep_exprs = collect_direct_scope_dependency_exprs(cx, scope, instructions)?;
     let mut computation_cx = cx.clone();
-    computation_cx.inline_temp_zero_dep_scope_shapes = false;
+    computation_cx.inline_temp_zero_dep_scope_shapes = true;
     let computation_shape = canonicalize_generated_body_shape(
         try_build_generated_body_shape_from_reactive_block(&mut computation_cx, instructions)?,
     );
@@ -4685,29 +4984,6 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
                 inner: Box::new(inner),
             })
         };
-    }
-    if cx.inline_temp_zero_dep_scope_shapes
-        && dep_exprs.is_empty()
-        && output_names.iter().all(|name| is_codegen_temp_name(name))
-        && !generated_body_shape_is_function_like_seed(&computation_shape)
-        && !reactive_block_has_source_line_gaps(instructions)
-    {
-        let inline_shape = if declarations.is_empty() {
-            computation_shape
-        } else {
-            GeneratedBodyShape::PrefixedDeclarations {
-                declarations,
-                inner: Box::new(computation_shape),
-            }
-        };
-        if trace {
-            eprintln!(
-                "[DIRECT_SCOPE_STATEMENT_TRACE] inline zero-dep temp scope={} outputs={:?}",
-                scope.id.0, output_names
-            );
-        }
-        maybe_mark_direct_zero_dep_scope_outputs_stable(cx, scope, instructions);
-        return Some(canonicalize_generated_body_shape(inline_shape));
     }
     let mut setup_statements =
         try_build_simple_scope_setup_statements(&primary_output_name, &computation_shape).or_else(
@@ -4882,21 +5158,6 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
 
 fn generated_shape_is_empty_expression_body(shape: &GeneratedBodyShape) -> bool {
     matches!(shape, GeneratedBodyShape::ExpressionStatements(expressions) if expressions.is_empty())
-}
-
-fn generated_body_shape_is_function_like_seed(shape: &GeneratedBodyShape) -> bool {
-    match shape {
-        GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
-            bindings.len() == 1
-                && rendered_expr_is_function_like(&bindings[0].expression)
-                && generated_shape_is_empty_expression_body(inner)
-        }
-        GeneratedBodyShape::PrefixedDeclarations { inner, .. }
-        | GeneratedBodyShape::PrefixedAssignments { inner, .. }
-        | GeneratedBodyShape::PrefixedExpressionStatements { inner, .. }
-        | GeneratedBodyShape::Block { inner } => generated_body_shape_is_function_like_seed(inner),
-        _ => false,
-    }
 }
 
 fn statement_has_blank_line_marker(statement: &str) -> bool {
@@ -5566,6 +5827,67 @@ struct DirectMemoizedExistingReturnParts {
     memoized_expr: Option<String>,
 }
 
+struct InlineLiteralInitScopeMatch<'a> {
+    source_instr: &'a ReactiveInstruction,
+    store_instr: &'a ReactiveInstruction,
+    store_lvalue: &'a LValue,
+}
+
+fn match_inline_literal_init_scope<'a>(
+    scope_block: &'a ReactiveScopeBlock,
+    following_stmts: &'a [ReactiveStatement],
+) -> Option<InlineLiteralInitScopeMatch<'a>> {
+    if !scope_block.scope.dependencies.is_empty()
+        || !scope_block.scope.reassignments.is_empty()
+        || scope_block.scope.declarations.len() != 1
+        || scope_block.instructions.len() != 1
+    {
+        return None;
+    }
+    let decl = scope_block.scope.declarations.values().next()?;
+    let ReactiveStatement::Instruction(source_instr) = scope_block.instructions.first()? else {
+        return None;
+    };
+    let source_lvalue = source_instr.lvalue.as_ref()?;
+    if source_lvalue.identifier.declaration_id != decl.identifier.declaration_id {
+        return None;
+    }
+    if !matches!(
+        &source_instr.value,
+        InstructionValue::Primitive { .. }
+            | InstructionValue::ArrayExpression { .. }
+            | InstructionValue::ObjectExpression { .. }
+    ) {
+        return None;
+    }
+
+    let ReactiveStatement::Instruction(store_instr) = following_stmts.first()? else {
+        return None;
+    };
+    let (store_lvalue, store_value) = match &store_instr.value {
+        InstructionValue::StoreLocal { lvalue, value, .. }
+        | InstructionValue::StoreContext { lvalue, value, .. } => (lvalue, value),
+        _ => return None,
+    };
+    if store_value.identifier.declaration_id != decl.identifier.declaration_id
+        || store_lvalue.place.identifier.name.is_none()
+    {
+        return None;
+    }
+    let Some(parent_scope) = &store_lvalue.place.identifier.scope else {
+        return None;
+    };
+    if parent_scope.dependencies.is_empty() {
+        return None;
+    }
+
+    Some(InlineLiteralInitScopeMatch {
+        source_instr,
+        store_instr,
+        store_lvalue,
+    })
+}
+
 fn try_build_direct_fused_ternary_source_scope(
     cx: &mut Context,
     scope_block: &ReactiveScopeBlock,
@@ -5795,38 +6117,21 @@ fn try_build_direct_fused_zero_dep_literal_store_prefix(
     if !cx.inline_temp_zero_dep_scope_shapes {
         return None;
     }
-    let (scope_decl, source_instr) = zero_dep_single_decl_scope_source(scope_block)?;
-    if !matches!(
-        &source_instr.value,
-        InstructionValue::Primitive { .. }
-            | InstructionValue::ArrayExpression { .. }
-            | InstructionValue::ObjectExpression { .. }
-    ) {
-        return None;
-    }
-    let ReactiveStatement::Instruction(store_instr) = following_stmts.first()? else {
-        return None;
-    };
-    let (target_ident, store_result_decl) = parse_named_store_from_decl(store_instr, scope_decl)?;
-    if reactive_block_uses_declaration(&following_stmts[1..], scope_decl) {
-        return None;
-    }
-    if let Some(store_result_decl) = store_result_decl
-        && reactive_block_uses_declaration(&following_stmts[1..], store_result_decl)
-    {
-        return None;
-    }
-    let (store_lvalue, _) = match &store_instr.value {
-        InstructionValue::StoreLocal { lvalue, value, .. }
-        | InstructionValue::StoreContext { lvalue, value, .. } => (lvalue, value),
-        _ => return None,
-    };
+    let InlineLiteralInitScopeMatch {
+        source_instr,
+        store_lvalue,
+        ..
+    } = match_inline_literal_init_scope(scope_block, following_stmts)?;
+    let target_ident = &store_lvalue.place.identifier;
     let target_name = identifier_name_with_cx(cx, target_ident);
     let source_expr = codegen_instruction_value_ev(cx, &source_instr.value)
         .wrap_if_needed(ExprPrecedence::Assignment);
-    let shape = if store_lvalue.kind != InstructionKind::Reassign
-        && !has_materialized_named_binding(cx, target_ident)
-    {
+    let kind = if has_materialized_named_binding(cx, target_ident) {
+        InstructionKind::Reassign
+    } else {
+        store_lvalue.kind
+    };
+    let shape = if kind != InstructionKind::Reassign {
         let kind = variable_declaration_kind(store_lvalue.kind)?;
         cx.mark_decl_runtime_emitted(target_ident.declaration_id);
         cx.declare(target_ident);
@@ -6167,7 +6472,7 @@ fn try_build_generated_body_shape_from_reactive_scope_return(
     let mut full_scope_body = scope_block.instructions.clone();
     full_scope_body.push(ReactiveStatement::Terminal(term_stmt.clone()));
     let mut computation_cx = cx.clone();
-    computation_cx.inline_temp_zero_dep_scope_shapes = false;
+    computation_cx.inline_temp_zero_dep_scope_shapes = true;
     let computation_shape =
         try_build_generated_body_shape_from_reactive_block(&mut computation_cx, &full_scope_body)?;
     cx.next_cache_index = computation_cx.next_cache_index;
@@ -6246,7 +6551,7 @@ fn try_build_generated_early_return_scope_return(
     let dep_exprs =
         collect_direct_scope_dependency_exprs(cx, &scope_block.scope, &scope_block.instructions)?;
     let mut computation_cx = cx.clone();
-    computation_cx.inline_temp_zero_dep_scope_shapes = false;
+    computation_cx.inline_temp_zero_dep_scope_shapes = true;
     let Some(computation_shape) = try_build_generated_body_shape_from_reactive_block(
         &mut computation_cx,
         &scope_block.instructions,
@@ -19997,49 +20302,11 @@ fn maybe_codegen_inline_literal_init_scope(
     following_stmts: &[ReactiveStatement],
     output: &mut String,
 ) -> Option<usize> {
-    if !scope_block.scope.dependencies.is_empty()
-        || !scope_block.scope.reassignments.is_empty()
-        || scope_block.scope.declarations.len() != 1
-        || scope_block.instructions.len() != 1
-    {
-        return None;
-    }
-    let decl = scope_block.scope.declarations.values().next()?;
-    let ReactiveStatement::Instruction(source_instr) = scope_block.instructions.first()? else {
-        return None;
-    };
-    let source_lvalue = source_instr.lvalue.as_ref()?;
-    if source_lvalue.identifier.declaration_id != decl.identifier.declaration_id {
-        return None;
-    }
-    if !matches!(
-        source_instr.value,
-        InstructionValue::Primitive { .. }
-            | InstructionValue::ArrayExpression { .. }
-            | InstructionValue::ObjectExpression { .. }
-    ) {
-        return None;
-    }
-
-    let ReactiveStatement::Instruction(store_instr) = following_stmts.first()? else {
-        return None;
-    };
-    let (store_lvalue, store_value) = match &store_instr.value {
-        InstructionValue::StoreLocal { lvalue, value, .. }
-        | InstructionValue::StoreContext { lvalue, value, .. } => (lvalue, value),
-        _ => return None,
-    };
-    if store_value.identifier.declaration_id != decl.identifier.declaration_id
-        || store_lvalue.place.identifier.name.is_none()
-    {
-        return None;
-    }
-    let Some(parent_scope) = &store_lvalue.place.identifier.scope else {
-        return None;
-    };
-    if parent_scope.dependencies.is_empty() {
-        return None;
-    }
+    let InlineLiteralInitScopeMatch {
+        source_instr,
+        store_instr,
+        store_lvalue,
+    } = match_inline_literal_init_scope(scope_block, following_stmts)?;
 
     let rhs = codegen_instruction_value_ev(cx, &source_instr.value)
         .wrap_if_needed(ExprPrecedence::Assignment);
