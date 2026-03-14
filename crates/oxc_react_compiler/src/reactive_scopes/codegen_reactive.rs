@@ -8121,6 +8121,53 @@ fn try_decompose_direct_memoized_existing_return_shape(
     }
 }
 
+fn collect_scope_hook_callback_decl_ids(
+    cx: &Context,
+    scope: &ReactiveScope,
+    block: &[ReactiveStatement],
+) -> HashSet<DeclarationId> {
+    let mut hook_callback_decl_ids: HashSet<DeclarationId> = HashSet::new();
+    let scope_decl_ids: HashSet<DeclarationId> = scope
+        .declarations
+        .values()
+        .map(|decl| decl.identifier.declaration_id)
+        .collect();
+    for decl in scope.declarations.values() {
+        let decl_id = decl.identifier.declaration_id;
+        if cx.hook_callback_arg_decls.contains(&decl_id) {
+            hook_callback_decl_ids.insert(decl_id);
+        }
+    }
+    for stmt in block {
+        let ReactiveStatement::Instruction(instr) = stmt else {
+            continue;
+        };
+        match &instr.value {
+            InstructionValue::StoreLocal { lvalue, value, .. }
+            | InstructionValue::StoreContext { lvalue, value, .. } => {
+                let source_decl = value.identifier.declaration_id;
+                if !scope_decl_ids.contains(&source_decl) {
+                    continue;
+                }
+                let target_decl = lvalue.place.identifier.declaration_id;
+                if cx.hook_callback_arg_decls.contains(&target_decl) {
+                    hook_callback_decl_ids.insert(source_decl);
+                }
+            }
+            _ => {}
+        }
+    }
+    for reassignment in &scope.reassignments {
+        if cx
+            .hook_callback_arg_decls
+            .contains(&reassignment.declaration_id)
+        {
+            hook_callback_decl_ids.insert(reassignment.declaration_id);
+        }
+    }
+    hook_callback_decl_ids
+}
+
 fn collect_direct_scope_dependency_exprs(
     cx: &mut Context,
     scope: &ReactiveScope,
@@ -8145,6 +8192,8 @@ fn collect_direct_scope_dependency_exprs(
         && scope.reassignments.is_empty()
         && block.len() == 1
         && let Some(output_decl) = scope.declarations.values().next()
+        && collect_scope_hook_callback_decl_ids(cx, scope, block)
+            .contains(&output_decl.identifier.declaration_id)
         && let Some(callback_dep_exprs) =
             cx.callback_deps.get(&output_decl.identifier.declaration_id)
         && !callback_dep_exprs.is_empty()
@@ -27144,45 +27193,7 @@ fn codegen_reactive_scope(
     // Collect callback deps for function expressions in this scope block before
     // generating the guard, since `codegen_block` (which also records callback
     // deps) runs after dependency guards are emitted.
-    let mut hook_callback_decl_ids: HashSet<DeclarationId> = HashSet::new();
-    let scope_decl_ids: HashSet<DeclarationId> = scope
-        .declarations
-        .values()
-        .map(|decl| decl.identifier.declaration_id)
-        .collect();
-    for decl in scope.declarations.values() {
-        let decl_id = decl.identifier.declaration_id;
-        if cx.hook_callback_arg_decls.contains(&decl_id) {
-            hook_callback_decl_ids.insert(decl_id);
-        }
-    }
-    for stmt in block {
-        let ReactiveStatement::Instruction(instr) = stmt else {
-            continue;
-        };
-        match &instr.value {
-            InstructionValue::StoreLocal { lvalue, value, .. }
-            | InstructionValue::StoreContext { lvalue, value, .. } => {
-                let source_decl = value.identifier.declaration_id;
-                if !scope_decl_ids.contains(&source_decl) {
-                    continue;
-                }
-                let target_decl = lvalue.place.identifier.declaration_id;
-                if cx.hook_callback_arg_decls.contains(&target_decl) {
-                    hook_callback_decl_ids.insert(source_decl);
-                }
-            }
-            _ => {}
-        }
-    }
-    for reassignment in &scope.reassignments {
-        if cx
-            .hook_callback_arg_decls
-            .contains(&reassignment.declaration_id)
-        {
-            hook_callback_decl_ids.insert(reassignment.declaration_id);
-        }
-    }
+    let hook_callback_decl_ids = collect_scope_hook_callback_decl_ids(cx, scope, block);
     let mut scope_callback_deps: HashMap<DeclarationId, Vec<String>> = HashMap::new();
     if !hook_callback_decl_ids.is_empty() {
         let primitive_literals_for_callbacks = cx.primitive_literals_for_child();
