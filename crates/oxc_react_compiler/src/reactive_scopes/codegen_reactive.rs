@@ -2776,6 +2776,42 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             let inner = canonicalize_generated_body_shape(*inner);
             match (prefix, inner) {
                 (
+                    GeneratedBodyShape::Sequential {
+                        prefix: prior_prefix,
+                        inner: guard_prefix,
+                    },
+                    inner,
+                ) => {
+                    let folded = match guard_prefix.as_ref() {
+                        GeneratedBodyShape::GuardedReturnPrefix {
+                            test,
+                            consequent,
+                            inner: guard_inner,
+                        } if generated_body_shape_is_empty(guard_inner) => {
+                            Some(GeneratedBodyShape::Sequential {
+                                prefix: prior_prefix.clone(),
+                                inner: Box::new(GeneratedBodyShape::GuardedReturnPrefix {
+                                    test: test.clone(),
+                                    consequent: consequent.clone(),
+                                    inner: Box::new(inner.clone()),
+                                }),
+                            })
+                        }
+                        _ => None,
+                    };
+                    if let Some(shape) = folded {
+                        shape
+                    } else {
+                        GeneratedBodyShape::Sequential {
+                            prefix: Box::new(GeneratedBodyShape::Sequential {
+                                prefix: prior_prefix,
+                                inner: guard_prefix,
+                            }),
+                            inner: Box::new(inner),
+                        }
+                    }
+                }
+                (
                     GeneratedBodyShape::ExpressionStatements(mut expressions),
                     GeneratedBodyShape::ExpressionStatements(inner_expressions),
                 ) => {
@@ -2807,6 +2843,28 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                         *prefixed_inner,
                         &declarations,
                     );
+                    if let GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+                        deps,
+                        setup_statements,
+                        cached_values,
+                        restored_values,
+                        sentinel_name,
+                        final_return: None,
+                        fallback_body: None,
+                    } = &prefixed_inner
+                        && deps.is_empty()
+                        && let Some(shape) = build_direct_zero_dep_early_return_shape(
+                            declarations.clone(),
+                            setup_statements.clone(),
+                            cached_values.clone(),
+                            restored_values.clone(),
+                            sentinel_name.clone(),
+                            None,
+                            Some(Box::new(inner.clone())),
+                        )
+                    {
+                        return shape;
+                    }
                     GeneratedBodyShape::PrefixedDeclarations {
                         declarations,
                         inner: Box::new(canonicalize_generated_body_shape(
@@ -5962,14 +6020,27 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
         {
             return None;
         }
-        let inner = GeneratedBodyShape::MemoizedEarlyReturnSentinel {
-            deps,
-            setup_statements,
-            cached_values,
-            restored_values,
-            sentinel_name,
-            final_return: None,
-            fallback_body: None,
+        let is_zero_dep = deps.is_empty();
+        let inner = if is_zero_dep {
+            build_direct_zero_dep_early_return_shape(
+                declarations.clone(),
+                setup_statements,
+                cached_values,
+                restored_values,
+                sentinel_name,
+                None,
+                None,
+            )?
+        } else {
+            GeneratedBodyShape::MemoizedEarlyReturnSentinel {
+                deps,
+                setup_statements,
+                cached_values,
+                restored_values,
+                sentinel_name,
+                final_return: None,
+                fallback_body: None,
+            }
         };
         let inner = if deferred_post_scope_expressions.is_empty() {
             inner
@@ -5981,7 +6052,7 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
                 )),
             }
         };
-        return if declarations.is_empty() {
+        return if is_zero_dep || declarations.is_empty() {
             Some(inner)
         } else {
             Some(GeneratedBodyShape::PrefixedDeclarations {
@@ -7908,6 +7979,17 @@ fn try_build_generated_early_return_scope_return(
             .any(|cached_value| cached_value.name == final_return)
             .then_some(final_return)
     };
+    if deps.is_empty() {
+        return build_direct_zero_dep_early_return_shape(
+            declarations,
+            setup_statements,
+            cached_values,
+            restored_values,
+            sentinel_name,
+            final_return,
+            None,
+        );
+    }
     let inner = GeneratedBodyShape::MemoizedEarlyReturnSentinel {
         deps,
         setup_statements,
@@ -8031,7 +8113,7 @@ fn try_decompose_direct_memoized_existing_return_shape(
 fn collect_direct_scope_dependency_exprs(
     cx: &mut Context,
     scope: &ReactiveScope,
-    _block: &[ReactiveStatement],
+    block: &[ReactiveStatement],
 ) -> Option<Vec<String>> {
     let sorted_deps: Vec<ReactiveScopeDependency> = scope
         .dependencies
@@ -8046,6 +8128,20 @@ fn collect_direct_scope_dependency_exprs(
         let key = format_dependency_identity(dep);
         if seen.insert(key) {
             dep_exprs.push(codegen_dependency(cx, dep));
+        }
+    }
+    if scope.declarations.len() == 1
+        && scope.reassignments.is_empty()
+        && block.len() == 1
+        && let Some(output_decl) = scope.declarations.values().next()
+        && let Some(callback_dep_exprs) = cx
+            .callback_deps
+            .get(&output_decl.identifier.declaration_id)
+        && !callback_dep_exprs.is_empty()
+    {
+        let override_dep_exprs = choose_callback_dep_override(&dep_exprs, callback_dep_exprs);
+        if !override_dep_exprs.is_empty() {
+            dep_exprs = override_dep_exprs;
         }
     }
     Some(dep_exprs)
@@ -9200,6 +9296,48 @@ fn apply_generated_body_shape_cache_binding_name(
 fn analyze_rendered_generated_body_shape_source(source: &str) -> Option<GeneratedBodyShape> {
     let shape = fully_canonicalize_generated_body_shape(analyze_generated_body_shape(source));
     (!matches!(shape, GeneratedBodyShape::Unknown)).then_some(shape)
+}
+
+fn build_direct_zero_dep_early_return_shape(
+    declarations: Vec<GeneratedDeclaration>,
+    setup_statements: Vec<String>,
+    cached_values: Vec<GeneratedCachedValue>,
+    restored_values: Vec<GeneratedCachedValue>,
+    sentinel_name: String,
+    final_return: Option<String>,
+    fallback_body: Option<Box<GeneratedBodyShape>>,
+) -> Option<GeneratedBodyShape> {
+    let sentinel_slot = cached_values.first()?.slot;
+    let zero_dep_shape = GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+        sentinel_slot,
+        setup_statements,
+        cached_values,
+        restored_values,
+    };
+    let prefix_shape = if declarations.is_empty() {
+        zero_dep_shape
+    } else {
+        GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner: Box::new(zero_dep_shape),
+        }
+    };
+    let tail_shape = GeneratedBodyShape::GuardedReturnPrefix {
+        test: format!("{sentinel_name} !== Symbol.for(\"{EARLY_RETURN_SENTINEL}\")"),
+        consequent: Some(sentinel_name),
+        inner: Box::new(if let Some(fallback_body) = fallback_body {
+            *fallback_body
+        } else if let Some(final_return) = final_return {
+            GeneratedBodyShape::ReturnIdentifier(final_return)
+        } else {
+            GeneratedBodyShape::ExpressionStatements(vec![])
+        }),
+    };
+    let mut rendered = try_render_statement_sources_from_generated_body_shape(&prefix_shape)?;
+    rendered.extend(try_render_statement_sources_from_generated_body_shape(
+        &tail_shape,
+    )?);
+    analyze_rendered_generated_body_shape_source(&rendered.join("\n"))
 }
 
 fn push_indented_source_lines(lines: &mut Vec<String>, source: &str, indent: usize) {
@@ -45968,6 +46106,104 @@ mod tests {
             !matches!(shape, super::GeneratedBodyShape::Unknown),
             "expected structured shape, got {shape:?}"
         );
+    }
+
+    #[test]
+    fn builds_zero_dep_early_return_shape_matching_fallback_tail_analysis() {
+        let shape = super::build_direct_zero_dep_early_return_shape(
+            vec![super::GeneratedDeclaration {
+                kind: ast::VariableDeclarationKind::Let,
+                pattern: "t0".to_string(),
+            }],
+            vec![
+                "t0 = Symbol.for(\"react.early_return_sentinel\");".to_string(),
+                "bb0: {\n  const x = [];\n  if (ENABLE_FEATURE) {\n    x.push(42);\n    t0 = x;\n    break bb0;\n  } else {\n    console.log(\"fallthrough\");\n  }\n}"
+                    .to_string(),
+            ],
+            vec![super::GeneratedCachedValue {
+                name: "t0".to_string(),
+                slot: 0,
+            }],
+            vec![super::GeneratedCachedValue {
+                name: "t0".to_string(),
+                slot: 0,
+            }],
+            "t0".to_string(),
+            None,
+            Some(Box::new(super::GeneratedBodyShape::PrefixedDeclarations {
+                declarations: vec![super::GeneratedDeclaration {
+                    kind: ast::VariableDeclarationKind::Let,
+                    pattern: "t1".to_string(),
+                }],
+                inner: Box::new(super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+                    value_name: "t1".to_string(),
+                    dep_slot: 1,
+                    dep_expr: "props.a".to_string(),
+                    value_slot: 2,
+                    memoized_bindings: vec![],
+                    memoized_assignments: vec![],
+                    memoized_expressions: vec![],
+                    memoized_setup_statements: vec![],
+                    memoized_expr: Some("makeArray(props.a)".to_string()),
+                }),
+            })),
+        )
+        .expect("expected zero-dep early return shape");
+
+        assert!(super::generated_body_shape_matches_rendered_body(
+            &shape,
+            "let t0;\nif ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {\n  t0 = Symbol.for(\"react.early_return_sentinel\");\n  bb0: {\n    const x = [];\n    if (ENABLE_FEATURE) {\n      x.push(42);\n      t0 = x;\n      break bb0;\n    } else {\n      console.log(\"fallthrough\");\n    }\n  }\n  $[0] = t0;\n} else {\n  t0 = $[0];\n}\nif (t0 !== Symbol.for(\"react.early_return_sentinel\")) {\n  return t0;\n}\nlet t1;\nif ($[1] !== props.a) {\n  t1 = makeArray(props.a);\n  $[1] = props.a;\n  $[2] = t1;\n} else {\n  t1 = $[2];\n}\nreturn t1;\n",
+        ));
+    }
+
+    #[test]
+    fn builds_zero_dep_early_return_shape_matching_final_return_analysis() {
+        let shape = super::build_direct_zero_dep_early_return_shape(
+            vec![
+                super::GeneratedDeclaration {
+                    kind: ast::VariableDeclarationKind::Let,
+                    pattern: "t0".to_string(),
+                },
+                super::GeneratedDeclaration {
+                    kind: ast::VariableDeclarationKind::Let,
+                    pattern: "x".to_string(),
+                },
+            ],
+            vec![
+                "t0 = Symbol.for(\"react.early_return_sentinel\");".to_string(),
+                "bb0: {\n  x = [];\n  try {\n    throwInput(x);\n  } catch (t1) {\n    const e = t1;\n    e.push(null);\n    t0 = e;\n    break bb0;\n  }\n}"
+                    .to_string(),
+            ],
+            vec![
+                super::GeneratedCachedValue {
+                    name: "t0".to_string(),
+                    slot: 0,
+                },
+                super::GeneratedCachedValue {
+                    name: "x".to_string(),
+                    slot: 1,
+                },
+            ],
+            vec![
+                super::GeneratedCachedValue {
+                    name: "t0".to_string(),
+                    slot: 0,
+                },
+                super::GeneratedCachedValue {
+                    name: "x".to_string(),
+                    slot: 1,
+                },
+            ],
+            "t0".to_string(),
+            Some("x".to_string()),
+            None,
+        )
+        .expect("expected zero-dep early return shape");
+
+        assert!(super::generated_body_shape_matches_rendered_body(
+            &shape,
+            "let t0;\nlet x;\nif ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {\n  t0 = Symbol.for(\"react.early_return_sentinel\");\n  bb0: {\n    x = [];\n    try {\n      throwInput(x);\n    } catch (t1) {\n      const e = t1;\n      e.push(null);\n      t0 = e;\n      break bb0;\n    }\n  }\n  $[0] = t0;\n  $[1] = x;\n} else {\n  t0 = $[0];\n  x = $[1];\n}\nif (t0 !== Symbol.for(\"react.early_return_sentinel\")) {\n  return t0;\n}\nreturn x;\n",
+        ));
     }
 
     #[test]
