@@ -6,6 +6,7 @@
 pub mod align_method_call_scopes;
 pub mod align_object_method_scopes;
 pub mod align_scopes;
+pub mod build_codegen_shape;
 pub mod build_reactive_function;
 pub mod codegen_reactive;
 pub mod extract_scope_destructuring;
