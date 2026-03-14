@@ -4118,45 +4118,26 @@ fn try_build_function_body_from_shape<'a>(
             fallback_body,
         } => {
             let cache_binding_name = &cache_prologue?.binding_name;
-            let (test, dep_assignments) = if deps.is_empty() {
-                let sentinel_slot = cached_values
-                    .iter()
-                    .find(|value| value.name == *sentinel_name)
-                    .or_else(|| restored_values.iter().find(|value| value.name == *sentinel_name))?
-                    .slot;
-                (
-                    builder.expression_binary(
-                        SPAN,
-                        cache_member_slot_expression(builder, cache_binding_name, sentinel_slot),
-                        BinaryOperator::StrictEquality,
-                        build_memo_cache_sentinel_expression(builder),
-                    ),
-                    builder.vec(),
-                )
-            } else {
-                let mut dep_assignments = builder.vec();
-                let mut dep_guards = deps.iter().map(|(slot, dep_expr)| {
-                    let dep_expression =
-                        parse_expression_source(allocator, source_type, dep_expr).ok()?;
-                    dep_assignments.push(build_cache_slot_assignment_statement(
-                        builder,
-                        cache_binding_name,
-                        *slot,
-                        dep_expression.clone_in(allocator),
-                    ));
-                    Some(builder.expression_binary(
-                        SPAN,
-                        cache_member_slot_expression(builder, cache_binding_name, *slot),
-                        BinaryOperator::StrictInequality,
-                        dep_expression,
-                    ))
-                });
-                let mut test = dep_guards.next()??;
-                for guard in dep_guards {
-                    test = builder.expression_logical(SPAN, test, LogicalOperator::Or, guard?);
-                }
-                (test, dep_assignments)
-            };
+            let mut dep_assignments = builder.vec();
+            let mut dep_guards = deps.iter().map(|(slot, dep_expr)| {
+                let dep_expression = parse_expression_source(allocator, source_type, dep_expr).ok()?;
+                dep_assignments.push(build_cache_slot_assignment_statement(
+                    builder,
+                    cache_binding_name,
+                    *slot,
+                    dep_expression.clone_in(allocator),
+                ));
+                Some(builder.expression_binary(
+                    SPAN,
+                    cache_member_slot_expression(builder, cache_binding_name, *slot),
+                    BinaryOperator::StrictInequality,
+                    dep_expression,
+                ))
+            });
+            let mut test = dep_guards.next()??;
+            for guard in dep_guards {
+                test = builder.expression_logical(SPAN, test, LogicalOperator::Or, guard?);
+            }
 
             let mut consequent = build_generated_statement_sources(
                 builder,

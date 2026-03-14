@@ -4028,78 +4028,25 @@ fn codegen_reactive_function_with_primitives(
                 );
             }
             if has_mismatch {
-                if root_shape_uses_alias_wrapper(&direct_body_shape)
-                    || root_shape_uses_alias_wrapper(&analyzed_body_shape)
-                {
+                // If the direct shape re-analyzes to the analyzed shape, they're
+                // semantically equivalent but categorized differently. Prefer the
+                // direct shape since it preserves the original statement ordering.
+                if generated_body_shape_reanalyzes_equivalent(
+                    &direct_body_shape,
+                    &analyzed_body_shape,
+                    func.async_,
+                    func.generator,
+                ) || generated_body_shapes_render_equivalent(
+                    &direct_body_shape,
+                    &analyzed_body_shape,
+                ) || generated_body_shape_renders_equivalent_to_string_body(
+                    &direct_body_shape,
+                    &body,
+                ) {
+                    direct_body_shape
+                } else {
                     bump_rendered_body_analysis_fallback();
                     analyzed_body_shape
-                } else {
-                    let debug_direct_shape_mismatch =
-                        std::env::var("DEBUG_DIRECT_BODY_SHAPE_MISMATCH").is_ok();
-                    let reanalyzes_equivalent = generated_body_shape_reanalyzes_equivalent(
-                        &direct_body_shape,
-                        &analyzed_body_shape,
-                        func.async_,
-                        func.generator,
-                    );
-                    let (renders_equivalent, renders_equivalent_to_string, equivalent) =
-                        if debug_direct_shape_mismatch {
-                            let renders_equivalent = generated_body_shapes_render_equivalent(
-                                &direct_body_shape,
-                                &analyzed_body_shape,
-                            );
-                            let renders_equivalent_to_string =
-                                generated_body_shape_renders_equivalent_to_string_body(
-                                    &direct_body_shape,
-                                    &body,
-                                );
-                            (
-                                renders_equivalent,
-                                renders_equivalent_to_string,
-                                reanalyzes_equivalent
-                                    || renders_equivalent
-                                    || renders_equivalent_to_string,
-                            )
-                        } else if reanalyzes_equivalent {
-                            (false, false, true)
-                        } else {
-                            let renders_equivalent = generated_body_shapes_render_equivalent(
-                                &direct_body_shape,
-                                &analyzed_body_shape,
-                            );
-                            if renders_equivalent {
-                                (true, false, true)
-                            } else {
-                                let renders_equivalent_to_string =
-                                    generated_body_shape_renders_equivalent_to_string_body(
-                                        &direct_body_shape,
-                                        &body,
-                                    );
-                                (
-                                    false,
-                                    renders_equivalent_to_string,
-                                    renders_equivalent_to_string,
-                                )
-                            }
-                        };
-                    if debug_direct_shape_mismatch {
-                        eprintln!(
-                            "[DIRECT_BODY_SHAPE_COMPARE] fn={:?} reanalyze={} render={} string={}",
-                            func.name_hint.as_deref(),
-                            reanalyzes_equivalent,
-                            renders_equivalent,
-                            renders_equivalent_to_string,
-                        );
-                    }
-                    // If the direct shape re-analyzes to the analyzed shape, they're
-                    // semantically equivalent but categorized differently. Prefer the
-                    // direct shape since it preserves the original statement ordering.
-                    if equivalent {
-                        direct_body_shape
-                    } else {
-                        bump_rendered_body_analysis_fallback();
-                        analyzed_body_shape
-                    }
                 }
             } else {
                 direct_body_shape
@@ -4497,201 +4444,7 @@ fn generated_body_shapes_render_equivalent(
         == canonicalize_rendered_generated_body_source(&analyzed_source.join("\n"))
 }
 
-fn root_shape_uses_alias_wrapper(shape: &GeneratedBodyShape) -> bool {
-    matches!(
-        shape,
-        GeneratedBodyShape::AliasedReturn { .. } | GeneratedBodyShape::AssignedAliasReturn { .. }
-    )
-}
-
-fn match_lenient_compare_temp_name(chars: &[char], start: usize) -> Option<usize> {
-    if chars.get(start).copied() != Some('t') {
-        return None;
-    }
-    let mut i = start + 1;
-    if i >= chars.len() || !chars[i].is_ascii_digit() {
-        return None;
-    }
-    while i < chars.len() && chars[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i < chars.len() && chars[i] == '_' {
-        let suffix_start = i + 1;
-        if suffix_start >= chars.len() || !chars[suffix_start].is_ascii_digit() {
-            return None;
-        }
-        i = suffix_start;
-        while i < chars.len() && chars[i].is_ascii_digit() {
-            i += 1;
-        }
-    }
-    Some(i)
-}
-
-fn is_lenient_compare_temp_name(name: &str) -> bool {
-    let chars: Vec<char> = name.trim().chars().collect();
-    match_lenient_compare_temp_name(&chars, 0).is_some_and(|end| end == chars.len())
-}
-
-fn line_declares_name(line: &str, name: &str) -> bool {
-    let trimmed = line.trim();
-    let Some(rest) = trimmed
-        .strip_prefix("let ")
-        .or_else(|| trimmed.strip_prefix("const "))
-        .or_else(|| trimmed.strip_prefix("var "))
-    else {
-        return false;
-    };
-    let ident_end = rest
-        .find(|c: char| !c.is_alphanumeric() && c != '_')
-        .unwrap_or(rest.len());
-    rest[..ident_end] == *name
-}
-
-/// Normalize rendered output for narrow alias-bridge comparison.
-fn normalize_for_alias_bridge_compare(source: &str) -> String {
-    // Step 1: Strip blank line markers and empty lines
-    let lines: Vec<&str> = source
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim();
-            !trimmed.is_empty()
-                && trimmed != "\"__REACT_COMPILER_INTERNAL_BLANK_LINE_MARKER__\";"
-                && trimmed != "__REACT_COMPILER_INTERNAL_BLANK_LINE_MARKER__"
-        })
-        .collect();
-
-    let mut result_lines: Vec<String> = de_shadow_temp_decls(&lines.join("\n"))
-        .lines()
-        .map(str::to_string)
-        .collect();
-
-    // Step 2: Inline immediate alias bridges (e.g., `const x = t0; return x;`)
-    // within a single temp lifetime.
-    loop {
-        let mut inlined = false;
-        for i in 0..result_lines.len() {
-            let trimmed = result_lines[i].trim();
-            // Match patterns: `const NAME = tN;` or `let NAME = tN;`
-            let binding = trimmed
-                .strip_prefix("const ")
-                .or_else(|| trimmed.strip_prefix("let "));
-            if let Some(rest) = binding {
-                // Check for `NAME = tN;` where tN is a temp variable
-                if let Some(eq_pos) = rest.find(" = ") {
-                    let name = &rest[..eq_pos];
-                    let value = rest[eq_pos + 3..].trim_end_matches(';').trim();
-                    // Only inline if value is a simple generated temp name.
-                    if is_lenient_compare_temp_name(value)
-                        && name
-                            .chars()
-                            .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
-                        && i + 1 < result_lines.len()
-                        && is_simple_alias_bridge_use(&result_lines[i + 1], name)
-                        && !result_lines
-                            .iter()
-                            .enumerate()
-                            .skip(i + 2)
-                            .any(|(_, line)| contains_word(line, name))
-                    {
-                        let Some(region_start) = (0..i)
-                            .rev()
-                            .find(|&j| line_declares_name(&result_lines[j], value))
-                        else {
-                            continue;
-                        };
-                        // Replace temp occurrences from the temp declaration through the
-                        // immediate alias use, then drop the alias declaration itself.
-                        let mut new_lines: Vec<String> = Vec::with_capacity(result_lines.len());
-                        for (j, line) in result_lines.iter().enumerate() {
-                            if j == i {
-                                continue;
-                            }
-                            if (region_start..=i + 1).contains(&j) {
-                                new_lines.push(replace_word(line, value, name));
-                            } else {
-                                new_lines.push(line.clone());
-                            }
-                        }
-                        result_lines = new_lines;
-                        inlined = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if !inlined {
-            break;
-        }
-    }
-
-    // Step 3: Also remove `let tN;` declarations for inlined temps that no longer appear
-    let snapshot = result_lines.clone();
-    result_lines.retain(|line| {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("let ") {
-            let rest = rest.trim_end_matches(';').trim();
-            if is_lenient_compare_temp_name(rest) {
-                let temp_name = rest;
-                let appears_elsewhere = snapshot
-                    .iter()
-                    .any(|l| l.trim() != trimmed && contains_word(l, temp_name));
-                return appears_elsewhere;
-            }
-        }
-        true
-    });
-
-    // Step 4: Normalize labeled blocks: `label: { body }` → `label: body`
-    // Remove redundant block wrappers around labeled statements.
-    let joined = result_lines.join("\n");
-    let result = normalize_labeled_blocks(&joined);
-
-    // Step 5: De-shadow temp declarations. If `let tN;` appears more than once,
-    // rename later declarations to unique names.
-    let result = de_shadow_temp_decls(&result);
-
-    // Step 6: Normalize shadow-suffixed temp names (`t1_0` → `t1`).
-    let mut normalized = String::with_capacity(result.len());
-    let chars: Vec<char> = result.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == 't'
-            && (i == 0 || !chars[i - 1].is_alphanumeric() && chars[i - 1] != '_')
-            && let Some(end) = match_lenient_compare_temp_name(&chars, i)
-            && (end >= chars.len() || (!chars[end].is_alphanumeric() && chars[end] != '_'))
-        {
-            let token: String = chars[i..end].iter().collect();
-            if let Some((base, _shadow)) = token.split_once('_')
-                && is_lenient_compare_temp_name(base)
-            {
-                normalized.push_str(base);
-                i = end;
-                continue;
-            }
-        } else if chars[i] == 't'
-            && (i == 0 || !chars[i - 1].is_alphanumeric() && chars[i - 1] != '_')
-        {
-            let start = i;
-            i += 1;
-            for c in &chars[start..i] {
-                normalized.push(*c);
-            }
-        } else {
-            normalized.push(chars[i]);
-            i += 1;
-        }
-    }
-
-    // Step 7: Final whitespace normalization
-    normalized
-        .lines()
-        .map(str::trim)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Normalize rendered output for the general string-body equivalence check.
+/// Normalize rendered output for lenient comparison.
 fn normalize_for_lenient_compare(source: &str) -> String {
     // Step 1: Strip blank line markers and empty lines
     let lines: Vec<&str> = source
@@ -4711,29 +4464,36 @@ fn normalize_for_lenient_compare(source: &str) -> String {
         let mut inlined = false;
         for i in 0..result_lines.len() {
             let trimmed = result_lines[i].trim();
+            // Match patterns: `const NAME = tN;` or `let NAME = tN;`
             let binding = trimmed
                 .strip_prefix("const ")
                 .or_else(|| trimmed.strip_prefix("let "));
-            if let Some(rest) = binding
-                && let Some(eq_pos) = rest.find(" = ")
-            {
-                let name = &rest[..eq_pos];
-                let value = rest[eq_pos + 3..].trim_end_matches(';').trim();
-                if is_lenient_compare_temp_name(value)
-                    && name
-                        .chars()
-                        .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
-                {
-                    let mut new_lines: Vec<String> = Vec::with_capacity(result_lines.len());
-                    for (j, line) in result_lines.iter().enumerate() {
-                        if j == i {
-                            continue;
+            if let Some(rest) = binding {
+                // Check for `NAME = tN;` where tN is a temp variable
+                if let Some(eq_pos) = rest.find(" = ") {
+                    let name = &rest[..eq_pos];
+                    let value = rest[eq_pos + 3..].trim_end_matches(';').trim();
+                    // Only inline if value is a simple temp var (t followed by digits)
+                    if value.starts_with('t')
+                        && value.len() > 1
+                        && value[1..].chars().all(|c| c.is_ascii_digit())
+                        && name
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+                    {
+                        // Replace all occurrences of `value` with `name` (word boundary)
+                        let mut new_lines: Vec<String> = Vec::with_capacity(result_lines.len());
+                        for (j, line) in result_lines.iter().enumerate() {
+                            if j == i {
+                                // Remove this binding line
+                                continue;
+                            }
+                            new_lines.push(replace_word(line, value, name));
                         }
-                        new_lines.push(replace_word(line, value, name));
+                        result_lines = new_lines;
+                        inlined = true;
+                        break;
                     }
-                    result_lines = new_lines;
-                    inlined = true;
-                    break;
                 }
             }
         }
@@ -4748,7 +4508,10 @@ fn normalize_for_lenient_compare(source: &str) -> String {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("let ") {
             let rest = rest.trim_end_matches(';').trim();
-            if is_lenient_compare_temp_name(rest) {
+            if rest.starts_with('t')
+                && rest.len() > 1
+                && rest[1..].chars().all(|c| c.is_ascii_digit())
+            {
                 let temp_name = rest;
                 let appears_elsewhere = snapshot
                     .iter()
@@ -4760,6 +4523,7 @@ fn normalize_for_lenient_compare(source: &str) -> String {
     });
 
     // Step 4: Normalize labeled blocks: `label: { body }` → `label: body`
+    // Remove redundant block wrappers around labeled statements.
     let joined = result_lines.join("\n");
     let result = normalize_labeled_blocks(&joined);
 
@@ -4767,36 +4531,34 @@ fn normalize_for_lenient_compare(source: &str) -> String {
     // rename later declarations to unique names.
     let result = de_shadow_temp_decls(&result);
 
-    // Step 6: Normalize temp variable numbering.
+    // Step 6: Normalize temp variable numbering
     let mut temp_map: HashMap<String, String> = HashMap::new();
     let mut next_temp = 0u32;
     let mut normalized = String::with_capacity(result.len());
     let chars: Vec<char> = result.chars().collect();
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] == 't'
-            && (i == 0 || !chars[i - 1].is_alphanumeric() && chars[i - 1] != '_')
-            && let Some(end) = match_lenient_compare_temp_name(&chars, i)
-            && (end >= chars.len() || (!chars[end].is_alphanumeric() && chars[end] != '_'))
-        {
-            let start = i;
-            i = end;
-            let original: String = chars[start..i].iter().collect();
-            let mapped = temp_map
-                .entry(original)
-                .or_insert_with(|| {
-                    let name = format!("t{next_temp}");
-                    next_temp += 1;
-                    name
-                })
-                .clone();
-            normalized.push_str(&mapped);
-            continue;
-        } else if chars[i] == 't'
-            && (i == 0 || !chars[i - 1].is_alphanumeric() && chars[i - 1] != '_')
-        {
+        if chars[i] == 't' && (i == 0 || !chars[i - 1].is_alphanumeric() && chars[i - 1] != '_') {
             let start = i;
             i += 1;
+            if i < chars.len() && chars[i].is_ascii_digit() {
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+                if i >= chars.len() || (!chars[i].is_alphanumeric() && chars[i] != '_') {
+                    let original: String = chars[start..i].iter().collect();
+                    let mapped = temp_map
+                        .entry(original)
+                        .or_insert_with(|| {
+                            let name = format!("t{next_temp}");
+                            next_temp += 1;
+                            name
+                        })
+                        .clone();
+                    normalized.push_str(&mapped);
+                    continue;
+                }
+            }
             for c in &chars[start..i] {
                 normalized.push(*c);
             }
@@ -4832,7 +4594,10 @@ fn de_shadow_temp_decls(source: &str) -> String {
             .find(|c: char| !c.is_alphanumeric() && c != '_')
             .unwrap_or(rest.len());
         let temp_name = &rest[..temp_end];
-        if is_lenient_compare_temp_name(temp_name) {
+        if temp_name.starts_with('t')
+            && temp_name.len() > 1
+            && temp_name[1..].chars().all(|c| c.is_ascii_digit())
+        {
             let entry = seen_temps.entry(temp_name.to_string()).or_insert(0);
             if *entry > 0 {
                 let shadow_name = format!("t{next_shadow}");
@@ -4901,48 +4666,6 @@ fn contains_word(source: &str, word: &str) -> bool {
     false
 }
 
-fn is_simple_alias_bridge_use(line: &str, name: &str) -> bool {
-    let trimmed = line.trim().trim_end_matches(';').trim();
-    trimmed == format!("return {name}")
-        || trimmed.ends_with(&format!("= {name}")) && contains_word(trimmed, name)
-}
-
-fn contains_immediate_alias_bridge_candidate(source: &str) -> bool {
-    let lines: Vec<&str> = source.lines().collect();
-    for i in 0..lines.len().saturating_sub(1) {
-        let trimmed = lines[i].trim();
-        let Some(rest) = trimmed
-            .strip_prefix("const ")
-            .or_else(|| trimmed.strip_prefix("let "))
-        else {
-            continue;
-        };
-        let Some(eq_pos) = rest.find(" = ") else {
-            continue;
-        };
-        let name = &rest[..eq_pos];
-        let value = rest[eq_pos + 3..].trim_end_matches(';').trim();
-        if is_lenient_compare_temp_name(value)
-            && name
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
-            && is_simple_alias_bridge_use(lines[i + 1], name)
-        {
-            return true;
-        }
-    }
-    false
-}
-
-fn alias_bridge_compare_is_small_enough(rendered: &str, string_body: &str) -> bool {
-    let rendered_lines = rendered.lines().count();
-    let body_lines = string_body.lines().count();
-    rendered_lines <= 32
-        && body_lines <= 32
-        && rendered.len() <= 4_000
-        && string_body.len() <= 4_000
-}
-
 /// Remove redundant `{ }` wrappers around labeled statement bodies.
 /// Transforms `label: { body }` to `label: body` when the block contains
 /// a single compound statement (if/while/for/switch).
@@ -4992,7 +4715,6 @@ fn normalize_labeled_blocks(source: &str) -> String {
                             let next_trimmed = lines[i + 1].trim();
                             let is_control = next_trimmed.starts_with("if ")
                                 || next_trimmed.starts_with("if(")
-                                || next_trimmed.starts_with("try ")
                                 || next_trimmed.starts_with("while ")
                                 || next_trimmed.starts_with("while(")
                                 || next_trimmed.starts_with("for ")
@@ -5044,18 +4766,7 @@ fn generated_body_shape_renders_equivalent_to_string_body(
     let rendered = rendered_shape_source.join("\n");
     let rendered_norm = normalize_for_lenient_compare(&rendered);
     let body_norm = normalize_for_lenient_compare(string_body);
-    if rendered_norm == body_norm {
-        return true;
-    }
-    if !contains_immediate_alias_bridge_candidate(&rendered)
-        && !contains_immediate_alias_bridge_candidate(string_body)
-    {
-        return false;
-    }
-    if !alias_bridge_compare_is_small_enough(&rendered, string_body) {
-        return false;
-    }
-    normalize_for_alias_bridge_compare(&rendered) == normalize_for_alias_bridge_compare(string_body)
+    rendered_norm == body_norm
 }
 
 #[cfg(test)]
@@ -35018,44 +34729,28 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
             fallback_body,
         } => {
             let cache_binding_name = spec.cache_prologue.as_ref()?.binding_name.as_str();
-            let (test, dep_assignments) = if deps.is_empty() {
-                let sentinel_slot = cached_values
-                    .iter()
-                    .find(|value| value.name == *sentinel_name)
-                    .or_else(|| {
-                        restored_values
-                            .iter()
-                            .find(|value| value.name == *sentinel_name)
-                    })?
-                    .slot;
-                (
-                    builder.expression_binary(
-                        SPAN,
-                        build_computed_member_expression_ast(
-                            builder,
-                            cache_binding_name,
-                            builder.expression_numeric_literal(
-                                SPAN,
-                                sentinel_slot as f64,
-                                None,
-                                NumberBase::Decimal,
-                            ),
-                        ),
-                        AstBinaryOperator::StrictEquality,
-                        build_symbol_for_call_expression_ast(builder, MEMO_CACHE_SENTINEL),
-                    ),
-                    builder.vec(),
+            let mut dep_assignments = builder.vec();
+            let mut dep_guards = deps.iter().map(|(slot, dep_expr)| {
+                let dep_expression = parse_expression_for_ast_codegen(
+                    allocator,
+                    SourceType::mjs().with_jsx(true),
+                    dep_expr,
                 )
-            } else {
-                let mut dep_assignments = builder.vec();
-                let mut dep_guards = deps.iter().map(|(slot, dep_expr)| {
-                    let dep_expression = parse_expression_for_ast_codegen(
-                        allocator,
-                        SourceType::mjs().with_jsx(true),
-                        dep_expr,
-                    )
-                    .ok()?;
-                    dep_assignments.push(build_computed_member_assignment_statement_ast(
+                .ok()?;
+                dep_assignments.push(build_computed_member_assignment_statement_ast(
+                    builder,
+                    cache_binding_name,
+                    builder.expression_numeric_literal(
+                        SPAN,
+                        *slot as f64,
+                        None,
+                        NumberBase::Decimal,
+                    ),
+                    dep_expression.clone_in(allocator),
+                ));
+                Some(builder.expression_binary(
+                    SPAN,
+                    build_computed_member_expression_ast(
                         builder,
                         cache_binding_name,
                         builder.expression_numeric_literal(
@@ -35064,30 +34759,15 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                             None,
                             NumberBase::Decimal,
                         ),
-                        dep_expression.clone_in(allocator),
-                    ));
-                    Some(builder.expression_binary(
-                        SPAN,
-                        build_computed_member_expression_ast(
-                            builder,
-                            cache_binding_name,
-                            builder.expression_numeric_literal(
-                                SPAN,
-                                *slot as f64,
-                                None,
-                                NumberBase::Decimal,
-                            ),
-                        ),
-                        AstBinaryOperator::StrictInequality,
-                        dep_expression,
-                    ))
-                });
-                let mut test = dep_guards.next()??;
-                for guard in dep_guards {
-                    test = builder.expression_logical(SPAN, test, AstLogicalOperator::Or, guard?);
-                }
-                (test, dep_assignments)
-            };
+                    ),
+                    AstBinaryOperator::StrictInequality,
+                    dep_expression,
+                ))
+            });
+            let mut test = dep_guards.next()??;
+            for guard in dep_guards {
+                test = builder.expression_logical(SPAN, test, AstLogicalOperator::Or, guard?);
+            }
 
             let mut consequent =
                 build_generated_statement_sources_ast(builder, allocator, setup_statements)?;
@@ -44791,434 +44471,6 @@ return t15;
         assert!(
             !matches!(shape, super::GeneratedBodyShape::Unknown),
             "expected structured shape, got {shape:?}"
-        );
-    }
-
-    #[test]
-    fn lenient_compare_normalizes_labeled_try_blocks() {
-        let direct = r#"bb0: {
-  try {
-    const y = [];
-    throwInput(y);
-  } catch (t1) {
-    t0 = t1;
-    break bb0;
-  }
-}"#;
-        let rendered = r#"bb0: try {
-  const y = [];
-  throwInput(y);
-} catch (t1) {
-  t0 = t1;
-  break bb0;
-}"#;
-
-        assert_eq!(
-            super::normalize_for_lenient_compare(direct),
-            super::normalize_for_lenient_compare(rendered)
-        );
-    }
-
-    fn assert_direct_shape_renders_leniently_equivalent(
-        shape: &super::GeneratedBodyShape,
-        string_body: &str,
-    ) {
-        let rendered = super::try_render_statement_sources_from_generated_body_shape(shape)
-            .expect("expected rendered body shape")
-            .join("\n");
-        let rendered_norm = super::normalize_for_lenient_compare(&rendered);
-        let body_norm = super::normalize_for_lenient_compare(string_body);
-        assert_eq!(
-            rendered_norm, body_norm,
-            "rendered body:\n{rendered}\n\nstring body:\n{string_body}"
-        );
-    }
-
-    #[test]
-    fn direct_shape_try_catch_with_catch_param_renders_equivalent_to_string_body() {
-        let shape = super::GeneratedBodyShape::PrefixedDeclarations {
-            declarations: vec![
-                super::GeneratedDeclaration {
-                    kind: ast::VariableDeclarationKind::Let,
-                    pattern: "t0".to_string(),
-                },
-                super::GeneratedDeclaration {
-                    kind: ast::VariableDeclarationKind::Let,
-                    pattern: "x".to_string(),
-                },
-            ],
-            inner: Box::new(super::GeneratedBodyShape::MemoizedEarlyReturnSentinel {
-                deps: vec![],
-                setup_statements: vec![
-                    "t0 = Symbol.for(\"react.early_return_sentinel\");".to_string(),
-                    "bb0: {\n  x = [];\n  try {\n    throwInput(x);\n  } catch (t1) {\n    const e = t1;\n    e.push(null);\n    t0 = e;\n    break bb0;\n  }\n}"
-                        .to_string(),
-                ],
-                cached_values: vec![
-                    super::GeneratedCachedValue {
-                        name: "t0".to_string(),
-                        slot: 0,
-                    },
-                    super::GeneratedCachedValue {
-                        name: "x".to_string(),
-                        slot: 1,
-                    },
-                ],
-                restored_values: vec![
-                    super::GeneratedCachedValue {
-                        name: "t0".to_string(),
-                        slot: 0,
-                    },
-                    super::GeneratedCachedValue {
-                        name: "x".to_string(),
-                        slot: 1,
-                    },
-                ],
-                sentinel_name: "t0".to_string(),
-                final_return: Some("x".to_string()),
-                fallback_body: None,
-            }),
-        };
-        let string_body = r#"let t0;
-let x;
-if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-  t0 = Symbol.for("react.early_return_sentinel");
-  bb0: {
-    x = [];
-    try {
-      throwInput(x);
-    } catch (t1) {
-      const e = t1;
-      e.push(null);
-      t0 = e;
-      break bb0;
-    }
-  }
-  $[0] = t0;
-  $[1] = x;
-} else {
-  t0 = $[0];
-  x = $[1];
-}
-if (t0 !== Symbol.for("react.early_return_sentinel")) {
-  return t0;
-}
-return x;"#;
-
-        assert_direct_shape_renders_leniently_equivalent(&shape, string_body);
-    }
-
-    #[test]
-    fn direct_shape_try_catch_with_return_renders_equivalent_to_string_body() {
-        let shape = super::GeneratedBodyShape::PrefixedDeclarations {
-            declarations: vec![
-                super::GeneratedDeclaration {
-                    kind: ast::VariableDeclarationKind::Let,
-                    pattern: "t0".to_string(),
-                },
-                super::GeneratedDeclaration {
-                    kind: ast::VariableDeclarationKind::Let,
-                    pattern: "x".to_string(),
-                },
-            ],
-            inner: Box::new(super::GeneratedBodyShape::MemoizedEarlyReturnSentinel {
-                deps: vec![],
-                setup_statements: vec![
-                    "t0 = Symbol.for(\"react.early_return_sentinel\");".to_string(),
-                    "bb0: {\n  x = [];\n  try {\n    const y = shallowCopy({});\n    if (y == null) {\n      t0 = undefined;\n      break bb0;\n    }\n    x.push(throwInput(y));\n  } catch {\n    t0 = null;\n    break bb0;\n  }\n}"
-                        .to_string(),
-                ],
-                cached_values: vec![
-                    super::GeneratedCachedValue {
-                        name: "t0".to_string(),
-                        slot: 0,
-                    },
-                    super::GeneratedCachedValue {
-                        name: "x".to_string(),
-                        slot: 1,
-                    },
-                ],
-                restored_values: vec![
-                    super::GeneratedCachedValue {
-                        name: "t0".to_string(),
-                        slot: 0,
-                    },
-                    super::GeneratedCachedValue {
-                        name: "x".to_string(),
-                        slot: 1,
-                    },
-                ],
-                sentinel_name: "t0".to_string(),
-                final_return: Some("x".to_string()),
-                fallback_body: None,
-            }),
-        };
-        let string_body = r#"let t0;
-let x;
-if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-  t0 = Symbol.for("react.early_return_sentinel");
-  bb0: {
-    x = [];
-    try {
-      const y = shallowCopy({});
-      if (y == null) {
-        t0 = undefined;
-        break bb0;
-      }
-      x.push(throwInput(y));
-    } catch {
-      t0 = null;
-      break bb0;
-    }
-  }
-  $[0] = t0;
-  $[1] = x;
-} else {
-  t0 = $[0];
-  x = $[1];
-}
-if (t0 !== Symbol.for("react.early_return_sentinel")) {
-  return t0;
-}
-return x;"#;
-
-        assert_direct_shape_renders_leniently_equivalent(&shape, string_body);
-    }
-
-    #[test]
-    fn direct_shape_ssa_property_alias_if_renders_equivalent_to_string_body() {
-        let shape = super::GeneratedBodyShape::PrefixedDeclarations {
-            declarations: vec![super::GeneratedDeclaration {
-                kind: ast::VariableDeclarationKind::Let,
-                pattern: "x".to_string(),
-            }],
-            inner: Box::new(super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
-                value_name: "x".to_string(),
-                dep_slot: 0,
-                dep_expr: "a".to_string(),
-                value_slot: 1,
-                memoized_bindings: vec![],
-                memoized_assignments: vec![],
-                memoized_expressions: vec![],
-                memoized_setup_statements: vec![
-                    "x = {};".to_string(),
-                    "if (a) {\n  let t0;\n  if ($[2] === Symbol.for(\"react.memo_cache_sentinel\")) {\n    t0 = {};\n    $[2] = t0;\n  } else {\n    t0 = $[2];\n  }\n  const y = t0;\n  x.y = y;\n} else {\n  let t1;\n  if ($[3] === Symbol.for(\"react.memo_cache_sentinel\")) {\n    t1 = {};\n    $[3] = t1;\n  } else {\n    t1 = $[3];\n  }\n  const z = t1;\n  x.z = z;\n}"
-                        .to_string(),
-                ],
-                memoized_expr: None,
-            }),
-        };
-        let string_body = r#"let x;
-if ($[0] !== a) {
-  x = {};
-  if (a) {
-    let t0;
-    if ($[2] === Symbol.for("react.memo_cache_sentinel")) {
-      t0 = {};
-      $[2] = t0;
-    } else {
-      t0 = $[2];
-    }
-    const y = t0;
-    x.y = y;
-  } else {
-    let t0;
-    if ($[3] === Symbol.for("react.memo_cache_sentinel")) {
-      t0 = {};
-      $[3] = t0;
-    } else {
-      t0 = $[3];
-    }
-    const z = t0;
-    x.z = z;
-  }
-  $[0] = a;
-  $[1] = x;
-} else {
-  x = $[1];
-}
-return x;"#;
-
-        assert_direct_shape_renders_leniently_equivalent(&shape, string_body);
-    }
-
-    #[test]
-    fn alias_bridge_compare_normalizes_ssa_property_alias_if() {
-        let direct = r#"let x;
-if ($[0] !== a) {
-  x = {};
-  if (a) {
-    let t0;
-    if ($[2] === Symbol.for("react.memo_cache_sentinel")) {
-      t0 = {};
-      $[2] = t0;
-    } else {
-      t0 = $[2];
-    }
-    const y = t0;
-    x.y = y;
-  } else {
-    let t1;
-    if ($[3] === Symbol.for("react.memo_cache_sentinel")) {
-      t1 = {};
-      $[3] = t1;
-    } else {
-      t1 = $[3];
-    }
-    const z = t1;
-    x.z = z;
-  }
-  $[0] = a;
-  $[1] = x;
-} else {
-  x = $[1];
-}
-return x;"#;
-        let body = r#"let x;
-if ($[0] !== a) {
-  x = {};
-  if (a) {
-    let t0;
-    if ($[2] === Symbol.for("react.memo_cache_sentinel")) {
-      t0 = {};
-      $[2] = t0;
-    } else {
-      t0 = $[2];
-    }
-    const y = t0;
-    x.y = y;
-  } else {
-    let t0;
-    if ($[3] === Symbol.for("react.memo_cache_sentinel")) {
-      t0 = {};
-      $[3] = t0;
-    } else {
-      t0 = $[3];
-    }
-    const z = t0;
-    x.z = z;
-  }
-  $[0] = a;
-  $[1] = x;
-} else {
-  x = $[1];
-}
-return x;"#;
-
-        assert_eq!(
-            super::normalize_for_alias_bridge_compare(direct),
-            super::normalize_for_alias_bridge_compare(body)
-        );
-    }
-
-    #[test]
-    fn ssa_property_alias_if_compare_path_accepts_alias_bridge_fallback() {
-        let shape = super::GeneratedBodyShape::PrefixedDeclarations {
-            declarations: vec![super::GeneratedDeclaration {
-                kind: ast::VariableDeclarationKind::Let,
-                pattern: "x".to_string(),
-            }],
-            inner: Box::new(super::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
-                value_name: "x".to_string(),
-                dep_slot: 0,
-                dep_expr: "a".to_string(),
-                value_slot: 1,
-                memoized_bindings: vec![],
-                memoized_assignments: vec![],
-                memoized_expressions: vec![],
-                memoized_setup_statements: vec![
-                    "x = {};".to_string(),
-                    "if (a) {\n  let t0;\n  if ($[2] === Symbol.for(\"react.memo_cache_sentinel\")) {\n    t0 = {};\n    $[2] = t0;\n  } else {\n    t0 = $[2];\n  }\n  const y = t0;\n  x.y = y;\n} else {\n  let t1;\n  if ($[3] === Symbol.for(\"react.memo_cache_sentinel\")) {\n    t1 = {};\n    $[3] = t1;\n  } else {\n    t1 = $[3];\n  }\n  const z = t1;\n  x.z = z;\n}"
-                        .to_string(),
-                ],
-                memoized_expr: None,
-            }),
-        };
-        let string_body = r#"let x;
-if ($[0] !== a) {
-  x = {};
-  if (a) {
-    let t0;
-    if ($[2] === Symbol.for("react.memo_cache_sentinel")) {
-      t0 = {};
-      $[2] = t0;
-    } else {
-      t0 = $[2];
-    }
-    const y = t0;
-    x.y = y;
-  } else {
-    let t0;
-    if ($[3] === Symbol.for("react.memo_cache_sentinel")) {
-      t0 = {};
-      $[3] = t0;
-    } else {
-      t0 = $[3];
-    }
-    const z = t0;
-    x.z = z;
-  }
-  $[0] = a;
-  $[1] = x;
-} else {
-  x = $[1];
-}
-return x;"#;
-        let rendered = super::try_render_statement_sources_from_generated_body_shape(&shape)
-            .expect("expected rendered body shape")
-            .join("\n");
-
-        assert!(super::contains_immediate_alias_bridge_candidate(&rendered));
-        assert!(super::contains_immediate_alias_bridge_candidate(
-            string_body
-        ));
-        assert!(super::alias_bridge_compare_is_small_enough(
-            &rendered,
-            string_body
-        ));
-        assert!(super::generated_body_shape_renders_equivalent_to_string_body(&shape, string_body));
-    }
-
-    #[test]
-    fn lenient_compare_normalizes_shadow_suffix_temp_names() {
-        let direct = r#"let t1;
-if ($[0] !== props) {
-  t1 = <Child key="a" {...props} />;
-  $[0] = props;
-  $[1] = t1;
-} else {
-  t1 = $[1];
-}
-let t2;
-if ($[2] !== t1) {
-  t2 = <Parent>{t1}</Parent>;
-  $[2] = t1;
-  $[3] = t2;
-} else {
-  t2 = $[3];
-}
-return t2;"#;
-        let rendered = r#"let t1_0;
-if ($[0] !== props) {
-  t1_0 = <Child key="a" {...props} />;
-  $[0] = props;
-  $[1] = t1_0;
-} else {
-  t1_0 = $[1];
-}
-let t2;
-if ($[2] !== t1_0) {
-  t2 = <Parent>{t1_0}</Parent>;
-  $[2] = t1_0;
-  $[3] = t2;
-} else {
-  t2 = $[3];
-}
-return t2;"#;
-
-        assert_eq!(
-            super::normalize_for_lenient_compare(direct),
-            super::normalize_for_lenient_compare(rendered)
         );
     }
 }
