@@ -507,8 +507,6 @@ pub struct CodegenResult {
     pub cache_prologue: Option<CachePrologue>,
     /// Deferred codegen error (upstream invariant parity).
     pub error: Option<CompilerError>,
-    /// Raw string codegen body output for blank line transfer to AST codegen.
-    pub string_body: String,
 }
 
 fn generated_body_shape_returned_identifier(shape: &GeneratedBodyShape) -> Option<&str> {
@@ -4367,7 +4365,6 @@ fn codegen_reactive_function_with_primitives(
         needs_structural_check_import: cx.needs_structural_check_import,
         cache_prologue,
         error: cx.codegen_error,
-        string_body: body,
     }
 }
 

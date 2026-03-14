@@ -555,7 +555,6 @@ fn try_emit_module(
     let mut code = codegen_program(&program);
     code = apply_internal_blank_line_markers(&code);
     code = apply_blank_line_markers(state.source_type, &code, &blank_line_before);
-    code = transfer_blank_lines_from_string_bodies(&code, compiled);
     code = transfer_blank_lines_from_original_source(&code, args.source, compiled);
     code = move_leading_comment_to_import_trailing(&code);
     if code.contains(FLOW_CAST_MARKER_HELPER) {
@@ -8084,118 +8083,6 @@ fn move_leading_comment_to_import_trailing(code: &str) -> String {
     result
 }
 
-/// Transfer blank lines from string codegen bodies into the AST-generated output.
-///
-/// The string codegen already produces correct blank lines within memoized scope
-/// bodies. When the AST codegen produces the same code without blank lines, this
-/// function transfers them by matching non-blank lines between the reference
-/// (string body) and the output code.
-fn transfer_blank_lines_from_string_bodies(code: &str, compiled: &[CompiledFunction]) -> String {
-    let string_bodies: Vec<&str> = compiled
-        .iter()
-        .filter(|cf| !cf.string_body.is_empty())
-        .map(|cf| cf.string_body.as_str())
-        .collect();
-    if string_bodies.is_empty() {
-        return code.to_string();
-    }
-
-    let marker_quoted = format!(
-        "\"{}\"",
-        crate::reactive_scopes::codegen_reactive::INTERNAL_BLANK_LINE_MARKER
-    );
-
-    // A line is a "blank-like" line if it is empty/whitespace-only or is
-    // a blank-line marker expression statement.
-    let is_blank_or_marker = |line: &str| -> bool {
-        let t = line.trim();
-        t.is_empty() || t == format!("{};", marker_quoted) || t == marker_quoted
-    };
-
-    // Collect all blank-line positions from string bodies as sets of
-    // (line_before_trimmed, line_after_trimmed) pairs. A blank line (or
-    // marker statement) in the string body between lines A and B means we
-    // want a blank line in the output between lines matching A and B.
-    let mut blank_line_pairs: HashSet<(String, String)> = HashSet::new();
-    for body in &string_bodies {
-        let lines: Vec<&str> = body.lines().collect();
-        for i in 0..lines.len() {
-            if !is_blank_or_marker(lines[i]) {
-                continue;
-            }
-            // Find the non-blank/non-marker line before and after
-            let before = (0..i)
-                .rev()
-                .find(|&j| !is_blank_or_marker(lines[j]))
-                .map(|j| lines[j].trim().to_string());
-            let after = ((i + 1)..lines.len())
-                .find(|&j| !is_blank_or_marker(lines[j]))
-                .map(|j| lines[j].trim().to_string());
-            if let (Some(before), Some(after)) = (before, after) {
-                blank_line_pairs.insert((before, after));
-            }
-        }
-    }
-
-    if std::env::var("DEBUG_TRANSFER_BLANK").is_ok() {
-        eprintln!("=== transfer_blank_lines ===");
-        eprintln!("string_bodies count: {}", string_bodies.len());
-        for (i, body) in string_bodies.iter().enumerate() {
-            eprintln!(
-                "--- string_body[{}] ({} lines) ---",
-                i,
-                body.lines().count()
-            );
-            for line in body.lines().take(50) {
-                eprintln!("  |{}", line);
-            }
-        }
-        eprintln!("blank_line_pairs ({}):", blank_line_pairs.len());
-        for (before, after) in &blank_line_pairs {
-            eprintln!("  ({:?}, {:?})", before, after);
-        }
-    }
-
-    if blank_line_pairs.is_empty() {
-        return code.to_string();
-    }
-
-    let code_lines: Vec<&str> = code.lines().collect();
-    let mut result = String::with_capacity(code.len() + blank_line_pairs.len() * 2);
-    let mut i = 0;
-    while i < code_lines.len() {
-        result.push_str(code_lines[i]);
-        result.push('\n');
-
-        // Check if a blank line should follow this line
-        let current_trimmed = code_lines[i].trim();
-        if !current_trimmed.is_empty() {
-            // Find next non-blank line
-            let next_non_blank =
-                ((i + 1)..code_lines.len()).find(|&j| !code_lines[j].trim().is_empty());
-            if let Some(next_idx) = next_non_blank {
-                let next_trimmed = code_lines[next_idx].trim();
-                // Check if there should be a blank line here but isn't
-                let has_blank_between = (i + 1..next_idx).any(|j| code_lines[j].trim().is_empty());
-                if !has_blank_between
-                    && blank_line_pairs
-                        .contains(&(current_trimmed.to_string(), next_trimmed.to_string()))
-                {
-                    result.push('\n');
-                }
-            }
-        }
-        i += 1;
-    }
-
-    // Handle trailing newline
-    if !code.ends_with('\n') && result.ends_with('\n') {
-        result.pop();
-    }
-
-    result
-}
-
 /// Insert blank lines in the output based on blank line positions in the original source.
 ///
 /// When the original source has a blank line between two statements, and both of those
@@ -9453,7 +9340,6 @@ export const FIXTURE_ENTRYPOINT = {
             needs_hook_guards: false,
             needs_structural_check_import: false,
             needs_lower_context_access: false,
-            string_body: body_source.to_string(),
         }
     }
 

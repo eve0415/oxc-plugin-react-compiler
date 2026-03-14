@@ -6365,7 +6365,6 @@ fn try_compile_function<'a>(
         needs_hook_guards: codegen_result.needs_hook_guards,
         needs_structural_check_import: codegen_result.needs_structural_check_import,
         needs_lower_context_access: pipeline_output.has_lower_context_access,
-        string_body: codegen_result.string_body.clone(),
     }))
 }
 
@@ -6567,7 +6566,6 @@ fn try_compile_function_with_name<'a>(
         needs_hook_guards: codegen_result.needs_hook_guards,
         needs_structural_check_import: codegen_result.needs_structural_check_import,
         needs_lower_context_access: pipeline_output.has_lower_context_access,
-        string_body: codegen_result.string_body.clone(),
     }))
 }
 
@@ -6777,7 +6775,6 @@ fn try_compile_arrow<'a>(
         needs_hook_guards: codegen_result.needs_hook_guards,
         needs_structural_check_import: codegen_result.needs_structural_check_import,
         needs_lower_context_access: pipeline_output.has_lower_context_access,
-        string_body: codegen_result.string_body.clone(),
     }))
 }
 
