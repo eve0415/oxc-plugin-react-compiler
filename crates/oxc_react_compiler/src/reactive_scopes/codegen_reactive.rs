@@ -7293,9 +7293,7 @@ fn prefer_rendered_memo_parts(
         (Some(direct_parts), Some(rendered_parts)) => {
             let direct_score = rendered_memo_parts_score(&direct_parts);
             let rendered_score = rendered_memo_parts_score(&rendered_parts);
-            if (rendered_parts.bindings.len() > direct_parts.bindings.len()
-                && rendered_parts.setup_statements.len() <= direct_parts.setup_statements.len())
-                || rendered_score.0 > direct_score.0
+            if rendered_score.0 > direct_score.0
                 || (rendered_score.0 == direct_score.0 && rendered_score.1 < direct_score.1)
             {
                 Some(rendered_parts)
@@ -8283,12 +8281,6 @@ fn try_decompose_direct_memoized_existing_return_shape(
         GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_existing_return_shape(*inner, value_name)?;
-            if parts.setup_statements.is_empty() {
-                let mut prefix_bindings = bindings;
-                prefix_bindings.extend(parts.bindings);
-                parts.bindings = prefix_bindings;
-                return Some(parts);
-            }
             let mut prefix_statements = bindings
                 .iter()
                 .map(render_generated_binding_statement)
@@ -8300,12 +8292,6 @@ fn try_decompose_direct_memoized_existing_return_shape(
         GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_existing_return_shape(*inner, value_name)?;
-            if parts.setup_statements.is_empty() {
-                let mut prefix_assignments = assignments;
-                prefix_assignments.extend(parts.assignments);
-                parts.assignments = prefix_assignments;
-                return Some(parts);
-            }
             let mut prefix_statements = assignments
                 .iter()
                 .map(render_generated_assignment_statement)
@@ -8317,12 +8303,6 @@ fn try_decompose_direct_memoized_existing_return_shape(
         GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_existing_return_shape(*inner, value_name)?;
-            if parts.setup_statements.is_empty() {
-                let mut prefix_expressions = expressions;
-                prefix_expressions.extend(parts.expressions);
-                parts.expressions = prefix_expressions;
-                return Some(parts);
-            }
             let mut prefix_statements = expressions
                 .iter()
                 .map(|expression| render_generated_expression_statement(expression))
@@ -10153,8 +10133,6 @@ fn try_decompose_direct_memoized_declared_return_shape(
         GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_declared_return_shape(*inner, value_name)?;
-            let can_preserve_bindings = parts.setup_statements.is_empty();
-            let mut prefix_bindings = Vec::new();
             let mut prefix_statements = Vec::new();
             for binding in bindings {
                 if binding.pattern == value_name {
@@ -10162,16 +10140,9 @@ fn try_decompose_direct_memoized_declared_return_shape(
                         return None;
                     }
                     parts.memoized_expr = Some(binding.expression);
-                } else if can_preserve_bindings {
-                    prefix_bindings.push(binding);
                 } else {
                     prefix_statements.push(render_generated_binding_statement(&binding)?);
                 }
-            }
-            if can_preserve_bindings {
-                prefix_bindings.extend(parts.bindings);
-                parts.bindings = prefix_bindings;
-                return Some(parts);
             }
             prefix_statements.extend(parts.setup_statements);
             parts.setup_statements = prefix_statements;
@@ -10180,8 +10151,6 @@ fn try_decompose_direct_memoized_declared_return_shape(
         GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_declared_return_shape(*inner, value_name)?;
-            let can_preserve_assignments = parts.setup_statements.is_empty();
-            let mut prefix_assignments = Vec::new();
             let mut prefix_statements = Vec::new();
             for assignment in assignments {
                 if assignment.target == value_name {
@@ -10189,16 +10158,9 @@ fn try_decompose_direct_memoized_declared_return_shape(
                         return None;
                     }
                     parts.memoized_expr = Some(assignment.value);
-                } else if can_preserve_assignments {
-                    prefix_assignments.push(assignment);
                 } else {
                     prefix_statements.push(render_generated_assignment_statement(&assignment)?);
                 }
-            }
-            if can_preserve_assignments {
-                prefix_assignments.extend(parts.assignments);
-                parts.assignments = prefix_assignments;
-                return Some(parts);
             }
             prefix_statements.extend(parts.setup_statements);
             parts.setup_statements = prefix_statements;
@@ -10207,12 +10169,6 @@ fn try_decompose_direct_memoized_declared_return_shape(
         GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
             let mut parts =
                 try_decompose_direct_memoized_declared_return_shape(*inner, value_name)?;
-            if parts.setup_statements.is_empty() {
-                let mut prefix_expressions = expressions;
-                prefix_expressions.extend(parts.expressions);
-                parts.expressions = prefix_expressions;
-                return Some(parts);
-            }
             let mut prefix_statements = expressions
                 .iter()
                 .map(|expression| render_generated_expression_statement(expression))
@@ -44187,75 +44143,6 @@ mod tests {
             rewritten,
             vec!["bb0: {\n  if (cond) {\n    y = foo();\n    break bb0;\n  }\n}".to_string()]
         );
-    }
-
-    #[test]
-    fn prefers_rendered_memo_parts_when_binding_count_is_higher_on_tie() {
-        let direct = super::DirectMemoizedExistingReturnParts {
-            bindings: vec![
-                super::GeneratedBinding {
-                    kind: ast::VariableDeclarationKind::Let,
-                    pattern: "w".to_string(),
-                    expression: "{}".to_string(),
-                    promote_to_function_declaration: false,
-                },
-                super::GeneratedBinding {
-                    kind: ast::VariableDeclarationKind::Const,
-                    pattern: "t2".to_string(),
-                    expression: "w".to_string(),
-                    promote_to_function_declaration: false,
-                },
-            ],
-            assignments: vec![
-                super::GeneratedAssignment {
-                    target: "w".to_string(),
-                    value: "42".to_string(),
-                },
-                super::GeneratedAssignment {
-                    target: "w".to_string(),
-                    value: "999".to_string(),
-                },
-            ],
-            expressions: vec![],
-            setup_statements: vec![],
-            memoized_expr: Some("makeArray(t1, t2, 2)".to_string()),
-        };
-        let rendered = super::DirectMemoizedExistingReturnParts {
-            bindings: vec![
-                super::GeneratedBinding {
-                    kind: ast::VariableDeclarationKind::Let,
-                    pattern: "w".to_string(),
-                    expression: "{}".to_string(),
-                    promote_to_function_declaration: false,
-                },
-                super::GeneratedBinding {
-                    kind: ast::VariableDeclarationKind::Const,
-                    pattern: "t1".to_string(),
-                    expression: "w = 42".to_string(),
-                    promote_to_function_declaration: false,
-                },
-                super::GeneratedBinding {
-                    kind: ast::VariableDeclarationKind::Const,
-                    pattern: "t2".to_string(),
-                    expression: "w".to_string(),
-                    promote_to_function_declaration: false,
-                },
-            ],
-            assignments: vec![super::GeneratedAssignment {
-                target: "w".to_string(),
-                value: "999".to_string(),
-            }],
-            expressions: vec![],
-            setup_statements: vec![],
-            memoized_expr: Some("makeArray(t1, t2, 2)".to_string()),
-        };
-
-        let selected = super::prefer_rendered_memo_parts(Some(direct), Some(rendered))
-            .expect("expected selected memo parts");
-
-        assert_eq!(selected.bindings.len(), 3);
-        assert_eq!(selected.bindings[1].pattern, "t1");
-        assert_eq!(selected.assignments.len(), 1);
     }
 
     #[test]
