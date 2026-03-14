@@ -7925,12 +7925,22 @@ fn parse_statements<'a>(
 }
 
 fn codegen_program(program: &ast::Program<'_>) -> String {
+    codegen_program_with_source_map(program, None).0
+}
+
+fn codegen_program_with_source_map(
+    program: &ast::Program<'_>,
+    source_map_path: Option<&str>,
+) -> (String, Option<String>) {
     let options = CodegenOptions {
         indent_char: IndentChar::Space,
         indent_width: 2,
+        source_map_path: source_map_path.map(std::path::PathBuf::from),
         ..CodegenOptions::default()
     };
-    Codegen::new().with_options(options).build(program).code
+    let result = Codegen::new().with_options(options).build(program);
+    let map = result.map.map(|sm| sm.to_json_string());
+    (result.code, map)
 }
 
 fn compact_simple_jsx_object_attributes(code: &str) -> String {
