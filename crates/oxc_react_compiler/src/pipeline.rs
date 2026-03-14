@@ -22,10 +22,10 @@ use sha2::Sha256;
 
 use crate::CompileResult;
 use crate::codegen_backend::{
-    CompiledArrayPattern, CompiledBindingPattern, CompiledBodyPayload, CompiledFunction,
-    CompiledInitializer, CompiledObjectPattern, CompiledObjectPatternProperty,
-    CompiledOutlinedFunction, CompiledParam, CompiledParamPrefixStatement, CompiledPropertyKey,
-    ModuleEmitArgs, SynthesizedDefaultParamCache,
+    CompiledArrayPattern, CompiledBindingPattern, CompiledFunction, CompiledInitializer,
+    CompiledObjectPattern, CompiledObjectPatternProperty, CompiledOutlinedFunction, CompiledParam,
+    CompiledParamPrefixStatement, CompiledPropertyKey, ModuleEmitArgs,
+    SynthesizedDefaultParamCache,
 };
 use crate::error::CompilerError;
 use crate::hir::build;
@@ -1971,81 +1971,6 @@ fn outlined_function_needs_backend_render(
     )
 }
 
-fn generated_body_shape_is_nonmemoized_hir_lowerable(
-    body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
-) -> bool {
-    use crate::reactive_scopes::codegen_reactive::GeneratedBodyShape as Shape;
-
-    match body_shape {
-        Shape::Unknown => false,
-        Shape::Block { inner } => generated_body_shape_is_nonmemoized_hir_lowerable(inner),
-        Shape::Labeled { inner, .. } => generated_body_shape_is_nonmemoized_hir_lowerable(inner),
-        Shape::Switch { cases, .. } => cases
-            .iter()
-            .all(|case| generated_body_shape_is_nonmemoized_hir_lowerable(&case.consequent)),
-        Shape::DebuggerStatements(_)
-        | Shape::ExpressionStatements(_)
-        | Shape::AssignmentStatements(_)
-        | Shape::GuardedExpressionStatements { .. }
-        | Shape::GuardedAssignments { .. }
-        | Shape::WhileLoop { .. }
-        | Shape::DoWhileLoop { .. }
-        | Shape::ForLoop { .. }
-        | Shape::ForInLoop { .. }
-        | Shape::ForOfLoop { .. }
-        | Shape::GuardedAssignmentExpressions { .. }
-        | Shape::Break(_)
-        | Shape::Continue(_)
-        | Shape::ReturnVoid
-        | Shape::ReturnIdentifier(_)
-        | Shape::ReturnExpression(_)
-        | Shape::ThrowExpression(_)
-        | Shape::BoundExpressionReturn { .. }
-        | Shape::AssignedExpressionReturn { .. } => true,
-        Shape::GuardedBody { inner, .. }
-        | Shape::GuardedReturnPrefix { inner, .. }
-        | Shape::WrappedReturnExpression { inner, .. }
-        | Shape::AssignedAliasReturn { inner, .. }
-        | Shape::AliasedReturn { inner, .. }
-        | Shape::PrefixedDeclarations { inner, .. }
-        | Shape::PrefixedBindings { inner, .. }
-        | Shape::PrefixedExpressionStatements { inner, .. }
-        | Shape::PrefixedAssignments { inner, .. } => {
-            generated_body_shape_is_nonmemoized_hir_lowerable(inner)
-        }
-        Shape::ConditionalBranches {
-            consequent,
-            alternate,
-            ..
-        } => {
-            generated_body_shape_is_nonmemoized_hir_lowerable(consequent)
-                && generated_body_shape_is_nonmemoized_hir_lowerable(alternate)
-        }
-        Shape::TryCatch {
-            try_body,
-            catch_body,
-            ..
-        } => {
-            generated_body_shape_is_nonmemoized_hir_lowerable(try_body)
-                && generated_body_shape_is_nonmemoized_hir_lowerable(catch_body)
-        }
-        Shape::Sequential { prefix, inner } => {
-            generated_body_shape_is_nonmemoized_hir_lowerable(prefix)
-                && generated_body_shape_is_nonmemoized_hir_lowerable(inner)
-        }
-        Shape::ZeroDependencyMemoizedCachedValues { .. }
-        | Shape::MemoizedCachedValues { .. }
-        | Shape::MemoizedEarlyReturnSentinel { .. }
-        | Shape::ZeroDependencyMemoizedReturn { .. }
-        | Shape::ZeroDependencyMemoizedExistingReturn { .. }
-        | Shape::SingleDependencyMemoizedReturn { .. }
-        | Shape::SingleDependencyMemoizedExistingReturn { .. }
-        | Shape::MultiDependencyMemoizedReturn { .. }
-        | Shape::MultiDependencyMemoizedExistingReturn { .. }
-        | Shape::MemoizedComputedReturn { .. }
-        | Shape::SingleSlotMemoizedReturn { .. } => false,
-    }
-}
 
 fn dedupe_outlined_functions(outlined: &mut Vec<CompiledOutlinedFunction>) {
     let debug = std::env::var("DEBUG_OUTLINE_DEDUPE").is_ok();
@@ -6415,24 +6340,13 @@ fn try_compile_function<'a>(
     let needs_cache_import =
         codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
     let generated_body_shape = codegen_result.body_shape.clone();
-    let body_payload = if !needs_cache_import
-        && outlined_functions_are_hir_lowerable(&outlined)
-        && generated_body_shape_is_nonmemoized_hir_lowerable(&generated_body_shape)
-    {
-        CompiledBodyPayload::LowerFromFinalHir
-    } else {
-        CompiledBodyPayload::GeneratedShape
-    };
-    if body_payload == CompiledBodyPayload::LowerFromFinalHir {
-        codegen_reactive::restore_reactive_string_fallback_counts(reactive_fallback_count_start);
-    }
+    codegen_reactive::restore_reactive_string_fallback_counts(reactive_fallback_count_start);
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
         start: func.span.start,
         end: func.span.end,
         generated_body_shape,
-        body_payload,
         needs_cache_import,
         compiled_params,
         param_prefix_statements,
@@ -6628,24 +6542,13 @@ fn try_compile_function_with_name<'a>(
     let needs_cache_import =
         codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
     let generated_body_shape = codegen_result.body_shape.clone();
-    let body_payload = if !needs_cache_import
-        && outlined_functions_are_hir_lowerable(&outlined)
-        && generated_body_shape_is_nonmemoized_hir_lowerable(&generated_body_shape)
-    {
-        CompiledBodyPayload::LowerFromFinalHir
-    } else {
-        CompiledBodyPayload::GeneratedShape
-    };
-    if body_payload == CompiledBodyPayload::LowerFromFinalHir {
-        codegen_reactive::restore_reactive_string_fallback_counts(reactive_fallback_count_start);
-    }
+    codegen_reactive::restore_reactive_string_fallback_counts(reactive_fallback_count_start);
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
         start: func.span.start,
         end: func.span.end,
         generated_body_shape,
-        body_payload,
         needs_cache_import,
         compiled_params,
         param_prefix_statements,
@@ -6849,24 +6752,13 @@ fn try_compile_arrow<'a>(
     let needs_cache_import =
         codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
     let generated_body_shape = codegen_result.body_shape.clone();
-    let body_payload = if !needs_cache_import
-        && outlined_functions_are_hir_lowerable(&outlined)
-        && generated_body_shape_is_nonmemoized_hir_lowerable(&generated_body_shape)
-    {
-        CompiledBodyPayload::LowerFromFinalHir
-    } else {
-        CompiledBodyPayload::GeneratedShape
-    };
-    if body_payload == CompiledBodyPayload::LowerFromFinalHir {
-        codegen_reactive::restore_reactive_string_fallback_counts(reactive_fallback_count_start);
-    }
+    codegen_reactive::restore_reactive_string_fallback_counts(reactive_fallback_count_start);
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
         start: arrow.span.start,
         end: arrow.span.end,
         generated_body_shape,
-        body_payload,
         needs_cache_import,
         compiled_params,
         param_prefix_statements,
@@ -6897,13 +6789,6 @@ struct ParamsResult {
     prefix_statements: Vec<CompiledParamPrefixStatement>,
     /// HIR-lowered outlined functions from source default parameter values.
     hir_outlined_functions: Vec<(String, HIRFunction)>,
-}
-
-fn outlined_functions_are_hir_lowerable(outlined_functions: &[CompiledOutlinedFunction]) -> bool {
-    // `outlined_functions` only retains rendered bodies that still differ from
-    // the HIR-lowered form. If any rendered outlined body remains, the parent
-    // function cannot be emitted purely from final HIR.
-    outlined_functions.is_empty()
 }
 
 fn extract_simple_default_binding_candidate(
@@ -8480,8 +8365,7 @@ mod tests {
     use crate::options::PluginOptions;
 
     use super::{
-        align_params_result_with_codegen, extract_emitted_directives,
-        generated_body_shape_is_nonmemoized_hir_lowerable, params_to_result,
+        align_params_result_with_codegen, extract_emitted_directives, params_to_result,
         rewrite_inline_empty_arrow_callback,
     };
 
@@ -8638,41 +8522,4 @@ mod tests {
         assert!(outlined.is_empty());
     }
 
-    #[test]
-    fn nonmemoized_hir_lowerable_shape_accepts_guarded_sequential_bodies() {
-        let shape = crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Sequential {
-            prefix: Box::new(
-                crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedExpressionStatements {
-                    test: "props.cond".to_string(),
-                    expressions: vec!["foo()".to_string()],
-                },
-            ),
-            inner: Box::new(
-                crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(
-                    "x".to_string(),
-                ),
-            ),
-        };
-
-        assert!(generated_body_shape_is_nonmemoized_hir_lowerable(&shape));
-    }
-
-    #[test]
-    fn nonmemoized_hir_lowerable_shape_rejects_memoized_bodies() {
-        let shape =
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleDependencyMemoizedReturn {
-                value_name: "x".to_string(),
-                value_kind: ast::VariableDeclarationKind::Let,
-                dep_slot: 0,
-                dep_expr: "props.value".to_string(),
-                value_slot: 1,
-                memoized_bindings: vec![],
-                memoized_assignments: vec![],
-                memoized_expressions: vec![],
-                memoized_setup_statements: vec![],
-                memoized_expr: Some("props.value".to_string()),
-            };
-
-        assert!(!generated_body_shape_is_nonmemoized_hir_lowerable(&shape));
-    }
 }

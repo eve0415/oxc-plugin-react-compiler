@@ -8,12 +8,6 @@ pub(crate) mod ast_backend;
 pub(crate) mod hir_to_ast;
 pub(crate) mod shared;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CompiledBodyPayload {
-    GeneratedShape,
-    LowerFromFinalHir,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompiledParam {
     pub(crate) name: String,
@@ -99,7 +93,6 @@ pub(crate) struct CompiledFunction {
     pub(crate) start: u32,
     pub(crate) end: u32,
     pub(crate) generated_body_shape: crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
-    pub(crate) body_payload: CompiledBodyPayload,
     pub(crate) needs_cache_import: bool,
     pub(crate) compiled_params: Option<Vec<CompiledParam>>,
     pub(crate) param_prefix_statements: Vec<CompiledParamPrefixStatement>,

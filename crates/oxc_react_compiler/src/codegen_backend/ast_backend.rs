@@ -13,9 +13,9 @@ use oxc_syntax::operator::{AssignmentOperator, BinaryOperator, LogicalOperator};
 use crate::CompileResult;
 
 use super::{
-    CompiledArrayPattern, CompiledBindingPattern, CompiledBodyPayload, CompiledFunction,
-    CompiledInitializer, CompiledObjectPattern, CompiledParam, CompiledParamPrefixStatement,
-    CompiledPropertyKey, ModuleEmitArgs, SynthesizedDefaultParamCache,
+    CompiledArrayPattern, CompiledBindingPattern, CompiledFunction, CompiledInitializer,
+    CompiledObjectPattern, CompiledParam, CompiledParamPrefixStatement, CompiledPropertyKey,
+    ModuleEmitArgs, SynthesizedDefaultParamCache,
 };
 
 struct AstRenderState {
@@ -3110,7 +3110,7 @@ fn try_build_compiled_function_body_from_hir<'a>(
     cf: &CompiledFunction,
     _state: &AstRenderState,
 ) -> Option<ast::FunctionBody<'a>> {
-    if cf.body_payload != CompiledBodyPayload::LowerFromFinalHir || cf.needs_cache_import {
+    if cf.needs_cache_import {
         return None;
     }
     let hir_function = cf.hir_function.as_ref()?;
@@ -7708,9 +7708,7 @@ fn is_cache_initializer_statement(statement: &ast::Statement<'_>, cache_import_n
 }
 
 fn can_emit_compiled_statement_ast(cf: &CompiledFunction) -> bool {
-    cf.body_payload == CompiledBodyPayload::LowerFromFinalHir
-        && cf.is_function_declaration
-        && !cf.needs_cache_import
+    cf.is_function_declaration && !cf.needs_cache_import && cf.hir_function.is_some()
 }
 
 fn maybe_gate_entrypoint_source(
@@ -8688,9 +8686,9 @@ mod tests {
     };
 
     use super::{
-        AstRenderState, CompiledBindingPattern, CompiledBodyPayload, CompiledFunction,
-        CompiledInitializer, CompiledObjectPattern, CompiledParam, CompiledParamPrefixStatement,
-        CompiledPropertyKey, apply_internal_blank_line_markers, codegen_statement_source,
+        AstRenderState, CompiledBindingPattern, CompiledFunction, CompiledInitializer,
+        CompiledObjectPattern, CompiledParam, CompiledParamPrefixStatement, CompiledPropertyKey,
+        apply_internal_blank_line_markers, codegen_statement_source,
         compute_transform_state, maybe_gate_entrypoint_source,
         normalize_compiled_body_for_hir_match, normalize_generated_body_flow_cast_marker_calls,
         normalize_use_fire_binding_temps_ast, parse_rendered_function_body, parse_statements,
@@ -9361,7 +9359,6 @@ export const FIXTURE_ENTRYPOINT = {
             &["props"],
             true,
         );
-        compiled_function.body_payload = CompiledBodyPayload::LowerFromFinalHir;
         compiled_function.hir_function = Some(simple_return_param_hir("props"));
 
         let rewritten =
@@ -9430,7 +9427,6 @@ export const FIXTURE_ENTRYPOINT = {
             start,
             end,
             generated_body_shape,
-            body_payload: CompiledBodyPayload::GeneratedShape,
             needs_cache_import: false,
             compiled_params: Some(
                 params
