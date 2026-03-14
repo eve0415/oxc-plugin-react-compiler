@@ -5714,13 +5714,35 @@ fn inline_lenient_alias_bindings(statements: &mut Vec<String>) {
 }
 
 fn normalize_for_fallback_accounting_compare(source: &str) -> String {
+    fn normalize_cache_binding_aliases(source: &str) -> String {
+        let chars: Vec<char> = source.chars().collect();
+        let mut normalized = String::with_capacity(source.len());
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '$' {
+                let mut j = i + 1;
+                while j < chars.len() && chars[j].is_ascii_digit() {
+                    j += 1;
+                }
+                if j > i + 1 && j < chars.len() && chars[j] == '[' {
+                    normalized.push('$');
+                    i = j;
+                    continue;
+                }
+            }
+            normalized.push(chars[i]);
+            i += 1;
+        }
+        normalized
+    }
+
     let mut statements = statement_sources_for_lenient_normalization(source);
     statements.retain(|statement| !statement_is_leniently_ignorable(statement));
     inline_lenient_alias_bindings(&mut statements);
     statements.retain(|statement| !statement_is_leniently_ignorable(statement));
 
     let joined = normalize_labeled_blocks(&statements.join("\n"));
-    let result = de_shadow_temp_decls(&joined);
+    let result = normalize_cache_binding_aliases(&de_shadow_temp_decls(&joined));
 
     let mut temp_map: HashMap<String, String> = HashMap::new();
     let mut next_temp = 0u32;
@@ -6091,6 +6113,150 @@ fn generated_body_shape_renders_equivalent_to_string_body(
     rendered_norm == body_norm
 }
 
+fn render_fallback_accounting_memo_body_parts(
+    value_name: &str,
+    memoized_bindings: &[GeneratedBinding],
+    memoized_assignments: &[GeneratedAssignment],
+    memoized_expressions: &[String],
+    memoized_setup_statements: &[String],
+    memoized_expr: &Option<String>,
+) -> Option<Vec<String>> {
+    let mut rendered = Vec::new();
+
+    for binding in memoized_bindings {
+        rendered.push(render_generated_binding_statement(binding)?);
+    }
+    for assignment in memoized_assignments {
+        rendered.push(render_generated_assignment_statement(assignment)?);
+    }
+    rendered.extend(memoized_setup_statements.iter().cloned());
+    for expression in memoized_expressions {
+        rendered.push(render_generated_expression_statement(expression)?);
+    }
+    if let Some(expression) = memoized_expr {
+        rendered.push(
+            render_reactive_assignment_statement_ast(value_name, expression)?
+                .trim_end()
+                .to_string(),
+        );
+    }
+
+    Some(rendered)
+}
+
+fn try_render_statement_sources_for_fallback_accounting(
+    shape: &GeneratedBodyShape,
+) -> Option<Vec<String>> {
+    match shape {
+        GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } => {
+            let mut rendered = declarations
+                .iter()
+                .map(render_generated_declaration_statement)
+                .collect::<Option<Vec<_>>>()?;
+            rendered.extend(try_render_statement_sources_for_fallback_accounting(inner)?);
+            Some(rendered)
+        }
+        GeneratedBodyShape::PrefixedBindings { bindings, inner } => {
+            let mut rendered = bindings
+                .iter()
+                .map(render_generated_binding_statement)
+                .collect::<Option<Vec<_>>>()?;
+            rendered.extend(try_render_statement_sources_for_fallback_accounting(inner)?);
+            Some(rendered)
+        }
+        GeneratedBodyShape::PrefixedAssignments { assignments, inner } => {
+            let mut rendered = assignments
+                .iter()
+                .map(render_generated_assignment_statement)
+                .collect::<Option<Vec<_>>>()?;
+            rendered.extend(try_render_statement_sources_for_fallback_accounting(inner)?);
+            Some(rendered)
+        }
+        GeneratedBodyShape::PrefixedExpressionStatements { expressions, inner } => {
+            let mut rendered = expressions
+                .iter()
+                .map(|expression| render_generated_expression_statement(expression))
+                .collect::<Option<Vec<_>>>()?;
+            rendered.extend(try_render_statement_sources_for_fallback_accounting(inner)?);
+            Some(rendered)
+        }
+        GeneratedBodyShape::Sequential { prefix, inner } => {
+            let mut rendered = try_render_statement_sources_for_fallback_accounting(prefix)?;
+            rendered.extend(try_render_statement_sources_for_fallback_accounting(inner)?);
+            Some(rendered)
+        }
+        GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+            setup_statements, ..
+        }
+        | GeneratedBodyShape::MemoizedCachedValues {
+            setup_statements, ..
+        } => Some(setup_statements.clone()),
+        GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+            value_name,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+            ..
+        }
+        | GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
+            value_name,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+            ..
+        }
+        | GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+            value_name,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+            ..
+        } => render_fallback_accounting_memo_body_parts(
+            value_name,
+            memoized_bindings,
+            memoized_assignments,
+            memoized_expressions,
+            memoized_setup_statements,
+            memoized_expr,
+        ),
+        _ => try_render_statement_sources_from_generated_body_shape(shape),
+    }
+}
+
+fn generated_body_shapes_equivalent_after_stripping_memoization(
+    direct: &GeneratedBodyShape,
+    analyzed: &GeneratedBodyShape,
+    string_body: &str,
+) -> bool {
+    let Some(direct_source) = try_render_statement_sources_for_fallback_accounting(direct) else {
+        return false;
+    };
+    let Some(analyzed_source) = try_render_statement_sources_for_fallback_accounting(analyzed)
+    else {
+        return false;
+    };
+    let body_shape =
+        fully_canonicalize_generated_body_shape(analyze_generated_body_shape(string_body));
+    let Some(body_source) = try_render_statement_sources_for_fallback_accounting(&body_shape)
+    else {
+        return false;
+    };
+
+    let direct_norm = normalize_for_fallback_accounting_compare(&direct_source.join("\n"));
+    let analyzed_norm = normalize_for_fallback_accounting_compare(&analyzed_source.join("\n"));
+    let body_norm = normalize_for_fallback_accounting_compare(&body_source.join("\n"));
+    direct_norm == analyzed_norm && analyzed_norm == body_norm
+}
+
 fn generated_body_shapes_equivalent_for_fallback_accounting(
     direct: &GeneratedBodyShape,
     analyzed: &GeneratedBodyShape,
@@ -6107,7 +6273,12 @@ fn generated_body_shapes_equivalent_for_fallback_accounting(
     let direct_norm = normalize_for_fallback_accounting_compare(&direct_source.join("\n"));
     let analyzed_norm = normalize_for_fallback_accounting_compare(&analyzed_source.join("\n"));
     let body_norm = normalize_for_fallback_accounting_compare(string_body);
-    direct_norm == analyzed_norm && analyzed_norm == body_norm
+    (direct_norm == analyzed_norm && analyzed_norm == body_norm)
+        || generated_body_shapes_equivalent_after_stripping_memoization(
+            direct,
+            analyzed,
+            string_body,
+        )
 }
 
 #[cfg(test)]
@@ -7057,6 +7228,75 @@ fn rewrite_generated_setup_statements(setup_statements: Vec<String>) -> Vec<Stri
         rewritten
     }
 
+    fn parse_expression_statement_source_line(line: &str) -> Option<(String, String)> {
+        let indent_len = line.len().saturating_sub(line.trim_start().len());
+        let indent = line[..indent_len].to_string();
+        let allocator = Allocator::default();
+        let statement = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            line.trim(),
+        )
+        .ok()?;
+        let ast::Statement::ExpressionStatement(expression_statement) = statement else {
+            return None;
+        };
+        Some((
+            indent,
+            codegen_expression_with_flow_cast_restore(&expression_statement.expression),
+        ))
+    }
+
+    fn recompose_split_call_argument_setup_statements(
+        setup_statements: Vec<String>,
+    ) -> Vec<String> {
+        let mut rewritten = Vec::with_capacity(setup_statements.len());
+        let mut i = 0;
+        while i < setup_statements.len() {
+            if i + 3 < setup_statements.len() {
+                let recv_binding = parse_named_temp_binding_line(
+                    strip_statement_blank_line_marker(&setup_statements[i]),
+                );
+                let arg_binding = parse_named_temp_binding_line(strip_statement_blank_line_marker(
+                    &setup_statements[i + 1],
+                ));
+                let arg_assignment = parse_assignment_statement_source_line(
+                    strip_statement_blank_line_marker(&setup_statements[i + 2]),
+                );
+                let call_expression = parse_expression_statement_source_line(
+                    strip_statement_blank_line_marker(&setup_statements[i + 3]),
+                );
+                if let (
+                    Some((_, recv_name, recv_expr)),
+                    Some((_, arg_name, arg_expr)),
+                    Some((_, assignment_target, assignment_value)),
+                    Some((indent, call_expr)),
+                ) = (recv_binding, arg_binding, arg_assignment, call_expression)
+                    && assignment_value == arg_name
+                {
+                    let replaced_recv = replace_word(&call_expr, &recv_name, &recv_expr);
+                    let replacement_arg = format!("({assignment_target} = {arg_expr})");
+                    let replaced_call = replace_word(&replaced_recv, &arg_name, &replacement_arg);
+                    if replaced_call != call_expr
+                        && let Some(mut statement) =
+                            render_generated_expression_statement(&replaced_call)
+                    {
+                        statement = format!("{indent}{}", statement.trim_start());
+                        if statement_has_blank_line_marker(&setup_statements[i]) {
+                            statement = add_statement_blank_line_marker(statement);
+                        }
+                        rewritten.push(statement);
+                        i += 4;
+                        continue;
+                    }
+                }
+            }
+            rewritten.push(setup_statements[i].clone());
+            i += 1;
+        }
+        rewritten
+    }
+
     if setup_statements.is_empty() {
         return setup_statements;
     }
@@ -7066,16 +7306,22 @@ fn rewrite_generated_setup_statements(setup_statements: Vec<String>) -> Vec<Stri
     let rewritten = rewrite_named_test_sequence_ternary_in_scope_computation(&rewritten);
     let rewritten = rewrite_named_temp_ternary_in_scope_computation(&rewritten);
     if rewritten == computation {
-        return recompose_true_while_sequence_prefixes(
-            drop_redundant_assignment_tail_identifier_reads(setup_statements),
+        return recompose_split_call_argument_setup_statements(
+            recompose_true_while_sequence_prefixes(drop_redundant_assignment_tail_identifier_reads(
+                setup_statements,
+            )),
         );
     }
     match split_statement_sources_preserving_blank_lines(&rewritten) {
-        Some(statements) => recompose_true_while_sequence_prefixes(
-            drop_redundant_assignment_tail_identifier_reads(statements),
+        Some(statements) => recompose_split_call_argument_setup_statements(
+            recompose_true_while_sequence_prefixes(
+                drop_redundant_assignment_tail_identifier_reads(statements),
+            ),
         ),
-        None => recompose_true_while_sequence_prefixes(
-            drop_redundant_assignment_tail_identifier_reads(original),
+        None => recompose_split_call_argument_setup_statements(
+            recompose_true_while_sequence_prefixes(
+                drop_redundant_assignment_tail_identifier_reads(original),
+            ),
         ),
     }
 }
@@ -44535,6 +44781,25 @@ mod tests {
         assert_eq!(
             rewritten,
             vec!["while (foo(), true) {\n  x = (foo(), 2);\n}".to_string()]
+        );
+    }
+
+    #[test]
+    fn rewrites_generated_setup_statements_recompose_split_call_argument_sequence() {
+        let rewritten = super::rewrite_generated_setup_statements(vec![
+            "x = makeObject();".to_string(),
+            "const t0 = x;".to_string(),
+            "const t1 = makeObject();".to_string(),
+            "[x] = t1;".to_string(),
+            "t0.foo(t1);".to_string(),
+        ]);
+
+        assert_eq!(
+            rewritten,
+            vec![
+                "x = makeObject();".to_string(),
+                "x.foo(([x] = makeObject()));".to_string(),
+            ]
         );
     }
 
