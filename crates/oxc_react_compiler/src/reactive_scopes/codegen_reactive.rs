@@ -3985,7 +3985,7 @@ fn codegen_reactive_function_with_primitives(
                 direct_body_shape
             }
         }
-        None => analyzed_body_shape
+        None => analyzed_body_shape,
     };
     let body_shape = apply_generated_body_shape_cache_binding_name(body_shape, cache_binding_name);
     CodegenResult {

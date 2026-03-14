@@ -6713,25 +6713,6 @@ fn normalize_return_undefined_var(code: &str) -> String {
     result.join("\n")
 }
 
-/// Deduplicate consecutive identical directive lines within function bodies.
-/// E.g., `"use forget";\n"use forget";` → `"use forget";`
-fn normalize_dedup_directives(code: &str) -> String {
-    let lines: Vec<&str> = code.lines().collect();
-    let mut result = Vec::new();
-    let mut prev_line = "";
-    for line in &lines {
-        let trimmed = line.trim();
-        // A directive is a string literal (starts and ends with `"`) followed by `;`
-        let is_directive = trimmed.starts_with('"') && trimmed.ends_with("\";");
-        if is_directive && trimmed == prev_line {
-            continue; // Skip duplicate directive
-        }
-        result.push(trimmed.to_string());
-        prev_line = trimmed;
-    }
-    result.join("\n")
-}
-
 /// Normalize Unicode escape sequences: convert literal non-ASCII characters to `\uXXXX`
 /// escape form so that e.g. the literal character `ŧ` (U+0167) and the escape sequence
 /// `\u0167` are treated as equivalent. Also collapses multi-byte UTF-8 escape sequences
@@ -7719,60 +7700,6 @@ fn normalize_multiline_object_literal_access(code: &str) -> String {
     out.join("\n")
 }
 
-/// Drop obviously pure local declarations whose binding is never referenced later.
-fn normalize_drop_unused_pure_local_decls(code: &str) -> String {
-    let decl_re = regex::Regex::new(
-        r#"^let\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$.\[\]]*|\d+|".*"|'.*')\s*;$"#,
-    )
-    .unwrap();
-    let lines: Vec<&str> = code.lines().collect();
-    let mut out = Vec::with_capacity(lines.len());
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if let Some(caps) = decl_re.captures(trimmed) {
-            let ident = caps.get(1).unwrap().as_str();
-            let used_later = lines[i + 1..].iter().any(|later| {
-                let pattern = format!(r"\b{}\b", regex::escape(ident));
-                regex::Regex::new(&pattern)
-                    .map(|re| re.is_match(later))
-                    .unwrap_or(false)
-            });
-            if !used_later {
-                continue;
-            }
-        }
-        out.push(trimmed.to_string());
-    }
-
-    out.join("\n")
-}
-
-fn normalize_drop_unused_bare_local_decls(code: &str) -> String {
-    let decl_re = regex::Regex::new(r"^(?:let|var)\s+([A-Za-z_$][\w$]*)\s*;$").unwrap();
-    let lines: Vec<&str> = code.lines().collect();
-    let mut out = Vec::with_capacity(lines.len());
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if let Some(caps) = decl_re.captures(trimmed) {
-            let ident = caps.get(1).unwrap().as_str();
-            let used_later = lines[i + 1..].iter().any(|later| {
-                let pattern = format!(r"\b{}\b", regex::escape(ident));
-                regex::Regex::new(&pattern)
-                    .map(|re| re.is_match(later))
-                    .unwrap_or(false)
-            });
-            if !used_later {
-                continue;
-            }
-        }
-        out.push(trimmed.to_string());
-    }
-
-    out.join("\n")
-}
-
 fn normalize_object_shorthand_pairs(code: &str) -> String {
     let shorthand_re =
         regex::Regex::new(r"([,{]\s*)([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)(\s*[,}])")
@@ -7864,41 +7791,6 @@ fn normalize_arrow_copy_return_body(code: &str) -> String {
         .join("\n")
 }
 
-/// Drop a dead identifier read immediately following an assignment to the same
-/// identifier: `x = expr;` + `x;` -> `x = expr;`.
-///
-/// This is intentionally narrow so we do not erase potentially meaningful
-/// expression statements unrelated to assignment shaping.
-fn normalize_dead_identifier_read_after_assignment(code: &str) -> String {
-    let assign_re = regex::Regex::new(r"^([A-Za-z_$][\w$]*)\s*=\s*.+;$").unwrap();
-    let read_re = regex::Regex::new(r"^([A-Za-z_$][\w$]*)\s*;$").unwrap();
-    let lines: Vec<&str> = code.lines().collect();
-    let mut out = Vec::with_capacity(lines.len());
-    let mut i = 0usize;
-
-    while i < lines.len() {
-        let current = lines[i].trim();
-        if i + 1 < lines.len() {
-            let next = lines[i + 1].trim();
-            if let (Some(assign_caps), Some(read_caps)) =
-                (assign_re.captures(current), read_re.captures(next))
-            {
-                let assigned = assign_caps.get(1).unwrap().as_str();
-                let read = read_caps.get(1).unwrap().as_str();
-                if assigned == read {
-                    out.push(current.to_string());
-                    i += 2;
-                    continue;
-                }
-            }
-        }
-        out.push(current.to_string());
-        i += 1;
-    }
-
-    out.join("\n")
-}
-
 /// Sort consecutive runs of simple uninitialized `let name;` declarations.
 fn normalize_sort_simple_let_decl_runs(code: &str) -> String {
     let simple_let_re = regex::Regex::new(r"^let\s+[A-Za-z_$][\w$]*\s*;$").unwrap();
@@ -7928,33 +7820,6 @@ fn normalize_sort_simple_let_decl_runs(code: &str) -> String {
     out.join("\n")
 }
 
-/// Drop bare identifier statements when the identifier has already been
-/// declared as a local binding in the surrounding file/function.
-fn normalize_dead_local_identifier_reads(code: &str) -> String {
-    let decl_re = regex::Regex::new(r"^(?:let|const|var)\s+([A-Za-z_$][\w$]*)\b").unwrap();
-    let read_re = regex::Regex::new(r"^([A-Za-z_$][\w$]*)\s*;$").unwrap();
-    let mut declared = std::collections::HashSet::new();
-    let mut out = Vec::new();
-
-    for line in code.lines() {
-        let trimmed = line.trim();
-        if let Some(caps) = decl_re.captures(trimmed) {
-            declared.insert(caps.get(1).unwrap().as_str().to_string());
-            out.push(trimmed.to_string());
-            continue;
-        }
-        if let Some(caps) = read_re.captures(trimmed) {
-            let ident = caps.get(1).unwrap().as_str();
-            if declared.contains(ident) {
-                continue;
-            }
-        }
-        out.push(trimmed.to_string());
-    }
-
-    out.join("\n")
-}
-
 /// but `t0` stays `t0`.
 fn normalize_non_temp_ssa_suffixes(code: &str) -> String {
     let re = regex::Regex::new(r"\b([a-zA-Z_]\w*)_(\d+)\b").unwrap();
@@ -7969,11 +7834,6 @@ fn normalize_non_temp_ssa_suffixes(code: &str) -> String {
         }
     })
     .to_string()
-}
-
-fn normalize_change_detection_locations(code: &str) -> String {
-    let re = regex::Regex::new(r#""\(\d+:\d+\)""#).unwrap();
-    re.replace_all(code, "\"(__LOC__)\"").to_string()
 }
 
 fn normalize_temp_alpha_renaming(code: &str) -> String {
@@ -8773,10 +8633,8 @@ fn normalize_parenthesized_multiline_arrow_initializers(code: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_arrow_copy_return_body, normalize_code,
-        normalize_dead_identifier_read_after_assignment, normalize_dead_local_identifier_reads,
-        normalize_destructuring, normalize_drop_unused_bare_local_decls,
-        normalize_drop_unused_pure_local_decls, normalize_fbt_plural_cross_product_tables,
+        normalize_arrow_copy_return_body, normalize_code, normalize_destructuring,
+        normalize_fbt_plural_cross_product_tables,
         normalize_if_paren_spacing, normalize_inline_if_first_statements,
         normalize_inline_jsx_cached_wrapper_scope, normalize_jsx_branch_paren_spacing,
         normalize_jsx_nested_ternary_wrapper_parens, normalize_jsx_semicolon_on_own_line,
@@ -9059,25 +8917,6 @@ mod tests {
     }
 
     #[test]
-    fn normalize_dead_identifier_read_after_assignment_removes_immediate_dead_read() {
-        let input = "x = x + 1;\nx;\nreturn x;";
-        let expected = "x = x + 1;\nreturn x;";
-        assert_eq!(
-            normalize_dead_identifier_read_after_assignment(input),
-            expected
-        );
-    }
-
-    #[test]
-    fn normalize_dead_identifier_read_after_assignment_keeps_non_matching_read() {
-        let input = "x = x + 1;\ny;\nreturn x;";
-        assert_eq!(
-            normalize_dead_identifier_read_after_assignment(input),
-            input
-        );
-    }
-
-    #[test]
     fn normalize_strip_inline_comments_drops_comment_only_lines() {
         let input = "let x;\n// comment only\nlet y; // trailing\nreturn y;";
         let expected = "let x;\nlet y;\nreturn y;";
@@ -9089,13 +8928,6 @@ mod tests {
         let input = "let y;\nlet x;\nlet z = 1;";
         let expected = "let x;\nlet y;\nlet z = 1;";
         assert_eq!(normalize_sort_simple_let_decl_runs(input), expected);
-    }
-
-    #[test]
-    fn normalize_dead_local_identifier_reads_drops_declared_local_read() {
-        let input = "let input;\ninput;\nreturn input;";
-        let expected = "let input;\nreturn input;";
-        assert_eq!(normalize_dead_local_identifier_reads(input), expected);
     }
 
     #[test]
@@ -9256,20 +9088,6 @@ mod tests {
         let input = "const obj = { ref: ref, children: children, value: t0 };";
         let expected = "const obj = { ref, children, value: t0 };";
         assert_eq!(normalize_object_shorthand_pairs(input), expected);
-    }
-
-    #[test]
-    fn normalize_drop_unused_pure_local_decls_removes_unused_binding() {
-        let input = "let param = CONST_NUMBER0;\nlet foo = () => x[CONST_NUMBER0].value;";
-        let expected = "let foo = () => x[CONST_NUMBER0].value;";
-        assert_eq!(normalize_drop_unused_pure_local_decls(input), expected);
-    }
-
-    #[test]
-    fn normalize_drop_unused_bare_local_decls_removes_unused_binding() {
-        let input = "var _ref2;\nconst $ = _c(4);\nreturn t0;";
-        let expected = "const $ = _c(4);\nreturn t0;";
-        assert_eq!(normalize_drop_unused_bare_local_decls(input), expected);
     }
 
     #[test]

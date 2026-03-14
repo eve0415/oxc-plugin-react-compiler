@@ -1971,7 +1971,6 @@ fn outlined_function_needs_backend_render(
     )
 }
 
-
 fn dedupe_outlined_functions(outlined: &mut Vec<CompiledOutlinedFunction>) {
     let debug = std::env::var("DEBUG_OUTLINE_DEDUPE").is_ok();
     if debug {
@@ -8504,5 +8503,4 @@ mod tests {
         assert_eq!(rewritten, source);
         assert!(outlined.is_empty());
     }
-
 }

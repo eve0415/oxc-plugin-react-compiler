@@ -8585,12 +8585,11 @@ mod tests {
     use super::{
         AstRenderState, CompiledBindingPattern, CompiledFunction, CompiledInitializer,
         CompiledObjectPattern, CompiledParam, CompiledParamPrefixStatement, CompiledPropertyKey,
-        apply_internal_blank_line_markers, codegen_statement_source,
-        compute_transform_state, maybe_gate_entrypoint_source,
-        normalize_compiled_body_for_hir_match, normalize_generated_body_flow_cast_marker_calls,
-        normalize_use_fire_binding_temps_ast, parse_rendered_function_body, parse_statements,
-        restore_flow_cast_marker_calls, source_type_for_filename,
-        try_rewrite_compiled_statement_ast,
+        apply_internal_blank_line_markers, codegen_statement_source, compute_transform_state,
+        maybe_gate_entrypoint_source, normalize_compiled_body_for_hir_match,
+        normalize_generated_body_flow_cast_marker_calls, normalize_use_fire_binding_temps_ast,
+        parse_rendered_function_body, parse_statements, restore_flow_cast_marker_calls,
+        source_type_for_filename, try_rewrite_compiled_statement_ast,
     };
     use crate::codegen_backend::CompiledObjectPatternProperty;
     use crate::codegen_backend::module_emitter::apply_emit_freeze_to_cache_stores_ast;

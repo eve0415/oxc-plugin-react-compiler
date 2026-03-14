@@ -4,8 +4,8 @@ use oxc_span::SourceType;
 use crate::CompileResult;
 use crate::options::PluginOptions;
 
-pub(crate) mod module_emitter;
 pub(crate) mod hir_to_ast;
+pub(crate) mod module_emitter;
 pub(crate) mod shared;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
