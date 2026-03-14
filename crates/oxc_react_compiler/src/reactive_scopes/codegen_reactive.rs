@@ -1176,6 +1176,44 @@ fn rewrite_cached_setup_statements_for_outer_declarations(
     setup_statements: Vec<String>,
     declarations: &[GeneratedDeclaration],
 ) -> Vec<String> {
+    fn rewrite_nested_outer_declaration_lines(
+        statement_source: String,
+        declaration_names: &HashSet<&str>,
+    ) -> String {
+        let mut rewritten = Vec::new();
+        for line in statement_source.lines() {
+            let trimmed = line.trim();
+            let indent_len = line.len() - line.trim_start().len();
+            let indent = &line[..indent_len];
+            let mut handled = false;
+            for prefix in ["let ", "const ", "var "] {
+                let Some(rest) = trimmed.strip_prefix(prefix) else {
+                    continue;
+                };
+                if let Some(name) = rest.strip_suffix(';').map(str::trim)
+                    && is_valid_js_identifier_name(name)
+                    && declaration_names.contains(name)
+                {
+                    handled = true;
+                    break;
+                }
+                let Some(eq_pos) = rest.find(" = ") else {
+                    continue;
+                };
+                let name = rest[..eq_pos].trim();
+                if is_valid_js_identifier_name(name) && declaration_names.contains(name) {
+                    rewritten.push(format!("{indent}{name} = {}", &rest[eq_pos + 3..]));
+                    handled = true;
+                    break;
+                }
+            }
+            if !handled {
+                rewritten.push(line.to_string());
+            }
+        }
+        rewritten.join("\n")
+    }
+
     fn collect_binding_pattern_names(pattern: &ast::BindingPattern<'_>, names: &mut Vec<String>) {
         match pattern {
             ast::BindingPattern::BindingIdentifier(identifier) => {
@@ -1225,11 +1263,17 @@ fn rewrite_cached_setup_statements_for_outer_declarations(
             continue;
         };
         let ast::Statement::VariableDeclaration(declaration) = statement else {
-            rewritten.push(statement_source);
+            rewritten.push(rewrite_nested_outer_declaration_lines(
+                statement_source,
+                &declaration_names,
+            ));
             continue;
         };
         if declaration.declarations.len() != 1 {
-            rewritten.push(statement_source);
+            rewritten.push(rewrite_nested_outer_declaration_lines(
+                statement_source,
+                &declaration_names,
+            ));
             continue;
         }
         let declarator = declaration.declarations.first().expect("len checked");
@@ -1241,7 +1285,10 @@ fn rewrite_cached_setup_statements_for_outer_declarations(
                 .iter()
                 .all(|name| declaration_names.contains(name.as_str()))
         {
-            rewritten.push(statement_source);
+            rewritten.push(rewrite_nested_outer_declaration_lines(
+                statement_source,
+                &declaration_names,
+            ));
             continue;
         }
         let Some(init) = declarator.init.as_ref() else {
@@ -1250,7 +1297,10 @@ fn rewrite_cached_setup_statements_for_outer_declarations(
         let rhs = codegen_expression_with_flow_cast_restore(init);
         let Some(assignment) = render_reactive_assignment_target_statement_ast(&pattern, &rhs)
         else {
-            rewritten.push(statement_source);
+            rewritten.push(rewrite_nested_outer_declaration_lines(
+                statement_source,
+                &declaration_names,
+            ));
             continue;
         };
         rewritten.push(assignment.trim_end().to_string());
@@ -1669,6 +1719,53 @@ fn canonicalize_generated_statement_source(statement_source: String) -> String {
     } else {
         rendered
     }
+}
+
+fn canonicalize_generated_statement_sources(setup_statements: Vec<String>) -> Vec<String> {
+    let mut canonicalized = setup_statements
+        .into_iter()
+        .map(canonicalize_generated_statement_source)
+        .collect::<Vec<_>>();
+
+    for index in 0..canonicalized.len() {
+        let allocator = Allocator::default();
+        let Ok(statement) = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            &canonicalized[index],
+        ) else {
+            continue;
+        };
+        let ast::Statement::VariableDeclaration(declaration) = statement else {
+            continue;
+        };
+        if declaration.declarations.len() != 1 {
+            continue;
+        }
+        let Some(declarator) = declaration.declarations.first() else {
+            continue;
+        };
+        let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id else {
+            continue;
+        };
+        let Some(init) = declarator.init.as_ref() else {
+            continue;
+        };
+        let Some(function_declaration) = function_expr_as_declaration(
+            identifier.name.as_str(),
+            &codegen_expression_with_flow_cast_restore(init),
+        ) else {
+            continue;
+        };
+        if canonicalized[..index]
+            .iter()
+            .any(|statement| contains_base_identifier_token(statement, identifier.name.as_str()))
+        {
+            canonicalized[index] = function_declaration;
+        }
+    }
+
+    canonicalized
 }
 
 fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBodyShape {
@@ -2386,15 +2483,31 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     alias_kind,
                     source_name,
                     inner,
-                } => GeneratedBodyShape::AliasedReturn {
-                    alias_name,
-                    alias_kind,
-                    source_name,
-                    inner: Box::new(GeneratedBodyShape::PrefixedDeclarations {
-                        declarations,
-                        inner,
-                    }),
-                },
+                } => {
+                    let alias_declared = declarations
+                        .iter()
+                        .any(|declaration| declaration.pattern == alias_name);
+                    if alias_declared {
+                        GeneratedBodyShape::AssignedAliasReturn {
+                            alias_name,
+                            source_name,
+                            inner: Box::new(GeneratedBodyShape::PrefixedDeclarations {
+                                declarations,
+                                inner,
+                            }),
+                        }
+                    } else {
+                        GeneratedBodyShape::AliasedReturn {
+                            alias_name,
+                            alias_kind,
+                            source_name,
+                            inner: Box::new(GeneratedBodyShape::PrefixedDeclarations {
+                                declarations,
+                                inner,
+                            }),
+                        }
+                    }
+                }
                 inner => GeneratedBodyShape::PrefixedDeclarations {
                     declarations,
                     inner: Box::new(inner),
@@ -2787,10 +2900,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
         } => GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
             sentinel_slot,
             setup_statements: shift_nested_cache_slots_after_outer(
-                setup_statements
-                    .into_iter()
-                    .map(canonicalize_generated_statement_source)
-                    .collect(),
+                canonicalize_generated_statement_sources(setup_statements),
                 cached_values.len(),
             ),
             cached_values,
@@ -2808,10 +2918,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                 .collect();
             GeneratedBodyShape::MemoizedCachedValues {
                 setup_statements: shift_nested_cache_slots_after_outer(
-                    setup_statements
-                        .into_iter()
-                        .map(canonicalize_generated_statement_source)
-                        .collect(),
+                    canonicalize_generated_statement_sources(setup_statements),
                     deps.len() + cached_values.len(),
                 ),
                 deps,
@@ -2833,10 +2940,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                 .map(|(slot, expr)| (slot, canonicalize_generated_expression(expr)))
                 .collect();
             let setup_statements = shift_nested_cache_slots_after_outer(
-                setup_statements
-                    .into_iter()
-                    .map(canonicalize_generated_statement_source)
-                    .collect(),
+                canonicalize_generated_statement_sources(setup_statements),
                 deps.len() + cached_values.len(),
             );
             let fallback_body =
@@ -2969,10 +3073,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     !has_trailing_expressions,
                 );
             let memoized_setup_statements = rebase_nested_cache_slots_after_memoized_return(
-                memoized_setup_statements
-                    .into_iter()
-                    .map(canonicalize_generated_statement_source)
-                    .collect(),
+                canonicalize_generated_statement_sources(memoized_setup_statements),
                 std::slice::from_mut(&mut value_slot),
             );
             let memoized_expressions = memoized_expressions
@@ -3043,10 +3144,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                 );
             let mut outer_slots = vec![dep_slot, value_slot];
             let memoized_setup_statements = rebase_nested_cache_slots_after_memoized_return(
-                memoized_setup_statements
-                    .into_iter()
-                    .map(canonicalize_generated_statement_source)
-                    .collect(),
+                canonicalize_generated_statement_sources(memoized_setup_statements),
                 &mut outer_slots,
             );
             dep_slot = outer_slots[0];
@@ -3121,10 +3219,7 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             let mut outer_slots: Vec<u32> = deps.iter().map(|(slot, _)| *slot).collect();
             outer_slots.push(value_slot);
             let memoized_setup_statements = rebase_nested_cache_slots_after_memoized_return(
-                memoized_setup_statements
-                    .into_iter()
-                    .map(canonicalize_generated_statement_source)
-                    .collect(),
+                canonicalize_generated_statement_sources(memoized_setup_statements),
                 &mut outer_slots,
             );
             value_slot = outer_slots.pop().expect("value slot should exist");
@@ -35109,6 +35204,19 @@ fn build_generated_binding_statements_ast<'a>(
     for binding in bindings {
         let expression_source =
             rewrite_generated_source_with_cache_binding(&binding.expression, cache_prologue);
+        if binding.promote_to_function_declaration
+            && let Some(function_declaration) =
+                function_expr_as_declaration(binding.pattern.trim(), expression_source.as_ref())
+        {
+            let statement = parse_single_statement_for_ast_codegen(
+                allocator,
+                SourceType::mjs().with_jsx(true),
+                &function_declaration,
+            )
+            .ok()?;
+            statements.push(statement);
+            continue;
+        }
         let expression = parse_expression_for_ast_codegen(
             allocator,
             SourceType::mjs().with_jsx(true),
@@ -41250,6 +41358,44 @@ mod tests {
     }
 
     #[test]
+    fn renders_promoted_function_binding_as_declaration_via_ast() {
+        let shape = super::GeneratedBodyShape::PrefixedBindings {
+            bindings: vec![super::GeneratedBinding {
+                kind: ast::VariableDeclarationKind::Const,
+                pattern: "callback".to_string(),
+                expression:
+                    "(function callback(x_0) {\n  if (x_0 == 0) {\n    return null;\n  }\n  return callback(x_0 - 1);\n})"
+                        .to_string(),
+                promote_to_function_declaration: true,
+            }],
+            inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                "callback".to_string(),
+            )),
+        };
+        let expected = "function callback(x_0) {\n  if (x_0 == 0) {\n    return null;\n  }\n  return callback(x_0 - 1);\n}\nreturn callback;\n";
+
+        assert!(super::generated_body_shape_matches_rendered_body(
+            &shape, expected
+        ));
+    }
+
+    #[test]
+    fn canonicalizes_hoisted_function_setup_statements_after_earlier_use() {
+        let statements = super::canonicalize_generated_statement_sources(vec![
+            "x(t);".to_string(),
+            "const x = (function x(p) {\n  p.a.foo();\n});".to_string(),
+        ]);
+
+        assert_eq!(
+            statements,
+            vec![
+                "x(t);".to_string(),
+                "function x(p) {\n  p.a.foo();\n}".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn detects_rendered_function_shapes_via_ast() {
         assert!(rendered_expr_is_function_like("value => value"));
         assert!(rendered_expr_is_function_like(
@@ -43230,6 +43376,25 @@ mod tests {
     }
 
     #[test]
+    fn rewrites_nested_setup_statements_for_outer_declarations() {
+        let rewritten = super::rewrite_cached_setup_statements_for_outer_declarations(
+            vec![
+                "bb0: {\n  let y;\n  if (cond) {\n    y = foo();\n    break bb0;\n  }\n}"
+                    .to_string(),
+            ],
+            &[super::GeneratedDeclaration {
+                kind: ast::VariableDeclarationKind::Let,
+                pattern: "y".to_string(),
+            }],
+        );
+
+        assert_eq!(
+            rewritten,
+            vec!["bb0: {\n  if (cond) {\n    y = foo();\n    break bb0;\n  }\n}".to_string()]
+        );
+    }
+
+    #[test]
     fn rewrites_generated_setup_statements_drop_redundant_identifier_tail_reads() {
         let rewritten = super::rewrite_generated_setup_statements(vec![
             "y = x.concat(arr2);".to_string(),
@@ -43734,6 +43899,57 @@ mod tests {
                 "t2 = arr.at(t3);".to_string(),
             ]
             .as_slice()
+        );
+    }
+
+    #[test]
+    fn canonicalizes_aliased_return_into_assigned_alias_when_outer_decl_exists() {
+        let shape = super::canonicalize_generated_body_shape(
+            super::GeneratedBodyShape::PrefixedDeclarations {
+                declarations: vec![
+                    super::GeneratedDeclaration {
+                        kind: ast::VariableDeclarationKind::Let,
+                        pattern: "x".to_string(),
+                    },
+                    super::GeneratedDeclaration {
+                        kind: ast::VariableDeclarationKind::Let,
+                        pattern: "t0".to_string(),
+                    },
+                ],
+                inner: Box::new(super::GeneratedBodyShape::AliasedReturn {
+                    alias_name: "x".to_string(),
+                    alias_kind: ast::VariableDeclarationKind::Let,
+                    source_name: "t0".to_string(),
+                    inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                        "t0".to_string(),
+                    )),
+                }),
+            },
+        );
+
+        let super::GeneratedBodyShape::AssignedAliasReturn {
+            alias_name,
+            source_name,
+            inner,
+        } = shape
+        else {
+            panic!("expected assigned alias return, got {shape:?}");
+        };
+        assert_eq!(alias_name, "x");
+        assert_eq!(source_name, "t0");
+        let super::GeneratedBodyShape::PrefixedDeclarations {
+            declarations,
+            inner,
+        } = inner.as_ref()
+        else {
+            panic!("expected prefixed declarations, got {inner:?}");
+        };
+        assert_eq!(declarations.len(), 2);
+        assert_eq!(declarations[0].pattern, "x");
+        assert_eq!(declarations[1].pattern, "t0");
+        assert_eq!(
+            inner.as_ref(),
+            &super::GeneratedBodyShape::ReturnIdentifier("t0".to_string())
         );
     }
 
