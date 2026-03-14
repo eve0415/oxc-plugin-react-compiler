@@ -1617,7 +1617,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
     }
 }
 
-fn lower_property_load<'a, F>(
+pub(crate) fn lower_property_load<'a, F>(
     builder: AstBuilder<'a>,
     object: &Place,
     property: &types::PropertyLiteral,
@@ -1657,7 +1657,7 @@ where
     }
 }
 
-fn lower_property_assignment_target<'a, F>(
+pub(crate) fn lower_property_assignment_target<'a, F>(
     builder: AstBuilder<'a>,
     object: &Place,
     property: &types::PropertyLiteral,
@@ -1671,7 +1671,7 @@ where
     expression_to_assignment_target(builder, expression)
 }
 
-fn lower_jsx_expression<'a, F>(
+pub(crate) fn lower_jsx_expression<'a, F>(
     builder: AstBuilder<'a>,
     tag: &types::JsxTag,
     props: &[types::JsxAttribute],
@@ -1711,7 +1711,7 @@ where
     ))
 }
 
-fn lower_jsx_fragment_expression<'a, F>(
+pub(crate) fn lower_jsx_fragment_expression<'a, F>(
     builder: AstBuilder<'a>,
     children: &[Place],
     lower_place: F,
@@ -1903,7 +1903,7 @@ where
     }
 }
 
-fn lower_function_expression_ast<'a>(
+pub(crate) fn lower_function_expression_ast<'a>(
     builder: AstBuilder<'a>,
     name: Option<&str>,
     lowered_func: &types::LoweredFunction,
@@ -2226,7 +2226,7 @@ fn single_return_expression<'a>(
     }
 }
 
-fn lower_primitive<'a>(builder: AstBuilder<'a>, value: &PrimitiveValue) -> ast::Expression<'a> {
+pub(crate) fn lower_primitive<'a>(builder: AstBuilder<'a>, value: &PrimitiveValue) -> ast::Expression<'a> {
     match value {
         PrimitiveValue::Null => builder.expression_null_literal(SPAN),
         PrimitiveValue::Undefined => builder.expression_identifier(SPAN, "undefined"),
@@ -2240,7 +2240,7 @@ fn lower_primitive<'a>(builder: AstBuilder<'a>, value: &PrimitiveValue) -> ast::
     }
 }
 
-fn lower_binary_operator(operator: types::BinaryOperator) -> AstBinaryOperator {
+pub(crate) fn lower_binary_operator(operator: types::BinaryOperator) -> AstBinaryOperator {
     match operator {
         types::BinaryOperator::Eq => AstBinaryOperator::Equality,
         types::BinaryOperator::NotEq => AstBinaryOperator::Inequality,
@@ -2267,7 +2267,7 @@ fn lower_binary_operator(operator: types::BinaryOperator) -> AstBinaryOperator {
     }
 }
 
-fn lower_unary_operator(operator: types::UnaryOperator) -> AstUnaryOperator {
+pub(crate) fn lower_unary_operator(operator: types::UnaryOperator) -> AstUnaryOperator {
     match operator {
         types::UnaryOperator::Minus => AstUnaryOperator::UnaryNegation,
         types::UnaryOperator::Plus => AstUnaryOperator::UnaryPlus,
@@ -2278,7 +2278,7 @@ fn lower_unary_operator(operator: types::UnaryOperator) -> AstUnaryOperator {
     }
 }
 
-fn lower_logical_operator(operator: types::LogicalOperator) -> AstLogicalOperator {
+pub(crate) fn lower_logical_operator(operator: types::LogicalOperator) -> AstLogicalOperator {
     match operator {
         types::LogicalOperator::And => AstLogicalOperator::And,
         types::LogicalOperator::Or => AstLogicalOperator::Or,
@@ -2286,14 +2286,14 @@ fn lower_logical_operator(operator: types::LogicalOperator) -> AstLogicalOperato
     }
 }
 
-fn lower_update_operator(operator: types::UpdateOperator) -> AstUpdateOperator {
+pub(crate) fn lower_update_operator(operator: types::UpdateOperator) -> AstUpdateOperator {
     match operator {
         types::UpdateOperator::Increment => AstUpdateOperator::Increment,
         types::UpdateOperator::Decrement => AstUpdateOperator::Decrement,
     }
 }
 
-fn expression_to_simple_assignment_target<'a>(
+pub(crate) fn expression_to_simple_assignment_target<'a>(
     builder: AstBuilder<'a>,
     expression: ast::Expression<'a>,
 ) -> Option<ast::SimpleAssignmentTarget<'a>> {
