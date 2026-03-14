@@ -7131,31 +7131,26 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
     let shape = match &instr.value {
         InstructionValue::DeclareLocal { lvalue, .. }
         | InstructionValue::DeclareContext { lvalue, .. } => {
-            if let Some(kind) = variable_declaration_kind(lvalue.kind) {
-                let pattern = identifier_name_with_cx(cx, &lvalue.place.identifier);
-                if kind == ast::VariableDeclarationKind::Let
-                    && let Some(expression) = crate::optimization::dead_code_elimination::preserved_top_level_let_initializer_for_decl(lvalue.place.identifier.declaration_id)
-                {
-                    Some(GeneratedBodyShape::PrefixedBindings {
-                        bindings: vec![GeneratedBinding {
-                            kind,
-                            pattern,
-                            expression,
-                            promote_to_function_declaration: false,
-                        }],
-                        inner: Box::new(inner),
-                    })
-                } else {
-                    Some(GeneratedBodyShape::PrefixedDeclarations {
-                        declarations: vec![GeneratedDeclaration { kind, pattern }],
-                        inner: Box::new(inner),
-                    })
-                }
+            let kind =
+                variable_declaration_kind(lvalue.kind).unwrap_or(ast::VariableDeclarationKind::Let);
+            let pattern = identifier_name_with_cx(cx, &lvalue.place.identifier);
+            if kind == ast::VariableDeclarationKind::Let
+                && let Some(expression) = crate::optimization::dead_code_elimination::preserved_top_level_let_initializer_for_decl(lvalue.place.identifier.declaration_id)
+            {
+                Some(GeneratedBodyShape::PrefixedBindings {
+                    bindings: vec![GeneratedBinding {
+                        kind,
+                        pattern,
+                        expression,
+                        promote_to_function_declaration: false,
+                    }],
+                    inner: Box::new(inner),
+                })
             } else {
-                rendered_single_statement_prefix(
-                    codegen_instruction_nullable(cx, instr)?.as_str(),
-                    inner,
-                )
+                Some(GeneratedBodyShape::PrefixedDeclarations {
+                    declarations: vec![GeneratedDeclaration { kind, pattern }],
+                    inner: Box::new(inner),
+                })
             }
         }
         InstructionValue::StoreLocal { lvalue, value, .. }
@@ -7187,11 +7182,33 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
                     inner: Box::new(inner),
                 })
             }
-            InstructionKind::Function | InstructionKind::HoistedFunction => {
-                rendered_single_statement_prefix(
-                    codegen_instruction_nullable(cx, instr)?.as_str(),
-                    inner,
-                )
+            InstructionKind::Function => {
+                let pattern = identifier_name_with_cx(cx, &lvalue.place.identifier);
+                let expression = codegen_place_to_expression(cx, value);
+                Some(GeneratedBodyShape::PrefixedBindings {
+                    bindings: vec![GeneratedBinding {
+                        kind: ast::VariableDeclarationKind::Const,
+                        pattern,
+                        expression,
+                        promote_to_function_declaration: true,
+                    }],
+                    inner: Box::new(inner),
+                })
+            }
+            InstructionKind::HoistedFunction => {
+                let pattern = identifier_name_with_cx(cx, &lvalue.place.identifier);
+                let expression = codegen_place_to_expression(cx, value);
+                Some(GeneratedBodyShape::PrefixedBindings {
+                    bindings: vec![GeneratedBinding {
+                        kind: ast::VariableDeclarationKind::Const,
+                        pattern,
+                        expression,
+                        promote_to_function_declaration: cx
+                            .function_decl_decls
+                            .contains(&lvalue.place.identifier.declaration_id),
+                    }],
+                    inner: Box::new(inner),
+                })
             }
         },
         InstructionValue::Destructure { lvalue, value, .. } => {
