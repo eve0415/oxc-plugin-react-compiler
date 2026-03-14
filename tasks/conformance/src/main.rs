@@ -3555,7 +3555,7 @@ fn normalize_code(code: &str) -> String {
         .join("\n");
 
     type NormalizeStep = (&'static str, fn(&str) -> String);
-    let steps: [NormalizeStep; 57] = [
+    let steps: [NormalizeStep; 55] = [
         ("normalize_multiline_imports", normalize_multiline_imports),
         ("normalize_empty_blocks", normalize_empty_blocks),
         ("normalize_iife_parens", normalize_iife_parens),
@@ -3596,7 +3596,6 @@ fn normalize_code(code: &str) -> String {
             "normalize_trailing_comma_in_calls",
             normalize_trailing_comma_in_calls,
         ),
-        ("normalize_promote_temps", normalize_promote_temps),
         ("normalize_update_expressions", normalize_update_expressions),
         (
             "normalize_compound_assignments",
@@ -3690,7 +3689,6 @@ fn normalize_code(code: &str) -> String {
             "normalize_multiline_function_object_params",
             normalize_multiline_function_object_params,
         ),
-        ("normalize_dedup_directives", normalize_dedup_directives),
         (
             "normalize_return_undefined_var",
             normalize_return_undefined_var,
@@ -3750,9 +3748,6 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_non_temp_ssa_suffixes(&lines_normalized);
     lines_normalized = normalize_shadowed_temp_decls(&lines_normalized);
     lines_normalized = normalize_temp_alpha_renaming(&lines_normalized);
-    // Retry temp promotion after canonicalizing shadowed temps so sibling
-    // branches that both started as `t0` can still normalize to the same
-    // promoted local names.
     lines_normalized = normalize_promote_temps(&lines_normalized);
     lines_normalized = normalize_two_dep_guard_order(&lines_normalized);
     lines_normalized = normalize_multiline_arrow_bodies(&lines_normalized);
@@ -3776,13 +3771,9 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_inline_if_first_statements(&lines_normalized);
     lines_normalized = normalize_multiline_object_method_bodies(&lines_normalized);
     lines_normalized = normalize_inline_if_first_statements(&lines_normalized);
-    lines_normalized = normalize_drop_unused_pure_local_decls(&lines_normalized);
-    lines_normalized = normalize_drop_unused_bare_local_decls(&lines_normalized);
     lines_normalized = normalize_simple_alias_return_tail(&lines_normalized);
     lines_normalized = normalize_arrow_copy_return_body(&lines_normalized);
     lines_normalized = normalize_sort_simple_let_decl_runs(&lines_normalized);
-    lines_normalized = normalize_dead_local_identifier_reads(&lines_normalized);
-    lines_normalized = normalize_dead_identifier_read_after_assignment(&lines_normalized);
     lines_normalized = normalize_memo_cache_decl_arity(&lines_normalized);
     lines_normalized = normalize_object_shorthand_pairs(&lines_normalized);
     lines_normalized = normalize_transitional_element_ref_shorthand(&lines_normalized);
@@ -3793,7 +3784,6 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_function_decl_trailing_semicolon(&lines_normalized);
     lines_normalized = normalize_arrow_expr_trailing_semicolon(&lines_normalized);
     lines_normalized = normalize_parenthesized_arrow_initializers(&lines_normalized);
-    lines_normalized = normalize_change_detection_locations(&lines_normalized);
 
     if debug_steps {
         eprintln!(
