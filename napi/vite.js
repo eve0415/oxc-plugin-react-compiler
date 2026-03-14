@@ -22,7 +22,7 @@ export default function reactCompilerOxc(options = {}) {
       if (!/\.[jt]sx?$/.test(id)) return null;
       if (options.sources) {
         if (Array.isArray(options.sources)) {
-          if (!options.sources.some((s) => id.includes(s))) return null;
+          if (!options.sources.some(s => id.includes(s))) return null;
         } else if (typeof options.sources === 'function') {
           if (!options.sources(id)) return null;
         }

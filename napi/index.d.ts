@@ -10,8 +10,4 @@ export interface TransformResult {
   map: string | null;
 }
 
-export function transform(
-  filename: string,
-  source: string,
-  options?: TransformOptions,
-): TransformResult;
+export function transform(filename: string, source: string, options?: TransformOptions): TransformResult;

@@ -14,9 +14,9 @@
     "TZ": "Asia/Tokyo"
   },
   "mounts": [
-    "type=bind,source=${localEnv:HOME}/.claude,target=/home/node/.claude,type=bind,consistency=cached",
-    "type=bind,source=${localEnv:HOME}/.codex,target=/home/node/.codex,type=bind,consistency=cached",
-    "type=bind,source=${localEnv:HOME}/.gemini,target=/home/node/.gemini,type=bind,consistency=cached"
+    "type=bind,source=${localEnv:HOME}/.claude,target=/home/node/.claude,consistency=cached",
+    "type=bind,source=${localEnv:HOME}/.codex,target=/home/node/.codex,consistency=cached",
+    "type=bind,source=${localEnv:HOME}/.gemini,target=/home/node/.gemini,consistency=cached"
   ],
   "customizations": {
     "vscode": {

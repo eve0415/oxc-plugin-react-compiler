@@ -85,21 +85,21 @@ Source → oxc_parser → OXC AST
 
 ### Key Modules
 
-| Module | Responsibility |
-|--------|---------------|
-| `hir/build.rs` | Lowers OXC AST → HIR CFG (largest file) |
-| `hir/types.rs` | All IR data structures |
-| `hir/globals.rs` | Known global function/type database |
-| `hir/propagate_scope_dependencies_hir.rs` | Scope dependency computation |
-| `hir/collect_hoistable_property_loads.rs` | Hoistable property analysis |
-| `pipeline.rs` | Pass orchestration (second largest file) |
-| `reactive_scopes/codegen_reactive.rs` | String-based JS codegen (largest file, future: migrate to OXC AstBuilder) |
-| `reactive_scopes/build_reactive_function.rs` | HIR CFG → tree-shaped ReactiveFunction |
-| `reactive_scopes/codegen.rs` | Alternative OXC AST-based codegen (in progress) |
-| `optimization/constant_propagation.rs` | SSA constant folding |
-| `optimization/dead_code_elimination.rs` | DCE pass |
-| `inference/infer_mutation_aliasing_effects.rs` | Aliasing side-effect analysis |
-| `options.rs` | PluginOptions, EnvironmentConfig, CompilationMode |
+| Module                                         | Responsibility                                                            |
+| ---------------------------------------------- | ------------------------------------------------------------------------- |
+| `hir/build.rs`                                 | Lowers OXC AST → HIR CFG (largest file)                                   |
+| `hir/types.rs`                                 | All IR data structures                                                    |
+| `hir/globals.rs`                               | Known global function/type database                                       |
+| `hir/propagate_scope_dependencies_hir.rs`      | Scope dependency computation                                              |
+| `hir/collect_hoistable_property_loads.rs`      | Hoistable property analysis                                               |
+| `pipeline.rs`                                  | Pass orchestration (second largest file)                                  |
+| `reactive_scopes/codegen_reactive.rs`          | String-based JS codegen (largest file, future: migrate to OXC AstBuilder) |
+| `reactive_scopes/build_reactive_function.rs`   | HIR CFG → tree-shaped ReactiveFunction                                    |
+| `reactive_scopes/codegen.rs`                   | Alternative OXC AST-based codegen (in progress)                           |
+| `optimization/constant_propagation.rs`         | SSA constant folding                                                      |
+| `optimization/dead_code_elimination.rs`        | DCE pass                                                                  |
+| `inference/infer_mutation_aliasing_effects.rs` | Aliasing side-effect analysis                                             |
+| `options.rs`                                   | PluginOptions, EnvironmentConfig, CompilationMode                         |
 
 ### Crate Structure
 
