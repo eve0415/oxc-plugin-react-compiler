@@ -6485,7 +6485,7 @@ fn statement_sources_are_sequence_recomposition_friendly(statement_sources: &[St
     })
 }
 
-fn rewrite_generated_setup_statements(mut setup_statements: Vec<String>) -> Vec<String> {
+fn rewrite_generated_setup_statements(setup_statements: Vec<String>) -> Vec<String> {
     fn parse_assignment_target_name(stmt: &str) -> Option<String> {
         let allocator = Allocator::default();
         let statement = parse_single_statement_for_ast_codegen(
@@ -6562,6 +6562,37 @@ fn rewrite_generated_setup_statements(mut setup_statements: Vec<String>) -> Vec<
         rewritten
     }
 
+    fn recompose_true_while_sequence_prefixes(setup_statements: Vec<String>) -> Vec<String> {
+        let mut rewritten = Vec::with_capacity(setup_statements.len());
+        let mut i = 0;
+        while i < setup_statements.len() {
+            if i + 1 < setup_statements.len() {
+                let mut prefix_statements =
+                    vec![strip_statement_blank_line_marker(&setup_statements[i]).to_string()];
+                let mut tail_setup_statements =
+                    vec![strip_statement_blank_line_marker(&setup_statements[i + 1]).to_string()];
+                maybe_recompose_sequence_prefixed_while_setup_statement(
+                    &mut prefix_statements,
+                    &mut tail_setup_statements,
+                );
+                if prefix_statements.is_empty() && tail_setup_statements.len() == 1 {
+                    let mut combined = tail_setup_statements
+                        .pop()
+                        .expect("single recomposed while setup statement");
+                    if statement_has_blank_line_marker(&setup_statements[i]) {
+                        combined = add_statement_blank_line_marker(combined);
+                    }
+                    rewritten.push(combined);
+                    i += 2;
+                    continue;
+                }
+            }
+            rewritten.push(setup_statements[i].clone());
+            i += 1;
+        }
+        rewritten
+    }
+
     if setup_statements.is_empty() {
         return setup_statements;
     }
@@ -6571,14 +6602,17 @@ fn rewrite_generated_setup_statements(mut setup_statements: Vec<String>) -> Vec<
     let rewritten = rewrite_named_test_sequence_ternary_in_scope_computation(&rewritten);
     let rewritten = rewrite_named_temp_ternary_in_scope_computation(&rewritten);
     if rewritten == computation {
-        return drop_redundant_assignment_tail_identifier_reads(setup_statements);
+        return recompose_true_while_sequence_prefixes(
+            drop_redundant_assignment_tail_identifier_reads(setup_statements),
+        );
     }
     match split_statement_sources_preserving_blank_lines(&rewritten) {
-        Some(statements) => {
-            setup_statements = statements;
-            drop_redundant_assignment_tail_identifier_reads(setup_statements)
-        }
-        None => drop_redundant_assignment_tail_identifier_reads(original),
+        Some(statements) => recompose_true_while_sequence_prefixes(
+            drop_redundant_assignment_tail_identifier_reads(statements),
+        ),
+        None => recompose_true_while_sequence_prefixes(
+            drop_redundant_assignment_tail_identifier_reads(original),
+        ),
     }
 }
 
@@ -8104,6 +8138,10 @@ fn try_decompose_direct_memoized_existing_return_shape(
                 .iter()
                 .map(|expression| render_generated_expression_statement(expression))
                 .collect::<Option<Vec<_>>>()?;
+            maybe_recompose_sequence_prefixed_while_setup_statement(
+                &mut prefix_statements,
+                &mut parts.setup_statements,
+            );
             prefix_statements.extend(parts.setup_statements);
             parts.setup_statements = prefix_statements;
             Some(parts)
@@ -8113,12 +8151,81 @@ fn try_decompose_direct_memoized_existing_return_shape(
                 try_decompose_direct_memoized_existing_return_shape(*inner, value_name)?;
             let mut prefix_statements =
                 try_render_statement_sources_from_generated_body_shape(&prefix)?;
+            maybe_recompose_sequence_prefixed_while_setup_statement(
+                &mut prefix_statements,
+                &mut parts.setup_statements,
+            );
             prefix_statements.extend(parts.setup_statements);
             parts.setup_statements = prefix_statements;
             Some(parts)
         }
         _ => None,
     }
+}
+
+fn maybe_recompose_sequence_prefixed_while_setup_statement(
+    prefix_statements: &mut Vec<String>,
+    setup_statements: &mut [String],
+) {
+    if prefix_statements.len() != 1 || setup_statements.is_empty() {
+        return;
+    }
+
+    let allocator = Allocator::default();
+    let prefix_stmt = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        prefix_statements[0].trim(),
+    );
+    let Ok(prefix_stmt) = prefix_stmt else {
+        return;
+    };
+    let ast::Statement::ExpressionStatement(prefix_expr_stmt) = &prefix_stmt else {
+        return;
+    };
+    if !matches!(
+        prefix_expr_stmt.expression.without_parentheses(),
+        ast::Expression::CallExpression(_)
+    ) {
+        return;
+    }
+    let prefix_expr = codegen_expression_with_flow_cast_restore(&prefix_expr_stmt.expression);
+
+    let while_statement = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        setup_statements[0].trim(),
+    );
+    let Ok(mut while_statement) = while_statement else {
+        return;
+    };
+    let ast::Statement::WhileStatement(while_stmt) = &mut while_statement else {
+        return;
+    };
+    if !matches!(
+        while_stmt.test.without_parentheses(),
+        ast::Expression::BooleanLiteral(boolean) if boolean.value
+    ) {
+        return;
+    }
+    let test_expr = codegen_expression_with_flow_cast_restore(&while_stmt.test);
+    let Some(combined_test) =
+        render_sequence_expression_ast(std::slice::from_ref(&prefix_expr), &test_expr)
+    else {
+        return;
+    };
+    let combined_test = parse_expression_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        &combined_test,
+    );
+    let Ok(combined_test) = combined_test else {
+        return;
+    };
+
+    while_stmt.test = combined_test;
+    setup_statements[0] = codegen_statement_with_flow_cast_restore(&while_statement);
+    prefix_statements.clear();
 }
 
 fn collect_scope_hook_callback_decl_ids(
@@ -9897,6 +10004,10 @@ fn try_decompose_direct_memoized_declared_return_shape(
                 .iter()
                 .map(|expression| render_generated_expression_statement(expression))
                 .collect::<Option<Vec<_>>>()?;
+            maybe_recompose_sequence_prefixed_while_setup_statement(
+                &mut prefix_statements,
+                &mut parts.setup_statements,
+            );
             prefix_statements.extend(parts.setup_statements);
             parts.setup_statements = prefix_statements;
             Some(parts)
@@ -9906,6 +10017,10 @@ fn try_decompose_direct_memoized_declared_return_shape(
                 try_decompose_direct_memoized_declared_return_shape(*inner, value_name)?;
             let mut prefix_statements =
                 try_render_statement_sources_from_generated_body_shape(&prefix)?;
+            maybe_recompose_sequence_prefixed_while_setup_statement(
+                &mut prefix_statements,
+                &mut parts.setup_statements,
+            );
             prefix_statements.extend(parts.setup_statements);
             parts.setup_statements = prefix_statements;
             Some(parts)
@@ -43890,6 +44005,19 @@ mod tests {
     }
 
     #[test]
+    fn rewrites_generated_setup_statements_fuse_true_while_sequence_prefix() {
+        let rewritten = super::rewrite_generated_setup_statements(vec![
+            "foo();".to_string(),
+            "while (true) {\n  x = (foo(), 2);\n}".to_string(),
+        ]);
+
+        assert_eq!(
+            rewritten,
+            vec!["while (foo(), true) {\n  x = (foo(), 2);\n}".to_string()]
+        );
+    }
+
+    #[test]
     fn parses_ssa_ternary_rewrite_helper_lines() {
         assert_eq!(
             super::parse_named_const_assignment_line("const t0 = props.cond;"),
@@ -44119,6 +44247,53 @@ mod tests {
                 memoized_assignments: Vec::new(),
                 memoized_expressions: Vec::new(),
                 memoized_setup_statements: vec!["while (cond) {\n  step();\n}".to_string()],
+                memoized_expr: None,
+            }
+        );
+    }
+
+    #[test]
+    fn canonicalizes_sequence_prefixed_while_setup_into_loop_test() {
+        let shape = super::canonicalize_generated_body_shape(
+            super::GeneratedBodyShape::MemoizedComputedReturn {
+                value_name: "x".to_string(),
+                value_kind: None,
+                deps: Vec::new(),
+                value_slot: 0,
+                computation: Box::new(super::GeneratedBodyShape::PrefixedExpressionStatements {
+                    expressions: vec!["foo()".to_string()],
+                    inner: Box::new(super::GeneratedBodyShape::Sequential {
+                        prefix: Box::new(super::GeneratedBodyShape::WhileLoop {
+                            test: "true".to_string(),
+                            body: Box::new(super::GeneratedBodyShape::PrefixedAssignments {
+                                assignments: vec![super::GeneratedAssignment {
+                                    target: "x".to_string(),
+                                    value: "(foo(), 2)".to_string(),
+                                }],
+                                inner: Box::new(super::GeneratedBodyShape::ExpressionStatements(
+                                    vec![],
+                                )),
+                            }),
+                        }),
+                        inner: Box::new(super::GeneratedBodyShape::ReturnIdentifier(
+                            "x".to_string(),
+                        )),
+                    }),
+                }),
+            },
+        );
+
+        assert_eq!(
+            shape,
+            super::GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+                value_name: "x".to_string(),
+                value_slot: 0,
+                memoized_bindings: Vec::new(),
+                memoized_assignments: Vec::new(),
+                memoized_expressions: Vec::new(),
+                memoized_setup_statements: vec![
+                    "while (foo(), true) {\n  x = (foo(), 2);\n}".to_string()
+                ],
                 memoized_expr: None,
             }
         );
