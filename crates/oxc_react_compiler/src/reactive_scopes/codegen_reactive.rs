@@ -6981,7 +6981,18 @@ fn try_build_generated_body_shape_from_terminal_statement(
     cx: &mut Context,
     term_stmt: &ReactiveTerminalStatement,
 ) -> Option<GeneratedBodyShape> {
-    if matches!(term_stmt.terminal, ReactiveTerminal::Switch { .. }) {
+    if matches!(
+        term_stmt.terminal,
+        ReactiveTerminal::If { .. }
+            | ReactiveTerminal::Switch { .. }
+            | ReactiveTerminal::DoWhile { .. }
+            | ReactiveTerminal::While { .. }
+            | ReactiveTerminal::For { .. }
+            | ReactiveTerminal::ForOf { .. }
+            | ReactiveTerminal::ForIn { .. }
+            | ReactiveTerminal::Try { .. }
+            | ReactiveTerminal::Label { .. }
+    ) {
         let mut probe_cx = cx.clone();
         if let Some(rendered) =
             render_terminal_statement_source_for_body_shape(&mut probe_cx, term_stmt)
@@ -8134,9 +8145,8 @@ fn collect_direct_scope_dependency_exprs(
         && scope.reassignments.is_empty()
         && block.len() == 1
         && let Some(output_decl) = scope.declarations.values().next()
-        && let Some(callback_dep_exprs) = cx
-            .callback_deps
-            .get(&output_decl.identifier.declaration_id)
+        && let Some(callback_dep_exprs) =
+            cx.callback_deps.get(&output_decl.identifier.declaration_id)
         && !callback_dep_exprs.is_empty()
     {
         let override_dep_exprs = choose_callback_dep_override(&dep_exprs, callback_dep_exprs);
@@ -9322,17 +9332,28 @@ fn build_direct_zero_dep_early_return_shape(
             inner: Box::new(zero_dep_shape),
         }
     };
+    let tail_inner = if let Some(fallback_body) = fallback_body {
+        *fallback_body
+    } else if let Some(final_return) = final_return {
+        GeneratedBodyShape::ReturnIdentifier(final_return)
+    } else {
+        GeneratedBodyShape::ExpressionStatements(vec![])
+    };
     let tail_shape = GeneratedBodyShape::GuardedReturnPrefix {
         test: format!("{sentinel_name} !== Symbol.for(\"{EARLY_RETURN_SENTINEL}\")"),
         consequent: Some(sentinel_name),
-        inner: Box::new(if let Some(fallback_body) = fallback_body {
-            *fallback_body
-        } else if let Some(final_return) = final_return {
-            GeneratedBodyShape::ReturnIdentifier(final_return)
-        } else {
-            GeneratedBodyShape::ExpressionStatements(vec![])
-        }),
+        inner: Box::new(tail_inner),
     };
+    if matches!(
+        tail_shape,
+        GeneratedBodyShape::GuardedReturnPrefix { ref inner, .. }
+            if generated_body_shape_is_empty(inner)
+    ) {
+        return Some(GeneratedBodyShape::Sequential {
+            prefix: Box::new(prefix_shape),
+            inner: Box::new(tail_shape),
+        });
+    }
     let mut rendered = try_render_statement_sources_from_generated_body_shape(&prefix_shape)?;
     rendered.extend(try_render_statement_sources_from_generated_body_shape(
         &tail_shape,
