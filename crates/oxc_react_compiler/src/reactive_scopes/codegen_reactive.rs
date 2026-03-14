@@ -34174,7 +34174,7 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 param_names: spec.param_names,
                 body_shape: try_body.as_ref(),
                 directives: &[],
-                cache_prologue: None,
+                cache_prologue: spec.cache_prologue,
                 needs_function_hook_guard_wrapper: false,
                 is_async: spec.is_async,
                 is_generator: spec.is_generator,
@@ -34187,7 +34187,7 @@ fn build_function_body_from_generated_shape_for_ast_codegen<'a>(
                 param_names: spec.param_names,
                 body_shape: catch_body.as_ref(),
                 directives: &[],
-                cache_prologue: None,
+                cache_prologue: spec.cache_prologue,
                 needs_function_hook_guard_wrapper: false,
                 is_async: spec.is_async,
                 is_generator: spec.is_generator,
@@ -38714,6 +38714,60 @@ mod tests {
         assert!(rendered.contains("break __memo_exit"));
         assert!(rendered.contains("$[1] = value;"));
         assert!(rendered.contains("return value;"));
+    }
+
+    #[test]
+    fn renders_try_catch_setup_shape_with_memoized_children_via_ast() {
+        let rendered = super::try_render_statement_sources_from_generated_body_shape(
+            &super::GeneratedBodyShape::PrefixedAssignments {
+                assignments: vec![super::GeneratedAssignment {
+                    target: "y".to_string(),
+                    value: "[]".to_string(),
+                }],
+                inner: Box::new(super::GeneratedBodyShape::TryCatch {
+                    catch_param: None,
+                    try_body: Box::new(super::GeneratedBodyShape::PrefixedDeclarations {
+                        declarations: vec![super::GeneratedDeclaration {
+                            kind: ast::VariableDeclarationKind::Let,
+                            pattern: "t0".to_string(),
+                        }],
+                        inner: Box::new(super::GeneratedBodyShape::Sequential {
+                            prefix: Box::new(super::GeneratedBodyShape::MemoizedCachedValues {
+                                deps: vec![(0, "maybeNullObject.value.inner".to_string())],
+                                setup_statements: vec![
+                                    "t0 = identity(maybeNullObject.value.inner);".to_string(),
+                                ],
+                                cached_values: vec![super::GeneratedCachedValue {
+                                    name: "t0".to_string(),
+                                    slot: 1,
+                                }],
+                                restored_values: vec![super::GeneratedCachedValue {
+                                    name: "t0".to_string(),
+                                    slot: 1,
+                                }],
+                            }),
+                            inner: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![
+                                "y.push(t0)".to_string(),
+                            ])),
+                        }),
+                    }),
+                    catch_body: Box::new(super::GeneratedBodyShape::ExpressionStatements(vec![
+                        "y.push(\"null\")".to_string(),
+                    ])),
+                }),
+            },
+        )
+        .expect("expected rendered try/catch setup shape")
+        .join("\n");
+
+        assert!(rendered.contains("y = [];"));
+        assert!(rendered.contains("try {"));
+        assert!(rendered.contains("if ($[0] !== maybeNullObject.value.inner)"));
+        assert!(rendered.contains("t0 = identity(maybeNullObject.value.inner);"));
+        assert!(rendered.contains("$[1] = t0;"));
+        assert!(rendered.contains("y.push(t0);"));
+        assert!(rendered.contains("catch {"));
+        assert!(rendered.contains("y.push(\"null\");"));
     }
 
     #[test]
