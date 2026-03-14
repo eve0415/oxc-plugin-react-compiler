@@ -5106,11 +5106,26 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
         }
         let sentinel_slot = cached_values.first()?.slot;
         let restored_values = cached_values.clone();
-        GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
-            sentinel_slot,
-            setup_statements,
-            cached_values,
-            restored_values,
+        if let Some(shape) = build_option_sensitive_cached_values_shape(
+            cx,
+            OptionSensitiveCachedValuesShapeSpec {
+                scope,
+                instructions,
+                deps: &[],
+                zero_dep_sentinel_slot: Some(sentinel_slot),
+                setup_statements: &setup_statements,
+                cached_values: &cached_values,
+                restored_values: &restored_values,
+            },
+        ) {
+            shape
+        } else {
+            GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
+                sentinel_slot,
+                setup_statements,
+                cached_values,
+                restored_values,
+            }
         }
     } else {
         let mut deps = Vec::with_capacity(dep_exprs.len());
@@ -5142,11 +5157,26 @@ fn try_build_generated_body_shape_from_scope_statement_parts(
             cached_value.slot = slot;
         }
         let restored_values = cached_values.clone();
-        GeneratedBodyShape::MemoizedCachedValues {
-            deps,
-            setup_statements,
-            cached_values,
-            restored_values,
+        if let Some(shape) = build_option_sensitive_cached_values_shape(
+            cx,
+            OptionSensitiveCachedValuesShapeSpec {
+                scope,
+                instructions,
+                deps: &deps,
+                zero_dep_sentinel_slot: None,
+                setup_statements: &setup_statements,
+                cached_values: &cached_values,
+                restored_values: &restored_values,
+            },
+        ) {
+            shape
+        } else {
+            GeneratedBodyShape::MemoizedCachedValues {
+                deps,
+                setup_statements,
+                cached_values,
+                restored_values,
+            }
         }
     };
     let inner = if deferred_post_scope_expressions.is_empty() {
@@ -6099,6 +6129,7 @@ fn try_build_direct_fused_ternary_source_scope(
             memoized_expr: Some(rhs_expr),
             ..DirectMemoizedExistingReturnParts::default()
         },
+        None,
     )?;
     if needs_declaration {
         shape = GeneratedBodyShape::PrefixedDeclarations {
@@ -6441,6 +6472,7 @@ fn try_build_direct_fused_zero_dep_ternary_default_scope(
             memoized_expr: Some(rhs_expr),
             ..DirectMemoizedExistingReturnParts::default()
         },
+        None,
     )?;
     if needs_declaration {
         shape = GeneratedBodyShape::PrefixedDeclarations {
@@ -6510,7 +6542,13 @@ fn try_build_generated_body_shape_from_reactive_scope_return(
             computation_shape.clone(),
             &value_name,
         ) {
-            return build_direct_existing_memoized_return_shape(cx, value_name, dep_exprs, parts);
+            return build_direct_existing_memoized_return_shape(
+                cx,
+                value_name,
+                dep_exprs,
+                parts,
+                Some((&scope_block.scope, &scope_block.instructions)),
+            );
         }
         if generated_body_shape_returned_identifier(&computation_shape) == Some(value_name.as_str())
         {
@@ -6534,7 +6572,13 @@ fn try_build_generated_body_shape_from_reactive_scope_return(
             computation_shape.clone(),
             &value_name,
         ) {
-            return build_direct_declared_memoized_return_shape(cx, value_name, dep_exprs, parts);
+            return build_direct_declared_memoized_return_shape(
+                cx,
+                value_name,
+                dep_exprs,
+                parts,
+                Some((&scope_block.scope, &scope_block.instructions)),
+            );
         }
         if generated_body_shape_returned_identifier(&computation_shape) == Some(value_name.as_str())
         {
@@ -6844,9 +6888,24 @@ fn build_direct_existing_memoized_return_shape(
     value_name: String,
     dep_exprs: Vec<String>,
     parts: DirectMemoizedExistingReturnParts,
+    change_detection_scope: Option<(&ReactiveScope, &ReactiveBlock)>,
 ) -> Option<GeneratedBodyShape> {
     if dep_exprs.is_empty() {
         let value_slot = cx.alloc_cache_slot();
+        if let Some(shape) = build_option_sensitive_memoized_return_shape(
+            cx,
+            OptionSensitiveMemoizedReturnShapeSpec {
+                value_name: &value_name,
+                declare_value_kind: None,
+                deps: &[],
+                zero_dep_sentinel_slot: Some(value_slot),
+                value_slot,
+                parts: &parts,
+                change_detection_scope,
+            },
+        ) {
+            return Some(shape);
+        }
         return Some(GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
             value_name,
             value_slot,
@@ -6860,6 +6919,21 @@ fn build_direct_existing_memoized_return_shape(
     if dep_exprs.len() == 1 {
         let dep_slot = cx.alloc_cache_slot();
         let value_slot = cx.alloc_cache_slot();
+        let deps = vec![(dep_slot, dep_exprs[0].clone())];
+        if let Some(shape) = build_option_sensitive_memoized_return_shape(
+            cx,
+            OptionSensitiveMemoizedReturnShapeSpec {
+                value_name: &value_name,
+                declare_value_kind: None,
+                deps: &deps,
+                zero_dep_sentinel_slot: None,
+                value_slot,
+                parts: &parts,
+                change_detection_scope,
+            },
+        ) {
+            return Some(shape);
+        }
         return Some(GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
             value_name,
             dep_slot,
@@ -6877,6 +6951,20 @@ fn build_direct_existing_memoized_return_shape(
         deps.push((cx.alloc_cache_slot(), dep_expr));
     }
     let value_slot = cx.alloc_cache_slot();
+    if let Some(shape) = build_option_sensitive_memoized_return_shape(
+        cx,
+        OptionSensitiveMemoizedReturnShapeSpec {
+            value_name: &value_name,
+            declare_value_kind: None,
+            deps: &deps,
+            zero_dep_sentinel_slot: None,
+            value_slot,
+            parts: &parts,
+            change_detection_scope,
+        },
+    ) {
+        return Some(shape);
+    }
     Some(GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
         value_name,
         deps,
@@ -6894,10 +6982,25 @@ fn build_direct_declared_memoized_return_shape(
     value_name: String,
     dep_exprs: Vec<String>,
     parts: DirectMemoizedExistingReturnParts,
+    change_detection_scope: Option<(&ReactiveScope, &ReactiveBlock)>,
 ) -> Option<GeneratedBodyShape> {
     let value_kind = ast::VariableDeclarationKind::Let;
     if dep_exprs.is_empty() {
         let value_slot = cx.alloc_cache_slot();
+        if let Some(shape) = build_option_sensitive_memoized_return_shape(
+            cx,
+            OptionSensitiveMemoizedReturnShapeSpec {
+                value_name: &value_name,
+                declare_value_kind: Some(value_kind),
+                deps: &[],
+                zero_dep_sentinel_slot: Some(value_slot),
+                value_slot,
+                parts: &parts,
+                change_detection_scope,
+            },
+        ) {
+            return Some(shape);
+        }
         return Some(GeneratedBodyShape::ZeroDependencyMemoizedReturn {
             value_name,
             value_kind,
@@ -6912,6 +7015,21 @@ fn build_direct_declared_memoized_return_shape(
     if dep_exprs.len() == 1 {
         let dep_slot = cx.alloc_cache_slot();
         let value_slot = cx.alloc_cache_slot();
+        let deps = vec![(dep_slot, dep_exprs[0].clone())];
+        if let Some(shape) = build_option_sensitive_memoized_return_shape(
+            cx,
+            OptionSensitiveMemoizedReturnShapeSpec {
+                value_name: &value_name,
+                declare_value_kind: Some(value_kind),
+                deps: &deps,
+                zero_dep_sentinel_slot: None,
+                value_slot,
+                parts: &parts,
+                change_detection_scope,
+            },
+        ) {
+            return Some(shape);
+        }
         return Some(GeneratedBodyShape::SingleDependencyMemoizedReturn {
             value_name,
             value_kind,
@@ -6930,6 +7048,20 @@ fn build_direct_declared_memoized_return_shape(
         deps.push((cx.alloc_cache_slot(), dep_expr));
     }
     let value_slot = cx.alloc_cache_slot();
+    if let Some(shape) = build_option_sensitive_memoized_return_shape(
+        cx,
+        OptionSensitiveMemoizedReturnShapeSpec {
+            value_name: &value_name,
+            declare_value_kind: Some(value_kind),
+            deps: &deps,
+            zero_dep_sentinel_slot: None,
+            value_slot,
+            parts: &parts,
+            change_detection_scope,
+        },
+    ) {
+        return Some(shape);
+    }
     Some(GeneratedBodyShape::MultiDependencyMemoizedReturn {
         value_name,
         value_kind,
@@ -7013,6 +7145,375 @@ fn render_generated_assignment_statement(assignment: &GeneratedAssignment) -> Op
 fn render_generated_expression_statement(expression: &str) -> Option<String> {
     render_reactive_expression_statement_ast(expression)
         .map(|statement| statement.trim_end().to_string())
+}
+
+fn analyze_rendered_generated_body_shape_source(source: &str) -> Option<GeneratedBodyShape> {
+    let shape = fully_canonicalize_generated_body_shape(analyze_generated_body_shape(source));
+    (!matches!(shape, GeneratedBodyShape::Unknown)).then_some(shape)
+}
+
+fn push_indented_source_lines(lines: &mut Vec<String>, source: &str, indent: usize) {
+    let padding = " ".repeat(indent);
+    for line in source.lines() {
+        lines.push(format!("{padding}{line}"));
+    }
+}
+
+fn push_indented_statement_sources(lines: &mut Vec<String>, sources: &[String], indent: usize) {
+    for source in sources {
+        push_indented_source_lines(lines, source, indent);
+    }
+}
+
+fn render_memo_guard_test_source(
+    cx: &mut Context,
+    deps: &[(u32, String)],
+    zero_dep_sentinel_slot: Option<u32>,
+) -> Option<(Vec<String>, String)> {
+    if deps.is_empty() {
+        let sentinel_slot = zero_dep_sentinel_slot?;
+        let mut test = render_cache_slot_comparison_expression_ast(
+            "$",
+            sentinel_slot,
+            BinaryOperator::StrictEq,
+            &render_symbol_for_call_expression_source(MEMO_CACHE_SENTINEL),
+        )?;
+        if cx.disable_memoization_for_debugging {
+            test = render_logical_expression_ast(&test, LogicalOperator::Or, "true")?;
+        }
+        return Some((Vec::new(), test));
+    }
+
+    let mut guard_prefix = Vec::new();
+    let mut guard_terms = Vec::with_capacity(deps.len());
+    for (slot, dep_expr) in deps {
+        let comparison = render_cache_slot_comparison_expression_ast(
+            "$",
+            *slot,
+            BinaryOperator::StrictNotEq,
+            dep_expr,
+        )?;
+        if cx.enable_change_variable_codegen {
+            let change_name = cx.synthesize_name(&format!("c_{}", slot));
+            guard_prefix.push(
+                render_reactive_variable_statement_ast(
+                    ast::VariableDeclarationKind::Const,
+                    &change_name,
+                    Some(&comparison),
+                )?
+                .trim_end()
+                .to_string(),
+            );
+            guard_terms.push(change_name);
+        } else {
+            guard_terms.push(comparison);
+        }
+    }
+
+    let mut test = render_logical_chain_expression_ast(&guard_terms, LogicalOperator::Or)?;
+    if cx.disable_memoization_for_debugging {
+        test = render_logical_expression_ast(&test, LogicalOperator::Or, "true")?;
+    }
+    Some((guard_prefix, test))
+}
+
+fn render_cached_value_store_sources(
+    cached_values: &[GeneratedCachedValue],
+) -> Option<Vec<String>> {
+    let mut stores = Vec::with_capacity(cached_values.len());
+    for value in cached_values {
+        stores.push(
+            render_cache_slot_store_statement_ast("$", value.slot, &value.name)?
+                .trim_end()
+                .to_string(),
+        );
+    }
+    Some(stores)
+}
+
+fn render_cached_value_restore_sources(
+    restored_values: &[GeneratedCachedValue],
+) -> Option<Vec<String>> {
+    let mut restores = Vec::with_capacity(restored_values.len());
+    for value in restored_values {
+        restores.push(
+            render_cache_slot_load_assignment_statement_ast(&value.name, "$", value.slot)?
+                .trim_end()
+                .to_string(),
+        );
+    }
+    Some(restores)
+}
+
+fn render_dependency_store_sources(deps: &[(u32, String)]) -> Option<Vec<String>> {
+    let mut stores = Vec::with_capacity(deps.len());
+    for (slot, dep_expr) in deps {
+        stores.push(
+            render_cache_slot_store_statement_ast("$", *slot, dep_expr)?
+                .trim_end()
+                .to_string(),
+        );
+    }
+    Some(stores)
+}
+
+fn render_direct_memoized_setup_sources(
+    value_name: &str,
+    parts: &DirectMemoizedExistingReturnParts,
+) -> Option<Vec<String>> {
+    let mut statements = Vec::new();
+    for binding in &parts.bindings {
+        statements.push(render_generated_binding_statement(binding)?);
+    }
+    for assignment in &parts.assignments {
+        statements.push(render_generated_assignment_statement(assignment)?);
+    }
+    for expression in &parts.expressions {
+        statements.push(render_generated_expression_statement(expression)?);
+    }
+    statements.extend(parts.setup_statements.iter().cloned());
+    if let Some(memoized_expr) = parts.memoized_expr.as_ref() {
+        statements.push(
+            render_reactive_assignment_statement_ast(value_name, memoized_expr)?
+                .trim_end()
+                .to_string(),
+        );
+    }
+    Some(statements)
+}
+
+fn render_structural_check_call_source(
+    old_value: String,
+    new_value: String,
+    name: &str,
+    function_name: &str,
+    phase: &str,
+    scope_loc: &str,
+) -> Option<String> {
+    render_generated_expression_statement(&render_call_expression_from_rendered_args_ast(
+        "$structuralCheck",
+        &[
+            old_value,
+            new_value,
+            format!("\"{}\"", escape_string(name)),
+            format!("\"{}\"", escape_string(function_name)),
+            format!("\"{}\"", phase),
+            format!("\"{}\"", escape_string(scope_loc)),
+        ],
+        false,
+    )?)
+}
+
+struct OptionSensitiveCachedValuesShapeSpec<'a> {
+    scope: &'a ReactiveScope,
+    instructions: &'a ReactiveBlock,
+    deps: &'a [(u32, String)],
+    zero_dep_sentinel_slot: Option<u32>,
+    setup_statements: &'a [String],
+    cached_values: &'a [GeneratedCachedValue],
+    restored_values: &'a [GeneratedCachedValue],
+}
+
+fn build_option_sensitive_cached_values_shape(
+    cx: &mut Context,
+    spec: OptionSensitiveCachedValuesShapeSpec<'_>,
+) -> Option<GeneratedBodyShape> {
+    let debug = std::env::var("DEBUG_DIRECT_OPTION_SHAPE").is_ok();
+    let needs_option_sensitive_shape = (cx.enable_change_detection_for_debugging
+        && !spec.deps.is_empty())
+        || cx.disable_memoization_for_debugging
+        || (cx.enable_change_variable_codegen && !spec.deps.is_empty());
+    if !needs_option_sensitive_shape {
+        return None;
+    }
+
+    let (guard_prefix, test) =
+        render_memo_guard_test_source(cx, spec.deps, spec.zero_dep_sentinel_slot)?;
+    let dep_store_sources = render_dependency_store_sources(spec.deps)?;
+    let cached_value_store_sources = render_cached_value_store_sources(spec.cached_values)?;
+    let restored_sources = render_cached_value_restore_sources(spec.restored_values)?;
+    let mut lines = guard_prefix;
+
+    if cx.enable_change_detection_for_debugging && !spec.deps.is_empty() {
+        let scope_loc = format_change_detection_scope_loc(spec.scope, spec.instructions);
+        let condition_name = cx.synthesize_name("condition");
+        lines.push("{".to_string());
+        push_indented_statement_sources(&mut lines, spec.setup_statements, 2);
+        lines.push(format!("  let {condition_name} = {test};"));
+        lines.push(format!("  if (!{condition_name}) {{"));
+        for value in spec.restored_values {
+            let old_name = cx.synthesize_name(&format!("old${}", value.name));
+            lines.push(format!(
+                "    let {old_name} = {};",
+                render_cache_slot_access_expression_ast("$", value.slot)?
+            ));
+            lines.push(format!(
+                "    {}",
+                render_structural_check_call_source(
+                    old_name,
+                    value.name.clone(),
+                    &value.name,
+                    &cx.function_name,
+                    "cached",
+                    &scope_loc,
+                )?
+            ));
+        }
+        lines.push("  }".to_string());
+        push_indented_statement_sources(&mut lines, &dep_store_sources, 2);
+        push_indented_statement_sources(&mut lines, &cached_value_store_sources, 2);
+        lines.push(format!("  if ({condition_name}) {{"));
+        push_indented_statement_sources(&mut lines, spec.setup_statements, 4);
+        for value in spec.cached_values {
+            let cached_access = render_cache_slot_access_expression_ast("$", value.slot)?;
+            lines.push(format!(
+                "    {}",
+                render_structural_check_call_source(
+                    cached_access.clone(),
+                    value.name.clone(),
+                    &value.name,
+                    &cx.function_name,
+                    "recomputed",
+                    &scope_loc,
+                )?
+            ));
+            lines.push(format!("    {} = {};", value.name, cached_access));
+        }
+        lines.push("  }".to_string());
+        lines.push("}".to_string());
+    } else {
+        lines.push(format!("if ({test}) {{"));
+        push_indented_statement_sources(&mut lines, spec.setup_statements, 2);
+        push_indented_statement_sources(&mut lines, &dep_store_sources, 2);
+        push_indented_statement_sources(&mut lines, &cached_value_store_sources, 2);
+        lines.push("} else {".to_string());
+        push_indented_statement_sources(&mut lines, &restored_sources, 2);
+        lines.push("}".to_string());
+    }
+
+    let source = lines.join("\n");
+    let analyzed = analyze_rendered_generated_body_shape_source(&source);
+    if debug && analyzed.is_none() {
+        eprintln!(
+            "[DIRECT_OPTION_SHAPE] cached-values fn={} deps={:?} sentinel={:?} source=\n{}",
+            cx.function_name, spec.deps, spec.zero_dep_sentinel_slot, source
+        );
+    }
+    analyzed
+}
+
+struct OptionSensitiveMemoizedReturnShapeSpec<'a> {
+    value_name: &'a str,
+    declare_value_kind: Option<ast::VariableDeclarationKind>,
+    deps: &'a [(u32, String)],
+    zero_dep_sentinel_slot: Option<u32>,
+    value_slot: u32,
+    parts: &'a DirectMemoizedExistingReturnParts,
+    change_detection_scope: Option<(&'a ReactiveScope, &'a ReactiveBlock)>,
+}
+
+fn build_option_sensitive_memoized_return_shape(
+    cx: &mut Context,
+    spec: OptionSensitiveMemoizedReturnShapeSpec<'_>,
+) -> Option<GeneratedBodyShape> {
+    let debug = std::env::var("DEBUG_DIRECT_OPTION_SHAPE").is_ok();
+    let needs_change_detection_shape = cx.enable_change_detection_for_debugging
+        && !spec.deps.is_empty()
+        && spec.change_detection_scope.is_some();
+    let needs_option_sensitive_shape = needs_change_detection_shape
+        || cx.disable_memoization_for_debugging
+        || (cx.enable_change_variable_codegen && !spec.deps.is_empty());
+    if !needs_option_sensitive_shape {
+        return None;
+    }
+
+    let (guard_prefix, test) =
+        render_memo_guard_test_source(cx, spec.deps, spec.zero_dep_sentinel_slot)?;
+    let setup_sources = render_direct_memoized_setup_sources(spec.value_name, spec.parts)?;
+    let dep_store_sources = render_dependency_store_sources(spec.deps)?;
+    let restore_source =
+        render_cache_slot_load_assignment_statement_ast(spec.value_name, "$", spec.value_slot)?
+            .trim_end()
+            .to_string();
+    let value_store_source =
+        render_cache_slot_store_statement_ast("$", spec.value_slot, spec.value_name)?
+            .trim_end()
+            .to_string();
+
+    let mut lines = guard_prefix;
+    if let Some(value_kind) = spec.declare_value_kind {
+        lines.push(render_generated_declaration_statement(
+            &GeneratedDeclaration {
+                kind: value_kind,
+                pattern: spec.value_name.to_string(),
+            },
+        )?);
+    }
+
+    if needs_change_detection_shape {
+        let (scope, instructions) = spec.change_detection_scope?;
+        let scope_loc = format_change_detection_scope_loc(scope, instructions);
+        let condition_name = cx.synthesize_name("condition");
+        lines.push("{".to_string());
+        push_indented_statement_sources(&mut lines, &setup_sources, 2);
+        lines.push(format!("  let {condition_name} = {test};"));
+        lines.push(format!("  if (!{condition_name}) {{"));
+        let old_name = cx.synthesize_name(&format!("old${}", spec.value_name));
+        lines.push(format!(
+            "    let {old_name} = {};",
+            render_cache_slot_access_expression_ast("$", spec.value_slot)?
+        ));
+        lines.push(format!(
+            "    {}",
+            render_structural_check_call_source(
+                old_name,
+                spec.value_name.to_string(),
+                spec.value_name,
+                &cx.function_name,
+                "cached",
+                &scope_loc,
+            )?
+        ));
+        lines.push("  }".to_string());
+        push_indented_statement_sources(&mut lines, &dep_store_sources, 2);
+        push_indented_source_lines(&mut lines, &value_store_source, 2);
+        lines.push(format!("  if ({condition_name}) {{"));
+        push_indented_statement_sources(&mut lines, &setup_sources, 4);
+        let cached_access = render_cache_slot_access_expression_ast("$", spec.value_slot)?;
+        lines.push(format!(
+            "    {}",
+            render_structural_check_call_source(
+                cached_access.clone(),
+                spec.value_name.to_string(),
+                spec.value_name,
+                &cx.function_name,
+                "recomputed",
+                &scope_loc,
+            )?
+        ));
+        lines.push(format!("    {} = {cached_access};", spec.value_name));
+        lines.push("  }".to_string());
+        lines.push("}".to_string());
+    } else {
+        lines.push(format!("if ({test}) {{"));
+        push_indented_statement_sources(&mut lines, &setup_sources, 2);
+        push_indented_statement_sources(&mut lines, &dep_store_sources, 2);
+        push_indented_source_lines(&mut lines, &value_store_source, 2);
+        lines.push("} else {".to_string());
+        push_indented_source_lines(&mut lines, &restore_source, 2);
+        lines.push("}".to_string());
+    }
+    lines.push(format!("return {};", spec.value_name));
+
+    let source = lines.join("\n");
+    let analyzed = analyze_rendered_generated_body_shape_source(&source);
+    if debug && analyzed.is_none() {
+        eprintln!(
+            "[DIRECT_OPTION_SHAPE] return fn={} value={} deps={:?} sentinel={:?} source=\n{}",
+            cx.function_name, spec.value_name, spec.deps, spec.zero_dep_sentinel_slot, source
+        );
+    }
+    analyzed
 }
 
 fn try_decompose_direct_memoized_declared_return_shape(
