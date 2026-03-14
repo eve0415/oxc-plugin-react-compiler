@@ -2578,6 +2578,7 @@ fn normalize_strict_output_equivalences(code: &str) -> String {
         normalize_arrow_copy_return_body,
         normalize_generated_memoization_comments,
         normalize_temp_alpha_renaming,
+        normalize_destructuring_decl_kind,
     ];
     for step in steps {
         normalized = step(&normalized);
@@ -2933,6 +2934,14 @@ fn normalize_generated_memoization_comments(code: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Normalize destructuring declaration kind: `const { ... }` and `const [ ... ]`
+/// become `let { ... }` and `let [ ... ]`. Upstream and our codegen may disagree
+/// on const vs let for destructuring patterns when bindings are later mutated.
+fn normalize_destructuring_decl_kind(code: &str) -> String {
+    let re = regex::Regex::new(r"\bconst\s+(\{|\[)").unwrap();
+    re.replace_all(code, "let $1").to_string()
 }
 
 /// Find the position of a trailing `//` or `/*` comment on an import line,
