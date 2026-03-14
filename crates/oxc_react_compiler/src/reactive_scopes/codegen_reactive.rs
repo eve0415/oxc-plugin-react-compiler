@@ -6343,12 +6343,11 @@ fn preserve_scope_setup_statement_blank_lines(
     setup_statements: Vec<String>,
 ) -> Vec<String> {
     let debug = std::env::var("DEBUG_BLANK_LINE_PRESERVE").is_ok();
-    if setup_statements.len() < 2 {
+    if setup_statements.is_empty() {
         if debug {
             eprintln!(
-                "[BLANK_LINE_PRESERVE] scope={} skip: <2 setup_statements (len={})",
+                "[BLANK_LINE_PRESERVE] scope={} skip: empty setup_statements",
                 scope.id.0,
-                setup_statements.len()
             );
         }
         return setup_statements;
@@ -6387,6 +6386,14 @@ fn preserve_scope_setup_statement_blank_lines(
         || statement_sources_are_sequence_recomposition_candidate(
             &stripped_rendered,
             &stripped_setup,
+        )
+        || statement_sources_are_outer_declaration_destructure_bridge_candidate(
+            &stripped_rendered,
+            &stripped_setup,
+        )
+        || statement_sources_are_labeled_suffix_split_candidate(
+            &stripped_rendered,
+            &stripped_setup,
         );
     if should_prefer_rendered {
         if debug {
@@ -6418,6 +6425,59 @@ fn preserve_scope_setup_statement_blank_lines(
     }
 }
 
+fn statement_sources_are_labeled_suffix_split_candidate(
+    rendered_statements: &[String],
+    setup_statements: &[String],
+) -> bool {
+    fn labeled_body_statement_sources(statement_source: &str) -> Option<(String, Vec<String>)> {
+        let allocator = Allocator::default();
+        let statement = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            statement_source.trim(),
+        )
+        .ok()?;
+        let ast::Statement::LabeledStatement(labeled) = statement else {
+            return None;
+        };
+        let body_statements: Vec<String> = match &labeled.body {
+            ast::Statement::BlockStatement(block) => block
+                .body
+                .iter()
+                .map(codegen_statement_with_flow_cast_restore)
+                .collect(),
+            other => vec![codegen_statement_with_flow_cast_restore(other)],
+        };
+        Some((labeled.label.name.to_string(), body_statements))
+    }
+
+    if rendered_statements.len() != 2 || setup_statements.len() != 1 {
+        return false;
+    }
+    let Some((rendered_label, rendered_body_statements)) =
+        labeled_body_statement_sources(&rendered_statements[0])
+    else {
+        return false;
+    };
+    let Some((setup_label, setup_body_statements)) =
+        labeled_body_statement_sources(&setup_statements[0])
+    else {
+        return false;
+    };
+    if rendered_label != setup_label
+        || setup_body_statements.len() != rendered_body_statements.len() + 1
+        || rendered_body_statements != setup_body_statements[..rendered_body_statements.len()]
+    {
+        return false;
+    }
+
+    let trailing_setup_statement = setup_body_statements
+        .last()
+        .map(|statement| statement.trim())
+        .unwrap_or_default();
+    trailing_setup_statement == rendered_statements[1].trim()
+}
+
 fn statement_sources_are_sequence_recomposition_candidate(
     rendered_statements: &[String],
     setup_statements: &[String],
@@ -6428,6 +6488,115 @@ fn statement_sources_are_sequence_recomposition_candidate(
     statement_sources_contain_sequence_expression(rendered_statements)
         && !statement_sources_contain_sequence_expression(setup_statements)
         && statement_sources_are_sequence_recomposition_friendly(setup_statements)
+}
+
+fn normalize_statement_source_for_bridge_match(statement_source: &str) -> String {
+    statement_source
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect()
+}
+
+fn parse_outer_destructure_bridge_setup_statement(
+    statement_source: &str,
+) -> Option<(&'static str, String, String)> {
+    let normalized = normalize_statement_source_for_bridge_match(statement_source);
+    if let Some((name, rhs)) = normalized
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once("]="))
+        .and_then(|(name, rhs)| rhs.strip_suffix(';').map(|rhs| (name, rhs)))
+    {
+        return Some(("array", name.to_string(), rhs.to_string()));
+    }
+    if let Some((name, rhs)) = normalized
+        .strip_prefix("({")
+        .and_then(|rest| rest.split_once("}="))
+        .and_then(|(name, rhs)| rhs.strip_suffix(");").map(|rhs| (name, rhs)))
+    {
+        return Some(("object", name.to_string(), rhs.to_string()));
+    }
+    None
+}
+
+fn parse_rendered_destructure_bridge_decl(
+    statement_source: &str,
+) -> Option<(&'static str, String, String)> {
+    let normalized = normalize_statement_source_for_bridge_match(statement_source);
+    if let Some((temp, rhs)) = normalized
+        .strip_prefix("const[")
+        .and_then(|rest| rest.split_once("]="))
+        .and_then(|(temp, rhs)| rhs.strip_suffix(';').map(|rhs| (temp, rhs)))
+    {
+        return Some(("array", temp.to_string(), rhs.to_string()));
+    }
+    if let Some((binding, rhs)) = normalized
+        .strip_prefix("const{")
+        .and_then(|rest| rest.split_once("}="))
+        .and_then(|(binding, rhs)| rhs.strip_suffix(';').map(|rhs| (binding, rhs)))
+        && let Some((_, temp)) = binding.split_once(':')
+    {
+        return Some(("object", temp.to_string(), rhs.to_string()));
+    }
+    None
+}
+
+fn parse_simple_assignment_statement(statement_source: &str) -> Option<(String, String)> {
+    let normalized = normalize_statement_source_for_bridge_match(statement_source);
+    let (target, value) = normalized.split_once('=')?;
+    let value = value.strip_suffix(';')?;
+    if target.is_empty() || value.is_empty() {
+        return None;
+    }
+    Some((target.to_string(), value.to_string()))
+}
+
+fn statement_sources_are_outer_declaration_destructure_bridge_candidate(
+    rendered_statements: &[String],
+    setup_statements: &[String],
+) -> bool {
+    let mut rendered_index = 0usize;
+    let mut setup_index = 0usize;
+    let mut changed = false;
+
+    while setup_index < setup_statements.len() && rendered_index < rendered_statements.len() {
+        if rendered_statements[rendered_index] == setup_statements[setup_index] {
+            rendered_index += 1;
+            setup_index += 1;
+            continue;
+        }
+
+        if rendered_index + 1 >= rendered_statements.len() {
+            return false;
+        }
+        let Some((setup_kind, outer_name, setup_rhs)) =
+            parse_outer_destructure_bridge_setup_statement(&setup_statements[setup_index])
+        else {
+            return false;
+        };
+        let Some((rendered_kind, temp_name, rendered_rhs)) =
+            parse_rendered_destructure_bridge_decl(&rendered_statements[rendered_index])
+        else {
+            return false;
+        };
+        let Some((assign_target, assign_value)) =
+            parse_simple_assignment_statement(&rendered_statements[rendered_index + 1])
+        else {
+            return false;
+        };
+        if setup_kind != rendered_kind
+            || outer_name != assign_target
+            || temp_name != assign_value
+            || setup_rhs != rendered_rhs
+        {
+            return false;
+        }
+
+        changed = true;
+        rendered_index += 2;
+        setup_index += 1;
+    }
+
+    changed && rendered_index == rendered_statements.len() && setup_index == setup_statements.len()
 }
 
 fn statement_sources_contain_sequence_expression(statement_sources: &[String]) -> bool {
@@ -10130,6 +10299,17 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
             }
         },
         InstructionValue::Destructure { lvalue, value, .. } => {
+            let mut probe_cx = cx.clone();
+            if let Some(rendered) = codegen_instruction_nullable(&mut probe_cx, instr)
+                && split_statement_sources_preserving_blank_lines(&rendered)
+                    .as_ref()
+                    .is_some_and(|statements| statements.len() > 1)
+                && let Some(shape) =
+                    rendered_instruction_prefix_shape(rendered.as_str(), inner.clone())
+            {
+                sync_direct_body_shape_naming_state(cx, &probe_cx);
+                return Some(shape);
+            }
             let pattern = codegen_pattern(cx, &lvalue.pattern);
             let expression = codegen_place_to_expression(cx, value);
             let declaration_kind =
@@ -10172,6 +10352,24 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
         );
     }
     shape
+}
+
+fn rendered_instruction_prefix_shape(
+    rendered: &str,
+    inner: GeneratedBodyShape,
+) -> Option<GeneratedBodyShape> {
+    let analyzed = fully_canonicalize_generated_body_shape(analyze_generated_body_shape(rendered));
+    if matches!(analyzed, GeneratedBodyShape::Unknown) {
+        return None;
+    }
+    if generated_body_shape_is_empty(&analyzed) {
+        Some(inner)
+    } else {
+        Some(GeneratedBodyShape::Sequential {
+            prefix: Box::new(analyzed),
+            inner: Box::new(inner),
+        })
+    }
 }
 
 fn rendered_single_statement_prefix(
@@ -43948,6 +44146,34 @@ mod tests {
     }
 
     #[test]
+    fn matches_outer_declaration_destructure_bridge_candidate_for_array() {
+        assert!(
+            super::statement_sources_are_outer_declaration_destructure_bridge_candidate(
+                &[
+                    "const [t0] = props.value;".to_string(),
+                    "x = t0;".to_string(),
+                    "foo();".to_string(),
+                ],
+                &["[x] = props.value;".to_string(), "foo();".to_string()],
+            )
+        );
+    }
+
+    #[test]
+    fn matches_outer_declaration_destructure_bridge_candidate_for_object() {
+        assert!(
+            super::statement_sources_are_outer_declaration_destructure_bridge_candidate(
+                &[
+                    "const { x: t0 } = props;".to_string(),
+                    "x = t0;".to_string(),
+                    "foo();".to_string(),
+                ],
+                &["({x} = props);".to_string(), "foo();".to_string()],
+            )
+        );
+    }
+
+    #[test]
     fn rewrites_generated_setup_statements_drop_redundant_identifier_tail_reads() {
         let rewritten = super::rewrite_generated_setup_statements(vec![
             "y = x.concat(arr2);".to_string(),
@@ -44015,6 +44241,19 @@ mod tests {
             rewritten,
             vec!["while (foo(), true) {\n  x = (foo(), 2);\n}".to_string()]
         );
+    }
+
+    #[test]
+    fn detects_labeled_suffix_split_candidate() {
+        assert!(super::statement_sources_are_labeled_suffix_split_candidate(
+            &[
+                "bb0: {\n  items = [];\n  if (cond) {\n    break bb0;\n  }\n  arrayPush(items, value);\n}"
+                    .to_string(),
+                "arrayPush(items, value);".to_string(),
+            ],
+            &["bb0: {\n  items = [];\n  if (cond) {\n    break bb0;\n  }\n  arrayPush(items, value);\n  arrayPush(items, value);\n}"
+                .to_string()]
+        ));
     }
 
     #[test]
