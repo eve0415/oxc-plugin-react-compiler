@@ -4,7 +4,7 @@ use oxc_span::SourceType;
 use crate::CompileResult;
 use crate::options::PluginOptions;
 
-pub(crate) mod ast_backend;
+pub(crate) mod module_emitter;
 pub(crate) mod hir_to_ast;
 pub(crate) mod shared;
 
@@ -128,5 +128,5 @@ pub(crate) fn emit_module(
     args: ModuleEmitArgs<'_>,
     compiled: Vec<CompiledFunction>,
 ) -> CompileResult {
-    ast_backend::emit_module(args, compiled)
+    module_emitter::emit_module(args, compiled)
 }

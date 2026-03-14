@@ -8583,7 +8583,7 @@ mod tests {
         try_rewrite_compiled_statement_ast,
     };
     use crate::codegen_backend::CompiledObjectPatternProperty;
-    use crate::codegen_backend::ast_backend::apply_emit_freeze_to_cache_stores_ast;
+    use crate::codegen_backend::module_emitter::apply_emit_freeze_to_cache_stores_ast;
 
     fn empty_test_state(source_type: oxc_span::SourceType) -> AstRenderState {
         AstRenderState {
