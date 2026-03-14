@@ -6892,11 +6892,8 @@ fn try_wrap_generated_body_shape_with_instruction_prefix(
         InstructionValue::Destructure { lvalue, value, .. } => {
             let pattern = codegen_pattern(cx, &lvalue.pattern);
             let expression = codegen_place_to_expression(cx, value);
-            let declaration_kind = reactive_destructure_declaration_kind(
-                cx,
-                lvalue.kind,
-                value.identifier.declaration_id,
-            );
+            let declaration_kind =
+                reactive_destructure_declaration_kind(cx, lvalue.kind, &lvalue.pattern);
             match lvalue.kind {
                 InstructionKind::Reassign => Some(GeneratedBodyShape::PrefixedAssignments {
                     assignments: vec![GeneratedAssignment {
@@ -10804,8 +10801,10 @@ fn render_hook_guarded_call_expression_ast(call_expr: &str) -> Option<String> {
         ))),
     );
     let expression = builder.expression_call(SPAN, function, NONE, builder.vec(), false);
-    Some(strip_top_level_parenthesized_expression(
-        codegen_expression_with_flow_cast_restore(&expression),
+    Some(strip_optional_chain_receiver_parens(
+        strip_top_level_parenthesized_expression(codegen_expression_with_flow_cast_restore(
+            &expression,
+        )),
     ))
 }
 
@@ -26025,15 +26024,10 @@ fn codegen_instruction_nullable(cx: &mut Context, instr: &ReactiveInstruction) -
                 ),
             );
 
-            let declaration_kind =
-                reactive_destructure_declaration_kind(cx, kind, value.identifier.declaration_id);
-            if let Some(bridged) = maybe_codegen_captured_context_destructure_bridge(
-                cx,
-                &pattern,
-                &rhs,
-                all_declared,
-                declaration_kind,
-            ) {
+            let declaration_kind = reactive_destructure_declaration_kind(cx, kind, &pattern);
+            if let Some(bridged) =
+                maybe_codegen_captured_context_destructure_bridge(cx, &pattern, &rhs, all_declared)
+            {
                 return Some(bridged);
             }
 
@@ -26932,8 +26926,12 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             object,
             property,
             optional,
-            ..
+            loc,
         } => {
+            if !optional && let Some(source_expr) = maybe_render_grouped_optional_member_source(loc)
+            {
+                return ExprValue::primary(source_expr);
+            }
             let obj = codegen_member_object_expression(cx, object);
             let expr = render_property_access_expression_ast(&obj, property, *optional)
                 .expect("generated property load should parse");
@@ -26963,8 +26961,12 @@ fn codegen_instruction_value_ev(cx: &mut Context, value: &InstructionValue) -> E
             object,
             property,
             optional,
-            ..
+            loc,
         } => {
+            if !optional && let Some(source_expr) = maybe_render_grouped_optional_member_source(loc)
+            {
+                return ExprValue::primary(source_expr);
+            }
             let obj = codegen_member_object_expression(cx, object);
             let prop = codegen_place_to_expression(cx, property);
             let expr = render_computed_access_expression_ast(&obj, &prop, *optional)
@@ -27763,7 +27765,9 @@ fn render_binary_expression_ast(
     let right = parse_rendered_expression_ast(&allocator, right)?;
     let expression =
         builder.expression_binary(SPAN, left, lower_binary_operator_ast(operator), right);
-    Some(codegen_expression_with_flow_cast_restore(&expression))
+    Some(strip_optional_chain_receiver_parens(
+        codegen_expression_with_flow_cast_restore(&expression),
+    ))
 }
 
 fn render_primitive_expression_ast(value: &PrimitiveValue) -> Option<String> {
@@ -28122,9 +28126,7 @@ fn render_computed_access_expression_ast(
     } else {
         ast::Expression::from(builder.member_expression_computed(SPAN, object, property, optional))
     };
-    Some(strip_optional_chain_receiver_parens(
-        codegen_expression_with_flow_cast_restore(&expression),
-    ))
+    Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
 fn render_computed_store_expression_ast(
@@ -28299,8 +28301,10 @@ fn render_call_expression_ast(
     let callee = parse_rendered_expression_ast(&allocator, callee)?;
     let args = render_arguments_ast(builder, &allocator, args, rendered_args)?;
     let expression = builder.expression_call(SPAN, callee, NONE, args, optional);
-    Some(strip_top_level_parenthesized_expression(
-        codegen_expression_with_flow_cast_restore(&expression),
+    Some(strip_optional_chain_receiver_parens(
+        strip_top_level_parenthesized_expression(codegen_expression_with_flow_cast_restore(
+            &expression,
+        )),
     ))
 }
 
@@ -28319,8 +28323,10 @@ fn render_call_expression_from_rendered_args_ast(
         )?));
     }
     let expression = builder.expression_call(SPAN, callee, NONE, args, optional);
-    Some(strip_top_level_parenthesized_expression(
-        codegen_expression_with_flow_cast_restore(&expression),
+    Some(strip_optional_chain_receiver_parens(
+        strip_top_level_parenthesized_expression(codegen_expression_with_flow_cast_restore(
+            &expression,
+        )),
     ))
 }
 
@@ -28471,6 +28477,52 @@ fn render_expression_source_with_ast(expression: &str) -> Option<String> {
     Some(codegen_expression_with_flow_cast_restore(&expression))
 }
 
+fn maybe_render_grouped_optional_member_source(loc: &SourceLocation) -> Option<String> {
+    let SourceLocation::Source(range) = loc else {
+        return None;
+    };
+    let source = crate::source_lines::slice_line_col_range(
+        range.start.line,
+        range.start.column,
+        range.end.line,
+        range.end.column,
+    )?;
+    let trimmed = source.trim();
+    if !trimmed.starts_with('(') || !trimmed.contains("?.") {
+        return None;
+    }
+    let (grouped_inner, _) = parse_balanced_paren_contents(trimmed, 0)?;
+    if grouped_inner.contains('(') {
+        return None;
+    }
+    let allocator = Allocator::default();
+    let expression = parse_rendered_expression_ast(&allocator, trimmed)?;
+    let is_parenthesized_non_call_chain = |object: &ast::Expression<'_>| {
+        matches!(
+            object,
+            ast::Expression::ParenthesizedExpression(parenthesized)
+                if matches!(
+                    parenthesized.expression.without_parentheses(),
+                    ast::Expression::ChainExpression(chain)
+                        if !matches!(&chain.expression, ast::ChainElement::CallExpression(_))
+                )
+        )
+    };
+    let is_grouped_optional_member = match &expression {
+        ast::Expression::StaticMemberExpression(member) if !member.optional => {
+            is_parenthesized_non_call_chain(&member.object)
+        }
+        ast::Expression::ComputedMemberExpression(member) if !member.optional => {
+            is_parenthesized_non_call_chain(&member.object)
+        }
+        _ => false,
+    };
+    if !is_grouped_optional_member {
+        return None;
+    }
+    Some(codegen_expression_with_flow_cast_restore(&expression))
+}
+
 fn render_regexp_literal_expression_ast(pattern: &str, flags: &str) -> Option<String> {
     render_expression_source_with_ast(&format!("/{}/{}", pattern, flags))
 }
@@ -28494,9 +28546,7 @@ fn strip_optional_chain_receiver_parens(expression: String) -> String {
         return expression;
     };
     let suffix = &trimmed[after_paren..];
-    if !rendered_expr_contains_optional_chain(&inner)
-        || !(suffix.starts_with('.') || suffix.starts_with('['))
-    {
+    if !inner.contains("?.") || !(suffix.starts_with('.') || suffix.starts_with('[')) {
         return expression;
     }
     format!("{}{suffix}", inner.trim())
@@ -30716,11 +30766,19 @@ fn render_reactive_pattern_assignment_expression_ast(
 fn reactive_destructure_declaration_kind(
     cx: &Context,
     kind: InstructionKind,
-    source_decl_id: DeclarationId,
+    pattern: &Pattern,
 ) -> ast::VariableDeclarationKind {
+    let binds_reassigned_identifier = pattern_operands(pattern).into_iter().any(|place| {
+        cx.reassigned_decls
+            .contains(&place.identifier.declaration_id)
+    });
     match kind {
-        InstructionKind::Const | InstructionKind::HoistedConst | InstructionKind::Function
-            if !cx.mutable_destructure_sources.contains(&source_decl_id) =>
+        InstructionKind::Const
+        | InstructionKind::HoistedConst
+        | InstructionKind::Function
+        | InstructionKind::HoistedFunction
+        | InstructionKind::Reassign
+            if !binds_reassigned_identifier =>
         {
             ast::VariableDeclarationKind::Const
         }
@@ -30737,7 +30795,6 @@ fn maybe_codegen_captured_context_destructure_bridge(
     pattern: &Pattern,
     rhs: &str,
     all_declared: bool,
-    declaration_kind: ast::VariableDeclarationKind,
 ) -> Option<String> {
     if !all_declared {
         return None;
@@ -30779,10 +30836,10 @@ fn maybe_codegen_captured_context_destructure_bridge(
             let mut statements = vec![ast::Statement::VariableDeclaration(
                 builder.alloc_variable_declaration(
                     SPAN,
-                    declaration_kind,
+                    ast::VariableDeclarationKind::Const,
                     builder.vec1(builder.variable_declarator(
                         SPAN,
-                        declaration_kind,
+                        ast::VariableDeclarationKind::Const,
                         array_pattern,
                         NONE,
                         Some(rhs_expr),
@@ -30854,10 +30911,10 @@ fn maybe_codegen_captured_context_destructure_bridge(
             let mut statements = vec![ast::Statement::VariableDeclaration(
                 builder.alloc_variable_declaration(
                     SPAN,
-                    declaration_kind,
+                    ast::VariableDeclarationKind::Const,
                     builder.vec1(builder.variable_declarator(
                         SPAN,
-                        declaration_kind,
+                        ast::VariableDeclarationKind::Const,
                         object_pattern,
                         NONE,
                         Some(rhs_expr),
@@ -37039,14 +37096,15 @@ mod tests {
         build_object_method_property_ast, codegen_expression_with_flow_cast_restore,
         contains_base_identifier_token, contains_identifier_token, function_expr_as_declaration,
         is_literal_init_assignment_line, is_readonly_console_callee, is_simple_assignment_line,
-        maybe_fill_for_header_initializer_from_update, normalize_root_optional_dependency,
-        parse_rendered_expression_ast, prune_unused_const_literal_decls,
-        reconstruct_for_init_declaration, render_assignment_expression_ast,
-        render_cached_inline_hook_callback_block_ast, render_computed_access_expression_ast,
-        render_function_expression_ast, render_hook_guarded_block_ast,
-        render_hook_guarded_call_expression_ast, render_jsx_expression_ast,
-        render_jsx_fragment_ast, render_method_call_expression_with_options_ast,
-        render_object_expression_ast, render_pattern_with_oxc, render_primitive_expression_ast,
+        maybe_fill_for_header_initializer_from_update, maybe_render_grouped_optional_member_source,
+        normalize_root_optional_dependency, parse_rendered_expression_ast,
+        prune_unused_const_literal_decls, reconstruct_for_init_declaration,
+        render_assignment_expression_ast, render_cached_inline_hook_callback_block_ast,
+        render_computed_access_expression_ast, render_function_expression_ast,
+        render_hook_guarded_block_ast, render_hook_guarded_call_expression_ast,
+        render_jsx_expression_ast, render_jsx_fragment_ast,
+        render_method_call_expression_with_options_ast, render_object_expression_ast,
+        render_pattern_with_oxc, render_primitive_expression_ast,
         render_property_access_expression_ast, render_reactive_assignment_statement_ast,
         render_reactive_expression_statement_ast, render_reactive_for_in_statement_ast,
         render_reactive_for_of_statement_ast, render_reactive_for_statement_ast,
@@ -37384,7 +37442,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_let_destructure_statement_when_source_marked_mutable() {
+    fn renders_const_destructure_statement_for_temp_binding_even_when_source_marked_mutable() {
         let mut cx = test_context();
         cx.mutable_destructure_sources.insert(DeclarationId::new(1));
         let target = named_place(0, 0, "t0");
@@ -37408,11 +37466,11 @@ mod tests {
         let rendered = super::codegen_instruction_nullable(&mut cx, &instr)
             .expect("expected destructure statement");
 
-        assert_eq!(rendered, "let [t0] = input;\n");
+        assert_eq!(rendered, "const [t0] = input;\n");
     }
 
     #[test]
-    fn directly_lowers_let_destructure_prefix_when_source_marked_mutable() {
+    fn directly_lowers_const_destructure_prefix_for_temp_binding_even_when_source_marked_mutable() {
         let mut cx = test_context();
         cx.mutable_destructure_sources.insert(DeclarationId::new(1));
         let target = named_place(0, 0, "t0");
@@ -37450,7 +37508,7 @@ mod tests {
             shape,
             super::GeneratedBodyShape::PrefixedBindings {
                 bindings: vec![super::GeneratedBinding {
-                    kind: ast::VariableDeclarationKind::Let,
+                    kind: ast::VariableDeclarationKind::Const,
                     pattern: "[t0]".to_string(),
                     expression: "input".to_string(),
                     promote_to_function_declaration: false,
@@ -37460,6 +37518,34 @@ mod tests {
                 )),
             }
         );
+    }
+
+    #[test]
+    fn renders_let_destructure_statement_when_binding_is_reassigned() {
+        let mut cx = test_context();
+        cx.reassigned_decls.insert(DeclarationId::new(0));
+        let target = named_place(0, 0, "value");
+        let source = named_place(1, 1, "input");
+        let instr = ReactiveInstruction {
+            id: crate::hir::types::make_instruction_id(0),
+            lvalue: None,
+            value: InstructionValue::Destructure {
+                lvalue: LValuePattern {
+                    pattern: Pattern::Array(ArrayPattern {
+                        items: vec![ArrayElement::Place(target)],
+                    }),
+                    kind: InstructionKind::Const,
+                },
+                value: source,
+                loc: SourceLocation::Generated,
+            },
+            loc: SourceLocation::Generated,
+        };
+
+        let rendered = super::codegen_instruction_nullable(&mut cx, &instr)
+            .expect("expected destructure statement");
+
+        assert_eq!(rendered, "let [value] = input;\n");
     }
 
     #[test]
@@ -38445,6 +38531,26 @@ mod tests {
         assert_eq!(
             strip_optional_chain_receiver_parens("(foo.bar).baz".to_string()),
             "(foo.bar).baz"
+        );
+    }
+
+    #[test]
+    fn renders_grouped_optional_member_source_from_original_loc() {
+        crate::source_lines::set_current_source("const x = (props?.a).b;\n");
+        let loc = SourceLocation::Source(crate::hir::types::SourceRange {
+            start: crate::hir::types::SourcePosition {
+                line: 1,
+                column: 10,
+            },
+            end: crate::hir::types::SourcePosition {
+                line: 1,
+                column: 22,
+            },
+        });
+
+        assert_eq!(
+            maybe_render_grouped_optional_member_source(&loc).as_deref(),
+            Some("(props?.a).b")
         );
     }
 

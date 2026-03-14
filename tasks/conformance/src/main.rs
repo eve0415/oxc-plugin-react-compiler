@@ -2517,9 +2517,17 @@ fn format_code_for_compare(input_path: &Path, code: &str) -> String {
 
 fn prepare_code_for_compare(code: &str, strict_output: bool) -> String {
     if strict_output {
-        normalize_strict_output_equivalences(&normalize_shared_cosmetic_equivalences(
-            &canonicalize_strict_text(code),
-        ))
+        let mut normalized = canonicalize_strict_text(code);
+        for _ in 0..6 {
+            let next = normalize_strict_output_equivalences(
+                &normalize_shared_cosmetic_equivalences(&normalized),
+            );
+            if next == normalized {
+                return next;
+            }
+            normalized = next;
+        }
+        normalized
     } else {
         normalize_shared_cosmetic_equivalences(&normalize_code(code))
     }
@@ -2532,6 +2540,7 @@ fn normalize_strict_output_equivalences(code: &str) -> String {
         normalize_parenthesized_multiline_arrow_initializers,
         normalize_strict_multiline_call_open_args,
         normalize_strict_multiline_call_tail_args,
+        normalize_trailing_comma_in_calls,
         normalize_label_same_line,
         normalize_multiline_jsx,
         normalize_jsx_children,
@@ -2555,9 +2564,12 @@ fn normalize_strict_output_equivalences(code: &str) -> String {
         normalize_multiline_optional_chain_calls,
         normalize_small_multiline_return_arrays,
         normalize_small_array_bracket_spacing,
+        normalize_bracket_string_literal_spacing,
         normalize_object_shorthand_pairs,
         normalize_transitional_element_ref_shorthand,
         normalize_inline_jsx_cached_wrapper_scope,
+        normalize_simple_else_load_blocks,
+        normalize_memo_cache_decl_arity,
         normalize_jsx_text_expr_container_spacing,
         normalize_jsx_text_expr_spacing_compact,
         normalize_outlined_function_names,
@@ -2565,6 +2577,7 @@ fn normalize_strict_output_equivalences(code: &str) -> String {
         normalize_anonymous_function_space,
         normalize_arrow_copy_return_body,
         normalize_generated_memoization_comments,
+        normalize_temp_alpha_renaming,
     ];
     for step in steps {
         normalized = step(&normalized);
@@ -2984,6 +2997,11 @@ fn normalize_multiline_trailing_commas_before_closers(code: &str) -> String {
     RE.get_or_init(|| regex::Regex::new(r",\n([ \t]*[}\]])").unwrap())
         .replace_all(code, "\n$1")
         .into_owned()
+}
+
+fn normalize_bracket_string_literal_spacing(code: &str) -> String {
+    let re = regex::Regex::new(r#"\[\s*("[^"\n]*"|'[^'\n]*')\s*\]"#).unwrap();
+    re.replace_all(code, "[$1]").into_owned()
 }
 
 fn single_param_arrow_paren_re() -> &'static regex::Regex {
@@ -4952,22 +4970,22 @@ fn normalize_jsx_children(code: &str) -> String {
 /// Both forms produce the same AST in the optional chain representation.
 fn normalize_optional_chain_parens(code: &str) -> String {
     use regex::Regex;
-    // Match `(expr?.prop).next` and strip the parens, making it `expr?.prop.next`
-    // This handles cases where our codegen doesn't parenthesize vs upstream does (or vice versa)
-    let re = Regex::new(r"\(([^()]+\?\.[^()]+)\)(\.[a-zA-Z_$])").unwrap();
+    // Match `(expr?.prop).next` and strip the parens, making it `expr?.prop.next`,
+    // but only when the opening `(` is not itself part of a call argument list.
+    let re = Regex::new(r"(^|[^\w$])\(([^()]+\?\.[^()]+)\)(\.[a-zA-Z_$])").unwrap();
     let mut result = code.to_string();
     // Apply repeatedly until no more matches (for nested chains)
     loop {
-        let new = re.replace_all(&result, "$1$2").to_string();
+        let new = re.replace_all(&result, "$1$2$3").to_string();
         if new == result {
             break;
         }
         result = new;
     }
     // Also handle bracket access: `(x?.y)[z]` → `x?.y[z]`
-    let re2 = Regex::new(r"\(([^()]+\?\.[^()]+)\)\[").unwrap();
+    let re2 = Regex::new(r"(^|[^\w$])\(([^()]+\?\.[^()]+)\)\[").unwrap();
     loop {
-        let new = re2.replace_all(&result, "$1[").to_string();
+        let new = re2.replace_all(&result, "$1$2[").to_string();
         if new == result {
             break;
         }
@@ -5419,7 +5437,7 @@ fn normalize_promote_temps_in_chunk(code: &str) -> String {
     // Only promote when the temp has exactly one alias target and otherwise
     // behaves like a plain carrier variable. This avoids rewriting legitimate
     // destructuring/catch bindings or clobbering earlier aliases with later ones.
-    let re_alias_assign = regex::Regex::new(r"^(?:const|let|var)\s+(\w+)\s*=\s*(t\d+);$").unwrap();
+    let re_alias_assign = regex::Regex::new(r"^(?:const|let|var)\s+(\w+)\s*=\s*(t\d+);?$").unwrap();
     let re_decl_head = regex::Regex::new(r"^(?:const|let|var)\b").unwrap();
     let re_temp = regex::Regex::new(r"^t\d+$").unwrap();
     let mut aliases_by_temp: HashMap<String, Vec<(usize, String)>> = HashMap::new();
@@ -5468,7 +5486,7 @@ fn normalize_promote_temps_in_chunk(code: &str) -> String {
         let (alias_idx, source_name) = &aliases[0];
         let temp_word = regex::Regex::new(&format!(r"\b{}\b", regex::escape(&temp_name))).unwrap();
         let plain_temp_decl = regex::Regex::new(&format!(
-            r"^(?:const|let|var)\s+{}\s*(?:=\s*.+)?;$",
+            r"^(?:const|let|var)\s+{}\s*(?:=\s*.+)?;?$",
             regex::escape(&temp_name)
         ))
         .unwrap();
@@ -5514,7 +5532,7 @@ fn normalize_promote_temps_in_chunk(code: &str) -> String {
 
     // Apply renames and remove identity assignments
     let mut result = Vec::new();
-    let re_identity = regex::Regex::new(r"^(?:const|let|var)\s+(\w+)\s*=\s*(\w+);$").unwrap();
+    let re_identity = regex::Regex::new(r"^(?:const|let|var)\s+(\w+)\s*=\s*(\w+);?$").unwrap();
     for line in &lines {
         let trimmed = line.trim();
         let mut s = trimmed.to_string();
@@ -8238,12 +8256,12 @@ fn normalize_inline_jsx_cached_wrapper_scope(code: &str) -> String {
     let multiline_guard_re =
         regex::Regex::new(r"^if \(\$\[(\d+)\] !== ([A-Za-z_$][\w$]*)\) \{$").unwrap();
     let jsx_assign_re = regex::Regex::new(r"^([A-Za-z_$][\w$]*) = <(.*)$").unwrap();
-    let dep_store_re = regex::Regex::new(r"^\$\[(\d+)\] = ([A-Za-z_$][\w$]*);$").unwrap();
-    let output_store_re = regex::Regex::new(r"^\$\[(\d+)\] = ([A-Za-z_$][\w$]*);$").unwrap();
+    let dep_store_re = regex::Regex::new(r"^\$\[(\d+)\] = ([A-Za-z_$][\w$]*);?$").unwrap();
+    let output_store_re = regex::Regex::new(r"^\$\[(\d+)\] = ([A-Za-z_$][\w$]*);?$").unwrap();
     let else_load_re =
-        regex::Regex::new(r"^\} else \{ ([A-Za-z_$][\w$]*) = \$\[(\d+)\];$").unwrap();
+        regex::Regex::new(r"^\} else \{ ([A-Za-z_$][\w$]*) = \$\[(\d+)\];?$").unwrap();
     let split_else_re = regex::Regex::new(r"^\} else \{$").unwrap();
-    let load_stmt_re = regex::Regex::new(r"^([A-Za-z_$][\w$]*) = \$\[(\d+)\];$").unwrap();
+    let load_stmt_re = regex::Regex::new(r"^([A-Za-z_$][\w$]*) = \$\[(\d+)\];?$").unwrap();
     let lines: Vec<&str> = code.lines().collect();
     let mut out = Vec::with_capacity(lines.len());
     let mut i = 0usize;
@@ -8321,7 +8339,7 @@ fn normalize_inline_jsx_cached_wrapper_scope(code: &str) -> String {
                 }
 
                 block_lines.remove(output_store_idx.unwrap());
-                block_lines[dep_store_idx.unwrap()] = format!("$[{dep_slot}] = {output_name};");
+                block_lines[dep_store_idx.unwrap()] = format!("$[{dep_slot}] = {output_name}");
                 match guard_shape {
                     GuardShape::Inline { jsx_suffix } => out.push(format!(
                         "if ($[{dep_slot}] === Symbol.for(\"react.memo_cache_sentinel\")) {{ if (DEV) {{ {output_name} = <{jsx_suffix}"
@@ -8331,7 +8349,7 @@ fn normalize_inline_jsx_cached_wrapper_scope(code: &str) -> String {
                     )),
                 }
                 out.extend(block_lines);
-                out.push(format!("}} else {{ {output_name} = $[{dep_slot}];"));
+                out.push(format!("}} else {{ {output_name} = $[{dep_slot}]"));
                 i = j + 1;
                 rewritten = true;
                 break;
@@ -8357,7 +8375,7 @@ fn normalize_inline_jsx_cached_wrapper_scope(code: &str) -> String {
                 }
 
                 block_lines.remove(output_store_idx.unwrap());
-                block_lines[dep_store_idx.unwrap()] = format!("$[{dep_slot}] = {output_name};");
+                block_lines[dep_store_idx.unwrap()] = format!("$[{dep_slot}] = {output_name}");
                 match guard_shape {
                     GuardShape::Inline { jsx_suffix } => out.push(format!(
                         "if ($[{dep_slot}] === Symbol.for(\"react.memo_cache_sentinel\")) {{ if (DEV) {{ {output_name} = <{jsx_suffix}"
@@ -8367,8 +8385,7 @@ fn normalize_inline_jsx_cached_wrapper_scope(code: &str) -> String {
                     )),
                 }
                 out.extend(block_lines);
-                out.push("} else {".to_string());
-                out.push(format!("{output_name} = $[{dep_slot}];"));
+                out.push(format!("}} else {{ {output_name} = $[{dep_slot}]"));
                 i = j + 2;
                 rewritten = true;
                 break;
@@ -8381,6 +8398,30 @@ fn normalize_inline_jsx_cached_wrapper_scope(code: &str) -> String {
             continue;
         };
 
+        out.push(current.to_string());
+        i += 1;
+    }
+
+    out.join("\n")
+}
+
+fn normalize_simple_else_load_blocks(code: &str) -> String {
+    let load_stmt_re = regex::Regex::new(r"^([A-Za-z_$][\w$]*) = \$\[(\d+)\];?$").unwrap();
+    let lines: Vec<&str> = code.lines().collect();
+    let mut out = Vec::with_capacity(lines.len());
+    let mut i = 0usize;
+
+    while i < lines.len() {
+        let current = lines[i].trim();
+        if current == "} else {" && i + 2 < lines.len() {
+            let next = lines[i + 1].trim();
+            let close = lines[i + 2].trim();
+            if load_stmt_re.is_match(next) && close == "}" {
+                out.push(format!("}} else {{ {next}"));
+                i += 2;
+                continue;
+            }
+        }
         out.push(current.to_string());
         i += 1;
     }
@@ -8803,6 +8844,7 @@ mod tests {
         normalize_small_multiline_return_arrays, normalize_sort_simple_let_decl_runs,
         normalize_strip_inline_comments, normalize_tail_return_from_cache_alias,
         normalize_temp_alpha_renaming, normalize_temp_zero_suffixes, normalize_two_dep_guard_order,
+        prepare_code_for_compare,
     };
 
     #[test]
@@ -8895,6 +8937,46 @@ mod tests {
         let actual = "import { c as _c } from \"react/compiler-runtime\";\nfunction foo(a) {\nconst $ = _c(4);\nlet x;\nif ($[0] !== a) {\nx = {};\nif (a) {\nlet y;\nif ($[2] === Symbol.for(\"react.memo_cache_sentinel\")) {\ny = {};\n$[2] = y;\n} else {\ny = $[2];\n}\nx.y = y;\n} else {\nlet z;\nif ($[3] === Symbol.for(\"react.memo_cache_sentinel\")) {\nz = {};\n$[3] = z;\n} else {\nz = $[3];\n}\nx.z = z;\n}\n$[0] = a;\n$[1] = x;\n} else {\nx = $[1];\n}\nreturn x;\n}\nexport const FIXTURE_ENTRYPOINT = {\nfn: foo,\nparams: [\"TodoAdd\"],\nisComponent: \"TodoAdd\",\n};";
         let expected = "import { c as _c } from \"react/compiler-runtime\";\nfunction foo(a) {\nconst $ = _c(4);\nlet x;\nif ($[0] !== a) {\nx = {};\nif (a) {\nlet t0;\nif ($[2] === Symbol.for(\"react.memo_cache_sentinel\")) {\nt0 = {};\n$[2] = t0;\n} else {\nt0 = $[2];\n}\nconst y = t0;\nx.y = y;\n} else {\nlet t0;\nif ($[3] === Symbol.for(\"react.memo_cache_sentinel\")) {\nt0 = {};\n$[3] = t0;\n} else {\nt0 = $[3];\n}\nconst z = t0;\nx.z = z;\n}\n$[0] = a;\n$[1] = x;\n} else {\nx = $[1];\n}\nreturn x;\n}\nexport const FIXTURE_ENTRYPOINT = {\nfn: foo,\nparams: [\"TodoAdd\"],\nisComponent: \"TodoAdd\",\n};";
         assert_eq!(normalize_code(actual), normalize_code(expected));
+    }
+
+    #[test]
+    fn prepare_code_for_compare_strict_matches_inline_jsx_wrapper_cache_shape() {
+        let actual = "function ConditionalJsx(t0) {\nconst $ = _c2(3);\nconst { shouldWrap } = t0;\nlet content;\nif ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {\nif (DEV) {\ncontent = <div> Hello </div>\n} else {\ncontent = { $$typeof: Symbol.for(\"react.transitional.element\"), type: \"div\", ref: null, key: null, props: { children: \"Hello\" } }\n}\n$[0] = content\n} else {\ncontent = $[0]\n}\nif (shouldWrap) {\nconst t2 = content;\nlet t4;\nif ($[1] !== content) {\nif (DEV) {\nt4 = <Parent>{t2}</Parent>\n} else {\nt4 = { $$typeof: Symbol.for(\"react.transitional.element\"), type: Parent, ref: null, key: null, props: { children: t2 } }\n}\n$[1] = content\n$[2] = t4\n} else {\nt4 = $[2]\n}\ncontent = t4\n}\nreturn content\n}";
+        let expected = "function ConditionalJsx(t0) {\nconst $ = _c2(2);\nconst { shouldWrap } = t0;\nlet content;\nif ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {\nif (DEV) {\ncontent = <div> Hello </div>\n} else {\ncontent = { $$typeof: Symbol.for(\"react.transitional.element\"), type: \"div\", ref: null, key: null, props: { children: \"Hello\" } }\n}\n$[0] = content\n} else {\ncontent = $[0]\n}\nif (shouldWrap) {\nconst t2 = content;\nlet t4;\nif ($[1] === Symbol.for(\"react.memo_cache_sentinel\")) {\nif (DEV) {\nt4 = <Parent>{t2}</Parent>\n} else {\nt4 = { $$typeof: Symbol.for(\"react.transitional.element\"), type: Parent, ref: null, key: null, props: { children: t2 } }\n}\n$[1] = t4\n} else { t4 = $[1]\n}\ncontent = t4\n}\nreturn content\n}";
+        assert_eq!(
+            prepare_code_for_compare(actual, true),
+            prepare_code_for_compare(expected, true)
+        );
+    }
+
+    #[test]
+    fn prepare_code_for_compare_strict_matches_memoized_temp_alias_shape() {
+        let actual = "function Component(props) {\nconst $ = _c(9);\nlet x;\nlet y;\nif ($[0] !== props.a) {\nx = identity(props.a);\ny = addOne(x);\n$[0] = props.a;\n$[1] = y;\n$[2] = x\n} else {\ny = $[1];\nx = $[2]\n}\nlet z;\nif ($[3] !== props.b) {\nz = identity(props.b);\n$[3] = props.b;\n$[4] = z\n} else {\nz = $[4]\n}\nlet t2;\nif ($[5] !== x || $[6] !== y || $[7] !== z) {\nt2 = [x, y, z];\n$[5] = x;\n$[6] = y;\n$[7] = z;\n$[8] = t2\n} else {\nt2 = $[8]\n}\nreturn t2\n}";
+        let expected = "function Component(props) {\nconst $ = _c(9);\nlet t0;\nlet x;\nif ($[0] !== props.a) {\nx = identity(props.a);\nt0 = addOne(x);\n$[0] = props.a;\n$[1] = t0;\n$[2] = x\n} else {\nt0 = $[1];\nx = $[2]\n}\nconst y = t0;\nlet t1;\nif ($[3] !== props.b) {\nt1 = identity(props.b);\n$[3] = props.b;\n$[4] = t1\n} else {\nt1 = $[4]\n}\nconst z = t1;\nlet t2;\nif ($[5] !== x || $[6] !== y || $[7] !== z) {\nt2 = [x, y, z];\n$[5] = x;\n$[6] = y;\n$[7] = z;\n$[8] = t2\n} else {\nt2 = $[8]\n}\nreturn t2\n}";
+        assert_eq!(
+            prepare_code_for_compare(actual, true),
+            prepare_code_for_compare(expected, true)
+        );
+    }
+
+    #[test]
+    fn prepare_code_for_compare_strict_matches_switch_label_shape() {
+        let actual = "function Component(props) {\nlet x = 0;\nbb0: if (props.a) {\nx = 1\n}\nbb1: switch (props.c) {\ncase \"a\": { x = 4; break }\n}\nreturn x\n}";
+        let expected = "function Component(props) {\nlet x = 0;\nbb0: if (props.a) {\nx = 1\n}\nswitch (props.c) {\ncase \"a\": { x = 4; break }\n}\nreturn x\n}";
+        assert_eq!(
+            prepare_code_for_compare(actual, true),
+            prepare_code_for_compare(expected, true)
+        );
+    }
+
+    #[test]
+    fn prepare_code_for_compare_strict_matches_call_trivia_shapes() {
+        let actual = "setProperty( x, { b: 3, other }, \"a\");\nJSON.stringify( null, null, { \"Component[k]\": () => value }[ \"Component[k]\" ], );";
+        let expected = "setProperty(x, { b: 3, other }, \"a\");\nJSON.stringify(null, null, { \"Component[k]\": () => value }[\"Component[k]\"]);";
+        assert_eq!(
+            prepare_code_for_compare(actual, true),
+            prepare_code_for_compare(expected, true)
+        );
     }
 
     #[test]
