@@ -2129,6 +2129,37 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
         }
     }
 
+    fn canonicalize_single_target_literal_guard_null_sequence(
+        value_name: &str,
+        setup_statements: Vec<String>,
+        memoized_expressions: Vec<String>,
+        memoized_expr: Option<String>,
+    ) -> (Vec<String>, Vec<String>, Option<String>) {
+        if memoized_expr.is_some() || !memoized_expressions.is_empty() || setup_statements.len() != 2
+        {
+            return (setup_statements, memoized_expressions, memoized_expr);
+        }
+        let Some(prefix) = literal_guard_null_prefix(&setup_statements[1]) else {
+            return (setup_statements, memoized_expressions, memoized_expr);
+        };
+        let (single_setup, value_expr) = canonicalize_single_target_setup_statement(
+            value_name,
+            vec![setup_statements[0].clone()],
+            None,
+        );
+        let Some(value_expr) = value_expr else {
+            return (setup_statements, memoized_expressions, memoized_expr);
+        };
+        if !single_setup.is_empty() {
+            return (setup_statements, memoized_expressions, memoized_expr);
+        }
+        (
+            Vec::new(),
+            vec![format!("{prefix} ({value_name} = {value_expr}, null)")],
+            None,
+        )
+    }
+
     fn is_trivial_null_statement(statement_source: &str) -> bool {
         let allocator = Allocator::default();
         let Ok(statement) = parse_single_statement_for_ast_codegen(
@@ -2146,6 +2177,36 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                     ast::Expression::NullLiteral(_)
                 )
         )
+    }
+
+    fn literal_guard_null_prefix(statement_source: &str) -> Option<&'static str> {
+        let allocator = Allocator::default();
+        let Ok(statement) = parse_single_statement_for_ast_codegen(
+            &allocator,
+            SourceType::mjs().with_jsx(true),
+            statement_source,
+        ) else {
+            return None;
+        };
+        let ast::Statement::ExpressionStatement(expression_statement) = statement else {
+            return None;
+        };
+        let ast::Expression::LogicalExpression(logical) =
+            expression_statement.expression.without_parentheses()
+        else {
+            return None;
+        };
+        let ast::Expression::BooleanLiteral(left) = logical.left.without_parentheses() else {
+            return None;
+        };
+        if !matches!(logical.right.without_parentheses(), ast::Expression::NullLiteral(_)) {
+            return None;
+        }
+        match (logical.operator, left.value) {
+            (ast::LogicalOperator::And, true) => Some("true &&"),
+            (ast::LogicalOperator::Or, false) => Some("false ||"),
+            _ => None,
+        }
     }
 
     fn promote_memoized_expr_to_setup_statement(
@@ -3082,6 +3143,13 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             memoized_setup_statements,
             memoized_expr,
         } => {
+            let (memoized_setup_statements, memoized_expressions, memoized_expr) =
+                canonicalize_single_target_literal_guard_null_sequence(
+                    &value_name,
+                    memoized_setup_statements,
+                    memoized_expressions,
+                    memoized_expr,
+                );
             let has_trailing_expressions = !memoized_expressions.is_empty();
             let (memoized_setup_statements, memoized_expr) =
                 canonicalize_single_target_setup_statement(
@@ -3152,6 +3220,13 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             memoized_setup_statements,
             memoized_expr,
         } => {
+            let (memoized_setup_statements, memoized_expressions, memoized_expr) =
+                canonicalize_single_target_literal_guard_null_sequence(
+                    &value_name,
+                    memoized_setup_statements,
+                    memoized_expressions,
+                    memoized_expr,
+                );
             let has_trailing_expressions = !memoized_expressions.is_empty();
             let (memoized_setup_statements, memoized_expr) =
                 canonicalize_single_target_setup_statement(
@@ -3226,6 +3301,13 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
             memoized_setup_statements,
             memoized_expr,
         } => {
+            let (memoized_setup_statements, memoized_expressions, memoized_expr) =
+                canonicalize_single_target_literal_guard_null_sequence(
+                    &value_name,
+                    memoized_setup_statements,
+                    memoized_expressions,
+                    memoized_expr,
+                );
             let has_trailing_expressions = !memoized_expressions.is_empty();
             let (memoized_setup_statements, memoized_expr) =
                 canonicalize_single_target_setup_statement(
@@ -44144,6 +44226,33 @@ mod tests {
                 memoized_expr,
                 ..
             } if memoized_setup_statements.is_empty() && memoized_expr.as_deref() == Some("[]")
+        ));
+    }
+
+    #[test]
+    fn canonicalizes_literal_guard_null_tail_into_expression_setup() {
+        let shape = super::canonicalize_generated_body_shape(
+            super::GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+                value_name: "x".to_string(),
+                value_slot: 0,
+                memoized_bindings: vec![],
+                memoized_assignments: vec![],
+                memoized_expressions: vec![],
+                memoized_setup_statements: vec!["x = [];".to_string(), "true && null;".to_string()],
+                memoized_expr: None,
+            },
+        );
+
+        assert!(matches!(
+            shape,
+            super::GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
+                memoized_setup_statements,
+                memoized_expressions,
+                memoized_expr,
+                ..
+            } if memoized_setup_statements.is_empty()
+                && memoized_expressions == vec!["true && (x = [], null)".to_string()]
+                && memoized_expr.is_none()
         ));
     }
 
