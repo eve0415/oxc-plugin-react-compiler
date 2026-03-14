@@ -4335,6 +4335,12 @@ fn codegen_reactive_function_with_primitives(
                     &body,
                 ) {
                     direct_body_shape
+                } else if generated_body_shapes_equivalent_for_fallback_accounting(
+                    &direct_body_shape,
+                    &analyzed_body_shape,
+                    &body,
+                ) {
+                    analyzed_body_shape
                 } else {
                     bump_rendered_body_analysis_fallback();
                     analyzed_body_shape
@@ -5490,6 +5496,276 @@ fn generated_body_shapes_render_equivalent(
         == canonicalize_rendered_generated_body_source(&analyzed_source.join("\n"))
 }
 
+fn statement_sources_for_lenient_normalization(source: &str) -> Vec<String> {
+    let allocator = Allocator::default();
+    if let Ok(statements) =
+        parse_statement_list_for_ast_codegen(&allocator, SourceType::mjs().with_jsx(true), source)
+    {
+        let mut rendered = Vec::new();
+        for statement in statements {
+            if is_internal_blank_line_marker_statement_ast(&statement) {
+                continue;
+            }
+            let statement = codegen_statement_with_flow_cast_restore(&statement)
+                .trim()
+                .to_string();
+            if !statement.is_empty() {
+                rendered.push(statement);
+            }
+        }
+        return rendered;
+    }
+
+    source
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && *line != "\"__REACT_COMPILER_INTERNAL_BLANK_LINE_MARKER__\";"
+                && *line != "__REACT_COMPILER_INTERNAL_BLANK_LINE_MARKER__"
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+fn rendered_expression_is_leniently_pure(expression: &ast::Expression<'_>) -> bool {
+    match expression.without_parentheses() {
+        ast::Expression::Identifier(_)
+        | ast::Expression::ThisExpression(_)
+        | ast::Expression::NumericLiteral(_)
+        | ast::Expression::StringLiteral(_)
+        | ast::Expression::BooleanLiteral(_)
+        | ast::Expression::NullLiteral(_)
+        | ast::Expression::BigIntLiteral(_)
+        | ast::Expression::RegExpLiteral(_) => true,
+        ast::Expression::StaticMemberExpression(member) => {
+            rendered_expression_is_leniently_pure(&member.object)
+        }
+        ast::Expression::ComputedMemberExpression(member) => {
+            rendered_expression_is_leniently_pure(&member.object)
+                && rendered_expression_is_leniently_pure(&member.expression)
+        }
+        ast::Expression::ChainExpression(chain) => match &chain.expression {
+            ast::ChainElement::StaticMemberExpression(member) => {
+                rendered_expression_is_leniently_pure(&member.object)
+            }
+            ast::ChainElement::ComputedMemberExpression(member) => {
+                rendered_expression_is_leniently_pure(&member.object)
+                    && rendered_expression_is_leniently_pure(&member.expression)
+            }
+            _ => false,
+        },
+        ast::Expression::UnaryExpression(unary) => {
+            unary.operator != AstUnaryOperator::Delete
+                && rendered_expression_is_leniently_pure(&unary.argument)
+        }
+        ast::Expression::BinaryExpression(binary) => {
+            rendered_expression_is_leniently_pure(&binary.left)
+                && rendered_expression_is_leniently_pure(&binary.right)
+        }
+        ast::Expression::LogicalExpression(logical) => {
+            rendered_expression_is_leniently_pure(&logical.left)
+                && rendered_expression_is_leniently_pure(&logical.right)
+        }
+        ast::Expression::ConditionalExpression(conditional) => {
+            rendered_expression_is_leniently_pure(&conditional.test)
+                && rendered_expression_is_leniently_pure(&conditional.consequent)
+                && rendered_expression_is_leniently_pure(&conditional.alternate)
+        }
+        ast::Expression::SequenceExpression(sequence) => sequence
+            .expressions
+            .iter()
+            .all(rendered_expression_is_leniently_pure),
+        ast::Expression::ArrayExpression(array) => {
+            array.elements.iter().all(|element| match element {
+                ast::ArrayExpressionElement::SpreadElement(_) => false,
+                ast::ArrayExpressionElement::Elision(_) => true,
+                element => rendered_expression_is_leniently_pure(element.to_expression()),
+            })
+        }
+        ast::Expression::ObjectExpression(object) => {
+            object.properties.iter().all(|property| match property {
+                ast::ObjectPropertyKind::ObjectProperty(property) => {
+                    property.kind == ast::PropertyKind::Init
+                        && !property.method
+                        && !property.shorthand
+                        && !property.computed
+                        && rendered_expression_is_leniently_pure(&property.value)
+                }
+                ast::ObjectPropertyKind::SpreadProperty(_) => false,
+            })
+        }
+        ast::Expression::TemplateLiteral(template) => template
+            .expressions
+            .iter()
+            .all(rendered_expression_is_leniently_pure),
+        ast::Expression::TSAsExpression(ts_as) => {
+            rendered_expression_is_leniently_pure(&ts_as.expression)
+        }
+        ast::Expression::TSSatisfiesExpression(ts_satisfies) => {
+            rendered_expression_is_leniently_pure(&ts_satisfies.expression)
+        }
+        ast::Expression::TSNonNullExpression(ts_non_null) => {
+            rendered_expression_is_leniently_pure(&ts_non_null.expression)
+        }
+        ast::Expression::TSTypeAssertion(type_assertion) => {
+            rendered_expression_is_leniently_pure(&type_assertion.expression)
+        }
+        ast::Expression::ParenthesizedExpression(parenthesized) => {
+            rendered_expression_is_leniently_pure(&parenthesized.expression)
+        }
+        _ => false,
+    }
+}
+
+fn statement_is_leniently_pure_expression(statement_source: &str) -> bool {
+    let allocator = Allocator::default();
+    let Ok(statement) = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        statement_source,
+    ) else {
+        return false;
+    };
+    let ast::Statement::ExpressionStatement(expression_statement) = statement else {
+        return false;
+    };
+    rendered_expression_is_leniently_pure(&expression_statement.expression)
+}
+
+fn statement_is_leniently_ignorable(statement_source: &str) -> bool {
+    if statement_is_leniently_pure_expression(statement_source) {
+        return true;
+    }
+
+    let allocator = Allocator::default();
+    let Ok(statement) = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        statement_source,
+    ) else {
+        return false;
+    };
+
+    matches!(
+        statement,
+        ast::Statement::ReturnStatement(return_statement) if return_statement.argument.is_none()
+    )
+}
+
+fn generated_binding_name_is_lenient_alias(name: &str) -> bool {
+    (name.starts_with('t') && name[1..].chars().all(|c| c.is_ascii_digit()))
+        || name.starts_with("c_")
+}
+
+fn statement_lenient_alias_binding(statement_source: &str) -> Option<(String, String)> {
+    let allocator = Allocator::default();
+    let Ok(statement) = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        statement_source,
+    ) else {
+        return None;
+    };
+    let ast::Statement::VariableDeclaration(declaration) = statement else {
+        return None;
+    };
+    if declaration.declarations.len() != 1 {
+        return None;
+    }
+    let declarator = declaration.declarations.first()?;
+    let ast::BindingPattern::BindingIdentifier(identifier) = &declarator.id else {
+        return None;
+    };
+    if !generated_binding_name_is_lenient_alias(identifier.name.as_str()) {
+        return None;
+    }
+    let init = declarator.init.as_ref()?;
+    rendered_expression_is_leniently_pure(init).then(|| {
+        (
+            identifier.name.to_string(),
+            codegen_expression_with_flow_cast_restore(init),
+        )
+    })
+}
+
+fn inline_lenient_alias_bindings(statements: &mut Vec<String>) {
+    loop {
+        let mut changed = false;
+        for index in 0..statements.len() {
+            let Some((name, expr)) = statement_lenient_alias_binding(&statements[index]) else {
+                continue;
+            };
+            let mut new_statements = Vec::with_capacity(statements.len().saturating_sub(1));
+            for (inner_index, statement) in statements.iter().enumerate() {
+                if inner_index == index {
+                    continue;
+                }
+                new_statements.push(replace_word(statement, &name, &expr));
+            }
+            *statements = new_statements;
+            changed = true;
+            break;
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+fn normalize_for_fallback_accounting_compare(source: &str) -> String {
+    let mut statements = statement_sources_for_lenient_normalization(source);
+    statements.retain(|statement| !statement_is_leniently_ignorable(statement));
+    inline_lenient_alias_bindings(&mut statements);
+    statements.retain(|statement| !statement_is_leniently_ignorable(statement));
+
+    let joined = normalize_labeled_blocks(&statements.join("\n"));
+    let result = de_shadow_temp_decls(&joined);
+
+    let mut temp_map: HashMap<String, String> = HashMap::new();
+    let mut next_temp = 0u32;
+    let mut normalized = String::with_capacity(result.len());
+    let chars: Vec<char> = result.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == 't' && (i == 0 || !chars[i - 1].is_alphanumeric() && chars[i - 1] != '_') {
+            let start = i;
+            i += 1;
+            if i < chars.len() && chars[i].is_ascii_digit() {
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+                if i >= chars.len() || (!chars[i].is_alphanumeric() && chars[i] != '_') {
+                    let original: String = chars[start..i].iter().collect();
+                    let mapped = temp_map
+                        .entry(original)
+                        .or_insert_with(|| {
+                            let name = format!("t{next_temp}");
+                            next_temp += 1;
+                            name
+                        })
+                        .clone();
+                    normalized.push_str(&mapped);
+                    continue;
+                }
+            }
+            for c in &chars[start..i] {
+                normalized.push(*c);
+            }
+        } else {
+            normalized.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    normalized
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Normalize rendered output for lenient comparison.
 fn normalize_for_lenient_compare(source: &str) -> String {
     // Step 1: Strip blank line markers and empty lines
@@ -5813,6 +6089,25 @@ fn generated_body_shape_renders_equivalent_to_string_body(
     let rendered_norm = normalize_for_lenient_compare(&rendered);
     let body_norm = normalize_for_lenient_compare(string_body);
     rendered_norm == body_norm
+}
+
+fn generated_body_shapes_equivalent_for_fallback_accounting(
+    direct: &GeneratedBodyShape,
+    analyzed: &GeneratedBodyShape,
+    string_body: &str,
+) -> bool {
+    let Some(direct_source) = try_render_statement_sources_from_generated_body_shape(direct) else {
+        return false;
+    };
+    let Some(analyzed_source) = try_render_statement_sources_from_generated_body_shape(analyzed)
+    else {
+        return false;
+    };
+
+    let direct_norm = normalize_for_fallback_accounting_compare(&direct_source.join("\n"));
+    let analyzed_norm = normalize_for_fallback_accounting_compare(&analyzed_source.join("\n"));
+    let body_norm = normalize_for_fallback_accounting_compare(string_body);
+    direct_norm == analyzed_norm && analyzed_norm == body_norm
 }
 
 #[cfg(test)]
@@ -46000,6 +46295,15 @@ mod tests {
         assert!(rendered.contains("let c = $0[0] !== props.value;"));
         assert!(rendered.contains("if (c) {"));
         assert!(!rendered.contains("if ($0[0] !== props.value) {"));
+    }
+
+    #[test]
+    fn normalizes_fallback_accounting_ignoring_bare_return_and_identifier_read() {
+        let normalized = super::normalize_for_fallback_accounting_compare(
+            "count = count + (aggregate.count || 0);\ncount;\nreturn;\n",
+        );
+
+        assert_eq!(normalized, "count = count + (aggregate.count || 0);");
     }
 
     #[test]
