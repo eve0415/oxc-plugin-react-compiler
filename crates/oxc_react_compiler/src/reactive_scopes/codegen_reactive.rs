@@ -2978,6 +2978,11 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                 .collect();
             let memoized_bindings = canonicalize_generated_bindings(memoized_bindings);
             let (memoized_bindings, memoized_setup_statements) =
+                rewrite_memoized_bindings_into_setup_statements(
+                    memoized_bindings,
+                    memoized_setup_statements,
+                );
+            let (memoized_bindings, memoized_setup_statements) =
                 defer_setup_dependent_bindings_to_setup(
                     memoized_bindings,
                     memoized_setup_statements,
@@ -3048,6 +3053,11 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                 .map(canonicalize_generated_expression)
                 .collect();
             let memoized_bindings = canonicalize_generated_bindings(memoized_bindings);
+            let (memoized_bindings, memoized_setup_statements) =
+                rewrite_memoized_bindings_into_setup_statements(
+                    memoized_bindings,
+                    memoized_setup_statements,
+                );
             let (memoized_bindings, memoized_setup_statements) =
                 defer_setup_dependent_bindings_to_setup(
                     memoized_bindings,
@@ -3123,6 +3133,11 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
                 .map(canonicalize_generated_expression)
                 .collect();
             let memoized_bindings = canonicalize_generated_bindings(memoized_bindings);
+            let (memoized_bindings, memoized_setup_statements) =
+                rewrite_memoized_bindings_into_setup_statements(
+                    memoized_bindings,
+                    memoized_setup_statements,
+                );
             let (memoized_bindings, memoized_setup_statements) =
                 defer_setup_dependent_bindings_to_setup(
                     memoized_bindings,
@@ -5182,25 +5197,6 @@ fn strip_statement_blank_line_markers(statements: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn render_setup_statements_with_blank_lines(statements: &[String]) -> String {
-    let mut output = String::new();
-    for (index, statement) in statements.iter().enumerate() {
-        let has_blank_line_before = statement_has_blank_line_marker(statement);
-        let statement = strip_statement_blank_line_marker(statement);
-        if index > 0 {
-            output.push('\n');
-            if has_blank_line_before {
-                output.push('\n');
-            }
-        }
-        output.push_str(statement);
-        if !statement.ends_with('\n') {
-            output.push('\n');
-        }
-    }
-    output
-}
-
 fn split_statement_sources_preserving_blank_lines(body_source: &str) -> Option<Vec<String>> {
     if body_source.trim().is_empty() {
         return Some(Vec::new());
@@ -5398,8 +5394,9 @@ fn rewrite_generated_setup_statements(mut setup_statements: Vec<String>) -> Vec<
         return setup_statements;
     }
     let original = setup_statements.clone();
-    let computation = render_setup_statements_with_blank_lines(&setup_statements);
+    let computation = strip_statement_blank_line_markers(&setup_statements).join("\n");
     let rewritten = rewrite_named_test_reassign_ternary_in_scope_computation(&computation);
+    let rewritten = rewrite_named_test_sequence_ternary_in_scope_computation(&rewritten);
     let rewritten = rewrite_named_temp_ternary_in_scope_computation(&rewritten);
     if rewritten == computation {
         return drop_redundant_assignment_tail_identifier_reads(setup_statements);
@@ -5411,6 +5408,31 @@ fn rewrite_generated_setup_statements(mut setup_statements: Vec<String>) -> Vec<
         }
         None => drop_redundant_assignment_tail_identifier_reads(original),
     }
+}
+
+fn rewrite_memoized_bindings_into_setup_statements(
+    memoized_bindings: Vec<GeneratedBinding>,
+    setup_statements: Vec<String>,
+) -> (Vec<GeneratedBinding>, Vec<String>) {
+    if memoized_bindings.is_empty() || setup_statements.is_empty() {
+        return (memoized_bindings, setup_statements);
+    }
+
+    let mut combined = Vec::with_capacity(memoized_bindings.len() + setup_statements.len());
+    for binding in &memoized_bindings {
+        let Some(statement) = render_generated_binding_statement(binding) else {
+            return (memoized_bindings, setup_statements);
+        };
+        combined.push(statement.trim_end().to_string());
+    }
+    combined.extend(setup_statements.clone());
+
+    let rewritten = rewrite_generated_setup_statements(combined.clone());
+    if rewritten == combined {
+        return (memoized_bindings, setup_statements);
+    }
+
+    extract_leading_generated_bindings_from_setup_statements(rewritten)
 }
 
 fn drop_redundant_assignment_tail_identifier_read_lines(source: String) -> String {
@@ -16893,6 +16915,34 @@ fn parse_assignment_statement_line(line: &str) -> Option<(String, String, String
     ))
 }
 
+fn parse_assignment_statement_source_line(line: &str) -> Option<(String, String, String)> {
+    let indent_len = line.len().saturating_sub(line.trim_start().len());
+    let indent = line[..indent_len].to_string();
+    let allocator = Allocator::default();
+    let statement = parse_single_statement_for_ast_codegen(
+        &allocator,
+        SourceType::mjs().with_jsx(true),
+        line.trim(),
+    )
+    .ok()?;
+    let ast::Statement::ExpressionStatement(expression_statement) = statement else {
+        return None;
+    };
+    let ast::Expression::AssignmentExpression(assignment) =
+        expression_statement.expression.without_parentheses()
+    else {
+        return None;
+    };
+    if assignment.operator != AssignmentOperator::Assign {
+        return None;
+    }
+    Some((
+        indent,
+        codegen_assignment_target_with_flow_cast_restore(&assignment.left),
+        codegen_expression_with_flow_cast_restore(&assignment.right),
+    ))
+}
+
 fn parse_computed_member_assignment_line(line: &str) -> Option<(String, String, String, String)> {
     let indent_len = line.len().saturating_sub(line.trim_start().len());
     let indent = line[..indent_len].to_string();
@@ -17008,6 +17058,222 @@ fn rewrite_named_test_reassign_ternary_in_scope_computation(computation: &str) -
     }
 
     let mut rewritten = out.join("\n");
+    if had_trailing_newline {
+        rewritten.push('\n');
+    }
+    rewritten
+}
+
+fn rendered_expr_is_array_reset_literal(expr: &str) -> bool {
+    if rendered_expr_is_empty_array_literal(expr) {
+        return true;
+    }
+
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let allocator = Allocator::default();
+    let Some(expression) = parse_rendered_expression_ast(&allocator, trimmed) else {
+        return false;
+    };
+    matches!(
+        expression.without_parentheses(),
+        ast::Expression::ArrayExpression(array)
+            if array.elements.len() == 1
+                && matches!(
+                    array.elements.first(),
+                    Some(ast::ArrayExpressionElement::ArrayExpression(inner))
+                        if inner.elements.is_empty()
+                )
+    )
+}
+
+fn rewrite_named_test_sequence_ternary_in_scope_computation(computation: &str) -> String {
+    let had_trailing_newline = computation.ends_with('\n');
+    let mut lines: Vec<String> = computation
+        .trim_end_matches('\n')
+        .split('\n')
+        .map(|line| line.to_string())
+        .collect();
+    if lines.is_empty() {
+        return computation.to_string();
+    }
+
+    let mut keep = vec![true; lines.len()];
+    for ternary_idx in 0..lines.len() {
+        let Some((indent, ternary_test, ternary_consequent, ternary_alternate)) =
+            parse_ternary_statement_line(&lines[ternary_idx])
+        else {
+            continue;
+        };
+        if !is_codegen_temp_name(&ternary_test) {
+            continue;
+        }
+
+        let mut binding: Option<(usize, String)> = None;
+        for idx in (0..ternary_idx).rev() {
+            if !keep[idx] {
+                continue;
+            }
+            if let Some((binding_indent, binding_name, binding_expr)) =
+                parse_named_const_assignment_line(&lines[idx])
+                && binding_indent == indent
+                && binding_name == ternary_test
+            {
+                binding = Some((idx, binding_expr));
+                break;
+            }
+            if contains_identifier_token(&lines[idx], &ternary_test) {
+                break;
+            }
+        }
+        let Some((binding_idx, test_expr)) = binding else {
+            continue;
+        };
+
+        if ternary_idx >= 3
+            && keep[ternary_idx - 3]
+            && keep[ternary_idx - 2]
+            && keep[ternary_idx - 1]
+            && let Some((assign1_indent, assign1_target, assign1_rhs)) =
+                parse_assignment_statement_source_line(&lines[ternary_idx - 3])
+            && assign1_indent == indent
+            && rendered_expr_is_array_reset_literal(&assign1_rhs)
+            && let Some((binding_indent, binding_name, consequent_expr)) =
+                parse_named_temp_binding_line(&lines[ternary_idx - 2])
+            && binding_indent == indent
+            && is_codegen_temp_name(&binding_name)
+            && let Some((assign2_indent, assign2_target, assign2_rhs)) =
+                parse_assignment_statement_source_line(&lines[ternary_idx - 1])
+            && assign2_indent == indent
+            && rendered_expr_is_array_reset_literal(&assign2_rhs)
+            && ternary_consequent == binding_name
+        {
+            let assign1_names =
+                collect_identifier_tokens_from_generated_expression(&assign1_target);
+            let assign2_names =
+                collect_identifier_tokens_from_generated_expression(&assign2_target);
+            let same_targets = !assign1_names.is_empty()
+                && !assign2_names.is_empty()
+                && assign1_names == assign2_names;
+            let test_uses_target = assign1_names
+                .iter()
+                .any(|target| contains_identifier_token(&test_expr, target));
+            let consequent_uses_target = assign1_names
+                .iter()
+                .any(|target| contains_identifier_token(&consequent_expr, target));
+            let alternate_uses_target = assign2_names
+                .iter()
+                .any(|target| contains_identifier_token(&ternary_alternate, target));
+            if same_targets && !test_uses_target && consequent_uses_target && alternate_uses_target
+            {
+                let assign1_expr = lines[ternary_idx - 3]
+                    .trim()
+                    .trim_end_matches(';')
+                    .to_string();
+                let assign2_expr = lines[ternary_idx - 1]
+                    .trim()
+                    .trim_end_matches(';')
+                    .to_string();
+                if let Some(consequent_branch) = render_sequence_expression_ast(
+                    std::slice::from_ref(&assign1_expr),
+                    &consequent_expr,
+                ) && let Some(alternate_branch) = render_sequence_expression_ast(
+                    std::slice::from_ref(&assign2_expr),
+                    &ternary_alternate,
+                ) && let Some(rewritten_expr) = render_conditional_expression_ast(
+                    &test_expr,
+                    &consequent_branch,
+                    &alternate_branch,
+                ) && let Some(statement) =
+                    render_indented_expression_statement_ast(&indent, &rewritten_expr)
+                {
+                    keep[binding_idx] = false;
+                    keep[ternary_idx - 3] = false;
+                    keep[ternary_idx - 2] = false;
+                    keep[ternary_idx - 1] = false;
+                    lines[ternary_idx] = statement.trim_end_matches('\n').to_string();
+                    continue;
+                }
+            }
+        }
+
+        if ternary_idx >= 1
+            && keep[ternary_idx - 1]
+            && let Some((assign_indent, assign_target, assign_rhs)) =
+                parse_assignment_statement_source_line(&lines[ternary_idx - 1])
+            && assign_indent == indent
+            && rendered_expr_is_array_reset_literal(&assign_rhs)
+        {
+            let assign_target_names =
+                collect_identifier_tokens_from_generated_expression(&assign_target);
+            let test_uses_target = assign_target_names
+                .iter()
+                .any(|target| contains_identifier_token(&test_expr, target));
+            let consequent_uses_target = assign_target_names
+                .iter()
+                .any(|target| contains_identifier_token(&ternary_consequent, target));
+            let alternate_uses_target = assign_target_names
+                .iter()
+                .any(|target| contains_identifier_token(&ternary_alternate, target));
+            let non_sequence_branch = if consequent_uses_target && !alternate_uses_target {
+                Some(&ternary_alternate)
+            } else if alternate_uses_target && !consequent_uses_target {
+                Some(&ternary_consequent)
+            } else {
+                None
+            };
+            if !assign_target_names.is_empty()
+                && !test_uses_target
+                && non_sequence_branch
+                    .is_some_and(|branch| is_inlineable_primitive_literal_expression(branch.trim()))
+            {
+                let assign_expr = lines[ternary_idx - 1]
+                    .trim()
+                    .trim_end_matches(';')
+                    .to_string();
+                let consequent = if consequent_uses_target {
+                    let Some(expr) = render_sequence_expression_ast(
+                        std::slice::from_ref(&assign_expr),
+                        &ternary_consequent,
+                    ) else {
+                        continue;
+                    };
+                    expr
+                } else {
+                    ternary_consequent
+                };
+                let alternate = if alternate_uses_target {
+                    let Some(expr) = render_sequence_expression_ast(
+                        std::slice::from_ref(&assign_expr),
+                        &ternary_alternate,
+                    ) else {
+                        continue;
+                    };
+                    expr
+                } else {
+                    ternary_alternate
+                };
+                if let Some(rewritten_expr) =
+                    render_conditional_expression_ast(&test_expr, &consequent, &alternate)
+                    && let Some(statement) =
+                        render_indented_expression_statement_ast(&indent, &rewritten_expr)
+                {
+                    keep[binding_idx] = false;
+                    keep[ternary_idx - 1] = false;
+                    lines[ternary_idx] = statement.trim_end_matches('\n').to_string();
+                }
+            }
+        }
+    }
+
+    let mut rewritten = lines
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(line, keep)| keep.then_some(line))
+        .collect::<Vec<_>>()
+        .join("\n");
     if had_trailing_newline {
         rewritten.push('\n');
     }
@@ -24604,6 +24870,7 @@ fn codegen_reactive_scope(
     let _ = cx.block_scope_declared_temp_names.pop();
     let _ = cx.block_scope_output_names.pop();
     computation = rewrite_named_test_reassign_ternary_in_scope_computation(&computation);
+    computation = rewrite_named_test_sequence_ternary_in_scope_computation(&computation);
     computation = rewrite_named_temp_ternary_in_scope_computation(&computation);
     if let Some((dep_expr, alias)) = &optional_dep_alias {
         computation = computation.replace(dep_expr, alias);
@@ -40493,6 +40760,250 @@ mod tests {
         ]);
 
         assert_eq!(rewritten, vec!["y = x.concat(arr2);".to_string()]);
+    }
+
+    #[test]
+    fn rewrites_generated_setup_statements_fuse_destructured_ssa_ternary() {
+        let rewritten = super::rewrite_generated_setup_statements(vec![
+            "const t0 = props.cond;".to_string(),
+            "x = [];".to_string(),
+            "x.push(props.bar);".to_string(),
+            "[x] = [[]];".to_string(),
+            "t0 ? x.push(props.foo) : null;".to_string(),
+            "mutate(x);".to_string(),
+        ]);
+
+        assert_eq!(
+            rewritten,
+            vec![
+                "x = [];".to_string(),
+                "x.push(props.bar);".to_string(),
+                "props.cond ? ([x] = [[]], x.push(props.foo)) : null;".to_string(),
+                "mutate(x);".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn rewrites_generated_setup_statements_fuse_dual_reset_ssa_ternary() {
+        let rewritten = super::rewrite_generated_setup_statements(vec![
+            "const t0 = props.cond;".to_string(),
+            "x = [];".to_string(),
+            "x.push(props.bar);".to_string(),
+            "x = [];".to_string(),
+            "const t1 = x.push(props.foo);".to_string(),
+            "x = [];".to_string(),
+            "t0 ? t1 : x.push(props.bar);".to_string(),
+            "arrayPush(x, 4);".to_string(),
+        ]);
+
+        assert_eq!(
+            rewritten,
+            vec![
+                "x = [];".to_string(),
+                "x.push(props.bar);".to_string(),
+                "props.cond ? (x = [], x.push(props.foo)) : (x = [], x.push(props.bar));"
+                    .to_string(),
+                "arrayPush(x, 4);".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_ssa_ternary_rewrite_helper_lines() {
+        assert_eq!(
+            super::parse_named_const_assignment_line("const t0 = props.cond;"),
+            Some(("".to_string(), "t0".to_string(), "props.cond".to_string()))
+        );
+        assert_eq!(
+            super::parse_assignment_statement_source_line("[x] = [[]];"),
+            Some(("".to_string(), "[x]".to_string(), "[[]]".to_string()))
+        );
+        assert_eq!(
+            super::parse_ternary_statement_line("t0 ? x.push(props.foo) : null;"),
+            Some((
+                "".to_string(),
+                "t0".to_string(),
+                "x.push(props.foo)".to_string(),
+                "null".to_string(),
+            ))
+        );
+        assert_eq!(
+            super::render_sequence_expression_ast(
+                &[String::from("[x] = [[]]")],
+                "x.push(props.foo)"
+            )
+            .as_deref(),
+            Some("([x] = [[]], x.push(props.foo))")
+        );
+        assert_eq!(
+            super::render_conditional_expression_ast(
+                "props.cond",
+                "([x] = [[]], x.push(props.foo))",
+                "null",
+            )
+            .as_deref(),
+            Some("props.cond ? ([x] = [[]], x.push(props.foo)) : null")
+        );
+        assert_eq!(
+            super::rewrite_named_test_sequence_ternary_in_scope_computation(
+                "const t0 = props.cond;\n[x] = [[]];\nt0 ? x.push(props.foo) : null;\n"
+            ),
+            "props.cond ? ([x] = [[]], x.push(props.foo)) : null;\n"
+        );
+        assert_eq!(
+            super::rewrite_named_test_sequence_ternary_in_scope_computation(
+                "const t0 = props.cond;\nx = [];\nconst t1 = x.push(props.foo);\nx = [];\nt0 ? t1 : x.push(props.bar);\n"
+            ),
+            "props.cond ? (x = [], x.push(props.foo)) : (x = [], x.push(props.bar));\n"
+        );
+        assert_eq!(
+            super::rewrite_named_test_sequence_ternary_in_scope_computation(
+                "const t0 = props.cond;\nx = [];\nx.push(props.bar);\n[x] = [[]];\nt0 ? x.push(props.foo) : null;\nmutate(x);\n"
+            ),
+            "x = [];\nx.push(props.bar);\nprops.cond ? ([x] = [[]], x.push(props.foo)) : null;\nmutate(x);\n"
+        );
+        assert_eq!(
+            super::split_statement_sources_preserving_blank_lines(
+                "x = [];\nx.push(props.bar);\nprops.cond ? ([x] = [[]], x.push(props.foo)) : null;\nmutate(x);\n"
+            ),
+            Some(vec![
+                "x = [];".to_string(),
+                "x.push(props.bar);".to_string(),
+                "props.cond ? ([x] = [[]], x.push(props.foo)) : null;".to_string(),
+                "mutate(x);".to_string(),
+            ])
+        );
+        let setup = vec![
+            "const t0 = props.cond;".to_string(),
+            "x = [];".to_string(),
+            "x.push(props.bar);".to_string(),
+            "[x] = [[]];".to_string(),
+            "t0 ? x.push(props.foo) : null;".to_string(),
+            "mutate(x);".to_string(),
+        ];
+        let computation = super::strip_statement_blank_line_markers(&setup).join("\n");
+        let computation =
+            super::rewrite_named_test_reassign_ternary_in_scope_computation(&computation);
+        let computation =
+            super::rewrite_named_test_sequence_ternary_in_scope_computation(&computation);
+        let computation = super::rewrite_named_temp_ternary_in_scope_computation(&computation);
+        assert_eq!(
+            computation,
+            "x = [];\nx.push(props.bar);\nprops.cond ? ([x] = [[]], x.push(props.foo)) : null;\nmutate(x);"
+        );
+        assert_eq!(
+            super::rewrite_generated_setup_statements(setup),
+            vec![
+                "x = [];".to_string(),
+                "x.push(props.bar);".to_string(),
+                "props.cond ? ([x] = [[]], x.push(props.foo)) : null;".to_string(),
+                "mutate(x);".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn canonicalizes_memoized_existing_return_with_destructured_ssa_ternary_setup() {
+        let shape = super::canonicalize_generated_body_shape(
+            super::GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+                value_name: "x".to_string(),
+                deps: vec![
+                    (0, "props.bar".to_string()),
+                    (1, "props.cond".to_string()),
+                    (2, "props.foo".to_string()),
+                ],
+                value_slot: 3,
+                memoized_bindings: vec![super::GeneratedBinding {
+                    kind: ast::VariableDeclarationKind::Const,
+                    pattern: "t0".to_string(),
+                    expression: "props.cond".to_string(),
+                    promote_to_function_declaration: false,
+                }],
+                memoized_assignments: Vec::new(),
+                memoized_expressions: Vec::new(),
+                memoized_setup_statements: vec![
+                    "x = [];".to_string(),
+                    "x.push(props.bar);".to_string(),
+                    "[x] = [[]];".to_string(),
+                    "t0 ? x.push(props.foo) : null;".to_string(),
+                    "mutate(x);".to_string(),
+                ],
+                memoized_expr: None,
+            },
+        );
+
+        assert!(
+            matches!(
+                shape,
+                super::GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+                    ref memoized_bindings,
+                    ref memoized_setup_statements,
+                    ..
+                } if memoized_bindings.is_empty()
+                    && *memoized_setup_statements
+                        == vec![
+                            "x = [];".to_string(),
+                            "x.push(props.bar);".to_string(),
+                            "props.cond ? ([x] = [[]], x.push(props.foo)) : null;".to_string(),
+                            "mutate(x);".to_string(),
+                        ]
+            ),
+            "unexpected shape: {shape:#?}"
+        );
+    }
+
+    #[test]
+    fn canonicalizes_memoized_existing_return_with_dual_reset_ssa_ternary_setup() {
+        let shape = super::canonicalize_generated_body_shape(
+            super::GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+                value_name: "x".to_string(),
+                deps: vec![
+                    (0, "props.bar".to_string()),
+                    (1, "props.cond".to_string()),
+                    (2, "props.foo".to_string()),
+                ],
+                value_slot: 3,
+                memoized_bindings: vec![super::GeneratedBinding {
+                    kind: ast::VariableDeclarationKind::Const,
+                    pattern: "t0".to_string(),
+                    expression: "props.cond".to_string(),
+                    promote_to_function_declaration: false,
+                }],
+                memoized_assignments: Vec::new(),
+                memoized_expressions: Vec::new(),
+                memoized_setup_statements: vec![
+                    "x = [];".to_string(),
+                    "x.push(props.bar);".to_string(),
+                    "x = [];".to_string(),
+                    "const t1 = x.push(props.foo);".to_string(),
+                    "x = [];".to_string(),
+                    "t0 ? t1 : x.push(props.bar);".to_string(),
+                    "arrayPush(x, 4);".to_string(),
+                ],
+                memoized_expr: None,
+            },
+        );
+
+        assert!(
+            matches!(
+                shape,
+                super::GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
+                    ref memoized_bindings,
+                    ref memoized_setup_statements,
+                    ..
+                } if memoized_bindings.is_empty()
+                    && *memoized_setup_statements
+                        == vec![
+                            "x = [];".to_string(),
+                            "x.push(props.bar);".to_string(),
+                            "props.cond ? (x = [], x.push(props.foo)) : (x = [], x.push(props.bar));"
+                                .to_string(),
+                            "arrayPush(x, 4);".to_string(),
+                        ]
+            ),
+            "unexpected shape: {shape:#?}"
+        );
     }
 
     #[test]
