@@ -2135,7 +2135,9 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
         memoized_expressions: Vec<String>,
         memoized_expr: Option<String>,
     ) -> (Vec<String>, Vec<String>, Option<String>) {
-        if memoized_expr.is_some() || !memoized_expressions.is_empty() || setup_statements.len() != 2
+        if memoized_expr.is_some()
+            || !memoized_expressions.is_empty()
+            || setup_statements.len() != 2
         {
             return (setup_statements, memoized_expressions, memoized_expr);
         }
@@ -2199,7 +2201,10 @@ fn canonicalize_generated_body_shape(shape: GeneratedBodyShape) -> GeneratedBody
         let ast::Expression::BooleanLiteral(left) = logical.left.without_parentheses() else {
             return None;
         };
-        if !matches!(logical.right.without_parentheses(), ast::Expression::NullLiteral(_)) {
+        if !matches!(
+            logical.right.without_parentheses(),
+            ast::Expression::NullLiteral(_)
+        ) {
             return None;
         }
         match (logical.operator, left.value) {
