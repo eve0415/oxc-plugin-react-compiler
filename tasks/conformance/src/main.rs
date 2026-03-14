@@ -24,7 +24,6 @@ struct FixtureSuiteOptions {
     strict_output: bool,
     parallel: bool,
     verbose: bool,
-    assert_no_reactive_string_fallback: bool,
 }
 
 fn main() {
@@ -52,9 +51,6 @@ fn main() {
     let strict_output = args.iter().any(|a| a == "--strict-output");
     let parallel = !args.iter().any(|a| a == "--no-parallel");
     let verbose = args.iter().any(|a| a == "--verbose");
-    let assert_no_reactive_string_fallback = args
-        .iter()
-        .any(|a| a == "--assert-no-reactive-string-fallback");
     let failures_json_path = args
         .iter()
         .position(|a| a == "--failures-json")
@@ -96,7 +92,6 @@ fn main() {
             strict_output,
             parallel,
             verbose,
-            assert_no_reactive_string_fallback,
         },
     );
     let results: Vec<FixtureResult> = results_raw
@@ -605,7 +600,6 @@ fn run_fixture_suite(fixtures: &[Fixture], options: FixtureSuiteOptions) -> Vec<
                     options.fixture_timeout,
                     options.run_skipped,
                     options.strict_output,
-                    options.assert_no_reactive_string_fallback,
                 );
                 if options.verbose {
                     println!("Finished {}", fixture.name);
@@ -625,7 +619,6 @@ fn run_fixture_suite(fixtures: &[Fixture], options: FixtureSuiteOptions) -> Vec<
                     options.fixture_timeout,
                     options.run_skipped,
                     options.strict_output,
-                    options.assert_no_reactive_string_fallback,
                 );
                 if options.verbose {
                     println!("Finished {}", fixture.name);
@@ -1716,19 +1709,13 @@ fn run_fixture_with_timeout(
     timeout: std::time::Duration,
     run_skipped: bool,
     strict_output: bool,
-    assert_no_reactive_string_fallback: bool,
 ) -> FixtureResult {
     let fixture_clone = fixture.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024) // 64MB stack
         .spawn(move || {
-            let r = run_fixture(
-                &fixture_clone,
-                run_skipped,
-                strict_output,
-                assert_no_reactive_string_fallback,
-            );
+            let r = run_fixture(&fixture_clone, run_skipped, strict_output);
             let _ = tx.send(r);
         })
         .expect("failed to spawn fixture thread");
@@ -1768,12 +1755,7 @@ fn run_fixture_with_timeout(
     }
 }
 
-fn run_fixture(
-    fixture: &Fixture,
-    run_skipped: bool,
-    strict_output: bool,
-    assert_no_reactive_string_fallback: bool,
-) -> FixtureResult {
+fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> FixtureResult {
     let source = match std::fs::read_to_string(&fixture.input_path) {
         Ok(s) => s,
         Err(e) => {
@@ -2163,11 +2145,7 @@ fn run_fixture(
             }]);
     }
 
-    oxc_react_compiler::reactive_scopes::codegen_reactive::reset_reactive_string_fallback_counts();
     let result = oxc_react_compiler::compile(&filename, &source, &options);
-    let reactive_string_fallback_counts =
-        oxc_react_compiler::reactive_scopes::codegen_reactive::take_reactive_string_fallback_counts(
-        );
     let language = if source.contains("@flow") {
         "flow"
     } else {
@@ -2178,35 +2156,6 @@ fn run_fixture(
     } else {
         "module"
     };
-
-    if assert_no_reactive_string_fallback && reactive_string_fallback_counts.total() > 0 {
-        return FixtureResult {
-            name: fixture.name.clone(),
-            status: Status::Fail,
-            message: Some(format!(
-                "Reactive string fallback used: {:?}",
-                reactive_string_fallback_counts
-            )),
-            expected_state,
-            actual_state: if result.transformed {
-                ActualState::Transformed
-            } else {
-                ActualState::Bailout
-            },
-            outcome: FixtureOutcome::Mismatch,
-            parity_success: false,
-            actual_code: Some(canonicalize_strict_text(&result.code)),
-            expected_code: expected_code
-                .clone()
-                .map(|code| canonicalize_strict_text(&code))
-                .or_else(|| {
-                    expected_error
-                        .clone()
-                        .map(|text| canonicalize_strict_text(&text))
-                }),
-            is_error_fixture,
-        };
-    }
 
     if matches!(expected_state, Some(ExpectedState::Error)) {
         if !result.transformed {

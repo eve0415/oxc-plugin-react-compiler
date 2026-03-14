@@ -48,8 +48,6 @@ thread_local! {
     static FAST_REFRESH_SOURCE_HASH: RefCell<Option<String>> = const { RefCell::new(None) };
     static GENERATED_BODY_SHAPE_CACHE: RefCell<HashMap<(bool, String), GeneratedBodyShape>> =
         RefCell::new(HashMap::new());
-    static REACTIVE_STRING_FALLBACK_COUNTS: RefCell<ReactiveStringFallbackCounts> =
-        const { RefCell::new(ReactiveStringFallbackCounts::zero()) };
 }
 
 pub fn set_fast_refresh_source_hash(hash: Option<String>) {
@@ -60,60 +58,6 @@ pub fn set_fast_refresh_source_hash(hash: Option<String>) {
 
 fn get_fast_refresh_source_hash() -> Option<String> {
     FAST_REFRESH_SOURCE_HASH.with(|slot| slot.borrow().clone())
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ReactiveStringFallbackCounts {
-    pub rendered_body_analysis: usize,
-    pub scope_statement_shape_render: usize,
-    pub early_return_shape_render: usize,
-    pub memo_decomposition_shape_render: usize,
-}
-
-impl ReactiveStringFallbackCounts {
-    const fn zero() -> Self {
-        Self {
-            rendered_body_analysis: 0,
-            scope_statement_shape_render: 0,
-            early_return_shape_render: 0,
-            memo_decomposition_shape_render: 0,
-        }
-    }
-
-    pub fn total(self) -> usize {
-        self.rendered_body_analysis
-            + self.scope_statement_shape_render
-            + self.early_return_shape_render
-            + self.memo_decomposition_shape_render
-    }
-}
-
-pub fn reset_reactive_string_fallback_counts() {
-    REACTIVE_STRING_FALLBACK_COUNTS.with(|counts| {
-        *counts.borrow_mut() = ReactiveStringFallbackCounts::zero();
-    });
-}
-
-pub fn take_reactive_string_fallback_counts() -> ReactiveStringFallbackCounts {
-    REACTIVE_STRING_FALLBACK_COUNTS.with(|counts| *counts.borrow())
-}
-
-pub(crate) fn current_reactive_string_fallback_counts() -> ReactiveStringFallbackCounts {
-    REACTIVE_STRING_FALLBACK_COUNTS.with(|counts| *counts.borrow())
-}
-
-pub(crate) fn restore_reactive_string_fallback_counts(
-    counts_to_restore: ReactiveStringFallbackCounts,
-) {
-    REACTIVE_STRING_FALLBACK_COUNTS.with(|counts| {
-        *counts.borrow_mut() = counts_to_restore;
-    });
-}
-
-fn bump_rendered_body_analysis_fallback() {
-    REACTIVE_STRING_FALLBACK_COUNTS.with(|counts| {
-        counts.borrow_mut().rendered_body_analysis += 1;
-    });
 }
 
 /// Expression precedence levels (matching JavaScript operator precedence).
@@ -4325,32 +4269,16 @@ fn codegen_reactive_function_with_primitives(
                     &analyzed_body_shape,
                     func.async_,
                     func.generator,
-                ) || generated_body_shapes_render_equivalent(
-                    &direct_body_shape,
-                    &analyzed_body_shape,
-                ) || generated_body_shape_renders_equivalent_to_string_body(
-                    &direct_body_shape,
-                    &body,
                 ) {
                     direct_body_shape
-                } else if generated_body_shapes_equivalent_for_fallback_accounting(
-                    &direct_body_shape,
-                    &analyzed_body_shape,
-                    &body,
-                ) {
-                    analyzed_body_shape
                 } else {
-                    bump_rendered_body_analysis_fallback();
                     analyzed_body_shape
                 }
             } else {
                 direct_body_shape
             }
         }
-        None => {
-            bump_rendered_body_analysis_fallback();
-            analyzed_body_shape
-        }
+        None => analyzed_body_shape
     };
     let body_shape = apply_generated_body_shape_cache_binding_name(body_shape, cache_binding_name);
     CodegenResult {

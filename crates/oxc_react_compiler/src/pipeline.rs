@@ -4154,13 +4154,8 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
         None
     };
     codegen_reactive::set_fast_refresh_source_hash(fast_refresh_hash);
-    let reactive_fallback_count_start = codegen_reactive::current_reactive_string_fallback_counts();
-    let rollback_reactive_fallback_counts = || {
-        codegen_reactive::restore_reactive_string_fallback_counts(reactive_fallback_count_start);
-    };
     macro_rules! untransformed_result {
         ($code:expr) => {{
-            rollback_reactive_fallback_counts();
             return CompileResult {
                 transformed: false,
                 code: $code,
@@ -6183,8 +6178,6 @@ fn try_compile_function<'a>(
     }
 
     // TODO: implement validate_no_dynamic_components_or_hooks
-    let reactive_fallback_count_start = codegen_reactive::current_reactive_string_fallback_counts();
-
     let env = crate::environment::Environment::new(options.environment.clone());
 
     // Phase 1: Lower to HIR
@@ -6340,7 +6333,6 @@ fn try_compile_function<'a>(
     let needs_cache_import =
         codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
     let generated_body_shape = codegen_result.body_shape.clone();
-    codegen_reactive::restore_reactive_string_fallback_counts(reactive_fallback_count_start);
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -6391,8 +6383,6 @@ fn try_compile_function_with_name<'a>(
     }
 
     // TODO: implement validate_no_dynamic_components_or_hooks
-    let reactive_fallback_count_start = codegen_reactive::current_reactive_string_fallback_counts();
-
     let env = crate::environment::Environment::new(options.environment.clone());
 
     // Phase 1: Lower to HIR
@@ -6541,7 +6531,6 @@ fn try_compile_function_with_name<'a>(
     let needs_cache_import =
         codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
     let generated_body_shape = codegen_result.body_shape.clone();
-    codegen_reactive::restore_reactive_string_fallback_counts(reactive_fallback_count_start);
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
@@ -6601,8 +6590,6 @@ fn try_compile_arrow<'a>(
     }
 
     // TODO: implement validate_no_dynamic_components_or_hooks
-    let reactive_fallback_count_start = codegen_reactive::current_reactive_string_fallback_counts();
-
     let env = crate::environment::Environment::new(options.environment.clone());
 
     let lowering_cx = build::LoweringContext::new(semantic, source, env);
@@ -6750,7 +6737,6 @@ fn try_compile_arrow<'a>(
     let needs_cache_import =
         codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
     let generated_body_shape = codegen_result.body_shape.clone();
-    codegen_reactive::restore_reactive_string_fallback_counts(reactive_fallback_count_start);
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
