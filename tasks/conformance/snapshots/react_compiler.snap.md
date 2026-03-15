@@ -1,6 +1,6 @@
-# React Compiler Conformance — 73.3% parity rate
+# React Compiler Conformance — 74.1% parity rate
 
-**1285** parity_success, **467** parity_failure, **0** skipped
+**1298** parity_success, **454** parity_failure, **0** skipped
 
 ## Failed
 
@@ -28,7 +28,6 @@
 - `allow-ref-initialization-undefined`: Expected upstream bailout (untransformed output), but compiler transformed output
 - `allow-ref-lazy-initialization-with-logical`: Output mismatch
 - `array-at-closure`: Output mismatch
-- `array-at-effect`: Output mismatch
 - `array-property-call`: Output mismatch
 - `assume-invoked/conditional-call-chain`: Output mismatch
 - `assume-invoked/function-with-conditional-callsite-in-another-function`: Output mismatch
@@ -133,7 +132,6 @@
 - `gating/gating-test-export-function-and-default`: Output mismatch
 - `global-types/set-constructor-arg`: Output mismatch
 - `hoisted-declaration-with-scope`: Output mismatch
-- `hoisting-functionexpr-conditional-dep`: Output mismatch
 - `hoisting-setstate-captured-indirectly-jsx`: Output mismatch
 - `hook-inside-logical-expression`: Expected upstream bailout (untransformed output), but compiler transformed output
 - `hook-ref-callback`: Output mismatch
@@ -181,13 +179,11 @@
 - `jsx-tag-evaluation-order`: Output mismatch
 - `jsx-tag-evaluation-order-non-global`: Output mismatch
 - `jsx-ternary-local-variable`: Output mismatch
-- `jump-poisoned/break-poisons-outer-scope`: Output mismatch
 - `jump-poisoned/loop-break-in-scope`: Output mismatch
 - `jump-poisoned/reduce-if-nonexhaustive-poisoned-deps`: Output mismatch
 - `jump-poisoned/reduce-if-nonexhaustive-poisoned-deps1`: Output mismatch
 - `jump-poisoned/return-in-scope`: Output mismatch
 - `jump-poisoned/return-poisons-outer-scope`: Output mismatch
-- `jump-unpoisoned/else-branch-scope-unpoisoned`: Output mismatch
 - `jump-unpoisoned/reduce-if-exhaustive-nonpoisoned-deps`: Output mismatch
 - `jump-unpoisoned/reduce-if-exhaustive-nonpoisoned-deps1`: Output mismatch
 - `labeled-break-within-label-loop`: Output mismatch
@@ -204,7 +200,6 @@
 - `memoize-value-block-value-sequence`: Output mismatch
 - `meta-isms/repro-cx-assigned-to-temporary`: Output mismatch
 - `meta-isms/repro-cx-namespace-assigned-to-temporary`: Output mismatch
-- `method-call-fn-call`: Output mismatch
 - `mixedreadonly-mutating-map`: Output mismatch
 - `mutate-outer-scope-within-value-block`: Output mismatch
 - `mutation-within-jsx`: Output mismatch
@@ -307,12 +302,8 @@
 - `reassigned-phi-in-returned-function-expression`: Output mismatch
 - `reassignment-separate-scopes`: Output mismatch
 - `recursive-function-expression`: Output mismatch
-- `reduce-reactive-cond-deps-cfg-nested-testifelse`: Output mismatch
 - `reduce-reactive-cond-deps-return-in-scope`: Output mismatch
 - `reduce-reactive-deps/cfg-condexpr`: Output mismatch
-- `reduce-reactive-deps/cfg-ifelse`: Output mismatch
-- `reduce-reactive-deps/cfg-nested-ifelse`: Output mismatch
-- `reduce-reactive-deps/cfg-nested-ifelse-missing`: Output mismatch
 - `reduce-reactive-deps/conditional-member-expr`: Output mismatch
 - `reduce-reactive-deps/conditional-member-expr`: Output mismatch
 - `reduce-reactive-deps/context-var-granular-dep`: Output mismatch
@@ -324,14 +315,11 @@
 - `reduce-reactive-deps/memberexpr-join-optional-chain2`: Output mismatch
 - `reduce-reactive-deps/memberexpr-join-optional-chain2`: Output mismatch
 - `reduce-reactive-deps/merge-uncond-optional-chain-and-cond`: Output mismatch
-- `reduce-reactive-deps/promote-uncond`: Output mismatch
-- `reduce-reactive-deps/promote-uncond`: Output mismatch
 - `reduce-reactive-deps/reduce-if-exhaustive-poisoned-deps`: Output mismatch
 - `reduce-reactive-deps/todo-infer-function-uncond-optionals-hoisted`: Output mismatch
 - `reduce-reactive-deps/todo-infer-function-uncond-optionals-hoisted`: Output mismatch
 - `reduce-reactive-deps/todo-merge-ssa-phi-access-nodes`: Output mismatch
 - `reduce-reactive-deps/uncond-access-in-mutable-range`: Output mismatch
-- `reduce-reactive-deps/uncond-nonoverlap-descendant`: Output mismatch
 - `ref-current-optional-field-no-added-to-dep`: Output mismatch
 - `ref-in-effect`: Output mismatch
 - `rename-source-variables`: Output mismatch
@@ -444,7 +432,6 @@
 - `type-annotations/type-annotation-satisfies-array`: Output mismatch
 - `type-cast-expression.flow`: Output mismatch
 - `type-inference-array-from`: Output mismatch
-- `unary-expr`: Output mismatch
 - `unlabeled-break-within-label-loop`: Output mismatch
 - `unused-conditional`: Output mismatch
 - `unused-logical`: Output mismatch
@@ -496,6 +483,7 @@
 - `allow-reassignment-to-global-function-jsx-prop`
 - `allow-ref-type-cast-in-render`
 - `array-access-assignment`
+- `array-at-effect`
 - `array-at-mutate-after-capture`
 - `array-concat-should-capture`
 - `array-expression-spread`
@@ -1015,6 +1003,7 @@
 - `hoisted-context-variable-in-outlined-fn`
 - `hoisted-function-declaration`
 - `hoisting-computed-member-expression`
+- `hoisting-functionexpr-conditional-dep`
 - `hoisting-invalid-tdz-let`
 - `hoisting-let-declaration-without-initialization`
 - `hoisting-member-expression`
@@ -1112,6 +1101,8 @@
 - `jsx-preserve-whitespace`
 - `jsx-reactive-local-variable-member-expr`
 - `jump-poisoned/break-in-scope`
+- `jump-poisoned/break-poisons-outer-scope`
+- `jump-unpoisoned/else-branch-scope-unpoisoned`
 - `jump-unpoisoned/jump-target-within-scope-label`
 - `jump-unpoisoned/jump-target-within-scope-loop-break`
 - `jump-unpoisoned/return-before-scope-starts`
@@ -1144,6 +1135,7 @@
 - `meta-isms/repro-cx-namespace-nesting`
 - `method-call`
 - `method-call-computed`
+- `method-call-fn-call`
 - `module-scoped-bindings`
 - `multi-directive`
 - `multiple-calls-to-hoisted-callback-from-other-callback`
@@ -1398,6 +1390,10 @@
 - `reassignment-conditional`
 - `recursive-function`
 - `reduce-reactive-cond-deps-break-in-scope`
+- `reduce-reactive-cond-deps-cfg-nested-testifelse`
+- `reduce-reactive-deps/cfg-ifelse`
+- `reduce-reactive-deps/cfg-nested-ifelse`
+- `reduce-reactive-deps/cfg-nested-ifelse-missing`
 - `reduce-reactive-deps/cfg-switch-exhaustive`
 - `reduce-reactive-deps/cfg-switch-missing-case`
 - `reduce-reactive-deps/cfg-switch-missing-default`
@@ -1416,10 +1412,13 @@
 - `reduce-reactive-deps/join-uncond-scopes-cond-deps`
 - `reduce-reactive-deps/join-uncond-scopes-cond-deps`
 - `reduce-reactive-deps/no-uncond`
+- `reduce-reactive-deps/promote-uncond`
+- `reduce-reactive-deps/promote-uncond`
 - `reduce-reactive-deps/subpath-order1`
 - `reduce-reactive-deps/subpath-order2`
 - `reduce-reactive-deps/superpath-order1`
 - `reduce-reactive-deps/superpath-order2`
+- `reduce-reactive-deps/uncond-nonoverlap-descendant`
 - `reduce-reactive-deps/uncond-nonoverlap-direct`
 - `reduce-reactive-deps/uncond-overlap-descendant`
 - `reduce-reactive-deps/uncond-overlap-direct`
@@ -1680,6 +1679,7 @@
 - `type-test-polymorphic`
 - `type-test-primitive`
 - `type-test-return-type-inference`
+- `unary-expr`
 - `unclosed-eslint-suppression-skips-all-components`
 - `unconditional-break-label`
 - `uninitialized-declaration-in-reactive-scope`

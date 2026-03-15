@@ -1719,8 +1719,10 @@ fn codegen_reactive_scope<'a>(
     }
 
     // Build dependency comparison: $[slot] !== dep_expr || ...
-    let deps: Vec<(u32, ast::Expression<'a>)> = scope
-        .dependencies
+    // Sort dependencies by their rendered name to match upstream ordering.
+    let mut sorted_deps: Vec<&ReactiveScopeDependency> = scope.dependencies.iter().collect();
+    sorted_deps.sort_by_key(|d| dep_sort_key(d));
+    let deps: Vec<(u32, ast::Expression<'a>)> = sorted_deps
         .iter()
         .filter_map(|dep| {
             let slot = cx.alloc_cache_slot();
@@ -2210,6 +2212,25 @@ fn all_pattern_vars_declared(cx: &CodegenContext<'_>, pattern: &Pattern) -> bool
 /// Try to inline a zero-dependency (sentinel) scope by storing its output
 /// expression in the temp map. Returns true if the scope was inlined (should
 /// be skipped in output), false if it should be emitted normally.
+/// Build a sort key for a scope dependency (for deterministic ordering).
+fn dep_sort_key(dep: &ReactiveScopeDependency) -> String {
+    let root = dep
+        .identifier
+        .name
+        .as_ref()
+        .map(|n| n.value().to_string())
+        .unwrap_or_else(|| format!("t{}", dep.identifier.id.0));
+    if dep.path.is_empty() {
+        return root;
+    }
+    let mut key = root;
+    for entry in &dep.path {
+        key.push('.');
+        key.push_str(&entry.property);
+    }
+    key
+}
+
 /// Extract the collection Place from a for-of/for-in init block by scanning
 /// for `IteratorNext` or `NextPropertyOf` instructions.
 fn extract_for_collection(init: &ReactiveBlock) -> Option<Place> {
