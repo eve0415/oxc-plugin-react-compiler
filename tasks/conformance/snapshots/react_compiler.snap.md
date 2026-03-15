@@ -1,17 +1,13 @@
-# React Compiler Conformance — 90.6% parity rate
+# React Compiler Conformance — 91.2% parity rate
 
-**1587** parity_success, **165** parity_failure, **0** skipped
+**1597** parity_success, **155** parity_failure, **0** skipped
 
 ## Failed
 
 - `allow-passing-ref-to-render-helper-props-object`: Output mismatch
 - `assume-invoked/conditional-call-chain`: Output mismatch
 - `assume-invoked/function-with-conditional-callsite-in-another-function`: Output mismatch
-- `bailout-retry/bailout-capitalized-fn-call`: Output mismatch
-- `bailout-retry/bailout-eslint-suppressions`: Output mismatch
 - `bailout-retry/bailout-validate-preserve-memo`: Output mismatch
-- `bailout-retry/bailout-validate-prop-write`: Output mismatch
-- `bailout-retry/bailout-validate-ref-current-access`: Output mismatch
 - `bailout-retry/mutate-after-useeffect-optional-chain`: Output mismatch
 - `bug-ref-prefix-postfix-operator`: Output mismatch
 - `call-args-destructuring-assignment`: Output mismatch
@@ -65,7 +61,6 @@
 - `flag-enable-emit-hook-guards`: Output mismatch
 - `for-logical`: Output mismatch
 - `for-loop-let-undefined-decl`: Expected upstream bailout (untransformed output), but compiler transformed output
-- `for-multiple-variable-declarations-in-initializer`: Output mismatch
 - `for-with-assignment-as-update`: Output mismatch
 - `function-param-assignment-pattern`: Output mismatch
 - `hoisting-repro-variable-used-in-assignment`: Output mismatch
@@ -102,7 +97,6 @@
 - `option-enable-change-variable-codegen`: Output mismatch
 - `original-reactive-scopes-fork/capture-ref-for-later-mutation`: Output mismatch
 - `preserve-existing-memoization-guarantees/lambda-with-fbt-preserve-memoization`: Output mismatch
-- `preserve-memo-validation/useCallback-in-other-reactive-block`: Output mismatch
 - `preserve-memo-validation/useCallback-reordering-deplist-controlflow`: Output mismatch
 - `preserve-memo-validation/useMemo-conditional-access-alloc`: Output mismatch
 - `preserve-memo-validation/useMemo-conditional-access-noAlloc`: Output mismatch
@@ -117,7 +111,6 @@
 - `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-ternary`: Output mismatch
 - `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-ternary-with-mutation`: Output mismatch
 - `propagate-scope-deps-hir-fork/switch`: Output mismatch
-- `propagate-scope-deps-hir-fork/switch-non-final-default`: Output mismatch
 - `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch`: Output mismatch
 - `property-call-evaluation-order`: Output mismatch
 - `reactive-control-dependency-for-init`: Output mismatch
@@ -139,11 +132,9 @@
 - `repro-invalid-reactivity-value-block`: Output mismatch
 - `repro-mutate-ref-in-function-passed-to-hook`: Output mismatch
 - `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`: Output mismatch
-- `repro-propagate-type-of-ternary-nested`: Output mismatch
 - `repro-scope-missing-mutable-range`: Output mismatch
 - `repro-unmerged-fbt-call-merge-overlapping-reactive-scopes`: Output mismatch
 - `repro-unreachable-code-early-return-in-useMemo`: Output mismatch
-- `reverse-postorder`: Output mismatch
 - `sequence-expression`: Output mismatch
 - `simple`: Output mismatch
 - `ssa-renaming-ternary`: Output mismatch
@@ -153,7 +144,6 @@
 - `ssa-renaming-unconditional-ternary`: Output mismatch
 - `ssa-renaming-unconditional-ternary-with-mutation`: Output mismatch
 - `switch`: Output mismatch
-- `switch-non-final-default`: Output mismatch
 - `switch-with-fallthrough`: Output mismatch
 - `todo-granular-iterator-semantics`: Output mismatch
 - `transform-fire/hook-guard`: Output mismatch
@@ -263,6 +253,10 @@
 - `babel-existing-react-namespace-import`
 - `babel-existing-react-runtime-import`
 - `babel-repro-compact-negative-number`
+- `bailout-retry/bailout-capitalized-fn-call`
+- `bailout-retry/bailout-eslint-suppressions`
+- `bailout-retry/bailout-validate-prop-write`
+- `bailout-retry/bailout-validate-ref-current-access`
 - `bailout-retry/error.callsite-in-non-react-fn`
 - `bailout-retry/error.callsite-in-non-react-fn-default-import`
 - `bailout-retry/error.non-inlined-effect-fn`
@@ -701,6 +695,7 @@
 - `for-in-statement-empty-body`
 - `for-in-statement-type-inference`
 - `for-loop-with-value-block-initializer`
+- `for-multiple-variable-declarations-in-initializer`
 - `for-of-break`
 - `for-of-capture-item-of-local-collection-mutate-later`
 - `for-of-capture-item-of-local-collection-mutate-later-value-initially-null`
@@ -1157,6 +1152,7 @@
 - `preserve-memo-validation/useCallback-captures-reassigned-context-property`
 - `preserve-memo-validation/useCallback-dep-scope-pruned`
 - `preserve-memo-validation/useCallback-extended-contextvar-scope`
+- `preserve-memo-validation/useCallback-in-other-reactive-block`
 - `preserve-memo-validation/useCallback-infer-fewer-deps`
 - `preserve-memo-validation/useCallback-infer-more-specific`
 - `preserve-memo-validation/useCallback-infer-read-dep`
@@ -1210,6 +1206,7 @@
 - `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-via-destructuring-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-with-mutation`
+- `propagate-scope-deps-hir-fork/switch-non-final-default`
 - `propagate-scope-deps-hir-fork/try-catch-maybe-null-dependency`
 - `propagate-scope-deps-hir-fork/try-catch-mutate-outer-value`
 - `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch-escaping`
@@ -1385,6 +1382,7 @@
 - `repro-preds-undefined-try-catch-return-primitive`
 - `repro-preserve-memoization-inner-destructured-value-mistaken-as-dependency`
 - `repro-propagate-type-of-ternary-jsx`
+- `repro-propagate-type-of-ternary-nested`
 - `repro-reassign-props`
 - `repro-reassign-to-variable-without-mutable-range`
 - `repro-ref-mutable-range`
@@ -1405,6 +1403,7 @@
 - `return-ref-callback`
 - `return-ref-callback-structure`
 - `return-undefined`
+- `reverse-postorder`
 - `rewrite-phis-in-lambda-capture-context`
 - `rules-of-hooks/allow-locals-named-like-hooks`
 - `rules-of-hooks/allow-props-named-like-hooks`
@@ -1568,6 +1567,7 @@
 - `store-via-call`
 - `store-via-new`
 - `switch-global-propertyload-case-test`
+- `switch-non-final-default`
 - `switch-with-only-default`
 - `tagged-template-in-hook`
 - `tagged-template-literal`

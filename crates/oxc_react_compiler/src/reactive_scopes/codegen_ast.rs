@@ -1565,25 +1565,13 @@ fn codegen_terminal<'a>(
             loop_block,
             ..
         } => {
-            // Init: emit instructions from init block, take last as init expression.
+            // Init: emit instructions from init block, reconstructing merged
+            // declarations.  The HIR may split `let i = expr;` into separate
+            // DeclareLocal + StoreLocal instructions, producing `let i;` then
+            // `i = expr;`.  We merge these back into a single VariableDeclaration
+            // with the initializer, matching upstream Babel output.
             let init_stmts = codegen_block(cx, init);
-            let for_init = if let Some(last) = init_stmts.last() {
-                match last {
-                    ast::Statement::VariableDeclaration(_) => {
-                        // Clone the last statement as ForStatementInit
-                        if let ast::Statement::VariableDeclaration(decl) =
-                            init_stmts.into_iter().last().unwrap()
-                        {
-                            Some(ast::ForStatementInit::VariableDeclaration(decl))
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                }
-            } else {
-                None
-            };
+            let for_init = reconstruct_for_init(cx, init_stmts);
 
             let test_expr = codegen_place(cx, test);
 
@@ -2455,4 +2443,100 @@ fn dump_reactive_block(block: &ReactiveBlock, indent: usize) {
             }
         }
     }
+}
+
+/// Reconstruct a for-loop init from the emitted statements.
+///
+/// The HIR may split `let i = expr` into separate DeclareLocal (`let i;`) and
+/// StoreLocal (`i = expr;`) instructions.  This function merges them back:
+///
+/// - `[let i;, i = expr;]` → `let i = expr`
+/// - `[let i = 0;, let len = expr;]` → `let i = 0, len = expr`
+/// - `[let i;]` → `let i`
+///
+/// Returns `None` when the statements cannot be reconstructed into a single
+/// `ForStatementInit`.
+fn reconstruct_for_init<'a>(
+    cx: &mut CodegenContext<'a>,
+    stmts: Vec<ast::Statement<'a>>,
+) -> Option<ast::ForStatementInit<'a>> {
+    if stmts.is_empty() {
+        return None;
+    }
+
+    // Fast path: single variable declaration (common case).
+    if stmts.len() == 1 {
+        if let ast::Statement::VariableDeclaration(_) = &stmts[0]
+            && let ast::Statement::VariableDeclaration(decl) = stmts.into_iter().next().unwrap()
+        {
+            return Some(ast::ForStatementInit::VariableDeclaration(decl));
+        }
+        return None;
+    }
+
+    // Multi-statement path: merge DeclareLocal + assignment pairs.
+    // Collect all declarators from variable declarations, then merge in
+    // assignments for uninitialized ones.
+    struct DeclInfo<'a> {
+        name: String,
+        id: ast::BindingPattern<'a>,
+        init: Option<ast::Expression<'a>>,
+    }
+    let mut declarators: Vec<DeclInfo<'a>> = Vec::new();
+    let mut kind = ast::VariableDeclarationKind::Let;
+
+    for stmt in stmts {
+        match stmt {
+            ast::Statement::VariableDeclaration(mut decl) => {
+                kind = decl.kind;
+                for d in decl.declarations.drain(..) {
+                    let name = match &d.id {
+                        ast::BindingPattern::BindingIdentifier(id) => id.name.to_string(),
+                        _ => String::new(),
+                    };
+                    declarators.push(DeclInfo {
+                        name,
+                        id: d.id,
+                        init: d.init,
+                    });
+                }
+            }
+            ast::Statement::ExpressionStatement(es) => {
+                if let ast::Expression::AssignmentExpression(assign) = es.unbox().expression
+                    && assign.operator == AssignmentOperator::Assign
+                    && let ast::AssignmentTarget::AssignmentTargetIdentifier(ident) = &assign.left
+                {
+                    let name = ident.name.as_str();
+                    // Find the matching uninitialised declarator and set its init.
+                    if let Some(d) = declarators
+                        .iter_mut()
+                        .rev()
+                        .find(|d| d.init.is_none() && d.name == name)
+                    {
+                        d.init = Some(assign.unbox().right);
+                        continue;
+                    }
+                }
+                // Could not merge — bail out.
+                return None;
+            }
+            _ => return None,
+        }
+    }
+
+    if declarators.is_empty() {
+        return None;
+    }
+
+    let mut oxc_declarators = cx.builder.vec_with_capacity(declarators.len());
+    for d in declarators {
+        oxc_declarators.push(
+            cx.builder
+                .variable_declarator(SPAN, kind, d.id, NONE, d.init, false),
+        );
+    }
+    Some(ast::ForStatementInit::VariableDeclaration(
+        cx.builder
+            .alloc_variable_declaration(SPAN, kind, oxc_declarators, false),
+    ))
 }

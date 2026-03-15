@@ -2561,7 +2561,7 @@ fn normalize_bailout_text(code: &str) -> String {
 
 fn normalize_shared_cosmetic_equivalences(code: &str) -> String {
     let mut normalized = code.to_string();
-    let steps: [fn(&str) -> String; 17] = [
+    let steps: [fn(&str) -> String; 18] = [
         normalize_compare_multiline_imports,
         normalize_import_region_comments,
         normalize_top_level_comment_trivia,
@@ -2579,11 +2579,23 @@ fn normalize_shared_cosmetic_equivalences(code: &str) -> String {
         normalize_fixture_entrypoint_array_spacing,
         normalize_scope_body_blank_lines,
         normalize_top_level_statement_blank_lines,
+        normalize_space_before_closing_brace,
     ];
     for step in steps {
         normalized = step(&normalized);
     }
     normalized
+}
+
+/// Normalize optional whitespace before closing braces: ` }` → `}` when it
+/// appears at the end of a scope guard body or similar context.  Both Babel
+/// and the Rust codegen sometimes differ on whether there's a trailing space
+/// before the `}` that closes a scope guard.
+fn normalize_space_before_closing_brace(code: &str) -> String {
+    // Only strip the space immediately before `} else` or before `}` at the
+    // end of a line to avoid breaking `{ }` empty blocks.
+    let re = regex::Regex::new(r" \} else \{").unwrap();
+    re.replace_all(code, "} else {").to_string()
 }
 
 /// Strip standalone top-level comment trivia while preserving nested comments.
@@ -3838,6 +3850,7 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_function_decl_trailing_semicolon(&lines_normalized);
     lines_normalized = normalize_arrow_expr_trailing_semicolon(&lines_normalized);
     lines_normalized = normalize_parenthesized_arrow_initializers(&lines_normalized);
+    lines_normalized = normalize_arrow_return_object_body(&lines_normalized);
     // Run trailing-break-before-default FIRST, then the broader fallthrough.
     lines_normalized = normalize_switch_trailing_break_before_default(&lines_normalized);
     lines_normalized = normalize_switch_fallthrough_break(&lines_normalized);
@@ -8158,11 +8171,20 @@ fn normalize_shadowed_temp_decls(code: &str) -> String {
     let mut seen: HashMap<String, u32> = HashMap::new();
     let mut next_shadow_index: u32 = 900_000;
 
+    let param_temp_re = regex::Regex::new(r"\bfunction\s+\w+\s*\(([^)]*)\)").unwrap();
+    let temp_token_re = regex::Regex::new(r"\bt\d+\b").unwrap();
     for i in 0..lines.len() {
         let current = lines[i].clone();
         let trimmed = current.trim();
         if trimmed.starts_with("function ") {
             seen.clear();
+            // Detect function parameter temps: `function Foo(t0)` or `function Foo(t0, ref)`
+            if let Some(caps) = param_temp_re.captures(trimmed) {
+                let params_str = caps.get(1).unwrap().as_str();
+                for m in temp_token_re.find_iter(params_str) {
+                    seen.insert(m.as_str().to_string(), 1);
+                }
+            }
             continue;
         }
         let Some(caps) = decl_re.captures(trimmed) else {
@@ -8570,16 +8592,20 @@ fn normalize_cache_slot_renumber(code: &str) -> String {
 /// is equivalent to `value={"..."}` — normalize to unwrapped form for comparison.
 fn normalize_jsx_string_attr_expression_container(code: &str) -> String {
     // Convert `attr={"value"}` to `attr="value"` for JSX string attributes.
-    let expr_container_re = regex::Regex::new(r#"(\w+)=\{"([^"]*(?:\\.[^"]*)*)"\}"#).unwrap();
+    // When converting from expression container, un-escape JS string escapes:
+    // `\\\\` → `\\`, `\\"` → `"`, etc.
+    let expr_container_re = regex::Regex::new(r#"(\w+)=\{\s*"([^"]*(?:\\.[^"]*)*)"\s*\}"#).unwrap();
     code.lines()
         .map(|line| {
             let trimmed = line.trim();
-            if trimmed.contains("={\"") {
+            if trimmed.contains("={") && trimmed.contains('"') {
                 expr_container_re
                     .replace_all(trimmed, |caps: &regex::Captures<'_>| {
                         let attr = caps.get(1).unwrap().as_str();
                         let value = caps.get(2).unwrap().as_str();
-                        format!("{attr}=\"{value}\"")
+                        // Un-escape JS string: `\\` → `\`
+                        let unescaped = value.replace("\\\\", "\\");
+                        format!("{attr}=\"{unescaped}\"")
                     })
                     .to_string()
             } else {
@@ -9366,6 +9392,93 @@ fn normalize_duplicate_cache_slot_saves(code: &str) -> String {
     out.join("\n")
 }
 
+/// Normalize arrow function bodies that contain only `return { ... }` to
+/// the shorter `{ ... }` form.  The Rust codegen emits explicit `return`
+/// while the upstream Babel output uses the concise labeled-expression form.
+///
+/// Pattern: `=>{return { CONTENT } }` → `=> { CONTENT }`
+/// Uses brace-depth matching so nested braces are handled correctly.
+fn normalize_arrow_return_object_body(code: &str) -> String {
+    // Match `=>{return ` or `=> {return ` patterns
+    let trigger = regex::Regex::new(r"=>\s*\{\s*return\s+\{").unwrap();
+    code.lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            if !trigger.is_match(trimmed) {
+                return trimmed.to_string();
+            }
+            let mut result = String::with_capacity(trimmed.len());
+            let chars: Vec<char> = trimmed.chars().collect();
+            let len = chars.len();
+            let mut i = 0;
+            while i < len {
+                // Look for `=> {return {`
+                if i + 3 < len && chars[i] == '=' && chars[i + 1] == '>' {
+                    // Find opening brace of arrow body
+                    let mut j = i + 2;
+                    while j < len && chars[j].is_whitespace() {
+                        j += 1;
+                    }
+                    if j < len && chars[j] == '{' {
+                        // Skip whitespace after {
+                        let mut k = j + 1;
+                        while k < len && chars[k].is_whitespace() {
+                            k += 1;
+                        }
+                        // Check for `return {`
+                        let rest: String = chars[k..].iter().collect();
+                        if rest.starts_with("return ") || rest.starts_with("return{") {
+                            // Skip `return ` or `return`
+                            let mut m = k + 6; // past "return"
+                            while m < len && chars[m].is_whitespace() {
+                                m += 1;
+                            }
+                            if m < len && chars[m] == '{' {
+                                // Find the matching closing brace for the inner object
+                                let mut depth = 1;
+                                let mut n = m + 1;
+                                while n < len && depth > 0 {
+                                    if chars[n] == '{' {
+                                        depth += 1;
+                                    } else if chars[n] == '}' {
+                                        depth -= 1;
+                                    }
+                                    n += 1;
+                                }
+                                // n is now past the inner closing brace
+                                // Skip optional trailing semicolon after the object literal
+                                let mut p = n;
+                                while p < len && chars[p].is_whitespace() {
+                                    p += 1;
+                                }
+                                if p < len && chars[p] == ';' {
+                                    p += 1;
+                                    while p < len && chars[p].is_whitespace() {
+                                        p += 1;
+                                    }
+                                }
+                                // Check that next non-whitespace is `}` (closing the arrow body)
+                                if p < len && chars[p] == '}' {
+                                    // Success: rewrite `=>{return { CONTENT } }` to `=> { CONTENT }`
+                                    let inner: String = chars[m..n].iter().collect();
+                                    result.push_str("=> ");
+                                    result.push_str(inner.trim());
+                                    i = p + 1;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+                result.push(chars[i]);
+                i += 1;
+            }
+            result
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Normalize switch-case fallthrough: remove trailing `break` from a case
 /// body when it falls through to the next case or `default:`.
 ///
@@ -9377,11 +9490,17 @@ fn normalize_switch_fallthrough_break(code: &str) -> String {
     // Match `break } case X:` or `break } default:` on the same line,
     // and remove the `break` keyword.
     // We match the pattern inline since our normalization collapses switch cases to one line.
-    let re = regex::Regex::new(r"\bbreak\s*\}\s*(case\s|default[\s:])").unwrap();
+    let re = regex::Regex::new(r"\bbreak;?\s*\}\s*(default[\s:])").unwrap();
+    // Collapse empty case body before default: `case X: { } default:` → `case X:\ndefault:`
+    let empty_before_default_re =
+        regex::Regex::new(r"(case\s+[^:]+:)\s*\{\s*\}\s*(default[\s:])").unwrap();
     let mut result = code.to_string();
     // Iterate until stable since removing one break may reveal another.
     loop {
         let next = re.replace_all(&result, "} $1").to_string();
+        let next = empty_before_default_re
+            .replace_all(&next, "$1\n$2")
+            .to_string();
         if next == result {
             break;
         }
@@ -9454,7 +9573,7 @@ fn normalize_nomemo_or_true(code: &str) -> String {
 fn normalize_switch_trailing_break_before_default(code: &str) -> String {
     // Pattern: `; break } default:` → ` } default:`
     // Also handle `; break } case X:` where the break is redundant fallthrough.
-    let re = regex::Regex::new(r";\s*break\s*\}\s*(default\s*:|case\s)").unwrap();
+    let re = regex::Regex::new(r";\s*break;?\s*\}\s*(default\s*:|case\s)").unwrap();
     re.replace_all(code, " } $1").to_string()
 }
 
@@ -9525,7 +9644,7 @@ fn normalize_duplicate_guard_deps(code: &str) -> String {
 fn normalize_switch_empty_break_case(code: &str) -> String {
     let lines: Vec<&str> = code.lines().collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
-    let case_break_re = regex::Regex::new(r"^(case\s+[^:]+:)\s*\{\s*break\s*\}$").unwrap();
+    let case_break_re = regex::Regex::new(r"^(case\s+[^:]+:)\s*\{\s*break;?\s*\}$").unwrap();
 
     for i in 0..lines.len() {
         let trimmed = lines[i].trim();
