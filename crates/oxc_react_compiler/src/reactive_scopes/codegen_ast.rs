@@ -2055,7 +2055,21 @@ fn codegen_dependency_expr<'a>(
     let name = dep.identifier.name.as_ref()?.value();
     let mut expr = cx.ident_expr(name);
     for entry in &dep.path {
-        if entry.optional {
+        // Use computed member access for numeric property names (e.g., x[0][1])
+        // and static member access for identifier-like names (e.g., x.foo).
+        let is_numeric = entry.property.parse::<f64>().is_ok();
+        if is_numeric {
+            let num_val = entry.property.parse::<f64>().unwrap();
+            expr = ast::Expression::from(
+                cx.builder.member_expression_computed(
+                    SPAN,
+                    expr,
+                    cx.builder
+                        .expression_numeric_literal(SPAN, num_val, None, NumberBase::Decimal),
+                    entry.optional,
+                ),
+            );
+        } else if entry.optional {
             expr = ast::Expression::from(
                 cx.builder.member_expression_static(
                     SPAN,
