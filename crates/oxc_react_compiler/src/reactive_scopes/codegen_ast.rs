@@ -37,6 +37,7 @@ pub struct CodegenOptions {
     pub fbt_operands: HashSet<IdentifierId>,
     /// Cache binding name override (e.g., "$0" when "$" is renamed to avoid conflicts).
     pub cache_binding_name: Option<String>,
+    // unique_identifiers tracking is planned for future temp naming collision detection
 }
 
 // ---------------------------------------------------------------------------
