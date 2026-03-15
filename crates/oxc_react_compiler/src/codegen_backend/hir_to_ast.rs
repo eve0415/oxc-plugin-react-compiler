@@ -1856,7 +1856,26 @@ where
             )))
         }
         ast::Expression::StringLiteral(literal) => {
-            Some(Some(ast::JSXAttributeValue::StringLiteral(literal)))
+            // JSX string attributes normalise whitespace (newlines → spaces,
+            // tabs → spaces).  When the string's meaning depends on those
+            // characters — i.e. it consists entirely of whitespace / control
+            // chars, or contains a tab — keep it in an expression container
+            // so the escapes survive: value={"\n"}, value={"\t"}.
+            let needs_expr_container = literal
+                .value
+                .chars()
+                .all(|c| c.is_ascii_whitespace() || c.is_control())
+                || literal.value.contains('\t');
+            if needs_expr_container {
+                let expr = ast::Expression::StringLiteral(literal);
+                Some(Some(ast::JSXAttributeValue::ExpressionContainer(
+                    builder.alloc(
+                        builder.jsx_expression_container(SPAN, ast::JSXExpression::from(expr)),
+                    ),
+                )))
+            } else {
+                Some(Some(ast::JSXAttributeValue::StringLiteral(literal)))
+            }
         }
         ast::Expression::JSXElement(element) => {
             // Wrap JSX elements in expression containers: value={<Foo/>}

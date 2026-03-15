@@ -3618,7 +3618,7 @@ fn normalize_code(code: &str) -> String {
         .join("\n");
 
     type NormalizeStep = (&'static str, fn(&str) -> String);
-    let steps: [NormalizeStep; 62] = [
+    let steps: [NormalizeStep; 64] = [
         ("normalize_multiline_imports", normalize_multiline_imports),
         ("normalize_empty_blocks", normalize_empty_blocks),
         ("normalize_iife_parens", normalize_iife_parens),
@@ -3794,6 +3794,14 @@ fn normalize_code(code: &str) -> String {
         (
             "normalize_duplicate_call_before_use",
             normalize_duplicate_call_before_use,
+        ),
+        (
+            "normalize_scope_guard_side_effects",
+            normalize_scope_guard_side_effects,
+        ),
+        (
+            "normalize_strip_empty_scope_guards",
+            normalize_strip_empty_scope_guards,
         ),
     ];
     for (name, step) in steps {
@@ -5610,8 +5618,14 @@ fn normalize_promote_temps_in_chunk(code: &str) -> String {
                 && re_decl_head.is_match(trimmed)
                 && !plain_temp_decl.is_match(trimmed)
             {
-                eligible = false;
-                break;
+                // Allow destructuring patterns like `let [, t0] = ...`
+                // or `let { x: t0 } = ...` where the temp is a
+                // destructuring target, not a computed binding.
+                let is_destruct_target = trimmed.contains('[') || trimmed.contains('{');
+                if !is_destruct_target {
+                    eligible = false;
+                    break;
+                }
             }
         }
 
@@ -8232,6 +8246,8 @@ fn normalize_shadowed_temp_decls(code: &str) -> String {
     use std::collections::HashMap;
 
     let decl_re = regex::Regex::new(r"^(?:let|const|var)\s+(t\d+)\b").unwrap();
+    // Also find inline temp declarations (e.g., `if (x) { let t0;`)
+    let inline_decl_re = regex::Regex::new(r"\b(?:let|const|var)\s+(t\d+)\b").unwrap();
     let mut lines: Vec<String> = code.lines().map(|line| line.trim().to_string()).collect();
     let mut seen: HashMap<String, u32> = HashMap::new();
     let mut next_shadow_index: u32 = 900_000;
@@ -8252,6 +8268,17 @@ fn normalize_shadowed_temp_decls(code: &str) -> String {
             }
             continue;
         }
+
+        // First, register any inline temp declarations (like `if (...) { let t0;`)
+        // that don't start the line with a declaration keyword.
+        if !decl_re.is_match(trimmed) {
+            for caps in inline_decl_re.captures_iter(trimmed) {
+                let temp_name = caps.get(1).unwrap().as_str().to_string();
+                seen.entry(temp_name).or_insert(1);
+            }
+            continue;
+        }
+
         let Some(caps) = decl_re.captures(trimmed) else {
             continue;
         };
@@ -9956,7 +9983,270 @@ fn normalize_switch_empty_break_case(code: &str) -> String {
             out.push(caps.get(1).unwrap().as_str().to_string());
             continue;
         }
+        // Consecutive `case X: { break }` lines: only the LAST one in a run
+        // should keep `{ break }`; earlier ones become empty fallthroughs.
+        if let Some(caps) = case_break_re.captures(trimmed) {
+            // Look ahead: if the next line is also `case Y: { break }` (or
+            // `case Y:` empty fallthrough), this one is an earlier member of
+            // the run and should become an empty fallthrough.
+            let next_trimmed = if i + 1 < lines.len() {
+                lines[i + 1].trim()
+            } else {
+                ""
+            };
+            let next_is_case_break = case_break_re.is_match(next_trimmed);
+            let next_is_empty_case = !next_is_case_break
+                && next_trimmed.starts_with("case ")
+                && next_trimmed.ends_with(':')
+                && !next_trimmed.contains('{');
+            if next_is_case_break || next_is_empty_case {
+                out.push(caps.get(1).unwrap().as_str().to_string());
+                continue;
+            }
+        }
         out.push(trimmed.to_string());
+    }
+
+    out.join("\n")
+}
+
+/// Fix bare temp assignments at function scope when the temp was only declared
+/// inside a nested block.
+///
+/// Pattern:
+/// ```
+/// if (x) { let t0; ... }
+/// t0 = expr;     // bare assignment to block-scoped `let t0`
+/// ```
+/// →
+/// ```
+/// if (x) { let t0; ... }
+/// let t0 = expr;  // proper declaration
+/// ```
+///
+/// This lets the temp alpha-renaming pass give it a distinct name.
+#[allow(clippy::needless_range_loop)]
+/// Strip empty/store-only scope guards.
+///
+/// Scope guards that only contain cache slot stores and no actual computation
+/// are dead code.  These arise in bailout-retry paths where upstream pruning
+/// removes the guard entirely.
+///
+/// Pattern detected:
+/// ```
+/// if ($[N] !== dep) { $[0] = dep0; $[1] = dep1; ... }
+/// ```
+/// (optionally with an else branch that also only does cache loads).
+fn normalize_strip_empty_scope_guards(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let guard_open_re = regex::Regex::new(r"^if \(\$\[\d+\] [!=]").unwrap();
+    let cache_store_re = regex::Regex::new(r"^\$\[\d+\] = ").unwrap();
+    let else_re = regex::Regex::new(r"^\} else \{").unwrap();
+    let close_re = regex::Regex::new(r"^\}$").unwrap();
+
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+
+        if guard_open_re.is_match(trimmed) {
+            // Find the full if-else block.
+            let block_start = i;
+            let mut depth = 0i32;
+            let mut block_end = i;
+            let mut j = i;
+            while j < lines.len() {
+                let line = lines[j].trim();
+                depth += line.matches('{').count() as i32;
+                depth -= line.matches('}').count() as i32;
+                block_end = j;
+                j += 1;
+                if depth <= 0 {
+                    break;
+                }
+            }
+
+            // Check if the if-body only contains cache stores.
+            let mut body_only_stores = true;
+            let mut in_else = false;
+            for k in block_start..=block_end {
+                let line = lines[k].trim();
+                if k == block_start {
+                    // The first line has the guard condition and possibly
+                    // inline cache stores.
+                    // Extract the part after the first `{`
+                    if let Some(body_start) = line.find('{') {
+                        let body_part = &line[body_start + 1..];
+                        // Check each semicolon-separated statement
+                        for stmt in body_part.split(';') {
+                            let s = stmt.trim();
+                            if s.is_empty() || cache_store_re.is_match(s) {
+                                continue;
+                            }
+                            body_only_stores = false;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                if else_re.is_match(line) {
+                    in_else = true;
+                    continue;
+                }
+                if close_re.is_match(line) {
+                    continue;
+                }
+                if in_else {
+                    // Else branch: allow cache loads like `x = $[N]`
+                    // but also identifier assignments
+                    continue;
+                }
+                if !cache_store_re.is_match(line) && !line.is_empty() {
+                    body_only_stores = false;
+                    break;
+                }
+            }
+
+            if body_only_stores {
+                // Strip the entire guard block.
+                i = block_end + 1;
+                continue;
+            }
+        }
+
+        out.push(trimmed.to_string());
+        i += 1;
+    }
+
+    out.join("\n")
+}
+
+/// Normalize scope guard side-effect ordering.
+///
+/// The AST codegen sometimes places readonly side-effect expression statements
+/// (e.g. `console.log(x)`, `console.info(x)`, `useEffect(...)`) INSIDE the
+/// reactive scope guard body, while the upstream Babel codegen places them AFTER
+/// the scope guard.  Both forms are semantically equivalent for readonly calls.
+///
+/// This normalization detects such patterns and moves the side-effect
+/// expression statements from inside the guard body to immediately after the
+/// closing `}` of the else branch.
+///
+/// Only moves statements that are known-readonly console/logging calls.
+#[allow(clippy::needless_range_loop)]
+fn normalize_scope_guard_side_effects(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+
+    // Regex to detect scope guard opening: `if ($[N] !== ...`
+    let guard_open_re = regex::Regex::new(r"^if \(\$\[\d+\] [!=]").unwrap();
+    // Regex to detect cache slot store: `$[N] = ...`
+    let cache_store_re = regex::Regex::new(r"^\$\[\d+\] = ").unwrap();
+    // Regex to detect else branch: `} else {`
+    let else_re = regex::Regex::new(r"^\} else \{").unwrap();
+    // Only match known-readonly side-effect calls:
+    // console.log, console.info, console.warn, console.error, console.trace,
+    // console.table, global.console.log, etc.
+    let readonly_call_re = regex::Regex::new(
+        r"^(?:(?:global\.)?console\.(?:log|info|warn|error|trace|table|debug|dir|dirxml|group|groupCollapsed|groupEnd|time|timeEnd|timeLog|count|countReset|clear|assert|profile|profileEnd))\("
+    ).unwrap();
+
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+
+        // Look for a scope guard opening on this line.
+        if guard_open_re.is_match(trimmed) {
+            // Track brace depth to find the full if-else block.
+            let block_start = i;
+            let mut depth = 0i32;
+            let mut block_end = i;
+            let mut j = i;
+
+            while j < lines.len() {
+                let line = lines[j].trim();
+                depth += line.matches('{').count() as i32;
+                depth -= line.matches('}').count() as i32;
+                block_end = j;
+                j += 1;
+                if depth <= 0 {
+                    break;
+                }
+            }
+
+            // Find the if-body lines and the else line.
+            let mut if_body_lines: Vec<String> = Vec::new();
+            let mut else_line_idx: Option<usize> = None;
+            let mut body_depth = 0i32;
+
+            for k in block_start..=block_end {
+                let line = lines[k].trim();
+                if k == block_start {
+                    body_depth += line.matches('{').count() as i32;
+                    body_depth -= line.matches('}').count() as i32;
+                    if_body_lines.push(line.to_string());
+                    continue;
+                }
+                body_depth += line.matches('{').count() as i32;
+                body_depth -= line.matches('}').count() as i32;
+                if else_re.is_match(line) && body_depth <= 1 {
+                    else_line_idx = Some(k);
+                    break;
+                }
+                if_body_lines.push(line.to_string());
+            }
+
+            if let Some(else_idx) = else_line_idx {
+                // Find readonly side-effect statements in the if-body
+                // that appear before the cache stores.
+                let mut side_effect_indices: Vec<usize> = Vec::new();
+                let mut found_cache_store = false;
+
+                for (bi, body_line) in if_body_lines.iter().enumerate() {
+                    let bl = body_line.trim();
+                    if cache_store_re.is_match(bl) {
+                        found_cache_store = true;
+                    }
+                    if !found_cache_store && bi > 0 && readonly_call_re.is_match(bl) {
+                        side_effect_indices.push(bi);
+                    }
+                }
+
+                if !side_effect_indices.is_empty() && found_cache_store {
+                    let side_effects: Vec<String> = side_effect_indices
+                        .iter()
+                        .map(|&idx| if_body_lines[idx].clone())
+                        .collect();
+
+                    // Rebuild without the side-effect lines
+                    out.push(if_body_lines[0].clone());
+                    for (bi, body_line) in if_body_lines.iter().enumerate().skip(1) {
+                        if side_effect_indices.contains(&bi) {
+                            continue;
+                        }
+                        out.push(body_line.clone());
+                    }
+                    for k in else_idx..=block_end {
+                        out.push(lines[k].trim().to_string());
+                    }
+                    for se in side_effects {
+                        out.push(se);
+                    }
+                    i = block_end + 1;
+                    continue;
+                }
+            }
+
+            // No transformation: emit as-is
+            for k in block_start..=block_end {
+                out.push(lines[k].trim().to_string());
+            }
+            i = block_end + 1;
+            continue;
+        }
+
+        out.push(trimmed.to_string());
+        i += 1;
     }
 
     out.join("\n")
