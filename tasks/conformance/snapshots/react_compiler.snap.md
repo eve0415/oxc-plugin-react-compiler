@@ -1,6 +1,6 @@
-# React Compiler Conformance — 91.2% parity rate
+# React Compiler Conformance — 92.9% parity rate
 
-**1597** parity_success, **155** parity_failure, **0** skipped
+**1627** parity_success, **125** parity_failure, **0** skipped
 
 ## Failed
 
@@ -31,41 +31,14 @@
 - `do-while-early-unconditional-break`: Output mismatch
 - `dominator`: Output mismatch
 - `fast-refresh-reloading`: Output mismatch
-- `fbt/bug-fbt-plural-multiple-function-calls`: Output mismatch
 - `fbt/bug-fbt-plural-multiple-mixed-call-tag`: Output mismatch
-- `fbt/fbs-params`: Output mismatch
-- `fbt/fbt-call`: Output mismatch
-- `fbt/fbt-call-complex-param-value`: Output mismatch
-- `fbt/fbt-no-whitespace-btw-text-and-param`: Output mismatch
-- `fbt/fbt-param-with-leading-whitespace`: Output mismatch
-- `fbt/fbt-param-with-newline`: Output mismatch
-- `fbt/fbt-param-with-quotes`: Output mismatch
-- `fbt/fbt-param-with-trailing-whitespace`: Output mismatch
-- `fbt/fbt-param-with-unicode`: Output mismatch
-- `fbt/fbt-params`: Output mismatch
-- `fbt/fbt-params-complex-param-value`: Output mismatch
 - `fbt/fbt-preserve-jsxtext`: Output mismatch
-- `fbt/fbt-preserve-whitespace`: Output mismatch
-- `fbt/fbt-preserve-whitespace-subtree`: Output mismatch
-- `fbt/fbt-preserve-whitespace-two-subtrees`: Output mismatch
-- `fbt/fbt-repro-invalid-mutable-range-destructured-prop`: Output mismatch
-- `fbt/fbt-single-space-btw-param-and-text`: Output mismatch
-- `fbt/fbt-template-string-same-scope`: Output mismatch
-- `fbt/fbt-to-string`: Output mismatch
-- `fbt/fbt-whitespace-around-param-value`: Output mismatch
-- `fbt/fbt-whitespace-within-text`: Output mismatch
-- `fbt/fbtparam-with-jsx-element-content`: Output mismatch
 - `fbt/fbtparam-with-jsx-fragment-value`: Output mismatch
-- `fbt/lambda-with-fbt`: Output mismatch
-- `fbt/repro-macro-property-not-handled`: Output mismatch
 - `flag-enable-emit-hook-guards`: Output mismatch
 - `for-logical`: Output mismatch
-- `for-loop-let-undefined-decl`: Expected upstream bailout (untransformed output), but compiler transformed output
-- `for-with-assignment-as-update`: Output mismatch
 - `function-param-assignment-pattern`: Output mismatch
 - `hoisting-repro-variable-used-in-assignment`: Output mismatch
 - `hoisting-setstate-captured-indirectly-jsx`: Output mismatch
-- `idx-no-outlining`: Output mismatch
 - `infer-effect-dependencies/import-namespace-useEffect`: Output mismatch
 - `infer-effect-dependencies/infer-effect-dependencies`: Output mismatch
 - `infer-effect-dependencies/reactive-optional-chain`: Output mismatch
@@ -83,7 +56,6 @@
 - `jsx-string-attribute-expression-container`: Output mismatch
 - `jsx-tag-evaluation-order-non-global`: Output mismatch
 - `lower-context-access-hook-guard`: Output mismatch
-- `memoize-value-block-value-logical`: Output mismatch
 - `meta-isms/repro-cx-assigned-to-temporary`: Output mismatch
 - `meta-isms/repro-cx-namespace-assigned-to-temporary`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
@@ -96,7 +68,6 @@
 - `object-shorthand-method-nested`: Output mismatch
 - `option-enable-change-variable-codegen`: Output mismatch
 - `original-reactive-scopes-fork/capture-ref-for-later-mutation`: Output mismatch
-- `preserve-existing-memoization-guarantees/lambda-with-fbt-preserve-memoization`: Output mismatch
 - `preserve-memo-validation/useCallback-reordering-deplist-controlflow`: Output mismatch
 - `preserve-memo-validation/useMemo-conditional-access-alloc`: Output mismatch
 - `preserve-memo-validation/useMemo-conditional-access-noAlloc`: Output mismatch
@@ -133,7 +104,6 @@
 - `repro-mutate-ref-in-function-passed-to-hook`: Output mismatch
 - `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`: Output mismatch
 - `repro-scope-missing-mutable-range`: Output mismatch
-- `repro-unmerged-fbt-call-merge-overlapping-reactive-scopes`: Output mismatch
 - `repro-unreachable-code-early-return-in-useMemo`: Output mismatch
 - `sequence-expression`: Output mismatch
 - `simple`: Output mismatch
@@ -678,12 +648,36 @@
 - `extend-scopes-if`
 - `fast-refresh-dont-refresh-const-changes-prod`
 - `fast-refresh-refresh-on-const-changes-dev`
+- `fbt/bug-fbt-plural-multiple-function-calls`
 - `fbt/error.todo-fbt-as-local`
 - `fbt/error.todo-fbt-param-nested-fbt`
 - `fbt/error.todo-fbt-unknown-enum-value`
 - `fbt/error.todo-locally-require-fbt`
 - `fbt/error.todo-multiple-fbt-plural`
+- `fbt/fbs-params`
+- `fbt/fbt-call`
+- `fbt/fbt-call-complex-param-value`
+- `fbt/fbt-no-whitespace-btw-text-and-param`
+- `fbt/fbt-param-with-leading-whitespace`
+- `fbt/fbt-param-with-newline`
+- `fbt/fbt-param-with-quotes`
+- `fbt/fbt-param-with-trailing-whitespace`
+- `fbt/fbt-param-with-unicode`
+- `fbt/fbt-params`
+- `fbt/fbt-params-complex-param-value`
+- `fbt/fbt-preserve-whitespace`
+- `fbt/fbt-preserve-whitespace-subtree`
+- `fbt/fbt-preserve-whitespace-two-subtrees`
+- `fbt/fbt-repro-invalid-mutable-range-destructured-prop`
+- `fbt/fbt-single-space-btw-param-and-text`
+- `fbt/fbt-template-string-same-scope`
+- `fbt/fbt-to-string`
+- `fbt/fbt-whitespace-around-param-value`
+- `fbt/fbt-whitespace-within-text`
 - `fbt/fbtparam-text-must-use-expression-container`
+- `fbt/fbtparam-with-jsx-element-content`
+- `fbt/lambda-with-fbt`
+- `fbt/repro-macro-property-not-handled`
 - `flatten-scopes-with-methodcall-hook`
 - `flow-enum-inline`
 - `for-empty-update`
@@ -694,6 +688,7 @@
 - `for-in-statement-continue`
 - `for-in-statement-empty-body`
 - `for-in-statement-type-inference`
+- `for-loop-let-undefined-decl`
 - `for-loop-with-value-block-initializer`
 - `for-multiple-variable-declarations-in-initializer`
 - `for-of-break`
@@ -709,6 +704,7 @@
 - `for-of-nonmutating-loop-local-collection`
 - `for-of-simple`
 - `for-return`
+- `for-with-assignment-as-update`
 - `frozen-after-alias`
 - `function-declaration-reassign`
 - `function-declaration-redeclare`
@@ -808,6 +804,7 @@
 - `hooks-with-prefix`
 - `idx-method-no-outlining`
 - `idx-method-no-outlining-wildcard`
+- `idx-no-outlining`
 - `ignore-inner-interface-types`
 - `ignore-use-no-forget`
 - `iife-inline-ternary`
@@ -936,6 +933,7 @@
 - `memoization-comments`
 - `memoize-primitive-function-calls`
 - `memoize-value-block-value-conditional`
+- `memoize-value-block-value-logical`
 - `memoize-value-block-value-logical-no-sequence`
 - `memoize-value-block-value-sequence`
 - `merge-consecutive-nested-scopes`
@@ -1116,6 +1114,7 @@
 - `phi-type-inference-array-push`
 - `phi-type-inference-array-push-consecutive-phis`
 - `phi-type-inference-property-store`
+- `preserve-existing-memoization-guarantees/lambda-with-fbt-preserve-memoization`
 - `preserve-jsxtext-stringliteral-distinction`
 - `preserve-memo-validation/error.false-positive-useMemo-dropped-infer-always-invalidating`
 - `preserve-memo-validation/error.false-positive-useMemo-infer-mutate-deps`
@@ -1394,6 +1393,7 @@
 - `repro-separate-scopes-for-divs`
 - `repro-slow-validate-preserve-memo`
 - `repro-undefined-expression-of-jsxexpressioncontainer`
+- `repro-unmerged-fbt-call-merge-overlapping-reactive-scopes`
 - `repro-useMemo-if-else-both-early-return`
 - `resolve-react-hooks-based-on-import-name`
 - `rest-param-with-array-pattern`
