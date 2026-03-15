@@ -2007,7 +2007,11 @@ fn codegen_reactive_scope<'a>(
         .collect();
 
     // Build the scope body.
-    let body_stmts = codegen_block(cx, instructions);
+    let mut body_stmts = codegen_block(cx, instructions);
+
+    // Post-process: fuse test variables and setup statements into ternary
+    // expressions to match upstream's ternary restructuring.
+    fuse_scope_body_ternaries(cx, &mut body_stmts);
 
     // --- Change detection for debugging ---
     if cx.options.enable_change_detection_for_debugging && !deps.is_empty() {
@@ -3137,6 +3141,122 @@ fn reconstruct_for_init<'a>(
 // ---------------------------------------------------------------------------
 // Change detection helpers
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Ternary fusion post-processing
+// ---------------------------------------------------------------------------
+
+/// Detect and fuse patterns like:
+/// ```js
+/// let t0 = TEST;
+/// SETUP;
+/// t0 ? CONSEQUENT : ALT;
+/// ```
+/// into:
+/// ```js
+/// TEST ? ((SETUP_EXPR), CONSEQUENT) : ALT;
+/// ```
+/// This matches the upstream string codegen's ternary restructuring.
+fn fuse_scope_body_ternaries<'a>(cx: &mut CodegenContext<'a>, stmts: &mut Vec<ast::Statement<'a>>) {
+    // Look for the pattern: const/let TEMP = EXPR; ... TEMP ? A : B;
+    // where TEMP is only used as the ternary test.
+    let mut i = 0;
+    while i < stmts.len() {
+        // Find a variable declaration `let tN = EXPR;`
+        let test_name = match &stmts[i] {
+            ast::Statement::VariableDeclaration(decl)
+                if decl.declarations.len() == 1
+                    && decl.declarations[0].init.is_some()
+                    && matches!(
+                        &decl.declarations[0].id,
+                        ast::BindingPattern::BindingIdentifier(_)
+                    ) =>
+            {
+                let d = &decl.declarations[0];
+                let name = if let ast::BindingPattern::BindingIdentifier(id) = &d.id {
+                    id.name.to_string()
+                } else {
+                    i += 1;
+                    continue;
+                };
+                // Only match temp-like names (t0, t1, etc.)
+                if !name.starts_with('t') || !name[1..].chars().all(|c| c.is_ascii_digit()) {
+                    i += 1;
+                    continue;
+                }
+                name
+            }
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+
+        // Look ahead for setup statements and a ternary using test_name.
+        let mut ternary_idx = None;
+        for (j, stmt) in stmts.iter().enumerate().skip(i + 1) {
+            if let ast::Statement::ExpressionStatement(es) = stmt
+                && let ast::Expression::ConditionalExpression(cond) = &es.expression
+                && let ast::Expression::Identifier(id) = &cond.test
+                && id.name.as_str() == test_name
+            {
+                ternary_idx = Some(j);
+                break;
+            } else if !matches!(stmt, ast::Statement::ExpressionStatement(_)) {
+                break; // Non-expression statement breaks the pattern
+            }
+        }
+
+        let Some(ternary_pos) = ternary_idx else {
+            i += 1;
+            continue;
+        };
+
+        // Extract the test expression from the declaration.
+        let test_decl_stmt = stmts.remove(i);
+        let test_init = if let ast::Statement::VariableDeclaration(mut decl) = test_decl_stmt {
+            decl.declarations.drain(..).next().and_then(|d| d.init)
+        } else {
+            None
+        };
+        let Some(real_test) = test_init else {
+            i += 1;
+            continue;
+        };
+
+        // Collect setup expressions between the declaration and the ternary.
+        let setup_count = ternary_pos - 1 - i; // positions shifted after remove
+        let mut setup_exprs: Vec<ast::Expression<'a>> = Vec::new();
+        for _ in 0..setup_count {
+            let setup_stmt = stmts.remove(i);
+            if let ast::Statement::ExpressionStatement(es) = setup_stmt {
+                setup_exprs.push(es.unbox().expression);
+            }
+        }
+
+        // Now stmts[i] is the ternary statement. Replace the test.
+        if let ast::Statement::ExpressionStatement(es) = &mut stmts[i]
+            && let ast::Expression::ConditionalExpression(cond) = &mut es.expression
+        {
+            // Replace test identifier with the real test expression.
+            cond.test = real_test;
+
+            // Fuse setup expressions into the consequent as a sequence.
+            if !setup_exprs.is_empty() {
+                let original_consequent = std::mem::replace(
+                    &mut cond.consequent,
+                    cx.builder.expression_null_literal(SPAN),
+                );
+                setup_exprs.push(original_consequent);
+                cond.consequent = cx
+                    .builder
+                    .expression_sequence(SPAN, cx.builder.vec_from_iter(setup_exprs));
+            }
+        }
+
+        // Don't increment i — process the same position again in case of chaining.
+    }
+}
 
 const STRUCTURAL_CHECK_IDENT: &str = "$structuralCheck";
 
