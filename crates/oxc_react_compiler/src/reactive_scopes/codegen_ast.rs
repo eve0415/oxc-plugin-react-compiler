@@ -1798,6 +1798,10 @@ fn codegen_reactive_scope<'a>(
         .collect();
     decl_names.sort_by(|a, b| a.0.cmp(&b.0));
 
+    // Collect scope variable declarations.
+    // When enable_change_variable_codegen is active with deps, these are deferred
+    // to emit after the change variable declarations.
+    let mut scope_decl_stmts: Vec<ast::Statement<'a>> = Vec::new();
     for (name, id, decl_id) in &decl_names {
         if !cx.declared.contains(id) && !cx.declared_decl_ids.contains(decl_id) {
             cx.declared.insert(*id);
@@ -1806,7 +1810,7 @@ fn codegen_reactive_scope<'a>(
             let pattern = cx
                 .builder
                 .binding_pattern_binding_identifier(SPAN, cx.builder.ident(name));
-            stmts.push(ast::Statement::VariableDeclaration(
+            scope_decl_stmts.push(ast::Statement::VariableDeclaration(
                 cx.builder.alloc_variable_declaration(
                     SPAN,
                     ast::VariableDeclarationKind::Let,
@@ -1842,7 +1846,7 @@ fn codegen_reactive_scope<'a>(
                     let pattern = cx
                         .builder
                         .binding_pattern_binding_identifier(SPAN, cx.builder.ident(name.value()));
-                    stmts.push(ast::Statement::VariableDeclaration(
+                    scope_decl_stmts.push(ast::Statement::VariableDeclaration(
                         cx.builder.alloc_variable_declaration(
                             SPAN,
                             ast::VariableDeclarationKind::Let,
@@ -1863,6 +1867,12 @@ fn codegen_reactive_scope<'a>(
                 cx.declared_decl_ids.insert(r_decl_id);
             }
         }
+    }
+
+    // Emit scope declarations now (will be deferred for change variable codegen).
+    let defer_decls = cx.options.enable_change_variable_codegen && !scope.dependencies.is_empty();
+    if !defer_decls {
+        stmts.append(&mut scope_decl_stmts);
     }
 
     // Build dependency comparison: $[slot] !== dep_expr || ...
@@ -1977,6 +1987,144 @@ fn codegen_reactive_scope<'a>(
             if_body.push(
                 cx.builder
                     .statement_expression(SPAN, cx.cache_assign(*slot, cx.ident_expr(name))),
+            );
+        }
+
+        let else_stmt = if else_body.is_empty() {
+            None
+        } else {
+            Some(
+                cx.builder
+                    .statement_block(SPAN, cx.builder.vec_from_iter(else_body)),
+            )
+        };
+
+        stmts.push(
+            cx.builder.statement_if(
+                SPAN,
+                test,
+                cx.builder
+                    .statement_block(SPAN, cx.builder.vec_from_iter(if_body)),
+                else_stmt,
+            ),
+        );
+    } else if cx.options.enable_change_variable_codegen {
+        // Change variable codegen: emit explicit comparison variables.
+        // `const c_0 = $[0] !== dep0; const c_1 = $[1] !== dep1; if (c_0 || c_1) { ... }`
+        let mut change_var_names: Vec<String> = Vec::new();
+        for (i, (slot, dep_expr)) in deps.iter().enumerate() {
+            let var_name = format!("c_{i}");
+            let comparison = cx.builder.expression_binary(
+                SPAN,
+                cx.cache_access(*slot),
+                oxc_syntax::operator::BinaryOperator::StrictInequality,
+                dep_expr.clone_in(cx.allocator),
+            );
+            let pattern = cx
+                .builder
+                .binding_pattern_binding_identifier(SPAN, cx.builder.ident(&var_name));
+            stmts.push(ast::Statement::VariableDeclaration(
+                cx.builder.alloc_variable_declaration(
+                    SPAN,
+                    ast::VariableDeclarationKind::Const,
+                    cx.builder.vec1(cx.builder.variable_declarator(
+                        SPAN,
+                        ast::VariableDeclarationKind::Const,
+                        pattern,
+                        NONE,
+                        Some(comparison),
+                        false,
+                    )),
+                    false,
+                ),
+            ));
+            change_var_names.push(var_name);
+        }
+
+        // Emit deferred scope declarations after change variables.
+        stmts.extend(scope_decl_stmts);
+
+        let mut test = change_var_names
+            .iter()
+            .map(|name| cx.ident_expr(name))
+            .reduce(|left, right| {
+                cx.builder.expression_logical(
+                    SPAN,
+                    left,
+                    oxc_syntax::operator::LogicalOperator::Or,
+                    right,
+                )
+            })
+            .unwrap();
+
+        if cx.options.disable_memoization_for_debugging {
+            test = cx.builder.expression_logical(
+                SPAN,
+                test,
+                LogicalOperator::Or,
+                cx.builder.expression_boolean_literal(SPAN, true),
+            );
+        }
+
+        // If body: recompute + store deps + store outputs.
+        let mut if_body = body_stmts;
+        for (slot, dep_expr) in deps {
+            if_body.push(
+                cx.builder
+                    .statement_expression(SPAN, cx.cache_assign(slot, dep_expr)),
+            );
+        }
+        for (name, slot) in &output_slots {
+            if_body.push(
+                cx.builder
+                    .statement_expression(SPAN, cx.cache_assign(*slot, cx.ident_expr(name))),
+            );
+        }
+        for (name, slot) in &reassign_slots {
+            if_body.push(
+                cx.builder
+                    .statement_expression(SPAN, cx.cache_assign(*slot, cx.ident_expr(name))),
+            );
+        }
+
+        // Else body: load cached values.
+        let mut else_body = Vec::new();
+        for (name, slot) in &output_slots {
+            else_body.push(
+                cx.builder.statement_expression(
+                    SPAN,
+                    cx.builder.expression_assignment(
+                        SPAN,
+                        AssignmentOperator::Assign,
+                        ast::AssignmentTarget::from(
+                            cx.builder
+                                .simple_assignment_target_assignment_target_identifier(
+                                    SPAN,
+                                    cx.builder.ident(name),
+                                ),
+                        ),
+                        cx.cache_access(*slot),
+                    ),
+                ),
+            );
+        }
+        for (name, slot) in &reassign_slots {
+            else_body.push(
+                cx.builder.statement_expression(
+                    SPAN,
+                    cx.builder.expression_assignment(
+                        SPAN,
+                        AssignmentOperator::Assign,
+                        ast::AssignmentTarget::from(
+                            cx.builder
+                                .simple_assignment_target_assignment_target_identifier(
+                                    SPAN,
+                                    cx.builder.ident(name),
+                                ),
+                        ),
+                        cx.cache_access(*slot),
+                    ),
+                ),
             );
         }
 
