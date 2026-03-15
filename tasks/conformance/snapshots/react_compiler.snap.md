@@ -1,17 +1,13 @@
-# React Compiler Conformance — 95.2% parity rate
+# React Compiler Conformance — 96.0% parity rate
 
-**1668** parity_success, **84** parity_failure, **0** skipped
+**1682** parity_success, **70** parity_failure, **0** skipped
 
 ## Failed
 
 - `allow-passing-ref-to-render-helper-props-object`: Output mismatch
 - `assume-invoked/conditional-call-chain`: Output mismatch
 - `assume-invoked/function-with-conditional-callsite-in-another-function`: Output mismatch
-- `bug-ref-prefix-postfix-operator`: Output mismatch
 - `call-args-destructuring-assignment`: Output mismatch
-- `capture-param-mutate`: Output mismatch
-- `capture-ref-for-later-mutation`: Output mismatch
-- `capturing-function-skip-computed-path`: Output mismatch
 - `change-detect-reassign`: Output mismatch
 - `computed-call-evaluation-order`: Output mismatch
 - `default-param-array-with-unary`: Output mismatch
@@ -29,21 +25,16 @@
 - `hoisting-repro-variable-used-in-assignment`: Output mismatch
 - `hoisting-setstate-captured-indirectly-jsx`: Output mismatch
 - `infer-effect-dependencies/import-namespace-useEffect`: Output mismatch
-- `infer-effect-dependencies/infer-effect-dependencies`: Output mismatch
 - `inline-jsx-transform`: Output mismatch
-- `jsx-outlining-child-stored-in-id`: Output mismatch
 - `jsx-tag-evaluation-order-non-global`: Output mismatch
 - `meta-isms/repro-cx-assigned-to-temporary`: Output mismatch
 - `meta-isms/repro-cx-namespace-assigned-to-temporary`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
 - `nested-optional-member-expr`: Output mismatch
-- `new-mutability/repro-invalid-function-expression-effects-phi`: Output mismatch
 - `new-mutability/ssa-renaming-ternary-destruction`: Output mismatch
-- `original-reactive-scopes-fork/capture-ref-for-later-mutation`: Output mismatch
 - `preserve-memo-validation/useMemo-conditional-access-alloc`: Output mismatch
 - `preserve-memo-validation/useMemo-conditional-access-noAlloc`: Output mismatch
 - `propagate-scope-deps-hir-fork/repro-invariant`: Output mismatch
-- `propagate-scope-deps-hir-fork/repro-scope-missing-mutable-range`: Output mismatch
 - `propagate-scope-deps-hir-fork/ssa-renaming-ternary`: Output mismatch
 - `propagate-scope-deps-hir-fork/ssa-renaming-ternary-destruction`: Output mismatch
 - `propagate-scope-deps-hir-fork/ssa-renaming-ternary-destruction-with-mutation`: Output mismatch
@@ -55,11 +46,8 @@
 - `property-call-evaluation-order`: Output mismatch
 - `reactive-control-dependency-for-init`: Output mismatch
 - `readonly-object-method-calls-mutable-lambda`: Output mismatch
-- `reassigned-phi-in-returned-function-expression`: Output mismatch
 - `reassignment-separate-scopes`: Fixture thread terminated unexpectedly
 - `recursive-function-expression`: Output mismatch
-- `ref-current-optional-field-no-added-to-dep`: Output mismatch
-- `ref-in-effect`: Output mismatch
 - `rename-source-variables`: Output mismatch
 - `rename-source-variables-nested-function`: Output mismatch
 - `rename-source-variables-nested-object-method`: Output mismatch
@@ -69,7 +57,6 @@
 - `repro-invalid-reactivity-value-block`: Output mismatch
 - `repro-mutate-ref-in-function-passed-to-hook`: Output mismatch
 - `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`: Output mismatch
-- `repro-scope-missing-mutable-range`: Output mismatch
 - `repro-unreachable-code-early-return-in-useMemo`: Output mismatch
 - `sequence-expression`: Output mismatch
 - `simple`: Output mismatch
@@ -87,7 +74,6 @@
 - `type-inference-array-from`: Output mismatch
 - `update-expression-in-sequence`: Output mismatch
 - `useState-unpruned-dependency`: Output mismatch
-- `valid-setState-in-effect-from-ref-function-call`: Output mismatch
 
 ## Passed
 
@@ -207,6 +193,7 @@
 - `block-scoping-switch-dead-code`
 - `block-scoping-switch-variable-scoping`
 - `bug-capturing-func-maybealias-captured-mutate`
+- `bug-ref-prefix-postfix-operator`
 - `bug-separate-memoization-due-to-callback-capturing`
 - `bug-type-inference-control-flow`
 - `builtin-jsx-tag-lowered-between-mutations`
@@ -218,6 +205,8 @@
 - `capitalized-function-allowlist`
 - `capture-indirect-mutate-alias`
 - `capture-indirect-mutate-alias-iife`
+- `capture-param-mutate`
+- `capture-ref-for-later-mutation`
 - `capture_mutate-across-fns`
 - `capture_mutate-across-fns-iife`
 - `capturing-arrow-function-1`
@@ -261,6 +250,7 @@
 - `capturing-function-renamed-ref`
 - `capturing-function-runs-inference`
 - `capturing-function-shadow-captured`
+- `capturing-function-skip-computed-path`
 - `capturing-function-within-block`
 - `capturing-member-expr`
 - `capturing-nested-member-call`
@@ -795,6 +785,7 @@
 - `infer-effect-dependencies/error.wrong-index-no-func`
 - `infer-effect-dependencies/helper-nonreactive`
 - `infer-effect-dependencies/infer-deps-custom-config`
+- `infer-effect-dependencies/infer-effect-dependencies`
 - `infer-effect-dependencies/nonreactive-dep`
 - `infer-effect-dependencies/nonreactive-effect-event`
 - `infer-effect-dependencies/nonreactive-ref`
@@ -860,6 +851,7 @@
 - `jsx-member-expression-tag-grouping`
 - `jsx-memberexpr-tag-in-lambda`
 - `jsx-namespaced-name`
+- `jsx-outlining-child-stored-in-id`
 - `jsx-outlining-dup-key-diff-value`
 - `jsx-outlining-dupe-attr-after-rename`
 - `jsx-outlining-dupe-key-dupe-component`
@@ -994,6 +986,7 @@
 - `new-mutability/repro-compiler-infinite-loop`
 - `new-mutability/repro-function-expression-effects-stack-overflow`
 - `new-mutability/repro-internal-compiler-shared-mutablerange-bug`
+- `new-mutability/repro-invalid-function-expression-effects-phi`
 - `new-mutability/repro-jsx-captures-value-mutated-later`
 - `new-mutability/repro-mutate-new-set-of-frozen-items-in-callback`
 - `new-mutability/retry-no-emit`
@@ -1086,6 +1079,7 @@
 - `optional-method-call`
 - `optional-receiver-method-call`
 - `optional-receiver-optional-method`
+- `original-reactive-scopes-fork/capture-ref-for-later-mutation`
 - `outlined-destructured-params`
 - `outlined-helper`
 - `outlining-in-func-expr`
@@ -1190,6 +1184,7 @@
 - `propagate-scope-deps-hir-fork/phi-type-inference-array-push-consecutive-phis`
 - `propagate-scope-deps-hir-fork/phi-type-inference-property-store`
 - `propagate-scope-deps-hir-fork/reactive-dependencies-non-optional-properties-inside-optional-chain`
+- `propagate-scope-deps-hir-fork/repro-scope-missing-mutable-range`
 - `propagate-scope-deps-hir-fork/ssa-cascading-eliminated-phis`
 - `propagate-scope-deps-hir-fork/ssa-leave-case`
 - `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-with-mutation`
@@ -1260,6 +1255,7 @@
 - `reassign-in-while-loop-condition`
 - `reassign-object-in-context`
 - `reassign-primitive-in-context`
+- `reassigned-phi-in-returned-function-expression`
 - `reassignment`
 - `reassignment-conditional`
 - `recursive-function`
@@ -1323,7 +1319,9 @@
 - `ref-current-field-write-not-added-to-dep`
 - `ref-current-not-added-to-dep`
 - `ref-current-not-added-to-dep-2`
+- `ref-current-optional-field-no-added-to-dep`
 - `ref-current-write-not-added-to-dep`
+- `ref-in-effect`
 - `ref-like-name-in-effect`
 - `ref-like-name-in-useCallback`
 - `ref-like-name-in-useCallback-2`
@@ -1382,6 +1380,7 @@
 - `repro-retain-source-when-bailout`
 - `repro-returned-inner-fn-mutates-context`
 - `repro-returned-inner-fn-reassigns-context`
+- `repro-scope-missing-mutable-range`
 - `repro-separate-memoization-due-to-callback-capturing`
 - `repro-separate-scopes-for-divs`
 - `repro-slow-validate-preserve-memo`
@@ -1746,6 +1745,7 @@
 - `valid-set-state-in-useEffect-from-ref`
 - `valid-setState-in-effect-from-ref-arithmetic`
 - `valid-setState-in-effect-from-ref-array-index`
+- `valid-setState-in-effect-from-ref-function-call`
 - `valid-setState-in-useEffect-listener`
 - `valid-setState-in-useEffect-listener-transitive`
 - `valid-setState-in-useLayoutEffect-from-ref`
