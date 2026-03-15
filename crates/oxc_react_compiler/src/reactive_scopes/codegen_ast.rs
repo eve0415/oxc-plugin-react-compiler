@@ -3138,25 +3138,40 @@ const STRUCTURAL_CHECK_IDENT: &str = "$structuralCheck";
 /// Returns "(startLine:endLine)" based on scope declaration/instruction locations.
 fn format_change_detection_scope_loc(
     scope: &ReactiveScope,
-    _instructions: &ReactiveBlock,
+    instructions: &ReactiveBlock,
 ) -> String {
     let mut lines: Vec<u32> = Vec::new();
     for decl in scope.declarations.values() {
         if let SourceLocation::Source(range) = &decl.identifier.loc {
             lines.push(range.start.line);
+            lines.push(range.end.line);
         }
     }
     for reassign in &scope.reassignments {
         if let SourceLocation::Source(range) = &reassign.loc {
             lines.push(range.start.line);
+            lines.push(range.end.line);
         }
     }
+    // Also include instruction locations.
+    collect_block_lines(instructions, &mut lines);
     if lines.is_empty() {
         "unknown location".to_string()
     } else {
         let min = lines.iter().min().unwrap();
         let max = lines.iter().max().unwrap();
         format!("({min}:{max})")
+    }
+}
+
+fn collect_block_lines(block: &ReactiveBlock, lines: &mut Vec<u32>) {
+    for stmt in block {
+        if let ReactiveStatement::Instruction(instr) = stmt
+            && let SourceLocation::Source(range) = &instr.loc
+        {
+            lines.push(range.start.line);
+            lines.push(range.end.line);
+        }
     }
 }
 
