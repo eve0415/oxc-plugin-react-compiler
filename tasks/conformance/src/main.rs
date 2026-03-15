@@ -2920,6 +2920,12 @@ fn find_trailing_comment_on_import(line: &str) -> Option<usize> {
 
 /// Normalize array formatting within FIXTURE_ENTRYPOINT lines:
 /// `[ { ... }, ]` → `[{ ... }]` and `[ ... ]` → `[...]` for single-line arrays.
+///
+/// Also normalizes:
+/// - Parenthesized objects in arrays: `( { a: 1 })` → `{ a: 1 }` (AST codegen
+///   wraps object literals in parens inside sequentialRenders arrays).
+/// - Trailing semicolons: ensures `export let FIXTURE_ENTRYPOINT = { ... }` ends
+///   with `;` (AST codegen may omit trailing semicolons on export declarations).
 fn normalize_fixture_entrypoint_array_spacing(code: &str) -> String {
     code.lines()
         .map(|line| {
@@ -2940,6 +2946,32 @@ fn normalize_fixture_entrypoint_array_spacing(code: &str) -> String {
                         break;
                     }
                     s.replace_range(pos..pos + 2, "[");
+                }
+                // Normalize parenthesized objects in arrays:
+                // `( { ... })` → `{ ... }` — AST codegen wraps object literals
+                // in parens inside sequentialRenders/params arrays.
+                // Handle `( {` → `{` (opening paren before object)
+                while s.contains("( {") {
+                    s = s.replace("( {", "{");
+                }
+                // Handle `})` → `}` (closing paren after object) — but only when
+                // preceded by a closing brace, i.e. the paren wraps an object.
+                // We need to be careful not to strip `)` from function calls like
+                // `createHookWrapper(useFoo)`. Only strip `)` that follows `}`
+                // and is followed by `,` or `]` (i.e. inside array context).
+                while s.contains("}),") || s.contains("})]") {
+                    s = s.replace("}),", "},");
+                    s = s.replace("})]", "}]");
+                }
+                // Ensure trailing semicolon on FIXTURE_ENTRYPOINT export declarations.
+                // AST codegen may omit it: `... }` → `... };`
+                let trimmed = s.trim_end();
+                if (trimmed.starts_with("export let FIXTURE_ENTRYPOINT")
+                    || trimmed.starts_with("export const FIXTURE_ENTRYPOINT"))
+                    && trimmed.ends_with('}')
+                    && !trimmed.ends_with("};")
+                {
+                    s = format!("{};", trimmed);
                 }
                 s
             } else {
