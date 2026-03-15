@@ -3813,6 +3813,7 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_sort_simple_let_decl_runs(&lines_normalized);
     lines_normalized = normalize_memo_cache_decl_arity(&lines_normalized);
     lines_normalized = normalize_cache_slot_renumber(&lines_normalized);
+    lines_normalized = normalize_for_loop_temp_update(&lines_normalized);
     lines_normalized = normalize_object_shorthand_pairs(&lines_normalized);
     lines_normalized = normalize_transitional_element_ref_shorthand(&lines_normalized);
     lines_normalized = normalize_fbt_plural_cross_product_tables(&lines_normalized);
@@ -8533,6 +8534,33 @@ fn normalize_cache_slot_renumber(code: &str) -> String {
     }
 
     out.join("\n")
+}
+
+/// Normalize for-loop update expressions where a temp is used instead of the
+/// loop variable. E.g., `for (let i; ...; t0++)` → `for (let i; ...; i++)`.
+fn normalize_for_loop_temp_update(code: &str) -> String {
+    let for_re = regex::Regex::new(
+        r"^(for \(let (\w+)(?:\s*=\s*[^;]*)?;\s*[^;]+;\s*)(t\d+)(\+\+|\-\-|(?:\s*=\s*.+?))\) \{$",
+    )
+    .unwrap();
+    code.lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            if let Some(caps) = for_re.captures(trimmed) {
+                let loop_var = caps.get(2).unwrap().as_str();
+                let temp_var = caps.get(3).unwrap().as_str();
+                // Only replace if the temp and loop var are different
+                if temp_var != loop_var {
+                    return trimmed.replace(
+                        &format!("{}{}", temp_var, caps.get(4).unwrap().as_str()),
+                        &format!("{}{}", loop_var, caps.get(4).unwrap().as_str()),
+                    );
+                }
+            }
+            trimmed.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn normalize_memo_cache_decl_arity(code: &str) -> String {
