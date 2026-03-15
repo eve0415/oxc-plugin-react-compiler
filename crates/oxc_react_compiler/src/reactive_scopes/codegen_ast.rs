@@ -54,8 +54,10 @@ pub struct CodegenFunctionResult<'a> {
 struct CodegenContext<'a> {
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
-    /// Identifiers that have been declared (to avoid re-declaring).
+    /// Identifiers that have been declared (to avoid re-declaring), tracked by IdentifierId.
     declared: HashSet<IdentifierId>,
+    /// Declaration IDs that have been declared (to avoid duplicates from different SSA ids).
+    declared_decl_ids: HashSet<DeclarationId>,
     /// Variable names that have been declared (to avoid duplicate `let` for same name).
     declared_names: HashSet<String>,
     /// Temp expressions: keyed by DeclarationId (shared across SSA uses) to match
@@ -189,6 +191,7 @@ pub fn codegen_reactive_function<'a>(
         builder,
         allocator,
         declared: HashSet::new(),
+        declared_decl_ids: HashSet::new(),
         declared_names: HashSet::new(),
         temps: HashMap::new(),
         next_cache_index: 0,
@@ -357,28 +360,27 @@ fn codegen_instruction<'a>(
         InstructionValue::StoreLocal { lvalue, value, .. } => {
             // Upstream: for StoreLocal/Reassign with a temp instruction-level
             // lvalue, inline the assignment expression into the temp map.
-            if matches!(lvalue.kind, InstructionKind::Reassign) {
-                if let Some(outer_lv) = &instr.lvalue {
-                    if is_temp_identifier(&outer_lv.identifier) {
-                        let rhs = codegen_place(cx, value)?;
-                        let assign_name = identifier_name(&lvalue.place.identifier);
-                        let assign_expr = cx.builder.expression_assignment(
-                            SPAN,
-                            AssignmentOperator::Assign,
-                            ast::AssignmentTarget::from(
-                                cx.builder
-                                    .simple_assignment_target_assignment_target_identifier(
-                                        SPAN,
-                                        cx.builder.ident(&assign_name),
-                                    ),
+            if matches!(lvalue.kind, InstructionKind::Reassign)
+                && let Some(outer_lv) = &instr.lvalue
+                && is_temp_identifier(&outer_lv.identifier)
+            {
+                let rhs = codegen_place(cx, value)?;
+                let assign_name = identifier_name(&lvalue.place.identifier);
+                let assign_expr = cx.builder.expression_assignment(
+                    SPAN,
+                    AssignmentOperator::Assign,
+                    ast::AssignmentTarget::from(
+                        cx.builder
+                            .simple_assignment_target_assignment_target_identifier(
+                                SPAN,
+                                cx.builder.ident(&assign_name),
                             ),
-                            rhs,
-                        );
-                        cx.temps
-                            .insert(outer_lv.identifier.declaration_id, Some(assign_expr));
-                        return None;
-                    }
-                }
+                    ),
+                    rhs,
+                );
+                cx.temps
+                    .insert(outer_lv.identifier.declaration_id, Some(assign_expr));
+                return None;
             }
             return codegen_store(cx, lvalue, value);
         }
@@ -863,10 +865,12 @@ fn codegen_instruction_value<'a>(
 fn codegen_declare<'a>(cx: &mut CodegenContext<'a>, lvalue: &LValue) -> Option<ast::Statement<'a>> {
     let name = lvalue.place.identifier.name.as_ref()?.value().to_string();
     let id = lvalue.place.identifier.id;
-    if cx.declared.contains(&id) {
+    let decl_id = lvalue.place.identifier.declaration_id;
+    if cx.declared.contains(&id) || cx.declared_decl_ids.contains(&decl_id) {
         return None;
     }
     cx.declared.insert(id);
+    cx.declared_decl_ids.insert(decl_id);
     let kind = variable_declaration_kind(lvalue.kind).unwrap_or(ast::VariableDeclarationKind::Let);
     Some(emit_var_decl_stmt(cx, &name, kind, None))
 }
@@ -1698,19 +1702,20 @@ fn codegen_reactive_scope<'a>(
 
     // Emit declarations for scope-declared variables (before the memoization guard).
     // Sort by name for deterministic output matching upstream.
-    let mut decl_names: Vec<(String, IdentifierId)> = scope
+    let mut decl_names: Vec<(String, IdentifierId, DeclarationId)> = scope
         .declarations
         .iter()
         .filter_map(|(id, decl)| {
             let name = decl.identifier.name.as_ref()?.value().to_string();
-            Some((name, *id))
+            Some((name, *id, decl.identifier.declaration_id))
         })
         .collect();
     decl_names.sort_by(|a, b| a.0.cmp(&b.0));
 
-    for (name, id) in &decl_names {
-        if !cx.declared.contains(id) {
+    for (name, id, decl_id) in &decl_names {
+        if !cx.declared.contains(id) && !cx.declared_decl_ids.contains(decl_id) {
             cx.declared.insert(*id);
+            cx.declared_decl_ids.insert(*decl_id);
             cx.declared_names.insert(name.clone());
             let pattern = cx
                 .builder
@@ -1779,7 +1784,7 @@ fn codegen_reactive_scope<'a>(
     // Allocate cache slots for outputs.
     let output_slots: Vec<(String, u32)> = decl_names
         .iter()
-        .map(|(name, _)| {
+        .map(|(name, _, _)| {
             let slot = cx.alloc_cache_slot();
             (name.clone(), slot)
         })
