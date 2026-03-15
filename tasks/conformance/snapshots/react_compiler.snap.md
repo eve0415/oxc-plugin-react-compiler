@@ -1,6 +1,6 @@
-# React Compiler Conformance — 88.4% parity rate
+# React Compiler Conformance — 88.5% parity rate
 
-**1548** parity_success, **204** parity_failure, **0** skipped
+**1551** parity_success, **201** parity_failure, **0** skipped
 
 ## Failed
 
@@ -81,8 +81,6 @@
 - `infer-effect-dependencies/reactive-optional-chain`: Output mismatch
 - `infer-effect-dependencies/reactive-optional-chain-complex`: Output mismatch
 - `inline-jsx-transform`: Output mismatch
-- `jsx-attribute-with-jsx-element-value`: Output mismatch
-- `jsx-attribute-with-jsx-fragment-value.flow`: Output mismatch
 - `jsx-lowercase-localvar-memberexpr-in-lambda`: Output mismatch
 - `jsx-outlining-child-stored-in-id`: Output mismatch
 - `jsx-outlining-dup-key-diff-value`: Output mismatch
@@ -170,7 +168,6 @@
 - `repro-unreachable-code-early-return-in-useMemo`: Output mismatch
 - `reverse-postorder`: Output mismatch
 - `rules-of-hooks/rules-of-hooks-69521d94fa03`: Output mismatch
-- `rules-of-hooks/rules-of-hooks-93dc5d5e538a`: Output mismatch
 - `rules-of-hooks/rules-of-hooks-c1e8c7f4c191`: Output mismatch
 - `same-variable-as-dep-and-redeclare`: Output mismatch
 - `same-variable-as-dep-and-redeclare-maybe-frozen`: Output mismatch
@@ -913,6 +910,8 @@
 - `issue852`
 - `issue933-disjoint-set-infinite-loop`
 - `jsx-attribute-default-to-true`
+- `jsx-attribute-with-jsx-element-value`
+- `jsx-attribute-with-jsx-fragment-value.flow`
 - `jsx-bracket-in-text`
 - `jsx-empty-expression`
 - `jsx-fragment`
@@ -1476,6 +1475,7 @@
 - `rules-of-hooks/rules-of-hooks-7e52f5eec669`
 - `rules-of-hooks/rules-of-hooks-844a496db20b`
 - `rules-of-hooks/rules-of-hooks-8f1c2c3f71c9`
+- `rules-of-hooks/rules-of-hooks-93dc5d5e538a`
 - `rules-of-hooks/rules-of-hooks-9a47e97b5d13`
 - `rules-of-hooks/rules-of-hooks-9d7879272ff6`
 - `rules-of-hooks/rules-of-hooks-c5d1f3143c4c`
