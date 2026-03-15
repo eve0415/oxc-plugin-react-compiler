@@ -499,13 +499,24 @@ fn codegen_instruction_value<'a>(
             args,
             optional,
             ..
-        } => Some(cx.builder.expression_call(
-            SPAN,
-            codegen_place(cx, callee)?,
-            NONE,
-            codegen_arguments(cx, args)?,
-            *optional,
-        )),
+        } => {
+            let callee_expr = codegen_place(cx, callee)?;
+            let is_hook = cx.options.enable_emit_hook_guards
+                && !cx.options.disable_memoization_features
+                && expr_is_hook_name(&callee_expr);
+            let call_expr = cx.builder.expression_call(
+                SPAN,
+                callee_expr,
+                NONE,
+                codegen_arguments(cx, args)?,
+                *optional,
+            );
+            if is_hook {
+                Some(wrap_hook_guard_iife(cx, call_expr))
+            } else {
+                Some(call_expr)
+            }
+        }
         InstructionValue::NewExpression { callee, args, .. } => Some(cx.builder.expression_new(
             SPAN,
             codegen_place(cx, callee)?,
@@ -520,14 +531,24 @@ fn codegen_instruction_value<'a>(
             call_optional,
             ..
         } => {
-            let callee = codegen_method_call_callee(cx, receiver, property, *receiver_optional)?;
-            Some(cx.builder.expression_call(
+            let callee_expr =
+                codegen_method_call_callee(cx, receiver, property, *receiver_optional)?;
+            // For method calls, the hook name is the property (e.g., obj.useIdentity).
+            let is_hook = cx.options.enable_emit_hook_guards
+                && !cx.options.disable_memoization_features
+                && method_property_is_hook_name(&callee_expr);
+            let call_expr = cx.builder.expression_call(
                 SPAN,
-                callee,
+                callee_expr,
                 NONE,
                 codegen_arguments(cx, args)?,
                 *call_optional,
-            ))
+            );
+            if is_hook {
+                Some(wrap_hook_guard_iife(cx, call_expr))
+            } else {
+                Some(call_expr)
+            }
         }
         InstructionValue::TypeCastExpression {
             value,
@@ -1876,12 +1897,22 @@ fn codegen_reactive_scope<'a>(
             cx.alloc_cache_slot()
         };
 
-        let test = cx.builder.expression_binary(
+        let mut test = cx.builder.expression_binary(
             SPAN,
             cx.cache_access(sentinel_slot),
             oxc_syntax::operator::BinaryOperator::StrictEquality,
             cx.sentinel_expr(),
         );
+
+        // disable_memoization_for_debugging: always recompute (append `|| true`)
+        if cx.options.disable_memoization_for_debugging {
+            test = cx.builder.expression_logical(
+                SPAN,
+                test,
+                LogicalOperator::Or,
+                cx.builder.expression_boolean_literal(SPAN, true),
+            );
+        }
 
         let mut else_body = Vec::new();
         for (name, slot) in &output_slots {
@@ -1968,7 +1999,7 @@ fn codegen_reactive_scope<'a>(
             ));
         }
 
-        let test = test_parts
+        let mut test = test_parts
             .into_iter()
             .reduce(|left, right| {
                 cx.builder.expression_logical(
@@ -1979,6 +2010,16 @@ fn codegen_reactive_scope<'a>(
                 )
             })
             .unwrap();
+
+        // disable_memoization_for_debugging: always recompute (append `|| true`)
+        if cx.options.disable_memoization_for_debugging {
+            test = cx.builder.expression_logical(
+                SPAN,
+                test,
+                LogicalOperator::Or,
+                cx.builder.expression_boolean_literal(SPAN, true),
+            );
+        }
 
         // If body: recompute + store deps + store outputs.
         let mut if_body = body_stmts;
@@ -2603,4 +2644,124 @@ fn reconstruct_for_init<'a>(
         cx.builder
             .alloc_variable_declaration(SPAN, kind, oxc_declarators, false),
     ))
+}
+
+// ---------------------------------------------------------------------------
+// Hook guard helpers
+// ---------------------------------------------------------------------------
+
+const HOOK_GUARD_IDENT: &str = "$dispatcherGuard";
+const HOOK_GUARD_ALLOW: u8 = 2;
+const HOOK_GUARD_DISALLOW: u8 = 3;
+
+fn is_hook_name_str(name: &str) -> bool {
+    name.len() >= 4 && name.starts_with("use") && name.as_bytes()[3].is_ascii_uppercase()
+}
+
+/// Check if a resolved callee expression is a hook name (identifier starting with `use` + uppercase).
+fn expr_is_hook_name(expr: &ast::Expression<'_>) -> bool {
+    match expr {
+        ast::Expression::Identifier(ident) => is_hook_name_str(ident.name.as_str()),
+        _ => false,
+    }
+}
+
+/// Check if a method call callee expression has a hook-name property.
+/// E.g., `ObjectWithHooks.useIdentity` → checks "useIdentity".
+fn method_property_is_hook_name(callee_expr: &ast::Expression<'_>) -> bool {
+    match callee_expr {
+        ast::Expression::StaticMemberExpression(member) => {
+            is_hook_name_str(member.property.name.as_str())
+        }
+        _ => false,
+    }
+}
+
+/// Wrap a hook call expression in an IIFE with dispatcher guard:
+/// ```js
+/// (function() { try { $dispatcherGuard(2); return hookCall(); } finally { $dispatcherGuard(3); } })()
+/// ```
+fn wrap_hook_guard_iife<'a>(
+    cx: &mut CodegenContext<'a>,
+    call_expr: ast::Expression<'a>,
+) -> ast::Expression<'a> {
+    cx.emitted_hook_guards = true;
+    cx.needs_function_hook_guard_wrapper = true;
+
+    let guard_allow = cx.builder.statement_expression(
+        SPAN,
+        cx.builder.expression_call(
+            SPAN,
+            cx.builder
+                .expression_identifier(SPAN, cx.builder.ident(HOOK_GUARD_IDENT)),
+            NONE,
+            cx.builder
+                .vec1(ast::Argument::from(cx.builder.expression_numeric_literal(
+                    SPAN,
+                    HOOK_GUARD_ALLOW as f64,
+                    None,
+                    NumberBase::Decimal,
+                ))),
+            false,
+        ),
+    );
+
+    let return_stmt = cx.builder.statement_return(SPAN, Some(call_expr));
+
+    let guard_disallow = cx.builder.statement_expression(
+        SPAN,
+        cx.builder.expression_call(
+            SPAN,
+            cx.builder
+                .expression_identifier(SPAN, cx.builder.ident(HOOK_GUARD_IDENT)),
+            NONE,
+            cx.builder
+                .vec1(ast::Argument::from(cx.builder.expression_numeric_literal(
+                    SPAN,
+                    HOOK_GUARD_DISALLOW as f64,
+                    None,
+                    NumberBase::Decimal,
+                ))),
+            false,
+        ),
+    );
+
+    let try_body = cx.builder.vec_from_iter([guard_allow, return_stmt]);
+
+    let try_stmt = cx.builder.statement_try(
+        SPAN,
+        cx.builder.alloc_block_statement(SPAN, try_body),
+        Option::<oxc_allocator::Box<'_, ast::CatchClause<'_>>>::None,
+        Some(
+            cx.builder
+                .alloc_block_statement(SPAN, cx.builder.vec1(guard_disallow)),
+        ),
+    );
+
+    let function_expr =
+        cx.builder.expression_function(
+            SPAN,
+            ast::FunctionType::FunctionExpression,
+            None,
+            false,
+            false,
+            false,
+            NONE,
+            NONE,
+            cx.builder.alloc(cx.builder.formal_parameters(
+                SPAN,
+                ast::FormalParameterKind::FormalParameter,
+                cx.builder.vec(),
+                Option::<oxc_allocator::Box<'_, ast::FormalParameterRest<'_>>>::None,
+            )),
+            NONE,
+            Some(cx.builder.alloc(cx.builder.function_body(
+                SPAN,
+                cx.builder.vec(),
+                cx.builder.vec1(try_stmt),
+            ))),
+        );
+
+    cx.builder
+        .expression_call(SPAN, function_expr, NONE, cx.builder.vec(), false)
 }
