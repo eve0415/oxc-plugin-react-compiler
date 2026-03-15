@@ -1,6 +1,6 @@
-# React Compiler Conformance — 95.1% parity rate
+# React Compiler Conformance — 95.2% parity rate
 
-**1666** parity_success, **86** parity_failure, **0** skipped
+**1668** parity_success, **84** parity_failure, **0** skipped
 
 ## Failed
 
@@ -12,7 +12,6 @@
 - `capture-param-mutate`: Output mismatch
 - `capture-ref-for-later-mutation`: Output mismatch
 - `capturing-function-skip-computed-path`: Output mismatch
-- `chained-assignment-context-variable`: Output mismatch
 - `change-detect-reassign`: Output mismatch
 - `computed-call-evaluation-order`: Output mismatch
 - `default-param-array-with-unary`: Output mismatch
@@ -40,13 +39,11 @@
 - `nested-optional-member-expr`: Output mismatch
 - `new-mutability/repro-invalid-function-expression-effects-phi`: Output mismatch
 - `new-mutability/ssa-renaming-ternary-destruction`: Output mismatch
-- `new-mutability/useCallback-reordering-deplist-controlflow`: Output mismatch
 - `original-reactive-scopes-fork/capture-ref-for-later-mutation`: Output mismatch
-- `preserve-memo-validation/useCallback-reordering-deplist-controlflow`: Output mismatch
 - `preserve-memo-validation/useMemo-conditional-access-alloc`: Output mismatch
 - `preserve-memo-validation/useMemo-conditional-access-noAlloc`: Output mismatch
-- `preserve-memo-validation/useMemo-reordering-depslist-controlflow`: Output mismatch
 - `propagate-scope-deps-hir-fork/repro-invariant`: Output mismatch
+- `propagate-scope-deps-hir-fork/repro-scope-missing-mutable-range`: Output mismatch
 - `propagate-scope-deps-hir-fork/ssa-renaming-ternary`: Output mismatch
 - `propagate-scope-deps-hir-fork/ssa-renaming-ternary-destruction`: Output mismatch
 - `propagate-scope-deps-hir-fork/ssa-renaming-ternary-destruction-with-mutation`: Output mismatch
@@ -72,6 +69,7 @@
 - `repro-invalid-reactivity-value-block`: Output mismatch
 - `repro-mutate-ref-in-function-passed-to-hook`: Output mismatch
 - `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`: Output mismatch
+- `repro-scope-missing-mutable-range`: Output mismatch
 - `repro-unreachable-code-early-return-in-useMemo`: Output mismatch
 - `sequence-expression`: Output mismatch
 - `simple`: Output mismatch
@@ -271,6 +269,7 @@
 - `capturing-reference-changes-type`
 - `capturing-variable-in-nested-block`
 - `capturing-variable-in-nested-function`
+- `chained-assignment-context-variable`
 - `chained-assignment-expressions`
 - `class-component-with-render-helper`
 - `codegen-emit-imports-same-source`
@@ -1010,6 +1009,7 @@
 - `new-mutability/transitivity-phi-assign-or-capture`
 - `new-mutability/typed-identity-function-frozen-input`
 - `new-mutability/typed-identity-function-mutable-input`
+- `new-mutability/useCallback-reordering-deplist-controlflow`
 - `new-mutability/useCallback-reordering-depslist-assignment`
 - `new-mutability/useMemo-reordering-depslist-assignment`
 - `new-spread`
@@ -1145,6 +1145,7 @@
 - `preserve-memo-validation/useCallback-infer-scope-global`
 - `preserve-memo-validation/useCallback-nonescaping`
 - `preserve-memo-validation/useCallback-nonescaping-invoked-callback-escaping-return`
+- `preserve-memo-validation/useCallback-reordering-deplist-controlflow`
 - `preserve-memo-validation/useCallback-reordering-depslist-assignment`
 - `preserve-memo-validation/useCallback-with-no-depslist`
 - `preserve-memo-validation/useMemo-alias-property-load-dep`
@@ -1159,6 +1160,7 @@
 - `preserve-memo-validation/useMemo-inner-decl`
 - `preserve-memo-validation/useMemo-invoke-prop`
 - `preserve-memo-validation/useMemo-reordering-depslist-assignment`
+- `preserve-memo-validation/useMemo-reordering-depslist-controlflow`
 - `preserve-memo-validation/useMemo-with-no-depslist`
 - `primitive-alias-mutate`
 - `primitive-as-dep`
@@ -1188,7 +1190,6 @@
 - `propagate-scope-deps-hir-fork/phi-type-inference-array-push-consecutive-phis`
 - `propagate-scope-deps-hir-fork/phi-type-inference-property-store`
 - `propagate-scope-deps-hir-fork/reactive-dependencies-non-optional-properties-inside-optional-chain`
-- `propagate-scope-deps-hir-fork/repro-scope-missing-mutable-range`
 - `propagate-scope-deps-hir-fork/ssa-cascading-eliminated-phis`
 - `propagate-scope-deps-hir-fork/ssa-leave-case`
 - `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-with-mutation`
@@ -1381,7 +1382,6 @@
 - `repro-retain-source-when-bailout`
 - `repro-returned-inner-fn-mutates-context`
 - `repro-returned-inner-fn-reassigns-context`
-- `repro-scope-missing-mutable-range`
 - `repro-separate-memoization-due-to-callback-capturing`
 - `repro-separate-scopes-for-divs`
 - `repro-slow-validate-preserve-memo`
