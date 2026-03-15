@@ -1,6 +1,6 @@
-# React Compiler Conformance — 93.0% parity rate
+# React Compiler Conformance — 93.6% parity rate
 
-**1629** parity_success, **123** parity_failure, **0** skipped
+**1639** parity_success, **113** parity_failure, **0** skipped
 
 ## Failed
 
@@ -28,14 +28,9 @@
 - `destructuring-mixed-scope-and-local-variables-with-default`: Output mismatch
 - `destructuring-object-default`: Output mismatch
 - `destructuring-with-typecast-as-default-value.flow`: Output mismatch
-- `do-while-early-unconditional-break`: Output mismatch
-- `dominator`: Output mismatch
 - `fast-refresh-reloading`: Output mismatch
-- `fbt/bug-fbt-plural-multiple-mixed-call-tag`: Output mismatch
-- `fbt/fbt-preserve-jsxtext`: Output mismatch
 - `fbt/fbtparam-with-jsx-fragment-value`: Output mismatch
 - `flag-enable-emit-hook-guards`: Output mismatch
-- `for-logical`: Output mismatch
 - `function-param-assignment-pattern`: Output mismatch
 - `hoisting-repro-variable-used-in-assignment`: Output mismatch
 - `hoisting-setstate-captured-indirectly-jsx`: Output mismatch
@@ -61,7 +56,6 @@
 - `name-anonymous-functions`: Output mismatch
 - `nested-optional-member-expr`: Output mismatch
 - `new-mutability/mutate-after-useeffect-optional-chain`: Output mismatch
-- `new-mutability/repro-compiler-infinite-loop`: Output mismatch
 - `new-mutability/repro-invalid-function-expression-effects-phi`: Output mismatch
 - `new-mutability/ssa-renaming-ternary-destruction`: Output mismatch
 - `new-mutability/useCallback-reordering-deplist-controlflow`: Output mismatch
@@ -72,7 +66,6 @@
 - `preserve-memo-validation/useMemo-conditional-access-alloc`: Output mismatch
 - `preserve-memo-validation/useMemo-conditional-access-noAlloc`: Output mismatch
 - `preserve-memo-validation/useMemo-reordering-depslist-controlflow`: Output mismatch
-- `primitive-reassigned-loop-force-scopes-enabled`: Output mismatch
 - `propagate-scope-deps-hir-fork/repro-invariant`: Output mismatch
 - `propagate-scope-deps-hir-fork/repro-scope-missing-mutable-range`: Output mismatch
 - `propagate-scope-deps-hir-fork/ssa-renaming-ternary`: Output mismatch
@@ -85,8 +78,6 @@
 - `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch`: Output mismatch
 - `property-call-evaluation-order`: Output mismatch
 - `reactive-control-dependency-for-init`: Output mismatch
-- `reactive-control-dependency-for-update`: Output mismatch
-- `reactive-control-dependency-from-interleaved-reactivity-for-update`: Output mismatch
 - `readonly-object-method-calls-mutable-lambda`: Output mismatch
 - `reassigned-phi-in-returned-function-expression`: Output mismatch
 - `recursive-function-expression`: Output mismatch
@@ -121,7 +112,6 @@
 - `type-annotations/type-annotation-as-array_.flow`: Output mismatch
 - `type-annotations/type-annotation-satisfies-array`: Output mismatch
 - `type-inference-array-from`: Output mismatch
-- `unused-conditional`: Output mismatch
 - `update-expression-in-sequence`: Output mismatch
 - `useState-and-other-hook-unpruned-dependency`: Output mismatch
 - `useState-pruned-dependency-change-detect`: Output mismatch
@@ -400,7 +390,9 @@
 - `do-while-compound-test`
 - `do-while-conditional-break`
 - `do-while-continue`
+- `do-while-early-unconditional-break`
 - `do-while-simple`
+- `dominator`
 - `dont-memoize-primitive-function-call-non-escaping`
 - `dont-memoize-primitive-function-call-non-escaping-useMemo`
 - `dont-merge-if-dep-is-inner-declaration-of-previous-scope`
@@ -647,6 +639,7 @@
 - `fast-refresh-dont-refresh-const-changes-prod`
 - `fast-refresh-refresh-on-const-changes-dev`
 - `fbt/bug-fbt-plural-multiple-function-calls`
+- `fbt/bug-fbt-plural-multiple-mixed-call-tag`
 - `fbt/error.todo-fbt-as-local`
 - `fbt/error.todo-fbt-param-nested-fbt`
 - `fbt/error.todo-fbt-unknown-enum-value`
@@ -663,6 +656,7 @@
 - `fbt/fbt-param-with-unicode`
 - `fbt/fbt-params`
 - `fbt/fbt-params-complex-param-value`
+- `fbt/fbt-preserve-jsxtext`
 - `fbt/fbt-preserve-whitespace`
 - `fbt/fbt-preserve-whitespace-subtree`
 - `fbt/fbt-preserve-whitespace-two-subtrees`
@@ -686,6 +680,7 @@
 - `for-in-statement-continue`
 - `for-in-statement-empty-body`
 - `for-in-statement-type-inference`
+- `for-logical`
 - `for-loop-let-undefined-decl`
 - `for-loop-with-value-block-initializer`
 - `for-multiple-variable-declarations-in-initializer`
@@ -1006,6 +1001,7 @@
 - `new-mutability/potential-mutation-in-function-expression`
 - `new-mutability/reactive-ref`
 - `new-mutability/reactive-setState`
+- `new-mutability/repro-compiler-infinite-loop`
 - `new-mutability/repro-function-expression-effects-stack-overflow`
 - `new-mutability/repro-internal-compiler-shared-mutablerange-bug`
 - `new-mutability/repro-jsx-captures-value-mutated-later`
@@ -1174,6 +1170,7 @@
 - `primitive-alias-mutate`
 - `primitive-as-dep`
 - `primitive-as-dep-nested-scope`
+- `primitive-reassigned-loop-force-scopes-enabled`
 - `prop-capturing-function-1`
 - `propagate-scope-deps-hir-fork/conditional-break-labeled`
 - `propagate-scope-deps-hir-fork/conditional-early-return`
@@ -1223,6 +1220,7 @@
 - `reactive-control-dependency-do-while-indirect`
 - `reactive-control-dependency-do-while-test`
 - `reactive-control-dependency-for-test`
+- `reactive-control-dependency-for-update`
 - `reactive-control-dependency-forin-collection`
 - `reactive-control-dependency-forof-collection`
 - `reactive-control-dependency-from-interleaved-reactivity-do-while`
@@ -1230,6 +1228,7 @@
 - `reactive-control-dependency-from-interleaved-reactivity-for-init`
 - `reactive-control-dependency-from-interleaved-reactivity-for-of`
 - `reactive-control-dependency-from-interleaved-reactivity-for-test`
+- `reactive-control-dependency-from-interleaved-reactivity-for-update`
 - `reactive-control-dependency-from-interleaved-reactivity-if`
 - `reactive-control-dependency-from-interleaved-reactivity-switch`
 - `reactive-control-dependency-from-interleaved-reactivity-while`
@@ -1669,6 +1668,7 @@
 - `unmemoized-nonreactive-dependency-is-pruned-as-dependency`
 - `unused-array-middle-element`
 - `unused-array-rest-element`
+- `unused-conditional`
 - `unused-logical`
 - `unused-logical-assigned-to-variable`
 - `unused-object-element`

@@ -1576,10 +1576,36 @@ fn codegen_terminal<'a>(
             let test_expr = codegen_place(cx, test);
 
             // Update expression.
-            let update_expr =
-                if let Some(uv) = update_value {
-                    // For StoreLocal/Reassign updates (e.g., `i = i + 1`), emit the
-                    // assignment expression, not just the RHS value.
+            //
+            // Strategy: process the update block's instructions to populate
+            // the temp map, then find the StoreLocal/Reassign instruction
+            // within the block to construct the assignment expression.  The
+            // `update_value` may be a trailing `LoadLocal(x)` that merely
+            // reads back the result; the actual side-effect we need is the
+            // `StoreLocal { x = expr }` inside the block.
+            let update_expr = if let Some(update_block) = update {
+                // Process all instructions into the temp map / statement list.
+                let update_stmts = codegen_block(cx, update_block);
+
+                // Prefer: find the assignment expression produced by the
+                // StoreLocal/Reassign in the emitted statements.
+                let assign_expr = update_stmts.iter().rev().find_map(|s| {
+                    if let ast::Statement::ExpressionStatement(es) = s {
+                        if matches!(&es.expression, ast::Expression::AssignmentExpression(_)) {
+                            Some(es.expression.clone_in(cx.allocator))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                });
+
+                if assign_expr.is_some() {
+                    assign_expr
+                } else if let Some(uv) = update_value {
+                    // Fallback to codegen_instruction_value on the
+                    // update_value when no assignment was found.
                     match uv.as_ref() {
                         InstructionValue::StoreLocal { lvalue, value, .. }
                         | InstructionValue::StoreContext { lvalue, value, .. }
@@ -1588,25 +1614,24 @@ fn codegen_terminal<'a>(
                             if let Some(rhs) = codegen_place(cx, value) {
                                 let name = identifier_name(&lvalue.place.identifier);
                                 Some(cx.builder.expression_assignment(
-                                SPAN,
-                                AssignmentOperator::Assign,
-                                ast::AssignmentTarget::from(
-                                    cx.builder
-                                        .simple_assignment_target_assignment_target_identifier(
-                                            SPAN,
-                                            cx.builder.ident(&name),
-                                        ),
-                                ),
-                                rhs,
-                            ))
+                                    SPAN,
+                                    AssignmentOperator::Assign,
+                                    ast::AssignmentTarget::from(
+                                        cx.builder
+                                            .simple_assignment_target_assignment_target_identifier(
+                                                SPAN,
+                                                cx.builder.ident(&name),
+                                            ),
+                                    ),
+                                    rhs,
+                                ))
                             } else {
                                 None
                             }
                         }
                         _ => codegen_instruction_value(cx, uv),
                     }
-                } else if let Some(update_block) = update {
-                    let update_stmts = codegen_block(cx, update_block);
+                } else {
                     // Extract expression from last statement.
                     update_stmts.into_iter().last().and_then(|s| {
                         if let ast::Statement::ExpressionStatement(es) = s {
@@ -1615,9 +1640,12 @@ fn codegen_terminal<'a>(
                             None
                         }
                     })
-                } else {
-                    None
-                };
+                }
+            } else if let Some(uv) = update_value {
+                codegen_instruction_value(cx, uv)
+            } else {
+                None
+            };
 
             let body_stmts = codegen_block(cx, loop_block);
             let body = cx
@@ -2464,14 +2492,47 @@ fn reconstruct_for_init<'a>(
         return None;
     }
 
-    // Fast path: single variable declaration (common case).
+    // Fast path: single statement.
     if stmts.len() == 1 {
-        if let ast::Statement::VariableDeclaration(_) = &stmts[0]
-            && let ast::Statement::VariableDeclaration(decl) = stmts.into_iter().next().unwrap()
-        {
-            return Some(ast::ForStatementInit::VariableDeclaration(decl));
+        let stmt = stmts.into_iter().next().unwrap();
+        match stmt {
+            ast::Statement::VariableDeclaration(decl) => {
+                return Some(ast::ForStatementInit::VariableDeclaration(decl));
+            }
+            // Single assignment: convert `VAR = EXPR;` to `let VAR = EXPR`
+            // for for-init position when the variable was already hoisted by
+            // scope declarations.
+            ast::Statement::ExpressionStatement(es) => {
+                if let ast::Expression::AssignmentExpression(assign) = es.unbox().expression
+                    && assign.operator == AssignmentOperator::Assign
+                    && let ast::AssignmentTarget::AssignmentTargetIdentifier(ref ident) =
+                        assign.left
+                {
+                    let name = ident.name.to_string();
+                    let pattern = cx
+                        .builder
+                        .binding_pattern_binding_identifier(SPAN, cx.builder.ident(&name));
+                    let kind = ast::VariableDeclarationKind::Let;
+                    return Some(ast::ForStatementInit::VariableDeclaration(
+                        cx.builder.alloc_variable_declaration(
+                            SPAN,
+                            kind,
+                            cx.builder.vec1(cx.builder.variable_declarator(
+                                SPAN,
+                                kind,
+                                pattern,
+                                NONE,
+                                Some(assign.unbox().right),
+                                false,
+                            )),
+                            false,
+                        ),
+                    ));
+                }
+                return None;
+            }
+            _ => return None,
         }
-        return None;
     }
 
     // Multi-statement path: merge DeclareLocal + assignment pairs.

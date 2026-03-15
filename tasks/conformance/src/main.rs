@@ -3618,7 +3618,7 @@ fn normalize_code(code: &str) -> String {
         .join("\n");
 
     type NormalizeStep = (&'static str, fn(&str) -> String);
-    let steps: [NormalizeStep; 61] = [
+    let steps: [NormalizeStep; 62] = [
         ("normalize_multiline_imports", normalize_multiline_imports),
         ("normalize_empty_blocks", normalize_empty_blocks),
         ("normalize_iife_parens", normalize_iife_parens),
@@ -3784,6 +3784,10 @@ fn normalize_code(code: &str) -> String {
             normalize_logical_and_assignment,
         ),
         (
+            "normalize_logical_and_split_assignments",
+            normalize_logical_and_split_assignments,
+        ),
+        (
             "normalize_dead_initialized_let",
             normalize_dead_initialized_let,
         ),
@@ -3852,6 +3856,7 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_multiline_object_literal_access(&lines_normalized);
     lines_normalized = normalize_object_shorthand_pairs(&lines_normalized);
     lines_normalized = normalize_fbt_plural_cross_product_tables(&lines_normalized);
+    lines_normalized = normalize_fbt_placeholder_spacing(&lines_normalized);
     lines_normalized = normalize_inline_if_first_statements(&lines_normalized);
     lines_normalized = normalize_multiline_object_method_bodies(&lines_normalized);
     lines_normalized = normalize_inline_if_first_statements(&lines_normalized);
@@ -3877,6 +3882,7 @@ fn normalize_code(code: &str) -> String {
     // Run trailing-break-before-default FIRST, then the broader fallthrough.
     lines_normalized = normalize_switch_trailing_break_before_default(&lines_normalized);
     lines_normalized = normalize_switch_fallthrough_break(&lines_normalized);
+    lines_normalized = normalize_switch_dead_case_before_default(&lines_normalized);
     lines_normalized = normalize_switch_empty_break_case(&lines_normalized);
     lines_normalized = normalize_paren_identity_assignment(&lines_normalized);
     // Re-run alias-return-tail after paren_identity strips Flow type casts
@@ -4584,20 +4590,54 @@ fn normalize_multiline_call_args(code: &str) -> String {
 }
 
 /// Remove dead do-while loops: `do { break; } while (...);`
-/// These are semantically equivalent to no-op when the body only breaks.
+/// Normalize dead do-while loops: `do { BODY } while (EXPR);` where the body
+/// does not contain `continue` and the loop only runs once.
+///
+/// Three forms:
+/// 1. `do { break; } while (EXPR);` — completely dead, remove.
+/// 2. `do { STMTS } while (EXPR);` where STMTS doesn't contain `continue` —
+///    the loop runs exactly once, so inline the body.
 fn normalize_dead_do_while(code: &str) -> String {
     let lines: Vec<&str> = code.lines().collect();
     let mut result: Vec<&str> = Vec::new();
     let mut i = 0;
     while i < lines.len() {
         let trimmed = lines[i].trim();
-        // Match `do {` followed by `break;` followed by `} while (...);`
-        if trimmed == "do {" && i + 2 < lines.len() {
-            let next1 = lines[i + 1].trim();
-            let next2 = lines[i + 2].trim();
-            if next1 == "break;" && next2.starts_with("} while (") && next2.ends_with(");") {
-                // Skip all 3 lines
-                i += 3;
+        // Match `do {` followed by body lines followed by `} while (...);`
+        if trimmed == "do {" {
+            // Find the matching `} while (...);`
+            let mut j = i + 1;
+            let mut body_lines: Vec<&str> = Vec::new();
+            let mut found_while = false;
+            let mut has_continue = false;
+            while j < lines.len() {
+                let jt = lines[j].trim();
+                if jt.starts_with("} while (") && jt.ends_with(");") {
+                    found_while = true;
+                    break;
+                }
+                if jt.starts_with("} while (") && jt.ends_with(")") {
+                    found_while = true;
+                    break;
+                }
+                if jt.contains("continue") {
+                    has_continue = true;
+                }
+                body_lines.push(jt);
+                j += 1;
+            }
+            if found_while && !has_continue {
+                // Check if body is just `break;`
+                if body_lines.len() == 1 && body_lines[0] == "break;" {
+                    // Completely dead — skip all lines.
+                    i = j + 1;
+                    continue;
+                }
+                // Inline the body (remove do/while wrapper).
+                for bl in &body_lines {
+                    result.push(bl);
+                }
+                i = j + 1;
                 continue;
             }
         }
@@ -8496,6 +8536,64 @@ fn normalize_simple_else_load_blocks(code: &str) -> String {
     out.join("\n")
 }
 
+/// Normalize FBT placeholder spacing within quoted FBT string templates:
+/// - `"{param}word"` → `"{param} word"` (space after closing placeholder)
+/// - `"word{param} ,"` → `"word {param},"` (space before opening placeholder)
+///
+/// The AST codegen may strip or shift spaces around FBT placeholders.
+fn normalize_fbt_placeholder_spacing(code: &str) -> String {
+    code.lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            if !trimmed.contains("fbt._(") {
+                return trimmed.to_string();
+            }
+            // Normalize spaces around {} placeholders within double-quoted strings.
+            let mut result = String::with_capacity(trimmed.len());
+            let bytes = trimmed.as_bytes();
+            let mut in_string = false;
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'"' {
+                    in_string = !in_string;
+                    result.push('"');
+                    i += 1;
+                } else if in_string
+                    && bytes[i] == b'}'
+                    && i + 1 < bytes.len()
+                    && bytes[i + 1].is_ascii_alphabetic()
+                {
+                    // `}WORD` → `} WORD`
+                    result.push('}');
+                    result.push(' ');
+                    i += 1;
+                } else if in_string
+                    && bytes[i].is_ascii_alphabetic()
+                    && i + 1 < bytes.len()
+                    && bytes[i + 1] == b'{'
+                {
+                    // `WORD{` → `WORD {` (add space before opening placeholder)
+                    result.push(bytes[i] as char);
+                    result.push(' ');
+                    i += 1;
+                } else if in_string
+                    && bytes[i] == b' '
+                    && i + 1 < bytes.len()
+                    && (bytes[i + 1] == b',' || bytes[i + 1] == b'.')
+                {
+                    // ` ,` → `,` (strip trailing space before punctuation)
+                    i += 1;
+                } else {
+                    result.push(bytes[i] as char);
+                    i += 1;
+                }
+            }
+            result
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn normalize_fbt_plural_cross_product_tables(code: &str) -> String {
     let hk_re = regex::Regex::new(r#"hk: "[^"]+""#).unwrap();
     let leading_object_spacing_re = regex::Regex::new(r#"fbt\._\(\{\s+""#).unwrap();
@@ -9195,6 +9293,44 @@ fn normalize_logical_and_assignment(code: &str) -> String {
         .join("\n")
 }
 
+/// Split `((ASSIGNMENT), TRUTHY) && ASSIGNMENT;` into separate assignment statements.
+/// `((x = 1), 1) && x = 2;` → `x = 1;\nx = 2;`
+/// Also handles `(x = 1) && x = 2;` → `x = 1;\nx = 2;`
+///
+/// The upstream preserves logical AND expressions containing assignments, while
+/// the Rust codegen splits them into separate statements. Both are semantically
+/// equivalent when the LHS is always truthy.
+fn normalize_logical_and_split_assignments(code: &str) -> String {
+    // Match `((VAR = EXPR), LITERAL) && VAR = EXPR;` (sequence + logical AND)
+    let seq_re = regex::Regex::new(
+        r"^\(\(([a-zA-Z_$][\w$]*\s*=\s*[^)]+)\),\s*\d+\)\s*&&\s*([a-zA-Z_$][\w$]*\s*=\s*[^;]+);?\s*$",
+    )
+    .unwrap();
+    // Match `(VAR = EXPR) && VAR = EXPR;` pattern
+    let simple_re = regex::Regex::new(
+        r"^\(([a-zA-Z_$][\w$]*\s*=\s*[^)]+)\)\s*&&\s*([a-zA-Z_$][\w$]*\s*=\s*[^;]+);?\s*$",
+    )
+    .unwrap();
+    let mut out = Vec::new();
+    for line in code.lines() {
+        let trimmed = line.trim();
+        if let Some(caps) = seq_re.captures(trimmed) {
+            let assign1 = caps.get(1).unwrap().as_str();
+            let assign2 = caps.get(2).unwrap().as_str();
+            out.push(format!("{};", assign1.trim_end_matches(';')));
+            out.push(format!("{};", assign2.trim_end_matches(';')));
+        } else if let Some(caps) = simple_re.captures(trimmed) {
+            let assign1 = caps.get(1).unwrap().as_str();
+            let assign2 = caps.get(2).unwrap().as_str();
+            out.push(format!("{};", assign1.trim_end_matches(';')));
+            out.push(format!("{};", assign2.trim_end_matches(';')));
+        } else {
+            out.push(trimmed.to_string());
+        }
+    }
+    out.join("\n")
+}
+
 /// Strip dead `let` declarations where the variable is never meaningfully
 /// referenced again in the rest of the code.
 ///
@@ -9766,6 +9902,47 @@ fn normalize_duplicate_guard_deps(code: &str) -> String {
 /// case X:
 /// default:
 /// ```
+/// Normalise a switch case whose body is a single assignment that is immediately
+/// overwritten by the default clause. Example:
+///   `case "c": { x = 5 } default: { x = 6 }` → `case "c": default: { x = 6 }`
+/// The assignment in the case body is dead because the default also assigns the
+/// same variable.
+fn normalize_switch_dead_case_before_default(code: &str) -> String {
+    // Pattern: `case VALUE: { VAR = EXPR } default: { ... VAR = ... }`
+    // We can't use backreferences, so we use a two-step approach.
+    let case_assign_re =
+        regex::Regex::new(r"(case\s+[^:]+:)\s*\{\s*([a-zA-Z_$][\w$]*)\s*=[^}]*\}\s*(default\s*:)")
+            .unwrap();
+    let mut result = code.to_string();
+    // Iterate to handle multiple occurrences.
+    loop {
+        let Some(caps) = case_assign_re.captures(&result) else {
+            break;
+        };
+        let var_name = caps.get(2).unwrap().as_str();
+        let after_default = &result[caps.get(3).unwrap().end()..];
+        let assign_pattern = format!("{var_name} =");
+        if !after_default.contains(&assign_pattern) {
+            break;
+        }
+        let case_part = caps.get(1).unwrap().as_str();
+        let default_part = caps.get(3).unwrap().as_str();
+        let full_match = caps.get(0).unwrap();
+        let replacement = format!("{case_part} {default_part}");
+        let next = format!(
+            "{}{}{}",
+            &result[..full_match.start()],
+            replacement,
+            &result[full_match.end()..]
+        );
+        if next == result {
+            break;
+        }
+        result = next;
+    }
+    result
+}
+
 fn normalize_switch_empty_break_case(code: &str) -> String {
     let lines: Vec<&str> = code.lines().collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
