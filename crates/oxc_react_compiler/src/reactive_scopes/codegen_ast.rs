@@ -3234,6 +3234,17 @@ fn lower_function_expression_via_reactive<'a>(
     let mut reactive_fn =
         crate::reactive_scopes::build_reactive_function::build_reactive_function(hir_func.clone());
 
+    // Run the same post-reactive passes as the string codegen:
+    // - prune_unused_labels: remove unreferenced labels
+    // - prune_unused_lvalues: set lvalue=None on instructions whose temp
+    //   result is never referenced, so they emit as expression statements
+    //   instead of being silently inlined into the temp map
+    // - prune_hoisted_contexts: remove unnecessary context hoisting
+    crate::reactive_scopes::prune_unused_labels_reactive::prune_unused_labels(&mut reactive_fn);
+    crate::reactive_scopes::prune_unused_lvalues::prune_unused_lvalues(&mut reactive_fn);
+    let _ =
+        crate::reactive_scopes::prune_hoisted_contexts::prune_hoisted_contexts(&mut reactive_fn);
+
     // Mark all terminal labels as implicit for inner functions — these are
     // CFG block IDs that shouldn't be emitted as visible JavaScript labels.
     suppress_labels_recursive(&mut reactive_fn.body);
