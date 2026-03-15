@@ -912,13 +912,50 @@ fn codegen_instruction_value<'a>(
             let mut prefix_exprs: Vec<ast::Expression<'a>> = Vec::new();
             for seq_instr in instructions {
                 let expr = match &seq_instr.value {
-                    InstructionValue::StoreLocal { value: v, .. }
-                    | InstructionValue::StoreContext { value: v, .. } => codegen_place(cx, v),
+                    InstructionValue::StoreLocal {
+                        lvalue: store_lv,
+                        value: v,
+                        ..
+                    }
+                    | InstructionValue::StoreContext {
+                        lvalue: store_lv,
+                        value: v,
+                        ..
+                    } => {
+                        let rhs = codegen_place(cx, v);
+                        // Build assignment expression for reassign stores.
+                        if matches!(store_lv.kind, InstructionKind::Reassign) {
+                            rhs.map(|rhs_expr| {
+                                let name = identifier_name(&store_lv.place.identifier);
+                                cx.builder.expression_assignment(
+                                    SPAN,
+                                    AssignmentOperator::Assign,
+                                    ast::AssignmentTarget::from(
+                                        cx.builder
+                                            .simple_assignment_target_assignment_target_identifier(
+                                                SPAN,
+                                                cx.builder.ident(&name),
+                                            ),
+                                    ),
+                                    rhs_expr,
+                                )
+                            })
+                        } else {
+                            rhs
+                        }
+                    }
                     _ => codegen_instruction_value(cx, &seq_instr.value),
                 };
                 if let Some(expr) = expr {
                     if let Some(lv) = &seq_instr.lvalue {
-                        cx.temps.insert(lv.identifier.declaration_id, Some(expr));
+                        if is_temp_identifier(&lv.identifier) {
+                            cx.temps.insert(
+                                lv.identifier.declaration_id,
+                                Some(expr.clone_in(cx.allocator)),
+                            );
+                        }
+                        // Always add to prefix for side effects.
+                        prefix_exprs.push(expr);
                     } else {
                         prefix_exprs.push(expr);
                     }
