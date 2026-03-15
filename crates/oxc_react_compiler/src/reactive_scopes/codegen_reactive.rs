@@ -28887,6 +28887,9 @@ fn codegen_terminal(cx: &mut Context, terminal: &ReactiveTerminal) -> Option<Str
             }
         }
 
+        if current_case_block.len() < 3 {
+            return None;
+        }
         let store_idx = current_case_block.len() - 2;
         let scope_idx = current_case_block.len() - 3;
         let (target_decl, source_decl) =
