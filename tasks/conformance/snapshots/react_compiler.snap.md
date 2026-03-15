@@ -1,6 +1,6 @@
-# React Compiler Conformance — 75.6% parity rate
+# React Compiler Conformance — 78.1% parity rate
 
-**1324** parity_success, **428** parity_failure, **0** skipped
+**1369** parity_success, **383** parity_failure, **0** skipped
 
 ## Failed
 
@@ -10,7 +10,6 @@
 - `align-scopes-nested-block-structure`: Output mismatch
 - `align-scopes-reactive-scope-overlaps-if`: Output mismatch
 - `align-scopes-reactive-scope-overlaps-label`: Output mismatch
-- `align-scopes-trycatch-nested-overlapping-range`: Output mismatch
 - `align-scopes-within-nested-valueblock-in-array`: Output mismatch
 - `allocating-logical-expression-instruction-scope`: Output mismatch
 - `allocating-primitive-as-dep`: Output mismatch
@@ -24,8 +23,6 @@
 - `allow-ref-access-in-effect`: Output mismatch
 - `allow-ref-access-in-effect-indirect`: Output mismatch
 - `allow-ref-access-in-unused-callback-nested`: Output mismatch
-- `allow-ref-initialization`: Expected upstream bailout (untransformed output), but compiler transformed output
-- `allow-ref-initialization-undefined`: Expected upstream bailout (untransformed output), but compiler transformed output
 - `allow-ref-lazy-initialization-with-logical`: Output mismatch
 - `array-at-closure`: Output mismatch
 - `assume-invoked/conditional-call-chain`: Output mismatch
@@ -78,7 +75,6 @@
 - `do-while-compound-test`: Output mismatch
 - `do-while-early-unconditional-break`: Output mismatch
 - `dominator`: Output mismatch
-- `empty-catch-statement`: Output mismatch
 - `escape-analysis-logical`: Output mismatch
 - `escape-analysis-not-conditional-test`: Expected upstream bailout (untransformed output), but compiler transformed output
 - `expression-with-assignment-dynamic`: Output mismatch
@@ -126,29 +122,14 @@
 - `hoisting-repro-variable-used-in-assignment`: Output mismatch
 - `hoisting-setstate-captured-indirectly-jsx`: Output mismatch
 - `hook-inside-logical-expression`: Expected upstream bailout (untransformed output), but compiler transformed output
-- `hook-ref-callback`: Output mismatch
 - `idx-no-outlining`: Output mismatch
-- `import-as-local`: Output mismatch
 - `infer-compile-hooks-with-multiple-params`: Output mismatch
-- `infer-effect-dependencies/helper-nonreactive`: Output mismatch
 - `infer-effect-dependencies/import-namespace-useEffect`: Output mismatch
-- `infer-effect-dependencies/infer-deps-custom-config`: Output mismatch
 - `infer-effect-dependencies/infer-effect-dependencies`: Output mismatch
-- `infer-effect-dependencies/nonreactive-dep`: Output mismatch
-- `infer-effect-dependencies/nonreactive-effect-event`: Output mismatch
-- `infer-effect-dependencies/nonreactive-ref`: Output mismatch
 - `infer-effect-dependencies/nonreactive-ref-helper`: Output mismatch
-- `infer-effect-dependencies/nonreactive-setState`: Output mismatch
-- `infer-effect-dependencies/outlined-function`: Output mismatch
-- `infer-effect-dependencies/pruned-nonreactive-obj`: Output mismatch
-- `infer-effect-dependencies/reactive-memberexpr`: Output mismatch
-- `infer-effect-dependencies/reactive-memberexpr-merge`: Output mismatch
 - `infer-effect-dependencies/reactive-optional-chain`: Output mismatch
 - `infer-effect-dependencies/reactive-optional-chain-complex`: Output mismatch
-- `infer-effect-dependencies/reactive-ref`: Output mismatch
 - `infer-effect-dependencies/reactive-ref-ternary`: Output mismatch
-- `infer-effect-dependencies/reactive-setState`: Output mismatch
-- `infer-effect-dependencies/reactive-variable`: Output mismatch
 - `infer-sequential-optional-chain-nonnull`: Output mismatch
 - `inline-jsx-transform`: Output mismatch
 - `jsx-attribute-with-jsx-element-value`: Output mismatch
@@ -198,8 +179,6 @@
 - `new-mutability/mutate-after-useeffect-optional-chain`: Output mismatch
 - `new-mutability/mutate-after-useeffect-ref-access`: Output mismatch
 - `new-mutability/object-expression-computed-member`: Output mismatch
-- `new-mutability/reactive-ref`: Output mismatch
-- `new-mutability/reactive-setState`: Output mismatch
 - `new-mutability/repro-compiler-infinite-loop`: Output mismatch
 - `new-mutability/repro-invalid-function-expression-effects-phi`: Output mismatch
 - `new-mutability/shared-hook-calls`: Output mismatch
@@ -230,8 +209,6 @@
 - `original-reactive-scopes-fork/capture-ref-for-later-mutation`: Output mismatch
 - `partial-early-return-within-reactive-scope`: Output mismatch
 - `preserve-existing-memoization-guarantees/lambda-with-fbt-preserve-memoization`: Output mismatch
-- `preserve-memo-validation/prune-nonescaping-useMemo-mult-returns`: Output mismatch
-- `preserve-memo-validation/prune-nonescaping-useMemo-mult-returns-primitive`: Output mismatch
 - `preserve-memo-validation/useCallback-in-other-reactive-block`: Output mismatch
 - `preserve-memo-validation/useCallback-reordering-deplist-controlflow`: Output mismatch
 - `preserve-memo-validation/useCallback-reordering-depslist-assignment`: Output mismatch
@@ -336,15 +313,9 @@
 - `repro-useMemo-if-else-both-early-return`: Output mismatch
 - `reverse-postorder`: Output mismatch
 - `rules-of-hooks/allow-props-named-like-hooks`: Output mismatch
-- `rules-of-hooks/rules-of-hooks-0e2214abc294`: Expected upstream bailout (untransformed output), but compiler transformed output
-- `rules-of-hooks/rules-of-hooks-1ff6c3fbbc94`: Expected upstream bailout (untransformed output), but compiler transformed output
-- `rules-of-hooks/rules-of-hooks-2e405c78cb80`: Expected upstream bailout (untransformed output), but compiler transformed output
 - `rules-of-hooks/rules-of-hooks-69521d94fa03`: Output mismatch
-- `rules-of-hooks/rules-of-hooks-844a496db20b`: Expected upstream bailout (untransformed output), but compiler transformed output
 - `rules-of-hooks/rules-of-hooks-93dc5d5e538a`: Output mismatch
 - `rules-of-hooks/rules-of-hooks-c1e8c7f4c191`: Output mismatch
-- `rules-of-hooks/rules-of-hooks-c5d1f3143c4c`: Output mismatch
-- `rules-of-hooks/rules-of-hooks-cfdfe5572fc7`: Expected upstream bailout (untransformed output), but compiler transformed output
 - `same-variable-as-dep-and-redeclare`: Output mismatch
 - `same-variable-as-dep-and-redeclare-maybe-frozen`: Output mismatch
 - `sequence-expression`: Output mismatch
@@ -353,11 +324,7 @@
 - `simple`: Output mismatch
 - `simple-alias`: Output mismatch
 - `ssa-cascading-eliminated-phis`: Output mismatch
-- `ssa-complex-multiple-if`: Output mismatch
-- `ssa-complex-single-if`: Output mismatch
 - `ssa-for`: Output mismatch
-- `ssa-if-else`: Output mismatch
-- `ssa-nested-partial-phi`: Output mismatch
 - `ssa-renaming`: Output mismatch
 - `ssa-renaming-ternary`: Output mismatch
 - `ssa-renaming-ternary-destruction`: Output mismatch
@@ -366,11 +333,6 @@
 - `ssa-renaming-unconditional-ternary`: Output mismatch
 - `ssa-renaming-unconditional-ternary-with-mutation`: Output mismatch
 - `ssa-renaming-via-destructuring`: Output mismatch
-- `ssa-shadowing`: Output mismatch
-- `ssa-sibling-phis`: Output mismatch
-- `ssa-simple-phi`: Output mismatch
-- `ssa-single-if`: Output mismatch
-- `ssa-switch`: Output mismatch
 - `switch`: Output mismatch
 - `switch-non-final-default`: Output mismatch
 - `switch-with-fallthrough`: Output mismatch
@@ -396,10 +358,6 @@
 - `ts-as-expression-default-value`: Output mismatch
 - `ts-instantiation-default-param`: Output mismatch
 - `ts-non-null-expression-default-value`: Output mismatch
-- `type-alias-used-as-annotation`: Output mismatch
-- `type-alias-used-as-annotation_.flow`: Output mismatch
-- `type-alias-used-as-variable-annotation`: Output mismatch
-- `type-alias-used-as-variable-annotation_.flow`: Output mismatch
 - `type-annotations/type-annotation-as-array`: Output mismatch
 - `type-annotations/type-annotation-as-array_.flow`: Output mismatch
 - `type-annotations/type-annotation-as-number_.flow`: Output mismatch
@@ -416,9 +374,6 @@
 - `update-expression-on-function-parameter-2`: Output mismatch
 - `update-expression-on-function-parameter-3`: Output mismatch
 - `update-expression-on-function-parameter-4`: Output mismatch
-- `useEffect-external-mutate`: Output mismatch
-- `useEffect-method-call`: Output mismatch
-- `useImperativeHandle-ref-mutate`: Output mismatch
 - `useMemo-logical`: Output mismatch
 - `useMemo-multiple-if-else`: Output mismatch
 - `useMemo-simple-preserved-nomemo`: Output mismatch
@@ -443,6 +398,7 @@
 - `aliased-nested-scope-fn-expr`
 - `aliased-nested-scope-truncated-dep`
 - `align-scopes-reactive-scope-overlaps-try`
+- `align-scopes-trycatch-nested-overlapping-range`
 - `allow-assigning-ref-accessing-function-to-object-property-if-not-mutated`
 - `allow-assigning-to-global-in-function-spread-as-jsx`
 - `allow-global-mutation-unused-usecallback`
@@ -455,6 +411,8 @@
 - `allow-passing-ref-to-render-helper`
 - `allow-passing-refs-as-props`
 - `allow-reassignment-to-global-function-jsx-prop`
+- `allow-ref-initialization`
+- `allow-ref-initialization-undefined`
 - `allow-ref-type-cast-in-render`
 - `array-access-assignment`
 - `array-at-effect`
@@ -672,6 +630,7 @@
 - `ecma/error.reserved-words`
 - `emit-freeze-conflicting-imports`
 - `emit-freeze-nonconflicting-global-reference`
+- `empty-catch-statement`
 - `empty-eslint-suppressions-config`
 - `error._todo.computed-lval-in-destructure`
 - `error.assign-global-in-component-tag-function`
@@ -1013,6 +972,7 @@
 - `hook-declaration-basic.flow`
 - `hook-noAlias`
 - `hook-property-load-local`
+- `hook-ref-callback`
 - `hooks-freeze-arguments`
 - `hooks-freeze-possibly-mutable-arguments`
 - `hooks-with-React-namespace`
@@ -1025,6 +985,7 @@
 - `iife-return-modified-later`
 - `iife-return-modified-later-phi`
 - `immutable-hooks`
+- `import-as-local`
 - `inadvertent-mutability-readonly-class`
 - `inadvertent-mutability-readonly-lambda`
 - `incompatible-destructuring-kinds`
@@ -1035,6 +996,19 @@
 - `infer-dont-compile-components-with-multiple-params`
 - `infer-effect-dependencies/error.wrong-index`
 - `infer-effect-dependencies/error.wrong-index-no-func`
+- `infer-effect-dependencies/helper-nonreactive`
+- `infer-effect-dependencies/infer-deps-custom-config`
+- `infer-effect-dependencies/nonreactive-dep`
+- `infer-effect-dependencies/nonreactive-effect-event`
+- `infer-effect-dependencies/nonreactive-ref`
+- `infer-effect-dependencies/nonreactive-setState`
+- `infer-effect-dependencies/outlined-function`
+- `infer-effect-dependencies/pruned-nonreactive-obj`
+- `infer-effect-dependencies/reactive-memberexpr`
+- `infer-effect-dependencies/reactive-memberexpr-merge`
+- `infer-effect-dependencies/reactive-ref`
+- `infer-effect-dependencies/reactive-setState`
+- `infer-effect-dependencies/reactive-variable`
 - `infer-function-React-memo`
 - `infer-function-assignment`
 - `infer-function-expression-component`
@@ -1172,6 +1146,8 @@
 - `new-mutability/nullable-objects-assume-invoked-direct-call`
 - `new-mutability/object-expression-computed-key-object-mutated-later`
 - `new-mutability/potential-mutation-in-function-expression`
+- `new-mutability/reactive-ref`
+- `new-mutability/reactive-setState`
 - `new-mutability/repro-function-expression-effects-stack-overflow`
 - `new-mutability/repro-internal-compiler-shared-mutablerange-bug`
 - `new-mutability/repro-jsx-captures-value-mutated-later`
@@ -1282,6 +1258,8 @@
 - `preserve-memo-validation/preserve-use-memo-ref-missing-ok`
 - `preserve-memo-validation/preserve-use-memo-transition`
 - `preserve-memo-validation/prune-nonescaping-useMemo`
+- `preserve-memo-validation/prune-nonescaping-useMemo-mult-returns`
+- `preserve-memo-validation/prune-nonescaping-useMemo-mult-returns-primitive`
 - `preserve-memo-validation/repro-maybe-invalid-useCallback-read-maybeRef`
 - `preserve-memo-validation/repro-maybe-invalid-useMemo-read-maybeRef`
 - `preserve-memo-validation/todo-ensure-constant-prop-decls-get-removed`
@@ -1521,16 +1499,22 @@
 - `rules-of-hooks/error.invalid.invalid-rules-of-hooks-d842d36db450`
 - `rules-of-hooks/error.invalid.invalid-rules-of-hooks-d952b82c2597`
 - `rules-of-hooks/rules-of-hooks-0592bd574811`
+- `rules-of-hooks/rules-of-hooks-0e2214abc294`
+- `rules-of-hooks/rules-of-hooks-1ff6c3fbbc94`
 - `rules-of-hooks/rules-of-hooks-23dc7fffde57`
 - `rules-of-hooks/rules-of-hooks-2bec02ac982b`
+- `rules-of-hooks/rules-of-hooks-2e405c78cb80`
 - `rules-of-hooks/rules-of-hooks-33a6e23edac1`
 - `rules-of-hooks/rules-of-hooks-347b0dae66f1`
 - `rules-of-hooks/rules-of-hooks-485bf041f55f`
 - `rules-of-hooks/rules-of-hooks-4f6c78a14bf7`
 - `rules-of-hooks/rules-of-hooks-7e52f5eec669`
+- `rules-of-hooks/rules-of-hooks-844a496db20b`
 - `rules-of-hooks/rules-of-hooks-8f1c2c3f71c9`
 - `rules-of-hooks/rules-of-hooks-9a47e97b5d13`
 - `rules-of-hooks/rules-of-hooks-9d7879272ff6`
+- `rules-of-hooks/rules-of-hooks-c5d1f3143c4c`
+- `rules-of-hooks/rules-of-hooks-cfdfe5572fc7`
 - `rules-of-hooks/rules-of-hooks-df4d750736f3`
 - `rules-of-hooks/rules-of-hooks-dfde14171fcd`
 - `rules-of-hooks/rules-of-hooks-e5dd6caf4084`
@@ -1574,11 +1558,15 @@
 - `ssa-arrayexpression`
 - `ssa-call-jsx`
 - `ssa-call-jsx-2`
+- `ssa-complex-multiple-if`
+- `ssa-complex-single-if`
 - `ssa-for-of`
 - `ssa-for-trivial-update`
+- `ssa-if-else`
 - `ssa-leave-case`
 - `ssa-multiple-phis`
 - `ssa-nested-loops-no-reassign`
+- `ssa-nested-partial-phi`
 - `ssa-nested-partial-reassignment`
 - `ssa-newexpression`
 - `ssa-non-empty-initializer`
@@ -1600,7 +1588,12 @@
 - `ssa-renaming-via-destructuring-with-mutation`
 - `ssa-renaming-with-mutation`
 - `ssa-return`
+- `ssa-shadowing`
+- `ssa-sibling-phis`
 - `ssa-simple`
+- `ssa-simple-phi`
+- `ssa-single-if`
+- `ssa-switch`
 - `ssa-throw`
 - `ssa-while`
 - `ssa-while-no-reassign`
@@ -1660,6 +1653,10 @@
 - `ts-enum-inline`
 - `ts-instantiation-expression`
 - `type-alias-declaration`
+- `type-alias-used-as-annotation`
+- `type-alias-used-as-annotation_.flow`
+- `type-alias-used-as-variable-annotation`
+- `type-alias-used-as-variable-annotation_.flow`
 - `type-alias.flow`
 - `type-annotations/todo_type-annotations-props`
 - `type-annotations/type-annotation-as-number`
@@ -1723,10 +1720,13 @@
 - `useContext-read-context-in-callback`
 - `useContext-read-context-in-callback-if-condition`
 - `useEffect-arg-memoized`
+- `useEffect-external-mutate`
 - `useEffect-global-pruned`
+- `useEffect-method-call`
 - `useEffect-namespace-pruned`
 - `useEffect-nested-lambdas`
 - `useEffect-snap-test`
+- `useImperativeHandle-ref-mutate`
 - `useMemo-arrow-implicit-return`
 - `useMemo-empty-return`
 - `useMemo-explicit-null-return`

@@ -238,11 +238,16 @@ pub fn codegen_reactive_function<'a>(
 
     let mut body_stmts = codegen_block(&mut cx, &func.body);
 
-    // Strip trailing `return;` (void return).
-    if let Some(ast::Statement::ReturnStatement(ret)) = body_stmts.last()
-        && ret.argument.is_none()
-    {
-        body_stmts.pop();
+    // Strip trailing void return (`return;` or `return undefined`).
+    if let Some(ast::Statement::ReturnStatement(ret)) = body_stmts.last() {
+        let is_void = ret.argument.is_none()
+            || matches!(
+                &ret.argument,
+                Some(ast::Expression::Identifier(id)) if id.name == "undefined"
+            );
+        if is_void {
+            body_stmts.pop();
+        }
     }
 
     let cache_size = cx.next_cache_index;
