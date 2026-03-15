@@ -1103,7 +1103,25 @@ fn codegen_store<'a>(
         .unwrap_or_else(|| identifier_name(&lvalue.place.identifier));
 
     match lvalue.kind {
-        InstructionKind::Reassign => Some(emit_assignment_stmt(cx, &name, expr)),
+        InstructionKind::Reassign => {
+            // For temp-like names (tN), if the name was removed from
+            // declared_names by pop_name_scope (child scope exited),
+            // emit a new declaration instead of a bare assignment.
+            let is_temp_like = name.starts_with('t')
+                && name.len() > 1
+                && name[1..].chars().all(|c| c.is_ascii_digit());
+            if is_temp_like && !cx.declared_names.contains(&name) && !cx.declared.contains(&id) {
+                cx.declared.insert(id);
+                return Some(emit_var_decl_stmt_inner(
+                    cx,
+                    &name,
+                    ast::VariableDeclarationKind::Let,
+                    Some(expr),
+                    Some(lvalue.place.identifier.declaration_id),
+                ));
+            }
+            Some(emit_assignment_stmt(cx, &name, expr))
+        }
         InstructionKind::Function | InstructionKind::HoistedFunction
             if matches!(&expr, ast::Expression::FunctionExpression(_)) =>
         {
