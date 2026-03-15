@@ -633,12 +633,24 @@ fn codegen_instruction_value<'a>(
             lowered_func,
             expr_type,
             ..
-        } => super::super::codegen_backend::hir_to_ast::lower_function_expression_ast(
-            cx.builder,
-            name.as_deref(),
-            lowered_func,
-            *expr_type,
-        ),
+        } => {
+            let result = super::super::codegen_backend::hir_to_ast::lower_function_expression_ast(
+                cx.builder,
+                name.as_deref(),
+                lowered_func,
+                *expr_type,
+            );
+            if result.is_some() {
+                result
+            } else {
+                lower_function_expression_via_reactive(
+                    cx,
+                    name.as_deref(),
+                    lowered_func,
+                    *expr_type,
+                )
+            }
+        }
         InstructionValue::JsxExpression {
             tag,
             props,
@@ -852,12 +864,22 @@ fn codegen_instruction_value<'a>(
         InstructionValue::IteratorNext { collection, .. } => codegen_place(cx, collection),
         InstructionValue::NextPropertyOf { value, .. } => codegen_place(cx, value),
         InstructionValue::ObjectMethod { lowered_func, .. } => {
-            super::super::codegen_backend::hir_to_ast::lower_function_expression_ast(
+            let result = super::super::codegen_backend::hir_to_ast::lower_function_expression_ast(
                 cx.builder,
                 None,
                 lowered_func,
                 FunctionExpressionType::FunctionExpression,
-            )
+            );
+            if result.is_some() {
+                result
+            } else {
+                lower_function_expression_via_reactive(
+                    cx,
+                    None,
+                    lowered_func,
+                    FunctionExpressionType::FunctionExpression,
+                )
+            }
         }
         InstructionValue::ReactiveSequenceExpression {
             instructions,
@@ -3067,6 +3089,114 @@ fn build_structural_check_call<'a>(
             false,
         ),
     )
+}
+
+// ---------------------------------------------------------------------------
+// Function expression fallback via ReactiveFunction
+// ---------------------------------------------------------------------------
+
+/// Build a function expression by constructing a ReactiveFunction from the HIR
+/// and using codegen_ast's own codegen. Handles cases where hir_to_ast fails.
+fn lower_function_expression_via_reactive<'a>(
+    cx: &mut CodegenContext<'a>,
+    name: Option<&str>,
+    lowered_func: &crate::hir::types::LoweredFunction,
+    expr_type: FunctionExpressionType,
+) -> Option<ast::Expression<'a>> {
+    let hir_func = &lowered_func.func;
+    let reactive_fn =
+        crate::reactive_scopes::build_reactive_function::build_reactive_function(hir_func.clone());
+
+    let options = CodegenOptions {
+        enable_change_variable_codegen: false,
+        enable_emit_hook_guards: false,
+        enable_change_detection_for_debugging: false,
+        enable_reset_cache_on_source_file_changes: false,
+        fast_refresh_source_hash: None,
+        disable_memoization_features: false,
+        disable_memoization_for_debugging: false,
+        fbt_operands: HashSet::new(),
+    };
+
+    let result = codegen_reactive_function(cx.builder, cx.allocator, &reactive_fn, options);
+
+    let mut directives = cx.builder.vec();
+    for directive in &hir_func.directives {
+        directives.push(
+            cx.builder.directive(
+                SPAN,
+                cx.builder
+                    .string_literal(SPAN, cx.builder.atom(directive), None),
+                cx.builder.atom(directive),
+            ),
+        );
+    }
+
+    let body = cx
+        .builder
+        .alloc(cx.builder.function_body(SPAN, directives, result.body));
+
+    // Build params from the reactive function's param list.
+    let mut param_items = cx.builder.vec();
+    let mut rest_param = None;
+    for param in &reactive_fn.params {
+        let (place, is_spread) = match param {
+            Argument::Place(p) => (p, false),
+            Argument::Spread(p) => (p, true),
+        };
+        let param_name = place
+            .identifier
+            .name
+            .as_ref()
+            .map(|n| n.value().to_string())
+            .unwrap_or_else(|| format!("t{}", place.identifier.id.0));
+        let pattern = cx
+            .builder
+            .binding_pattern_binding_identifier(SPAN, cx.builder.ident(&param_name));
+        if is_spread {
+            rest_param = Some(cx.builder.alloc_formal_parameter_rest(
+                SPAN,
+                cx.builder.vec(),
+                cx.builder.binding_rest_element(SPAN, pattern),
+                NONE,
+            ));
+        } else {
+            param_items.push(cx.builder.plain_formal_parameter(SPAN, pattern));
+        }
+    }
+    let params = cx.builder.formal_parameters(
+        SPAN,
+        ast::FormalParameterKind::FormalParameter,
+        param_items,
+        rest_param,
+    );
+
+    match expr_type {
+        FunctionExpressionType::ArrowFunctionExpression => {
+            Some(cx.builder.expression_arrow_function(
+                SPAN,
+                false,
+                hir_func.async_,
+                NONE,
+                cx.builder.alloc(params),
+                NONE,
+                body,
+            ))
+        }
+        _ => Some(cx.builder.expression_function(
+            SPAN,
+            ast::FunctionType::FunctionExpression,
+            name.map(|n| cx.builder.binding_identifier(SPAN, cx.builder.atom(n))),
+            hir_func.generator,
+            hir_func.async_,
+            false,
+            NONE,
+            NONE,
+            cx.builder.alloc(params),
+            NONE,
+            Some(body),
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------
