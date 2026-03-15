@@ -89,6 +89,9 @@ struct CodegenContext<'a> {
     /// Function name for structural check diagnostics.
     #[allow(dead_code)]
     fn_name: String,
+    /// Pre-computed DeclarationId → display name from string codegen.
+    /// Only used to resolve identifier references — does NOT affect temp inlining.
+    name_overrides: HashMap<DeclarationId, String>,
 }
 
 impl<'a> CodegenContext<'a> {
@@ -217,6 +220,7 @@ pub fn codegen_reactive_function<'a>(
         needs_function_hook_guard_wrapper: false,
         needs_structural_check: false,
         options,
+        name_overrides: HashMap::new(),
         fn_name: func.id.clone().unwrap_or_default(),
     };
 
@@ -470,7 +474,11 @@ fn codegen_instruction<'a>(
         return None;
     }
 
-    let name = identifier_name(&lvalue.identifier);
+    let name = cx
+        .name_overrides
+        .get(&lvalue.identifier.declaration_id)
+        .cloned()
+        .unwrap_or_else(|| identifier_name(&lvalue.identifier));
     let id = lvalue.identifier.id;
 
     // Already declared → reassignment.
@@ -1052,7 +1060,11 @@ fn codegen_store<'a>(
         return None;
     }
 
-    let name = identifier_name(&lvalue.place.identifier);
+    let name = cx
+        .name_overrides
+        .get(&lvalue.place.identifier.declaration_id)
+        .cloned()
+        .unwrap_or_else(|| identifier_name(&lvalue.place.identifier));
 
     match lvalue.kind {
         InstructionKind::Reassign => Some(emit_assignment_stmt(cx, &name, expr)),
@@ -1524,6 +1536,11 @@ fn codegen_place<'a>(cx: &mut CodegenContext<'a>, place: &Place) -> Option<ast::
         && let Some(expr) = temp_slot.as_ref()
     {
         return Some(expr.clone_in(cx.allocator));
+    }
+
+    // Check name override for this declaration (from string codegen).
+    if let Some(override_name) = cx.name_overrides.get(&decl_id) {
+        return Some(cx.ident_expr(override_name));
     }
 
     // Use identifier name.
