@@ -3113,9 +3113,9 @@ fn try_build_compiled_function_body_from_reactive_ast<'a>(
     allocator: &'a Allocator,
     cf: &CompiledFunction,
 ) -> Option<ast::FunctionBody<'a>> {
-    // New direct ReactiveFunction → AST codegen. Opt-in via env var until
-    // output parity with the shape-based path is achieved.
-    if std::env::var("REACT_COMPILER_AST_CODEGEN").is_err() {
+    // Direct ReactiveFunction → AST codegen (default path).
+    // Set REACT_COMPILER_STRING_CODEGEN=1 to fall back to the legacy string path.
+    if std::env::var("REACT_COMPILER_STRING_CODEGEN").is_ok() {
         return None;
     }
     let reactive_fn = cf.reactive_function.as_ref()?;
