@@ -1,6 +1,6 @@
-# React Compiler Conformance — 96.3% parity rate
+# React Compiler Conformance — 96.8% parity rate
 
-**1687** parity_success, **65** parity_failure, **0** skipped
+**1696** parity_success, **56** parity_failure, **0** skipped
 
 ## Failed
 
@@ -30,14 +30,9 @@
 - `meta-isms/repro-cx-namespace-assigned-to-temporary`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
 - `nested-optional-member-expr`: Output mismatch
-- `new-mutability/ssa-renaming-ternary-destruction`: Output mismatch
 - `preserve-memo-validation/useMemo-conditional-access-alloc`: Output mismatch
 - `preserve-memo-validation/useMemo-conditional-access-noAlloc`: Output mismatch
 - `propagate-scope-deps-hir-fork/repro-invariant`: Output mismatch
-- `propagate-scope-deps-hir-fork/ssa-renaming-ternary`: Output mismatch
-- `propagate-scope-deps-hir-fork/ssa-renaming-ternary-destruction`: Output mismatch
-- `propagate-scope-deps-hir-fork/ssa-renaming-ternary-destruction-with-mutation`: Output mismatch
-- `propagate-scope-deps-hir-fork/ssa-renaming-ternary-with-mutation`: Output mismatch
 - `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-ternary`: Output mismatch
 - `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-ternary-with-mutation`: Output mismatch
 - `propagate-scope-deps-hir-fork/switch`: Output mismatch
@@ -56,10 +51,6 @@
 - `repro-unreachable-code-early-return-in-useMemo`: Output mismatch
 - `sequence-expression`: Output mismatch
 - `simple`: Output mismatch
-- `ssa-renaming-ternary`: Output mismatch
-- `ssa-renaming-ternary-destruction`: Output mismatch
-- `ssa-renaming-ternary-destruction-with-mutation`: Output mismatch
-- `ssa-renaming-ternary-with-mutation`: Output mismatch
 - `ssa-renaming-unconditional-ternary`: Output mismatch
 - `ssa-renaming-unconditional-ternary-with-mutation`: Output mismatch
 - `switch`: Output mismatch
@@ -988,6 +979,7 @@
 - `new-mutability/retry-no-emit`
 - `new-mutability/set-add-mutate`
 - `new-mutability/shared-hook-calls`
+- `new-mutability/ssa-renaming-ternary-destruction`
 - `new-mutability/todo-control-flow-sensitive-mutation`
 - `new-mutability/todo-transitivity-createfrom-capture-lambda`
 - `new-mutability/transitive-mutation-before-capturing-value-created-earlier`
@@ -1183,6 +1175,10 @@
 - `propagate-scope-deps-hir-fork/repro-scope-missing-mutable-range`
 - `propagate-scope-deps-hir-fork/ssa-cascading-eliminated-phis`
 - `propagate-scope-deps-hir-fork/ssa-leave-case`
+- `propagate-scope-deps-hir-fork/ssa-renaming-ternary`
+- `propagate-scope-deps-hir-fork/ssa-renaming-ternary-destruction`
+- `propagate-scope-deps-hir-fork/ssa-renaming-ternary-destruction-with-mutation`
+- `propagate-scope-deps-hir-fork/ssa-renaming-ternary-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-via-destructuring-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-with-mutation`
@@ -1536,6 +1532,10 @@
 - `ssa-reassign`
 - `ssa-reassign-in-rval`
 - `ssa-renaming`
+- `ssa-renaming-ternary`
+- `ssa-renaming-ternary-destruction`
+- `ssa-renaming-ternary-destruction-with-mutation`
+- `ssa-renaming-ternary-with-mutation`
 - `ssa-renaming-unconditional-with-mutation`
 - `ssa-renaming-via-destructuring`
 - `ssa-renaming-via-destructuring-with-mutation`
