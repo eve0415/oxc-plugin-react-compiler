@@ -1,13 +1,12 @@
-# React Compiler Conformance — 93.6% parity rate
+# React Compiler Conformance — 94.1% parity rate
 
-**1639** parity_success, **113** parity_failure, **0** skipped
+**1649** parity_success, **103** parity_failure, **0** skipped
 
 ## Failed
 
 - `allow-passing-ref-to-render-helper-props-object`: Output mismatch
 - `assume-invoked/conditional-call-chain`: Output mismatch
 - `assume-invoked/function-with-conditional-callsite-in-another-function`: Output mismatch
-- `bailout-retry/bailout-validate-preserve-memo`: Output mismatch
 - `bailout-retry/mutate-after-useeffect-optional-chain`: Output mismatch
 - `bug-ref-prefix-postfix-operator`: Output mismatch
 - `call-args-destructuring-assignment`: Output mismatch
@@ -17,7 +16,6 @@
 - `chained-assignment-context-variable`: Output mismatch
 - `change-detect-reassign`: Output mismatch
 - `computed-call-evaluation-order`: Output mismatch
-- `console-readonly`: Output mismatch
 - `default-param-array-with-unary`: Output mismatch
 - `default-param-calls-global-function`: Output mismatch
 - `destructure-array-declaration-to-context-var`: Output mismatch
@@ -28,9 +26,7 @@
 - `destructuring-mixed-scope-and-local-variables-with-default`: Output mismatch
 - `destructuring-object-default`: Output mismatch
 - `destructuring-with-typecast-as-default-value.flow`: Output mismatch
-- `fast-refresh-reloading`: Output mismatch
 - `fbt/fbtparam-with-jsx-fragment-value`: Output mismatch
-- `flag-enable-emit-hook-guards`: Output mismatch
 - `function-param-assignment-pattern`: Output mismatch
 - `hoisting-repro-variable-used-in-assignment`: Output mismatch
 - `hoisting-setstate-captured-indirectly-jsx`: Output mismatch
@@ -48,9 +44,7 @@
 - `jsx-outlining-separate-nested`: Output mismatch
 - `jsx-outlining-simple`: Output mismatch
 - `jsx-outlining-with-non-jsx-children`: Output mismatch
-- `jsx-string-attribute-expression-container`: Output mismatch
 - `jsx-tag-evaluation-order-non-global`: Output mismatch
-- `lower-context-access-hook-guard`: Output mismatch
 - `meta-isms/repro-cx-assigned-to-temporary`: Output mismatch
 - `meta-isms/repro-cx-namespace-assigned-to-temporary`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
@@ -60,7 +54,6 @@
 - `new-mutability/ssa-renaming-ternary-destruction`: Output mismatch
 - `new-mutability/useCallback-reordering-deplist-controlflow`: Output mismatch
 - `object-shorthand-method-nested`: Output mismatch
-- `option-enable-change-variable-codegen`: Output mismatch
 - `original-reactive-scopes-fork/capture-ref-for-later-mutation`: Output mismatch
 - `preserve-memo-validation/useCallback-reordering-deplist-controlflow`: Output mismatch
 - `preserve-memo-validation/useMemo-conditional-access-alloc`: Output mismatch
@@ -80,6 +73,7 @@
 - `reactive-control-dependency-for-init`: Output mismatch
 - `readonly-object-method-calls-mutable-lambda`: Output mismatch
 - `reassigned-phi-in-returned-function-expression`: Output mismatch
+- `reassignment-separate-scopes`: Fixture thread terminated unexpectedly
 - `recursive-function-expression`: Output mismatch
 - `reduce-reactive-deps/todo-infer-function-uncond-optionals-hoisted`: Output mismatch
 - `reduce-reactive-deps/todo-infer-function-uncond-optionals-hoisted`: Output mismatch
@@ -105,16 +99,12 @@
 - `ssa-renaming-unconditional-ternary`: Output mismatch
 - `ssa-renaming-unconditional-ternary-with-mutation`: Output mismatch
 - `switch`: Output mismatch
-- `switch-with-fallthrough`: Output mismatch
 - `todo-granular-iterator-semantics`: Output mismatch
-- `transform-fire/hook-guard`: Output mismatch
 - `try-catch-try-value-modified-in-catch`: Output mismatch
 - `type-annotations/type-annotation-as-array_.flow`: Output mismatch
 - `type-annotations/type-annotation-satisfies-array`: Output mismatch
 - `type-inference-array-from`: Output mismatch
 - `update-expression-in-sequence`: Output mismatch
-- `useState-and-other-hook-unpruned-dependency`: Output mismatch
-- `useState-pruned-dependency-change-detect`: Output mismatch
 - `useState-unpruned-dependency`: Output mismatch
 - `valid-setState-in-effect-from-ref-function-call`: Output mismatch
 
@@ -213,6 +203,7 @@
 - `babel-repro-compact-negative-number`
 - `bailout-retry/bailout-capitalized-fn-call`
 - `bailout-retry/bailout-eslint-suppressions`
+- `bailout-retry/bailout-validate-preserve-memo`
 - `bailout-retry/bailout-validate-prop-write`
 - `bailout-retry/bailout-validate-ref-current-access`
 - `bailout-retry/error.callsite-in-non-react-fn`
@@ -319,6 +310,7 @@
 - `conflict-codegen-instrument-forget`
 - `conflicting-dollar-sign-variable`
 - `consecutive-use-memo`
+- `console-readonly`
 - `const-propagation-into-function-expression-global`
 - `const-propagation-into-function-expression-primitive`
 - `const-propagation-phi-nodes`
@@ -638,6 +630,7 @@
 - `extend-scopes-if`
 - `fast-refresh-dont-refresh-const-changes-prod`
 - `fast-refresh-refresh-on-const-changes-dev`
+- `fast-refresh-reloading`
 - `fbt/bug-fbt-plural-multiple-function-calls`
 - `fbt/bug-fbt-plural-multiple-mixed-call-tag`
 - `fbt/error.todo-fbt-as-local`
@@ -670,6 +663,7 @@
 - `fbt/fbtparam-with-jsx-element-content`
 - `fbt/lambda-with-fbt`
 - `fbt/repro-macro-property-not-handled`
+- `flag-enable-emit-hook-guards`
 - `flatten-scopes-with-methodcall-hook`
 - `flow-enum-inline`
 - `for-empty-update`
@@ -885,6 +879,7 @@
 - `jsx-preserve-whitespace`
 - `jsx-reactive-local-variable-member-expr`
 - `jsx-spread`
+- `jsx-string-attribute-expression-container`
 - `jsx-string-attribute-non-ascii`
 - `jsx-tag-evaluation-order`
 - `jsx-ternary-local-variable`
@@ -918,6 +913,7 @@
 - `logical-expression-object`
 - `logical-reorder.flow`
 - `loop-unused-let`
+- `lower-context-access-hook-guard`
 - `lower-context-acess-multiple`
 - `lower-context-selector-simple`
 - `maybe-mutate-object-in-callback`
@@ -1074,6 +1070,7 @@
 - `object-shorthand-method-2`
 - `object-values`
 - `object-values-mutation`
+- `option-enable-change-variable-codegen`
 - `optional-call`
 - `optional-call-chained`
 - `optional-call-logical`
@@ -1267,7 +1264,6 @@
 - `reassign-primitive-in-context`
 - `reassignment`
 - `reassignment-conditional`
-- `reassignment-separate-scopes`
 - `recursive-function`
 - `reduce-reactive-cond-deps-break-in-scope`
 - `reduce-reactive-cond-deps-cfg-nested-testifelse`
@@ -1565,6 +1561,7 @@
 - `store-via-new`
 - `switch-global-propertyload-case-test`
 - `switch-non-final-default`
+- `switch-with-fallthrough`
 - `switch-with-only-default`
 - `tagged-template-in-hook`
 - `tagged-template-literal`
@@ -1600,6 +1597,7 @@
 - `transform-fire/error.invalid-rewrite-deps-spread`
 - `transform-fire/error.invalid-spread`
 - `transform-fire/error.todo-method`
+- `transform-fire/hook-guard`
 - `transform-fire/multiple-scope`
 - `transform-fire/repeated-calls`
 - `transform-fire/repro-dont-add-hook-guards-on-retry`
@@ -1743,6 +1741,8 @@
 - `useMemo-switch-return`
 - `useMemo-with-optional`
 - `useReducer-returned-dispatcher-is-non-reactive`
+- `useState-and-other-hook-unpruned-dependency`
+- `useState-pruned-dependency-change-detect`
 - `valid-set-state-in-useEffect-from-ref`
 - `valid-setState-in-effect-from-ref-arithmetic`
 - `valid-setState-in-effect-from-ref-array-index`
