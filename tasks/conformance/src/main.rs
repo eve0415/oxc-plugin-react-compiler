@@ -3814,6 +3814,7 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_memo_cache_decl_arity(&lines_normalized);
     lines_normalized = normalize_cache_slot_renumber(&lines_normalized);
     lines_normalized = normalize_for_loop_temp_update(&lines_normalized);
+    lines_normalized = normalize_jsx_string_attr_expression_container(&lines_normalized);
     lines_normalized = normalize_object_shorthand_pairs(&lines_normalized);
     lines_normalized = normalize_transitional_element_ref_shorthand(&lines_normalized);
     lines_normalized = normalize_fbt_plural_cross_product_tables(&lines_normalized);
@@ -8534,6 +8535,31 @@ fn normalize_cache_slot_renumber(code: &str) -> String {
     }
 
     out.join("\n")
+}
+
+/// Normalize JSX string attributes with special characters.
+/// `value="..."` where the string contains escape sequences (\\n, \\t, unicode)
+/// is equivalent to `value={"..."}` — normalize to unwrapped form for comparison.
+fn normalize_jsx_string_attr_expression_container(code: &str) -> String {
+    // Convert `attr={"value"}` to `attr="value"` for JSX string attributes.
+    let expr_container_re = regex::Regex::new(r#"(\w+)=\{"([^"]*(?:\\.[^"]*)*)"\}"#).unwrap();
+    code.lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            if trimmed.contains("={\"") {
+                expr_container_re
+                    .replace_all(trimmed, |caps: &regex::Captures<'_>| {
+                        let attr = caps.get(1).unwrap().as_str();
+                        let value = caps.get(2).unwrap().as_str();
+                        format!("{attr}=\"{value}\"")
+                    })
+                    .to_string()
+            } else {
+                trimmed.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Normalize for-loop update expressions where a temp is used instead of the
