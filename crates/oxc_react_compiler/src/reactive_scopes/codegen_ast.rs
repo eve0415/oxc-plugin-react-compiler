@@ -56,6 +56,8 @@ struct CodegenContext<'a> {
     allocator: &'a Allocator,
     /// Identifiers that have been declared (to avoid re-declaring).
     declared: HashSet<IdentifierId>,
+    /// Variable names that have been declared (to avoid duplicate `let` for same name).
+    declared_names: HashSet<String>,
     /// Temp expressions: instructions whose lvalue is a temporary (used once, inlined).
     temps: HashMap<IdentifierId, Option<ast::Expression<'a>>>,
     /// Next cache slot index.
@@ -193,6 +195,7 @@ pub fn codegen_reactive_function<'a>(
         builder,
         allocator,
         declared: HashSet::new(),
+        declared_names: HashSet::new(),
         temps: HashMap::new(),
         next_cache_index: 0,
         cache_binding: cache_binding.clone(),
@@ -223,11 +226,14 @@ pub fn codegen_reactive_function<'a>(
 
     // Mark params as declared.
     for arg in &func.params {
-        let id = match arg {
-            Argument::Place(place) => place.identifier.id,
-            Argument::Spread(place) => place.identifier.id,
+        let (id, name) = match arg {
+            Argument::Place(place) => (place.identifier.id, &place.identifier.name),
+            Argument::Spread(place) => (place.identifier.id, &place.identifier.name),
         };
         cx.declared.insert(id);
+        if let Some(n) = name {
+            cx.declared_names.insert(n.value().to_string());
+        }
     }
 
     let mut body_stmts = codegen_block(&mut cx, &func.body);
@@ -1248,6 +1254,17 @@ fn emit_var_decl_stmt<'a>(
     kind: ast::VariableDeclarationKind,
     init: Option<ast::Expression<'a>>,
 ) -> ast::Statement<'a> {
+    // Prevent duplicate `let`/`const` for the same name (can happen when
+    // scope declarations and StoreLocal target the same variable via
+    // different IdentifierIds after renaming).
+    if cx.declared_names.contains(name) {
+        if let Some(expr) = init {
+            return emit_assignment_stmt(cx, name, expr);
+        }
+        // Bare duplicate — emit as empty statement that codegen will elide.
+        return cx.builder.statement_empty(SPAN);
+    }
+    cx.declared_names.insert(name.to_string());
     let pattern = cx
         .builder
         .binding_pattern_binding_identifier(SPAN, cx.builder.ident(name));
@@ -1491,27 +1508,20 @@ fn codegen_terminal<'a>(
             ]
         }
         ReactiveTerminal::ForOf {
-            init,
-            test,
-            loop_block,
-            ..
+            init, loop_block, ..
         } => {
-            let init_stmts = codegen_block(cx, init);
-            let left = init_stmts.into_iter().last().and_then(|s| {
-                if let ast::Statement::VariableDeclaration(mut decl) = s {
-                    // Strip initializer — for-of left side is pattern only.
-                    for declarator in decl.declarations.iter_mut() {
-                        declarator.init = None;
-                    }
-                    Some(ast::ForStatementLeft::VariableDeclaration(decl))
-                } else {
-                    None
-                }
-            });
-            let Some(left) = left else {
-                return vec![];
+            // Extract collection from IteratorNext/NextPropertyOf in init,
+            // and resolve it BEFORE processing the init block (which may
+            // consume the collection's temp).
+            let collection_place = extract_for_collection(init);
+            let right = if let Some(cp) = &collection_place {
+                codegen_place(cx, cp)
+            } else {
+                None
             };
-            let Some(right) = codegen_place(cx, test) else {
+            let init_stmts = codegen_block(cx, init);
+            let left = extract_for_of_left(cx, init_stmts);
+            let (Some(left), Some(right)) = (left, right) else {
                 return vec![];
             };
             let body_stmts = codegen_block(cx, loop_block);
@@ -1523,33 +1533,14 @@ fn codegen_terminal<'a>(
         ReactiveTerminal::ForIn {
             init, loop_block, ..
         } => {
-            // ForIn: init block produces left-hand side + iterable.
-            let init_stmts = codegen_block(cx, init);
-            // The init block should have a variable declaration (left) and the block instructions contain the iterable.
-            // For now, emit as a simple for-in with the init block's declarations.
-            let (left, right) = if !init_stmts.is_empty() {
-                let mut iter = init_stmts.into_iter();
-                let first = iter.next();
-                let left = first.and_then(|s| {
-                    if let ast::Statement::VariableDeclaration(decl) = s {
-                        Some(ast::ForStatementLeft::VariableDeclaration(decl))
-                    } else {
-                        None
-                    }
-                });
-                // The right-hand side is from the test place — but ForIn doesn't have a test field.
-                // For ForIn, the iterable comes from the last instruction of the init block.
-                let right = iter.last().and_then(|s| {
-                    if let ast::Statement::ExpressionStatement(es) = s {
-                        Some(es.unbox().expression)
-                    } else {
-                        None
-                    }
-                });
-                (left, right)
+            let collection_place = extract_for_collection(init);
+            let right = if let Some(cp) = &collection_place {
+                codegen_place(cx, cp)
             } else {
-                (None, None)
+                None
             };
+            let init_stmts = codegen_block(cx, init);
+            let left = extract_for_of_left(cx, init_stmts);
             let (Some(left), Some(right)) = (left, right) else {
                 return vec![];
             };
@@ -2137,6 +2128,44 @@ fn codegen_object_property_key<'a>(
             true,
         )),
     }
+}
+
+/// Extract the collection Place from a for-of/for-in init block by scanning
+/// for `IteratorNext` or `NextPropertyOf` instructions.
+fn extract_for_collection(init: &ReactiveBlock) -> Option<Place> {
+    for stmt in init {
+        let ReactiveStatement::Instruction(instr) = stmt else {
+            continue;
+        };
+        match &instr.value {
+            InstructionValue::IteratorNext { collection, .. } => {
+                return Some(collection.clone());
+            }
+            InstructionValue::NextPropertyOf { value, .. } => {
+                return Some(value.clone());
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Extract the for-of/for-in left-hand side from processed init statements.
+fn extract_for_of_left<'a>(
+    _cx: &mut CodegenContext<'a>,
+    init_stmts: Vec<ast::Statement<'a>>,
+) -> Option<ast::ForStatementLeft<'a>> {
+    init_stmts.into_iter().find_map(|s| {
+        if let ast::Statement::VariableDeclaration(mut decl) = s {
+            // Strip initializer — for-of/for-in left side is pattern only.
+            for declarator in decl.declarations.iter_mut() {
+                declarator.init = None;
+            }
+            Some(ast::ForStatementLeft::VariableDeclaration(decl))
+        } else {
+            None
+        }
+    })
 }
 
 fn collect_scope_declarations(block: &ReactiveBlock, out: &mut HashSet<IdentifierId>) {
