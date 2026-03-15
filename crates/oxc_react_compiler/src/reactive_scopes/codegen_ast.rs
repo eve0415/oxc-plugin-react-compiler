@@ -1913,6 +1913,172 @@ fn codegen_reactive_scope<'a>(
     // Build the scope body.
     let body_stmts = codegen_block(cx, instructions);
 
+    // --- Change detection for debugging ---
+    if cx.options.enable_change_detection_for_debugging && !deps.is_empty() {
+        cx.needs_structural_check = true;
+        let all_outputs: Vec<(String, u32)> = output_slots
+            .iter()
+            .chain(reassign_slots.iter())
+            .cloned()
+            .collect();
+
+        // Build condition: $[0] !== dep0 || $[1] !== dep1 || ...
+        let condition_expr = deps
+            .iter()
+            .map(|(slot, dep_expr)| {
+                cx.builder.expression_binary(
+                    SPAN,
+                    cx.cache_access(*slot),
+                    oxc_syntax::operator::BinaryOperator::StrictInequality,
+                    dep_expr.clone_in(cx.allocator),
+                )
+            })
+            .reduce(|left, right| {
+                cx.builder.expression_logical(
+                    SPAN,
+                    left,
+                    oxc_syntax::operator::LogicalOperator::Or,
+                    right,
+                )
+            })
+            .unwrap();
+
+        // Scope location string for diagnostics.
+        let scope_loc = format_change_detection_scope_loc(scope, instructions);
+
+        let mut block_stmts: Vec<ast::Statement<'a>> = Vec::new();
+
+        // 1. Execute body unconditionally.
+        block_stmts.extend(body_stmts);
+
+        // 2. let condition = deps_test;
+        let condition_pattern = cx
+            .builder
+            .binding_pattern_binding_identifier(SPAN, cx.builder.ident("condition"));
+        block_stmts.push(ast::Statement::VariableDeclaration(
+            cx.builder.alloc_variable_declaration(
+                SPAN,
+                ast::VariableDeclarationKind::Let,
+                cx.builder.vec1(cx.builder.variable_declarator(
+                    SPAN,
+                    ast::VariableDeclarationKind::Let,
+                    condition_pattern,
+                    NONE,
+                    Some(condition_expr),
+                    false,
+                )),
+                false,
+            ),
+        ));
+
+        // 3. if (!condition) { let old$name = $[slot]; $structuralCheck(..., "cached", ...) }
+        let mut cached_check_stmts: Vec<ast::Statement<'a>> = Vec::new();
+        for (name, slot) in &all_outputs {
+            let old_name = format!("old${name}");
+            let old_pattern = cx
+                .builder
+                .binding_pattern_binding_identifier(SPAN, cx.builder.ident(&old_name));
+            cached_check_stmts.push(ast::Statement::VariableDeclaration(
+                cx.builder.alloc_variable_declaration(
+                    SPAN,
+                    ast::VariableDeclarationKind::Let,
+                    cx.builder.vec1(cx.builder.variable_declarator(
+                        SPAN,
+                        ast::VariableDeclarationKind::Let,
+                        old_pattern,
+                        NONE,
+                        Some(cx.cache_access(*slot)),
+                        false,
+                    )),
+                    false,
+                ),
+            ));
+            cached_check_stmts.push(build_structural_check_call(
+                cx, &old_name, name, name, "cached", &scope_loc,
+            ));
+        }
+
+        if !cached_check_stmts.is_empty() {
+            block_stmts.push(
+                cx.builder.statement_if(
+                    SPAN,
+                    cx.builder.expression_unary(
+                        SPAN,
+                        oxc_syntax::operator::UnaryOperator::LogicalNot,
+                        cx.ident_expr("condition"),
+                    ),
+                    cx.builder
+                        .statement_block(SPAN, cx.builder.vec_from_iter(cached_check_stmts)),
+                    None,
+                ),
+            );
+        }
+
+        // 4. Store deps and outputs.
+        for (slot, dep_expr) in deps {
+            block_stmts.push(
+                cx.builder
+                    .statement_expression(SPAN, cx.cache_assign(slot, dep_expr)),
+            );
+        }
+        for (name, slot) in &all_outputs {
+            block_stmts.push(
+                cx.builder
+                    .statement_expression(SPAN, cx.cache_assign(*slot, cx.ident_expr(name))),
+            );
+        }
+
+        // 5. if (condition) { body_again; $structuralCheck(..., "recomputed", ...); name = $[slot] }
+        // Re-generate the body for the recomputed path.
+        let recompute_body = codegen_block(cx, instructions);
+        let mut recompute_stmts: Vec<ast::Statement<'a>> = Vec::new();
+        recompute_stmts.extend(recompute_body);
+        for (name, slot) in &all_outputs {
+            recompute_stmts.push(build_structural_check_call(
+                cx,
+                &format!("$[{slot}]"),
+                name,
+                name,
+                "recomputed",
+                &scope_loc,
+            ));
+            recompute_stmts.push(
+                cx.builder.statement_expression(
+                    SPAN,
+                    cx.builder.expression_assignment(
+                        SPAN,
+                        AssignmentOperator::Assign,
+                        ast::AssignmentTarget::from(
+                            cx.builder
+                                .simple_assignment_target_assignment_target_identifier(
+                                    SPAN,
+                                    cx.builder.ident(name),
+                                ),
+                        ),
+                        cx.cache_access(*slot),
+                    ),
+                ),
+            );
+        }
+
+        block_stmts.push(
+            cx.builder.statement_if(
+                SPAN,
+                cx.ident_expr("condition"),
+                cx.builder
+                    .statement_block(SPAN, cx.builder.vec_from_iter(recompute_stmts)),
+                None,
+            ),
+        );
+
+        // Wrap in a block statement.
+        stmts.push(
+            cx.builder
+                .statement_block(SPAN, cx.builder.vec_from_iter(block_stmts)),
+        );
+        return stmts;
+    }
+
     if deps.is_empty() {
         // Zero-dependency: use sentinel check.
         let sentinel_slot = if !output_slots.is_empty() {
@@ -2808,6 +2974,96 @@ fn reconstruct_for_init<'a>(
         cx.builder
             .alloc_variable_declaration(SPAN, kind, oxc_declarators, false),
     ))
+}
+
+// ---------------------------------------------------------------------------
+// Change detection helpers
+// ---------------------------------------------------------------------------
+
+const STRUCTURAL_CHECK_IDENT: &str = "$structuralCheck";
+
+/// Format the scope location string for $structuralCheck diagnostics.
+/// Returns "(startLine:endLine)" based on scope declaration/instruction locations.
+fn format_change_detection_scope_loc(
+    scope: &ReactiveScope,
+    _instructions: &ReactiveBlock,
+) -> String {
+    let mut lines: Vec<u32> = Vec::new();
+    for decl in scope.declarations.values() {
+        if let SourceLocation::Source(range) = &decl.identifier.loc {
+            lines.push(range.start.line);
+        }
+    }
+    for reassign in &scope.reassignments {
+        if let SourceLocation::Source(range) = &reassign.loc {
+            lines.push(range.start.line);
+        }
+    }
+    if lines.is_empty() {
+        "unknown location".to_string()
+    } else {
+        let min = lines.iter().min().unwrap();
+        let max = lines.iter().max().unwrap();
+        format!("({min}:{max})")
+    }
+}
+
+/// Build a `$structuralCheck(old, new, "name", "fnName", "phase", "loc")` call statement.
+fn build_structural_check_call<'a>(
+    cx: &mut CodegenContext<'a>,
+    old_expr_name: &str,
+    new_expr_name: &str,
+    var_name: &str,
+    phase: &str,
+    loc: &str,
+) -> ast::Statement<'a> {
+    let fn_name = cx.fn_name.clone();
+    let old_expr = if old_expr_name.starts_with("$[") {
+        // Cache access expression like $[0]
+        let slot: u32 = old_expr_name[2..old_expr_name.len() - 1]
+            .parse()
+            .unwrap_or(0);
+        cx.cache_access(slot)
+    } else {
+        cx.ident_expr(old_expr_name)
+    };
+    let new_expr = cx.ident_expr(new_expr_name);
+
+    let mut args = cx.builder.vec_with_capacity(6);
+    args.push(ast::Argument::from(old_expr));
+    args.push(ast::Argument::from(new_expr));
+    args.push(ast::Argument::from(cx.builder.expression_string_literal(
+        SPAN,
+        cx.builder.atom(var_name),
+        None,
+    )));
+    args.push(ast::Argument::from(cx.builder.expression_string_literal(
+        SPAN,
+        cx.builder.atom(&fn_name),
+        None,
+    )));
+    args.push(ast::Argument::from(cx.builder.expression_string_literal(
+        SPAN,
+        cx.builder.atom(phase),
+        None,
+    )));
+    args.push(ast::Argument::from(cx.builder.expression_string_literal(
+        SPAN,
+        cx.builder.atom(loc),
+        None,
+    )));
+
+    cx.builder.statement_expression(
+        SPAN,
+        cx.builder.expression_call(
+            SPAN,
+            cx.builder
+                .expression_identifier(SPAN, cx.builder.ident(STRUCTURAL_CHECK_IDENT)),
+            NONE,
+            args,
+            false,
+        ),
+    )
 }
 
 // ---------------------------------------------------------------------------
