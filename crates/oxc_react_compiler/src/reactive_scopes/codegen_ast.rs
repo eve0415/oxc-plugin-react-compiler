@@ -1478,11 +1478,19 @@ fn codegen_terminal<'a>(
             let mut switch_cases = cx.builder.vec();
             for case in cases {
                 let test_expr = case.test.as_ref().and_then(|t| codegen_place(cx, t));
-                let consequent = case
+                let mut consequent = case
                     .block
                     .as_ref()
                     .map(|b| codegen_block(cx, b))
                     .unwrap_or_default();
+                // If the case body is only a `break;` with no other content,
+                // treat it as fallthrough (suppress the break).
+                // If the case body is only a bare `break;`, treat as fallthrough.
+                if consequent.len() == 1
+                    && matches!(&consequent[0], ast::Statement::BreakStatement(b) if b.label.is_none())
+                {
+                    consequent.clear();
+                }
                 // Wrap case body in a block for Babel-compatible output.
                 let wrapped = if consequent.is_empty() {
                     cx.builder.vec()
