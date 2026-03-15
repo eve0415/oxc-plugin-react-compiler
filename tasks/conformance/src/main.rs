@@ -3879,6 +3879,8 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_switch_fallthrough_break(&lines_normalized);
     lines_normalized = normalize_switch_empty_break_case(&lines_normalized);
     lines_normalized = normalize_paren_identity_assignment(&lines_normalized);
+    // Re-run alias-return-tail after paren_identity strips Flow type casts
+    lines_normalized = normalize_simple_alias_return_tail(&lines_normalized);
     lines_normalized = normalize_arr_string_numeric_index(&lines_normalized);
     lines_normalized = normalize_nomemo_or_true(&lines_normalized);
     // Deduplicate duplicate deps in scope guard conditions.
@@ -7982,8 +7984,8 @@ fn normalize_object_shorthand_pairs(code: &str) -> String {
 /// Collapse `let alias = value; return alias;` to `return value;`.
 fn normalize_simple_alias_return_tail(code: &str) -> String {
     let decl_re =
-        regex::Regex::new(r"^let\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*;$").unwrap();
-    let ret_re = regex::Regex::new(r"^return\s+([A-Za-z_$][\w$]*)\s*;$").unwrap();
+        regex::Regex::new(r"^let\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*;?$").unwrap();
+    let ret_re = regex::Regex::new(r"^return\s+([A-Za-z_$][\w$]*)\s*;?$").unwrap();
     let lines: Vec<&str> = code.lines().collect();
     let mut out = Vec::with_capacity(lines.len());
     let mut i = 0usize;
@@ -9633,10 +9635,22 @@ fn normalize_paren_identity_assignment(code: &str) -> String {
         r"((?:let\s+)?[a-zA-Z_$][a-zA-Z0-9_$]*\s*=\s*)\(([a-zA-Z_$][a-zA-Z0-9_$]*)\)(;?)$",
     )
     .unwrap();
+    // Flow type cast: `let VAR = (IDENT: Type);` → `let VAR = IDENT;`
+    let flow_cast_re = regex::Regex::new(
+        r"((?:let\s+)?[a-zA-Z_$][a-zA-Z0-9_$]*\s*=\s*)\(([a-zA-Z_$][a-zA-Z0-9_$]*):\s*[A-Za-z_$][\w$<>\[\]|&?,\s]*\)(;?)$",
+    )
+    .unwrap();
     code.lines()
         .map(|line| {
             let trimmed = line.trim();
             if let Some(caps) = re.captures(trimmed) {
+                format!(
+                    "{}{}{}",
+                    caps.get(1).unwrap().as_str(),
+                    caps.get(2).unwrap().as_str(),
+                    caps.get(3).unwrap().as_str()
+                )
+            } else if let Some(caps) = flow_cast_re.captures(trimmed) {
                 format!(
                     "{}{}{}",
                     caps.get(1).unwrap().as_str(),

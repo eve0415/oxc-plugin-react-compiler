@@ -1,6 +1,6 @@
-# React Compiler Conformance — 92.9% parity rate
+# React Compiler Conformance — 93.0% parity rate
 
-**1627** parity_success, **125** parity_failure, **0** skipped
+**1629** parity_success, **123** parity_failure, **0** skipped
 
 ## Failed
 
@@ -119,9 +119,7 @@
 - `transform-fire/hook-guard`: Output mismatch
 - `try-catch-try-value-modified-in-catch`: Output mismatch
 - `type-annotations/type-annotation-as-array_.flow`: Output mismatch
-- `type-annotations/type-annotation-as-number_.flow`: Output mismatch
 - `type-annotations/type-annotation-satisfies-array`: Output mismatch
-- `type-cast-expression.flow`: Output mismatch
 - `type-inference-array-from`: Output mismatch
 - `unused-conditional`: Output mismatch
 - `update-expression-in-sequence`: Output mismatch
@@ -1643,11 +1641,13 @@
 - `type-annotations/todo_type-annotations-props`
 - `type-annotations/type-annotation-as-array`
 - `type-annotations/type-annotation-as-number`
+- `type-annotations/type-annotation-as-number_.flow`
 - `type-annotations/type-annotation-satisfies-number`
 - `type-annotations/type-annotation-var-array`
 - `type-annotations/type-annotation-var-array_.flow`
 - `type-args-test-binary-operator`
 - `type-binary-operator`
+- `type-cast-expression.flow`
 - `type-field-load`
 - `type-provider-log`
 - `type-provider-log-default-import`
