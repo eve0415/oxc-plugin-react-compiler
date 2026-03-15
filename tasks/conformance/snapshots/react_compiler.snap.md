@@ -1,6 +1,6 @@
-# React Compiler Conformance — 87.6% parity rate
+# React Compiler Conformance — 88.4% parity rate
 
-**1535** parity_success, **217** parity_failure, **0** skipped
+**1548** parity_success, **204** parity_failure, **0** skipped
 
 ## Failed
 
@@ -22,7 +22,6 @@
 - `capturing-function-skip-computed-path`: Output mismatch
 - `chained-assignment-context-variable`: Output mismatch
 - `change-detect-reassign`: Output mismatch
-- `component`: Output mismatch
 - `computed-call-evaluation-order`: Output mismatch
 - `console-readonly`: Output mismatch
 - `constant-prop-to-object-method`: Output mismatch
@@ -70,7 +69,6 @@
 - `flag-enable-emit-hook-guards`: Output mismatch
 - `for-logical`: Output mismatch
 - `for-loop-let-undefined-decl`: Expected upstream bailout (untransformed output), but compiler transformed output
-- `for-loop-with-value-block-initializer`: Output mismatch
 - `for-multiple-variable-declarations-in-initializer`: Output mismatch
 - `for-return`: Output mismatch
 - `for-with-assignment-as-update`: Output mismatch
@@ -96,10 +94,7 @@
 - `jsx-outlining-simple`: Output mismatch
 - `jsx-outlining-with-non-jsx-children`: Output mismatch
 - `jsx-string-attribute-expression-container`: Output mismatch
-- `jsx-string-attribute-non-ascii`: Output mismatch
 - `jsx-tag-evaluation-order-non-global`: Output mismatch
-- `jump-poisoned/loop-break-in-scope`: Output mismatch
-- `labeled-break-within-label-loop`: Output mismatch
 - `log-pruned-memoization`: Output mismatch
 - `lower-context-access-hook-guard`: Output mismatch
 - `memoize-value-block-value-logical`: Output mismatch
@@ -117,7 +112,6 @@
 - `new-mutability/useCallback-reordering-deplist-controlflow`: Output mismatch
 - `new-mutability/useCallback-reordering-depslist-assignment`: Output mismatch
 - `new-mutability/useMemo-reordering-depslist-assignment`: Output mismatch
-- `nullable-objects/bug-invalid-array-map-manual`: Output mismatch
 - `object-shorthand-method-nested`: Output mismatch
 - `option-enable-change-variable-codegen`: Output mismatch
 - `original-reactive-scopes-fork/capture-ref-for-later-mutation`: Output mismatch
@@ -156,7 +150,6 @@
 - `reassignment-separate-scopes`: Output mismatch
 - `recursive-function-expression`: Output mismatch
 - `reduce-reactive-deps/hoist-deps-diff-ssa-instance`: Output mismatch
-- `reduce-reactive-deps/hoist-deps-diff-ssa-instance1`: Output mismatch
 - `reduce-reactive-deps/todo-infer-function-uncond-optionals-hoisted`: Output mismatch
 - `reduce-reactive-deps/todo-infer-function-uncond-optionals-hoisted`: Output mismatch
 - `ref-current-optional-field-no-added-to-dep`: Output mismatch
@@ -165,7 +158,6 @@
 - `rename-source-variables-nested-function`: Output mismatch
 - `rename-source-variables-nested-object-method`: Output mismatch
 - `renaming-jsx-tag-lowercase`: Output mismatch
-- `repro-aliased-capture-mutate`: Output mismatch
 - `repro-dont-memoize-array-with-capturing-map-after-hook`: Output mismatch
 - `repro-dont-memoize-array-with-mutable-map-after-hook`: Output mismatch
 - `repro-invalid-reactivity-value-block`: Output mismatch
@@ -185,7 +177,6 @@
 - `sequence-expression`: Output mismatch
 - `simple`: Output mismatch
 - `ssa-cascading-eliminated-phis`: Output mismatch
-- `ssa-for`: Output mismatch
 - `ssa-renaming`: Output mismatch
 - `ssa-renaming-ternary`: Output mismatch
 - `ssa-renaming-ternary-destruction`: Output mismatch
@@ -203,15 +194,11 @@
 - `try-catch-try-value-modified-in-catch`: Output mismatch
 - `try-catch-try-value-modified-in-catch-escaping`: Output mismatch
 - `try-catch-with-catch-param`: Output mismatch
-- `ts-as-expression-default-value`: Output mismatch
-- `ts-instantiation-default-param`: Output mismatch
-- `type-annotations/type-annotation-as-array`: Output mismatch
 - `type-annotations/type-annotation-as-array_.flow`: Output mismatch
 - `type-annotations/type-annotation-as-number_.flow`: Output mismatch
 - `type-annotations/type-annotation-satisfies-array`: Output mismatch
 - `type-cast-expression.flow`: Output mismatch
 - `type-inference-array-from`: Output mismatch
-- `unlabeled-break-within-label-loop`: Output mismatch
 - `unused-conditional`: Output mismatch
 - `update-expression-in-sequence`: Output mismatch
 - `useMemo-simple-preserved-nomemo`: Output mismatch
@@ -403,6 +390,7 @@
 - `codegen-inline-iife-storeprop`
 - `codegen-instrument-forget-test`
 - `complex-while`
+- `component`
 - `component-declaration-basic.flow`
 - `component-inner-function-with-many-args`
 - `computed-call-spread`
@@ -747,6 +735,7 @@
 - `for-in-statement-continue`
 - `for-in-statement-empty-body`
 - `for-in-statement-type-inference`
+- `for-loop-with-value-block-initializer`
 - `for-of-break`
 - `for-of-capture-item-of-local-collection-mutate-later`
 - `for-of-capture-item-of-local-collection-mutate-later-value-initially-null`
@@ -942,10 +931,12 @@
 - `jsx-preserve-whitespace`
 - `jsx-reactive-local-variable-member-expr`
 - `jsx-spread`
+- `jsx-string-attribute-non-ascii`
 - `jsx-tag-evaluation-order`
 - `jsx-ternary-local-variable`
 - `jump-poisoned/break-in-scope`
 - `jump-poisoned/break-poisons-outer-scope`
+- `jump-poisoned/loop-break-in-scope`
 - `jump-poisoned/reduce-if-nonexhaustive-poisoned-deps`
 - `jump-poisoned/reduce-if-nonexhaustive-poisoned-deps1`
 - `jump-poisoned/return-in-scope`
@@ -957,6 +948,7 @@
 - `jump-unpoisoned/reduce-if-exhaustive-nonpoisoned-deps1`
 - `jump-unpoisoned/return-before-scope-starts`
 - `jump-unpoisoned/throw-before-scope-starts`
+- `labeled-break-within-label-loop`
 - `labeled-break-within-label-switch`
 - `lambda-array-access-member-expr-captured`
 - `lambda-array-access-member-expr-param`
@@ -1081,6 +1073,7 @@
 - `nullable-objects/array-map-named-callback-cross-context`
 - `nullable-objects/array-map-named-chained-callbacks`
 - `nullable-objects/array-map-simple`
+- `nullable-objects/bug-invalid-array-map-manual`
 - `nullable-objects/return-object-of-functions`
 - `numeric-literal-as-object-property-key`
 - `obj-literal-cached-in-if-else`
@@ -1314,6 +1307,7 @@
 - `reduce-reactive-deps/conditional-member-expr`
 - `reduce-reactive-deps/context-var-granular-dep`
 - `reduce-reactive-deps/edge-case-merge-uncond-optional-chain-and-cond`
+- `reduce-reactive-deps/hoist-deps-diff-ssa-instance1`
 - `reduce-reactive-deps/infer-function-cond-access-local-var`
 - `reduce-reactive-deps/infer-function-cond-access-not-hoisted`
 - `reduce-reactive-deps/infer-function-cond-access-not-hoisted`
@@ -1365,6 +1359,7 @@
 - `reordering-across-blocks`
 - `repro`
 - `repro-aliased-capture-aliased-mutate`
+- `repro-aliased-capture-mutate`
 - `repro-allocating-ternary-test-instruction-scope`
 - `repro-backedge-reference-effect`
 - `repro-bailout-nopanic-shouldnt-outline`
@@ -1533,6 +1528,7 @@
 - `ssa-call-jsx-2`
 - `ssa-complex-multiple-if`
 - `ssa-complex-single-if`
+- `ssa-for`
 - `ssa-for-of`
 - `ssa-for-trivial-update`
 - `ssa-if-else`
@@ -1636,7 +1632,9 @@
 - `try-catch-within-mutable-range`
 - `try-catch-within-object-method`
 - `try-catch-within-object-method-returns-caught-value`
+- `ts-as-expression-default-value`
 - `ts-enum-inline`
+- `ts-instantiation-default-param`
 - `ts-instantiation-expression`
 - `ts-non-null-expression-default-value`
 - `type-alias-declaration`
@@ -1646,6 +1644,7 @@
 - `type-alias-used-as-variable-annotation_.flow`
 - `type-alias.flow`
 - `type-annotations/todo_type-annotations-props`
+- `type-annotations/type-annotation-as-array`
 - `type-annotations/type-annotation-as-number`
 - `type-annotations/type-annotation-satisfies-number`
 - `type-annotations/type-annotation-var-array`
@@ -1668,6 +1667,7 @@
 - `unconditional-break-label`
 - `uninitialized-declaration-in-reactive-scope`
 - `unknown-hooks-do-not-assert`
+- `unlabeled-break-within-label-loop`
 - `unlabeled-break-within-label-switch`
 - `unmemoized-nonreactive-dependency-is-pruned-as-dependency`
 - `unused-array-middle-element`
