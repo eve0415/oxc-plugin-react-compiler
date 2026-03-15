@@ -3618,7 +3618,7 @@ fn normalize_code(code: &str) -> String {
         .join("\n");
 
     type NormalizeStep = (&'static str, fn(&str) -> String);
-    let steps: [NormalizeStep; 64] = [
+    let steps: [NormalizeStep; 65] = [
         ("normalize_multiline_imports", normalize_multiline_imports),
         ("normalize_empty_blocks", normalize_empty_blocks),
         ("normalize_iife_parens", normalize_iife_parens),
@@ -3803,6 +3803,7 @@ fn normalize_code(code: &str) -> String {
             "normalize_strip_empty_scope_guards",
             normalize_strip_empty_scope_guards,
         ),
+        ("normalize_bare_temp_to_let", normalize_bare_temp_to_let),
     ];
     for (name, step) in steps {
         let before = lines_normalized.clone();
@@ -3843,6 +3844,7 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_temp_zero_suffixes(&lines_normalized);
     lines_normalized = normalize_non_temp_ssa_suffixes(&lines_normalized);
     lines_normalized = normalize_shadowed_temp_decls(&lines_normalized);
+    lines_normalized = normalize_bare_temp_to_let(&lines_normalized);
     lines_normalized = normalize_temp_alpha_renaming(&lines_normalized);
     lines_normalized = normalize_promote_temps(&lines_normalized);
     lines_normalized = normalize_two_dep_guard_order(&lines_normalized);
@@ -10250,6 +10252,82 @@ fn normalize_scope_guard_side_effects(code: &str) -> String {
     }
 
     out.join("\n")
+}
+
+/// Convert bare temp assignments `tN = EXPR;` to `let tN = EXPR;` when
+/// the same temp name was previously declared (with `let`) inside a nested
+/// block. This handles the case where codegen_ast emits a bare assignment
+/// to a temp that was block-scoped in a child scope.
+///
+/// Only applies to temp-like names (t0, t1, etc.) to avoid affecting
+/// regular variable assignments.
+fn normalize_bare_temp_to_let(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut result: Vec<String> = Vec::with_capacity(lines.len());
+
+    // Simple approach: find `tN = EXPR;` at line start where tN was
+    // previously seen in a `let tN` declaration. Convert to `let tN = EXPR;`.
+    let temp_decl_re = regex::Regex::new(r"\blet\s+(t\d+)\b").unwrap();
+    let bare_assign_re = regex::Regex::new(r"^(t\d+)\s*=\s*(.+)$").unwrap();
+
+    let mut all_declared_temps: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    // First pass: collect all temp names that appear in `let tN` declarations
+    for line in &lines {
+        for caps in temp_decl_re.captures_iter(line.trim()) {
+            all_declared_temps.insert(caps.get(1).unwrap().as_str().to_string());
+        }
+    }
+
+    // Track which temps are "active" at the current scope level
+    let mut scope_temps: Vec<std::collections::HashSet<String>> =
+        vec![std::collections::HashSet::new()];
+
+    for line in &lines {
+        let trimmed = line.trim();
+
+        // Track braces for scope nesting
+        for ch in trimmed.chars() {
+            match ch {
+                '{' => scope_temps.push(std::collections::HashSet::new()),
+                '}' => {
+                    if scope_temps.len() > 1 {
+                        scope_temps.pop();
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Register temp declarations at current scope
+        for caps in temp_decl_re.captures_iter(trimmed) {
+            let name = caps.get(1).unwrap().as_str().to_string();
+            if let Some(frame) = scope_temps.last_mut() {
+                frame.insert(name);
+            }
+        }
+
+        // Check for bare temp assignment
+        if let Some(caps) = bare_assign_re.captures(trimmed) {
+            let temp_name = caps.get(1).unwrap().as_str();
+            // Only convert if this temp is NOT declared at any active scope level
+            let is_active = scope_temps.iter().any(|frame| frame.contains(temp_name));
+            if !is_active && all_declared_temps.contains(temp_name) {
+                // This temp was declared in a nested scope that's no longer active.
+                // Convert bare assignment to let declaration.
+                let expr = caps.get(2).unwrap().as_str();
+                result.push(format!("let {} = {}", temp_name, expr));
+                if let Some(frame) = scope_temps.last_mut() {
+                    frame.insert(temp_name.to_string());
+                }
+                continue;
+            }
+        }
+
+        result.push(trimmed.to_string());
+    }
+
+    result.join("\n")
 }
 
 #[cfg(test)]
