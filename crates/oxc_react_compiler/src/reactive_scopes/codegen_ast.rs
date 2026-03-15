@@ -1424,11 +1424,17 @@ fn codegen_terminal<'a>(
                 return vec![];
             };
             let consequent_stmts = codegen_block(cx, consequent);
+            let alternate_result = alternate.as_ref().map(|alt| codegen_block(cx, alt));
+            // Skip empty if/else blocks — emit test as expression statement.
+            if consequent_stmts.is_empty()
+                && alternate_result.as_ref().is_some_and(|a| a.is_empty())
+            {
+                return vec![cx.builder.statement_expression(SPAN, test_expr)];
+            }
             let consequent_block = cx
                 .builder
                 .statement_block(SPAN, cx.builder.vec_from_iter(consequent_stmts));
-            let alternate_stmt = alternate.as_ref().map(|alt| {
-                let alt_stmts = codegen_block(cx, alt);
+            let alternate_stmt = alternate_result.map(|alt_stmts| {
                 cx.builder
                     .statement_block(SPAN, cx.builder.vec_from_iter(alt_stmts))
             });
@@ -1449,11 +1455,16 @@ fn codegen_terminal<'a>(
                     .as_ref()
                     .map(|b| codegen_block(cx, b))
                     .unwrap_or_default();
-                switch_cases.push(cx.builder.switch_case(
-                    SPAN,
-                    test_expr,
-                    cx.builder.vec_from_iter(consequent),
-                ));
+                // Wrap case body in a block for Babel-compatible output.
+                let wrapped = if consequent.is_empty() {
+                    cx.builder.vec()
+                } else {
+                    cx.builder.vec1(
+                        cx.builder
+                            .statement_block(SPAN, cx.builder.vec_from_iter(consequent)),
+                    )
+                };
+                switch_cases.push(cx.builder.switch_case(SPAN, test_expr, wrapped));
             }
             vec![
                 cx.builder

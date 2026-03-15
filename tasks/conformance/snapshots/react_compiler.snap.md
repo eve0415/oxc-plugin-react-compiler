@@ -1,6 +1,6 @@
-# React Compiler Conformance — 71.9% parity rate
+# React Compiler Conformance — 72.8% parity rate
 
-**1259** parity_success, **493** parity_failure, **0** skipped
+**1276** parity_success, **476** parity_failure, **0** skipped
 
 ## Failed
 
@@ -45,7 +45,6 @@
 - `bailout-retry/mutate-after-useeffect-ref-access`: Output mismatch
 - `bailout-retry/no-fire-todo-syntax-shouldnt-throw`: Output mismatch
 - `block-scoping-switch-dead-code`: Output mismatch
-- `block-scoping-switch-variable-scoping`: Output mismatch
 - `bug-ref-prefix-postfix-operator`: Output mismatch
 - `bug-type-inference-control-flow`: Output mismatch
 - `call-args-assignment`: Output mismatch
@@ -92,8 +91,6 @@
 - `empty-catch-statement`: Output mismatch
 - `escape-analysis-logical`: Output mismatch
 - `escape-analysis-not-conditional-test`: Expected upstream bailout (untransformed output), but compiler transformed output
-- `escape-analysis-not-switch-case`: Expected upstream bailout (untransformed output), but compiler transformed output
-- `escape-analysis-not-switch-test`: Expected upstream bailout (untransformed output), but compiler transformed output
 - `expression-with-assignment-dynamic`: Output mismatch
 - `fast-refresh-refresh-on-const-changes-dev`: Output mismatch
 - `fast-refresh-reloading`: Output mismatch
@@ -200,7 +197,6 @@
 - `jump-unpoisoned/reduce-if-exhaustive-nonpoisoned-deps`: Output mismatch
 - `jump-unpoisoned/reduce-if-exhaustive-nonpoisoned-deps1`: Output mismatch
 - `labeled-break-within-label-loop`: Output mismatch
-- `labeled-break-within-label-switch`: Output mismatch
 - `lambda-array-access-member-expr-captured`: Output mismatch
 - `log-pruned-memoization`: Output mismatch
 - `logical-expression`: Output mismatch
@@ -312,11 +308,7 @@
 - `reactive-control-dependency-from-interleaved-reactivity-for-init`: Output mismatch
 - `reactive-control-dependency-from-interleaved-reactivity-for-test`: Output mismatch
 - `reactive-control-dependency-from-interleaved-reactivity-for-update`: Output mismatch
-- `reactive-control-dependency-from-interleaved-reactivity-switch`: Output mismatch
 - `reactive-control-dependency-reactive-after-fixpoint`: Output mismatch
-- `reactive-control-dependency-switch-case-test`: Output mismatch
-- `reactive-control-dependency-switch-condition`: Output mismatch
-- `reactive-control-dependency-via-mutation-switch`: Output mismatch
 - `reactive-control-dependency-while-test`: Output mismatch
 - `reactive-ref`: Output mismatch
 - `reactive-ref-param`: Output mismatch
@@ -332,9 +324,6 @@
 - `reduce-reactive-deps/cfg-ifelse`: Output mismatch
 - `reduce-reactive-deps/cfg-nested-ifelse`: Output mismatch
 - `reduce-reactive-deps/cfg-nested-ifelse-missing`: Output mismatch
-- `reduce-reactive-deps/cfg-switch-exhaustive`: Output mismatch
-- `reduce-reactive-deps/cfg-switch-missing-case`: Output mismatch
-- `reduce-reactive-deps/cfg-switch-missing-default`: Output mismatch
 - `reduce-reactive-deps/conditional-member-expr`: Output mismatch
 - `reduce-reactive-deps/conditional-member-expr`: Output mismatch
 - `reduce-reactive-deps/context-var-granular-dep`: Output mismatch
@@ -430,10 +419,8 @@
 - `ssa-single-if`: Output mismatch
 - `ssa-switch`: Output mismatch
 - `switch`: Output mismatch
-- `switch-global-propertyload-case-test`: Expected upstream bailout (untransformed output), but compiler transformed output
 - `switch-non-final-default`: Output mismatch
 - `switch-with-fallthrough`: Output mismatch
-- `switch-with-only-default`: Output mismatch
 - `temporary-at-start-of-value-block`: Output mismatch
 - `ternary-assignment-expression`: Output mismatch
 - `ternary-expression`: Expected upstream bailout (untransformed output), but compiler transformed output
@@ -468,7 +455,6 @@
 - `type-cast-expression.flow`: Output mismatch
 - `unary-expr`: Output mismatch
 - `unlabeled-break-within-label-loop`: Output mismatch
-- `unlabeled-break-within-label-switch`: Output mismatch
 - `unused-conditional`: Output mismatch
 - `unused-logical`: Output mismatch
 - `unused-logical-assigned-to-variable`: Output mismatch
@@ -484,8 +470,6 @@
 - `useMemo-logical`: Output mismatch
 - `useMemo-multiple-if-else`: Output mismatch
 - `useMemo-simple-preserved-nomemo`: Output mismatch
-- `useMemo-switch-no-fallthrough`: Output mismatch
-- `useMemo-switch-return`: Output mismatch
 - `useMemo-with-optional`: Output mismatch
 - `useState-and-other-hook-unpruned-dependency`: Output mismatch
 - `useState-pruned-dependency-change-detect`: Output mismatch
@@ -493,7 +477,6 @@
 - `valid-set-state-in-useEffect-from-ref`: Output mismatch
 - `valid-setState-in-effect-from-ref-function-call`: Output mismatch
 - `valid-setState-in-useLayoutEffect-from-ref`: Output mismatch
-- `validate-no-set-state-in-render-uncalled-function-with-mutable-range-is-valid`: Output mismatch
 - `value-block-mutates-outer-value`: Output mismatch
 - `while-logical`: Output mismatch
 - `while-with-assignment-in-test`: Output mismatch
@@ -576,6 +559,7 @@
 - `bailout-retry/error.untransformed-fire-reference`
 - `bailout-retry/error.use-no-memo`
 - `bailout-retry/error.use-no-memo`
+- `block-scoping-switch-variable-scoping`
 - `bug-capturing-func-maybealias-captured-mutate`
 - `bug-separate-memoization-due-to-callback-capturing`
 - `builtin-jsx-tag-lowered-between-mutations`
@@ -944,6 +928,8 @@
 - `escape-analysis-non-escaping-interleaved-allocating-nested-dependency`
 - `escape-analysis-non-escaping-interleaved-primitive-dependency`
 - `escape-analysis-not-if-test`
+- `escape-analysis-not-switch-case`
+- `escape-analysis-not-switch-test`
 - `evaluation-order-mutate-call-after-dependency-load`
 - `evaluation-order-mutate-store-after-dependency-load`
 - `existing-variables-with-c-name`
@@ -1133,6 +1119,7 @@
 - `jump-unpoisoned/jump-target-within-scope-loop-break`
 - `jump-unpoisoned/return-before-scope-starts`
 - `jump-unpoisoned/throw-before-scope-starts`
+- `labeled-break-within-label-switch`
 - `lambda-array-access-member-expr-param`
 - `lambda-capture-returned-alias`
 - `lambda-mutate-shadowed-object`
@@ -1376,11 +1363,15 @@
 - `reactive-control-dependency-from-interleaved-reactivity-for-in`
 - `reactive-control-dependency-from-interleaved-reactivity-for-of`
 - `reactive-control-dependency-from-interleaved-reactivity-if`
+- `reactive-control-dependency-from-interleaved-reactivity-switch`
 - `reactive-control-dependency-from-interleaved-reactivity-while`
 - `reactive-control-dependency-if`
 - `reactive-control-dependency-on-context-variable`
 - `reactive-control-dependency-phi-setState-type`
+- `reactive-control-dependency-switch-case-test`
+- `reactive-control-dependency-switch-condition`
 - `reactive-control-dependency-via-mutation-if`
+- `reactive-control-dependency-via-mutation-switch`
 - `reactive-dependencies-non-optional-properties-inside-optional-chain`
 - `reactive-dependency-fixpoint`
 - `reactive-dependency-nonreactive-captured-with-reactive`
@@ -1405,6 +1396,9 @@
 - `reassignment-conditional`
 - `recursive-function`
 - `reduce-reactive-cond-deps-break-in-scope`
+- `reduce-reactive-deps/cfg-switch-exhaustive`
+- `reduce-reactive-deps/cfg-switch-missing-case`
+- `reduce-reactive-deps/cfg-switch-missing-default`
 - `reduce-reactive-deps/cond-scope`
 - `reduce-reactive-deps/infer-function-cond-access-local-var`
 - `reduce-reactive-deps/infer-function-cond-access-not-hoisted`
@@ -1618,6 +1612,8 @@
 - `static-components/invalid-dynamically-constructed-component-new`
 - `store-via-call`
 - `store-via-new`
+- `switch-global-propertyload-case-test`
+- `switch-with-only-default`
 - `tagged-template-in-hook`
 - `tagged-template-literal`
 - `target-flag`
@@ -1688,6 +1684,7 @@
 - `unconditional-break-label`
 - `uninitialized-declaration-in-reactive-scope`
 - `unknown-hooks-do-not-assert`
+- `unlabeled-break-within-label-switch`
 - `unmemoized-nonreactive-dependency-is-pruned-as-dependency`
 - `unused-array-middle-element`
 - `unused-array-rest-element`
@@ -1748,11 +1745,14 @@
 - `useMemo-return-empty`
 - `useMemo-simple`
 - `useMemo-simple-preserved`
+- `useMemo-switch-no-fallthrough`
+- `useMemo-switch-return`
 - `useReducer-returned-dispatcher-is-non-reactive`
 - `valid-setState-in-effect-from-ref-arithmetic`
 - `valid-setState-in-effect-from-ref-array-index`
 - `valid-setState-in-useEffect-listener`
 - `valid-setState-in-useEffect-listener-transitive`
+- `validate-no-set-state-in-render-uncalled-function-with-mutable-range-is-valid`
 - `validate-no-set-state-in-render-unconditional-lambda-which-conditionally-sets-state-ok`
 - `weakmap-constructor`
 - `weakset-constructor`
