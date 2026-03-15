@@ -8562,24 +8562,39 @@ fn normalize_jsx_string_attr_expression_container(code: &str) -> String {
         .join("\n")
 }
 
-/// Normalize for-loop update expressions where a temp is used instead of the
-/// loop variable. E.g., `for (let i; ...; t0++)` → `for (let i; ...; i++)`.
+/// Normalize for-loop update expressions:
+/// 1. Replace temp vars with loop var: `for (let i; ...; t0++)` → `for (let i; ...; i++)`
+/// 2. Replace bare loop var with assignment: `for (let i; ...; i)` → `for (let i; ...; i = i + 1)`
 fn normalize_for_loop_temp_update(code: &str) -> String {
-    let for_re = regex::Regex::new(
+    let for_temp_re = regex::Regex::new(
         r"^(for \(let (\w+)(?:\s*=\s*[^;]*)?;\s*[^;]+;\s*)(t\d+)(\+\+|\-\-|(?:\s*=\s*.+?))\) \{$",
     )
     .unwrap();
+    // Match `for (let VAR; ...; VAR) {` — bare identifier as update (no operator)
+    let for_bare_re =
+        regex::Regex::new(r"^for \(let (\w+)(?:\s*=\s*[^;]*)?(;\s*[^;]+;\s*)(\w+)\) \{$").unwrap();
     code.lines()
         .map(|line| {
             let trimmed = line.trim();
-            if let Some(caps) = for_re.captures(trimmed) {
+            // Pattern 1: temp in update position
+            if let Some(caps) = for_temp_re.captures(trimmed) {
                 let loop_var = caps.get(2).unwrap().as_str();
                 let temp_var = caps.get(3).unwrap().as_str();
-                // Only replace if the temp and loop var are different
                 if temp_var != loop_var {
                     return trimmed.replace(
                         &format!("{}{}", temp_var, caps.get(4).unwrap().as_str()),
                         &format!("{}{}", loop_var, caps.get(4).unwrap().as_str()),
+                    );
+                }
+            }
+            // Pattern 2: bare identifier as update (e.g., `; i)`)
+            if let Some(caps) = for_bare_re.captures(trimmed) {
+                let loop_var = caps.get(1).unwrap().as_str();
+                let update_var = caps.get(3).unwrap().as_str();
+                if loop_var == update_var {
+                    let semi_part = caps.get(2).unwrap().as_str();
+                    return format!(
+                        "for (let {loop_var}{semi_part}{loop_var} = {loop_var} + 1) {{"
                     );
                 }
             }
