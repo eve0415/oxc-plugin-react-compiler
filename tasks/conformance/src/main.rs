@@ -8574,12 +8574,6 @@ fn normalize_jsx_string_attr_expression_container(code: &str) -> String {
         .join("\n")
 }
 
-/// Strip extra bare `let tN;` declarations that appear before scope guards.
-/// When the AST codegen emits `let tN;` as a scope declaration prologue but
-/// the scope guard body assigns `tN = ...`, the bare declaration is redundant
-/// — the assignment inside the guard serves as the effective declaration.
-/// This normalizes by removing such redundant declarations and converting the
-/// first assignment to `tN` into a `let tN =` declaration.
 /// Normalize for-loop update expressions:
 /// 1. Replace temp vars with loop var: `for (let i; ...; t0++)` → `for (let i; ...; i++)`
 /// 2. Replace prefix temp: `for (let i; ...; ++t0)` → `for (let i; ...; ++i)`
@@ -8623,15 +8617,24 @@ fn normalize_for_loop_temp_update(code: &str) -> String {
                     );
                 }
             }
-            // Pattern 2: bare identifier as update (e.g., `; i)`)
+            // Pattern 2: bare identifier as update (e.g., `; i)` or `; t0)`)
             if let Some(caps) = for_bare_re.captures(trimmed) {
                 let loop_var = caps.get(1).unwrap().as_str();
                 let update_var = caps.get(3).unwrap().as_str();
                 if loop_var == update_var {
+                    // Bare loop var → convert to assignment form
                     let semi_part = caps.get(2).unwrap().as_str();
                     return format!(
                         "for (let {loop_var}{semi_part}{loop_var} = {loop_var} + 1) {{"
                     );
+                }
+                // Bare temp in update → strip it (empty update)
+                if update_var.starts_with('t')
+                    && update_var.len() > 1
+                    && update_var[1..].chars().all(|c| c.is_ascii_digit())
+                {
+                    let semi_part = caps.get(2).unwrap().as_str();
+                    return format!("for (let {loop_var}{semi_part}) {{");
                 }
             }
             trimmed.to_string()
