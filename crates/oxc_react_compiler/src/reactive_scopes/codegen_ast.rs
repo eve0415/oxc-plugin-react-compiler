@@ -858,6 +858,20 @@ fn codegen_store<'a>(
 ) -> Option<ast::Statement<'a>> {
     let expr = codegen_place(cx, value)?;
     let id = lvalue.place.identifier.id;
+
+    // Temp inlining: if the target is a compiler-generated temp (name matches
+    // t0/t1/... pattern from rename_variables) and it's not a scope declaration,
+    // store for later inlining instead of emitting a declaration.
+    let is_scope_decl = cx.scope_declarations.contains(&id);
+    if !is_scope_decl
+        && !cx.declared.contains(&id)
+        && !matches!(lvalue.kind, InstructionKind::Reassign)
+        && is_compiler_temp_name(&lvalue.place.identifier)
+    {
+        cx.temps.insert(id, Some(expr));
+        return None;
+    }
+
     let name = identifier_name(&lvalue.place.identifier);
 
     match lvalue.kind {
@@ -1209,6 +1223,19 @@ fn build_property_key_for_pattern<'a>(
 // Emit helpers
 // ---------------------------------------------------------------------------
 
+/// Check if an identifier is a compiler-generated temporary (name starts with
+/// 't' or 'T' followed by digits, as assigned by rename_variables).
+fn is_compiler_temp_name(identifier: &Identifier) -> bool {
+    if let Some(name) = identifier.name.as_ref() {
+        let s = name.value();
+        (s.starts_with('t') || s.starts_with('T'))
+            && s.len() > 1
+            && s[1..].chars().all(|c| c.is_ascii_digit())
+    } else {
+        true // unnamed identifiers are always temps
+    }
+}
+
 fn identifier_name(identifier: &Identifier) -> String {
     identifier
         .name
@@ -1311,11 +1338,12 @@ fn parse_regexp_flags(flags: &str) -> ast::RegExpFlags {
 fn codegen_place<'a>(cx: &mut CodegenContext<'a>, place: &Place) -> Option<ast::Expression<'a>> {
     let id = place.identifier.id;
 
-    // Check temp map first — single-use inlined expression.
+    // Check temp map first — inlined expression. Use clone_in for
+    // multi-use temps (second+ reference gets a deep copy).
     if let Some(temp_slot) = cx.temps.get_mut(&id)
-        && let Some(expr) = temp_slot.take()
+        && let Some(expr) = temp_slot.as_ref()
     {
-        return Some(expr);
+        return Some(expr.clone_in(cx.allocator));
     }
 
     // Use identifier name.

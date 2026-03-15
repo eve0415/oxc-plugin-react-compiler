@@ -1,6 +1,6 @@
-# React Compiler Conformance — 71.7% parity rate
+# React Compiler Conformance — 71.9% parity rate
 
-**1256** parity_success, **496** parity_failure, **0** skipped
+**1259** parity_success, **493** parity_failure, **0** skipped
 
 ## Failed
 
@@ -32,7 +32,6 @@
 - `array-property-call`: Output mismatch
 - `assume-invoked/conditional-call-chain`: Output mismatch
 - `assume-invoked/function-with-conditional-callsite-in-another-function`: Output mismatch
-- `assume-invoked/jsx-and-passed`: Output mismatch
 - `babel-repro-compact-negative-number`: Output mismatch
 - `bailout-retry/bailout-capitalized-fn-call`: Output mismatch
 - `bailout-retry/bailout-eslint-suppressions`: Output mismatch
@@ -44,6 +43,7 @@
 - `bailout-retry/mutate-after-useeffect-granular-access`: Output mismatch
 - `bailout-retry/mutate-after-useeffect-optional-chain`: Output mismatch
 - `bailout-retry/mutate-after-useeffect-ref-access`: Output mismatch
+- `bailout-retry/no-fire-todo-syntax-shouldnt-throw`: Output mismatch
 - `block-scoping-switch-dead-code`: Output mismatch
 - `block-scoping-switch-variable-scoping`: Output mismatch
 - `bug-ref-prefix-postfix-operator`: Output mismatch
@@ -89,7 +89,6 @@
 - `do-while-early-unconditional-break`: Output mismatch
 - `dominator`: Output mismatch
 - `dont-merge-if-dep-is-inner-declaration-of-previous-scope`: Output mismatch
-- `early-return-within-reactive-scope`: Output mismatch
 - `empty-catch-statement`: Output mismatch
 - `escape-analysis-logical`: Output mismatch
 - `escape-analysis-not-conditional-test`: Expected upstream bailout (untransformed output), but compiler transformed output
@@ -225,7 +224,6 @@
 - `nested-optional-chains`: Output mismatch
 - `nested-optional-member-expr`: Output mismatch
 - `nested-scopes-begin-same-instr-valueblock`: Output mismatch
-- `new-mutability/array-map-named-callback-cross-context`: Output mismatch
 - `new-mutability/capturing-function-alias-computed-load-2-iife`: Output mismatch
 - `new-mutability/capturing-function-alias-computed-load-3-iife`: Output mismatch
 - `new-mutability/mutate-after-useeffect`: Output mismatch
@@ -236,18 +234,14 @@
 - `new-mutability/reactive-setState`: Output mismatch
 - `new-mutability/repro-compiler-infinite-loop`: Output mismatch
 - `new-mutability/repro-invalid-function-expression-effects-phi`: Output mismatch
+- `new-mutability/shared-hook-calls`: Output mismatch
 - `new-mutability/ssa-renaming-ternary-destruction`: Output mismatch
-- `new-mutability/todo-control-flow-sensitive-mutation`: Output mismatch
 - `new-mutability/useCallback-reordering-deplist-controlflow`: Output mismatch
 - `new-mutability/useCallback-reordering-depslist-assignment`: Output mismatch
 - `new-mutability/useMemo-reordering-depslist-assignment`: Output mismatch
 - `nonmutating-capture-in-unsplittable-memo-block`: Output mismatch
 - `nonoptional-load-from-optional-memberexpr`: Output mismatch
 - `nonreactive-noescaping-dependency-can-inline-into-consuming-scope`: Output mismatch
-- `nullable-objects/array-map-named-callback`: Output mismatch
-- `nullable-objects/array-map-named-callback-cross-context`: Output mismatch
-- `nullable-objects/array-map-named-chained-callbacks`: Output mismatch
-- `nullable-objects/array-map-simple`: Output mismatch
 - `nullable-objects/bug-invalid-array-map-manual`: Output mismatch
 - `object-expression-computed-member`: Output mismatch
 - `object-literal-method-call-in-ternary-test`: Output mismatch
@@ -286,7 +280,6 @@
 - `primitive-as-dep`: Output mismatch
 - `primitive-as-dep-nested-scope`: Output mismatch
 - `primitive-reassigned-loop-force-scopes-enabled`: Output mismatch
-- `propagate-scope-deps-hir-fork/early-return-within-reactive-scope`: Output mismatch
 - `propagate-scope-deps-hir-fork/infer-sequential-optional-chain-nonnull`: Output mismatch
 - `propagate-scope-deps-hir-fork/nested-optional-chains`: Output mismatch
 - `propagate-scope-deps-hir-fork/optional-member-expression-as-memo-dep`: Output mismatch
@@ -329,8 +322,6 @@
 - `reactive-ref-param`: Output mismatch
 - `reactivity-analysis-reactive-via-mutation-of-computed-load`: Output mismatch
 - `reactivity-analysis-reactive-via-mutation-of-property-load`: Output mismatch
-- `reactivity-via-aliased-mutation-array`: Output mismatch
-- `reactivity-via-aliased-mutation-lambda`: Output mismatch
 - `reassign-in-while-loop-condition`: Output mismatch
 - `reassigned-phi-in-returned-function-expression`: Output mismatch
 - `reassignment-separate-scopes`: Output mismatch
@@ -447,7 +438,15 @@
 - `ternary-assignment-expression`: Output mismatch
 - `ternary-expression`: Expected upstream bailout (untransformed output), but compiler transformed output
 - `todo.memoize-loops-that-produce-memoizeable-values`: Output mismatch
+- `transform-fire/bailout-validate-conditional-hook`: Output mismatch
+- `transform-fire/basic`: Output mismatch
+- `transform-fire/deep-scope`: Output mismatch
 - `transform-fire/hook-guard`: Output mismatch
+- `transform-fire/multiple-scope`: Output mismatch
+- `transform-fire/repeated-calls`: Output mismatch
+- `transform-fire/repro-dont-add-hook-guards-on-retry`: Output mismatch
+- `transform-fire/rewrite-deps`: Output mismatch
+- `transform-fire/shared-hook-calls`: Output mismatch
 - `transitive-freeze-function-expressions`: Output mismatch
 - `try-catch-alias-try-values`: Output mismatch
 - `try-catch-in-nested-scope`: Output mismatch
@@ -467,8 +466,6 @@
 - `type-annotations/type-annotation-as-number_.flow`: Output mismatch
 - `type-annotations/type-annotation-satisfies-array`: Output mismatch
 - `type-cast-expression.flow`: Output mismatch
-- `type-provider-store-capture`: Output mismatch
-- `type-provider-store-capture-namespace-import`: Output mismatch
 - `unary-expr`: Output mismatch
 - `unlabeled-break-within-label-loop`: Output mismatch
 - `unlabeled-break-within-label-switch`: Output mismatch
@@ -558,6 +555,7 @@
 - `assume-invoked/conditionally-return-fn`
 - `assume-invoked/direct-call`
 - `assume-invoked/hook-call`
+- `assume-invoked/jsx-and-passed`
 - `assume-invoked/jsx-function`
 - `assume-invoked/return-function`
 - `assume-invoked/use-memo-returned`
@@ -578,7 +576,6 @@
 - `bailout-retry/error.untransformed-fire-reference`
 - `bailout-retry/error.use-no-memo`
 - `bailout-retry/error.use-no-memo`
-- `bailout-retry/no-fire-todo-syntax-shouldnt-throw`
 - `bug-capturing-func-maybealias-captured-mutate`
 - `bug-separate-memoization-due-to-callback-capturing`
 - `builtin-jsx-tag-lowered-between-mutations`
@@ -725,6 +722,7 @@
 - `early-return`
 - `early-return-nested-early-return-within-reactive-scope`
 - `early-return-no-declarations-reassignments-dependencies`
+- `early-return-within-reactive-scope`
 - `ecma/error.reserved-words`
 - `emit-freeze-conflicting-imports`
 - `emit-freeze-nonconflicting-global-reference`
@@ -1179,6 +1177,7 @@
 - `new-mutability/aliased-nested-scope-truncated-dep`
 - `new-mutability/array-filter`
 - `new-mutability/array-map-captures-receiver-noAlias`
+- `new-mutability/array-map-named-callback-cross-context`
 - `new-mutability/array-push`
 - `new-mutability/basic-mutation`
 - `new-mutability/basic-mutation-via-function-expression`
@@ -1212,7 +1211,7 @@
 - `new-mutability/repro-mutate-new-set-of-frozen-items-in-callback`
 - `new-mutability/retry-no-emit`
 - `new-mutability/set-add-mutate`
-- `new-mutability/shared-hook-calls`
+- `new-mutability/todo-control-flow-sensitive-mutation`
 - `new-mutability/todo-transitivity-createfrom-capture-lambda`
 - `new-mutability/transitive-mutation-before-capturing-value-created-earlier`
 - `new-mutability/transitivity-add-captured-array-to-itself`
@@ -1229,6 +1228,10 @@
 - `no-flow-bailout-unrelated`
 - `noAlias-filter-on-array-prop`
 - `non-null-assertion`
+- `nullable-objects/array-map-named-callback`
+- `nullable-objects/array-map-named-callback-cross-context`
+- `nullable-objects/array-map-named-chained-callbacks`
+- `nullable-objects/array-map-simple`
 - `nullable-objects/return-object-of-functions`
 - `numeric-literal-as-object-property-key`
 - `obj-literal-cached-in-if-else`
@@ -1339,6 +1342,7 @@
 - `propagate-scope-deps-hir-fork/conditional-early-return`
 - `propagate-scope-deps-hir-fork/conditional-on-mutable`
 - `propagate-scope-deps-hir-fork/early-return-nested-early-return-within-reactive-scope`
+- `propagate-scope-deps-hir-fork/early-return-within-reactive-scope`
 - `propagate-scope-deps-hir-fork/error.todo-optional-call-chain-in-optional`
 - `propagate-scope-deps-hir-fork/error.todo-optional-member-expression-with-conditional`
 - `propagate-scope-deps-hir-fork/error.todo-optional-member-expression-with-conditional-optional`
@@ -1385,6 +1389,8 @@
 - `reactive-scopes`
 - `reactive-scopes-if`
 - `reactivity-analysis-interleaved-reactivity`
+- `reactivity-via-aliased-mutation-array`
+- `reactivity-via-aliased-mutation-lambda`
 - `reactivity-via-aliased-mutation-through-property-load`
 - `reactivity-via-readonly-alias-of-mutable-value`
 - `readonly-object-method-calls`
@@ -1631,9 +1637,6 @@
 - `todo.lower-context-access-nested-destructuring`
 - `todo.lower-context-access-property-load`
 - `todo.unnecessary-lambda-memoization`
-- `transform-fire/bailout-validate-conditional-hook`
-- `transform-fire/basic`
-- `transform-fire/deep-scope`
 - `transform-fire/error.invalid-mix-fire-and-no-fire`
 - `transform-fire/error.invalid-multiple-args`
 - `transform-fire/error.invalid-nested-use-effect`
@@ -1643,11 +1646,6 @@
 - `transform-fire/error.invalid-rewrite-deps-spread`
 - `transform-fire/error.invalid-spread`
 - `transform-fire/error.todo-method`
-- `transform-fire/multiple-scope`
-- `transform-fire/repeated-calls`
-- `transform-fire/repro-dont-add-hook-guards-on-retry`
-- `transform-fire/rewrite-deps`
-- `transform-fire/shared-hook-calls`
 - `transform-fire/use-effect-no-args-no-op`
 - `transitive-alias-fields`
 - `transitive-freeze-array`
@@ -1678,6 +1676,8 @@
 - `type-inference-array-from`
 - `type-provider-log`
 - `type-provider-log-default-import`
+- `type-provider-store-capture`
+- `type-provider-store-capture-namespace-import`
 - `type-provider-tagged-template-expression`
 - `type-test-field-load-binary-op`
 - `type-test-field-store`
