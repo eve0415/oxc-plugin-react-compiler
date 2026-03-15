@@ -1397,14 +1397,13 @@ fn build_property_key_for_pattern<'a>(
 // Emit helpers
 // ---------------------------------------------------------------------------
 
-/// Check if an identifier is a temporary (unnamed or promoted by rename_variables).
-/// Matches upstream's `identifier.name === null` check.
+/// Check if an identifier is a temporary (truly unnamed).
+/// Promoted `tN` names are runtime bindings that earlier passes chose to
+/// materialize, so re-inlining them breaks evaluation order. Only truly
+/// unnamed identifiers are eligible for temp inlining (matches string
+/// codegen's `is_temp_like_identifier`).
 fn is_temp_identifier(identifier: &Identifier) -> bool {
-    match &identifier.name {
-        None => true,
-        Some(IdentifierName::Promoted(_)) => true,
-        Some(IdentifierName::Named(_)) => false,
-    }
+    identifier.name.is_none()
 }
 
 fn identifier_name(identifier: &Identifier) -> String {
