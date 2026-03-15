@@ -1,6 +1,6 @@
-# React Compiler Conformance — 75.1% parity rate
+# React Compiler Conformance — 75.5% parity rate
 
-**1316** parity_success, **436** parity_failure, **0** skipped
+**1323** parity_success, **429** parity_failure, **0** skipped
 
 ## Failed
 
@@ -55,13 +55,9 @@
 - `capturing-function-skip-computed-path`: Output mismatch
 - `chained-assignment-context-variable`: Output mismatch
 - `change-detect-reassign`: Output mismatch
-- `codegen-inline-iife`: Output mismatch
-- `codegen-inline-iife-reassign`: Output mismatch
-- `codegen-inline-iife-storeprop`: Output mismatch
 - `component`: Output mismatch
 - `computed-call-evaluation-order`: Output mismatch
 - `computed-load-primitive-as-dependency`: Output mismatch
-- `conflicting-dollar-sign-variable`: Output mismatch
 - `console-readonly`: Output mismatch
 - `const-propagation-phi-nodes`: Output mismatch
 - `constant-prop-to-object-method`: Output mismatch
@@ -128,6 +124,7 @@
 - `gating/codegen-instrument-forget-gating-test`: Output mismatch
 - `gating/gating-test-export-function-and-default`: Output mismatch
 - `hoisted-declaration-with-scope`: Output mismatch
+- `hoisting-repro-variable-used-in-assignment`: Output mismatch
 - `hoisting-setstate-captured-indirectly-jsx`: Output mismatch
 - `hook-inside-logical-expression`: Expected upstream bailout (untransformed output), but compiler transformed output
 - `hook-ref-callback`: Output mismatch
@@ -175,7 +172,6 @@
 - `jsx-ternary-local-variable`: Output mismatch
 - `jump-poisoned/loop-break-in-scope`: Output mismatch
 - `labeled-break-within-label-loop`: Output mismatch
-- `lambda-array-access-member-expr-captured`: Output mismatch
 - `log-pruned-memoization`: Output mismatch
 - `logical-expression`: Output mismatch
 - `logical-expression-object`: Output mismatch
@@ -285,7 +281,6 @@
 - `reactivity-analysis-reactive-via-mutation-of-computed-load`: Output mismatch
 - `reactivity-analysis-reactive-via-mutation-of-property-load`: Output mismatch
 - `readonly-object-method-calls-mutable-lambda`: Output mismatch
-- `reassign-in-while-loop-condition`: Output mismatch
 - `reassigned-phi-in-returned-function-expression`: Output mismatch
 - `reassignment-separate-scopes`: Output mismatch
 - `recursive-function-expression`: Output mismatch
@@ -328,7 +323,6 @@
 - `repro-missing-memoization-lack-of-phi-types-explicit-types`: Output mismatch
 - `repro-mutable-range-extending-into-ternary`: Output mismatch
 - `repro-mutate-ref-in-function-passed-to-hook`: Output mismatch
-- `repro-no-value-for-temporary-reactive-scope-with-early-return`: Output mismatch
 - `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`: Output mismatch
 - `repro-preserve-memoization-inner-destructured-value-mistaken-as-dependency`: Output mismatch
 - `repro-propagate-type-of-ternary-jsx`: Output mismatch
@@ -365,7 +359,6 @@
 - `ssa-for`: Output mismatch
 - `ssa-if-else`: Output mismatch
 - `ssa-nested-partial-phi`: Output mismatch
-- `ssa-reassign-in-rval`: Output mismatch
 - `ssa-renaming`: Output mismatch
 - `ssa-renaming-ternary`: Output mismatch
 - `ssa-renaming-ternary-destruction`: Output mismatch
@@ -584,6 +577,9 @@
 - `class-component-with-render-helper`
 - `codegen-emit-imports-same-source`
 - `codegen-emit-make-read-only`
+- `codegen-inline-iife`
+- `codegen-inline-iife-reassign`
+- `codegen-inline-iife-storeprop`
 - `codegen-instrument-forget-test`
 - `complex-while`
 - `component-declaration-basic.flow`
@@ -596,6 +592,7 @@
 - `conditional-on-mutable`
 - `conditional-set-state-in-render`
 - `conflict-codegen-instrument-forget`
+- `conflicting-dollar-sign-variable`
 - `consecutive-use-memo`
 - `const-propagation-into-function-expression-global`
 - `const-propagation-into-function-expression-primitive`
@@ -1003,7 +1000,6 @@
 - `hoisting-reassigned-twice-let-declaration`
 - `hoisting-recursive-call`
 - `hoisting-recursive-call-within-lambda`
-- `hoisting-repro-variable-used-in-assignment`
 - `hoisting-simple-const-declaration`
 - `hoisting-simple-function-expression`
 - `hoisting-simple-let-declaration`
@@ -1102,6 +1098,7 @@
 - `jump-unpoisoned/return-before-scope-starts`
 - `jump-unpoisoned/throw-before-scope-starts`
 - `labeled-break-within-label-switch`
+- `lambda-array-access-member-expr-captured`
 - `lambda-array-access-member-expr-param`
 - `lambda-capture-returned-alias`
 - `lambda-mutate-shadowed-object`
@@ -1379,6 +1376,7 @@
 - `reanimated-shared-value-writes`
 - `reassign-global-hook-arg`
 - `reassign-global-return`
+- `reassign-in-while-loop-condition`
 - `reassign-object-in-context`
 - `reassign-primitive-in-context`
 - `reassignment`
@@ -1459,6 +1457,7 @@
 - `repro-mutate-result-of-method-call-on-frozen-value-is-allowed`
 - `repro-no-declarations-in-reactive-scope-with-early-return`
 - `repro-no-value-for-temporary`
+- `repro-no-value-for-temporary-reactive-scope-with-early-return`
 - `repro-non-identifier-object-keys`
 - `repro-object-fromEntries-entries`
 - `repro-object-pattern`
@@ -1596,6 +1595,7 @@
 - `ssa-property-mutate-2`
 - `ssa-property-mutate-alias`
 - `ssa-reassign`
+- `ssa-reassign-in-rval`
 - `ssa-renaming-unconditional-with-mutation`
 - `ssa-renaming-via-destructuring-with-mutation`
 - `ssa-renaming-with-mutation`

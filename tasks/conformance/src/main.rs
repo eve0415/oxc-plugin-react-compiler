@@ -7105,49 +7105,80 @@ fn normalize_sentinel_scope_inline(code: &str) -> String {
     let mut replacements: Vec<(String, String)> = Vec::new();
     let mut skip_lines: Vec<bool> = vec![false; len];
 
-    // Scan for sentinel scope patterns (7 lines in normalized multi-line format):
-    // l0: `let tN;`
-    // l1: `if ($[M] === Symbol.for("react.memo_cache_sentinel")) {`
-    // l2: `tN = EXPR;`
-    // l3: `$[M] = tN`   (or `$[M] = tN;`)
-    // l4: `} else {`
-    // l5: `tN = $[M]`   (or `tN = $[M];`)
-    // l6: `}`
+    // Scan for sentinel scope patterns. The pattern starts with `let tN;`
+    // followed by `if ($[M] === Symbol.for("react.memo_cache_sentinel")) {`
+    // and ends with `}` after a `} else {` block. The body may span multiple lines.
     let mut i = 0;
     while i + 6 < len {
         let l0 = lines[i].trim();
         let l1 = lines[i + 1].trim();
-        let l2 = lines[i + 2].trim();
-        let _l3 = lines[i + 3].trim();
-        let l4 = lines[i + 4].trim();
-        let _l5 = lines[i + 5].trim();
-        let l6 = lines[i + 6].trim();
 
-        if l0.starts_with("let t")
+        if !(l0.starts_with("let t")
             && l0.ends_with(';')
             && l1.contains("Symbol.for(\"react.memo_cache_sentinel\")")
-            && l1.ends_with('{')
-            && l4.starts_with("} else {")
-            && l6 == "}"
+            && l1.ends_with('{'))
         {
-            let temp = l0.strip_prefix("let ").and_then(|s| s.strip_suffix(';'));
-            if let Some(temp) = temp {
-                // Extract EXPR from l2: `TEMP = EXPR;`
-                let assign_prefix = format!("{} = ", temp);
-                if l2.starts_with(&assign_prefix) {
-                    let expr = l2[assign_prefix.len()..].trim_end_matches(';').to_string();
-                    if !expr.is_empty() {
-                        replacements.push((temp.to_string(), expr));
-                        for skip in &mut skip_lines[i..=i + 6] {
-                            *skip = true;
-                        }
-                        i += 7;
-                        continue;
-                    }
+            i += 1;
+            continue;
+        }
+
+        let temp = match l0.strip_prefix("let ").and_then(|s| s.strip_suffix(';')) {
+            Some(t) if t.starts_with('t') && t[1..].chars().all(|c| c.is_ascii_digit()) => t,
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+
+        // Find `} else {` and the final `}` to determine scope boundaries.
+        let mut else_line = None;
+        let mut end_line = None;
+        let mut depth = 1i32;
+        for (j, &scan_line) in lines.iter().enumerate().skip(i + 2) {
+            let lt = scan_line.trim();
+            if lt == "}" {
+                depth -= 1;
+                if depth == 0 {
+                    end_line = Some(j);
+                    break;
+                }
+            } else if lt.starts_with("} else {") {
+                if depth == 1 {
+                    else_line = Some(j);
+                }
+            } else if lt.ends_with('{') {
+                depth += 1;
+            }
+        }
+
+        let (Some(else_idx), Some(end_idx)) = (else_line, end_line) else {
+            i += 1;
+            continue;
+        };
+
+        // Extract the temp's assignment from the if-body (lines i+2 .. else_idx).
+        // Look for `TEMP = EXPR;` in the body.
+        let assign_prefix = format!("{} = ", temp);
+        let mut found_expr = None;
+        for &body_line in &lines[(i + 2)..else_idx] {
+            let lt = body_line.trim();
+            if lt.starts_with(&assign_prefix) {
+                let expr = lt[assign_prefix.len()..].trim_end_matches(';');
+                if !expr.is_empty() && !expr.starts_with('$') && !expr.contains("Symbol.for") {
+                    found_expr = Some(expr.to_string());
                 }
             }
         }
-        i += 1;
+
+        if let Some(expr) = found_expr {
+            replacements.push((temp.to_string(), expr));
+            for skip in &mut skip_lines[i..=end_idx] {
+                *skip = true;
+            }
+            i = end_idx + 1;
+        } else {
+            i += 1;
+        }
     }
 
     if replacements.is_empty() {
