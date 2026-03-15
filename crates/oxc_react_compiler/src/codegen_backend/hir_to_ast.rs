@@ -1848,7 +1848,13 @@ where
 {
     let expression = lower_place(place, visiting)?;
     match expression {
-        ast::Expression::BooleanLiteral(boolean) if boolean.value => Some(None),
+        ast::Expression::BooleanLiteral(boolean) => {
+            let expr = ast::Expression::BooleanLiteral(boolean);
+            Some(Some(ast::JSXAttributeValue::ExpressionContainer(
+                builder
+                    .alloc(builder.jsx_expression_container(SPAN, ast::JSXExpression::from(expr))),
+            )))
+        }
         ast::Expression::StringLiteral(literal) => {
             Some(Some(ast::JSXAttributeValue::StringLiteral(literal)))
         }
@@ -1891,10 +1897,12 @@ where
 {
     let expression = lower_place(place, visiting)?;
     match expression {
-        ast::Expression::StringLiteral(literal) => Some(
-            builder
-                .jsx_child_expression_container(SPAN, ast::JSXExpression::StringLiteral(literal)),
-        ),
+        ast::Expression::StringLiteral(literal) => {
+            let value = literal.unbox().value;
+            Some(ast::JSXChild::Text(
+                builder.alloc_jsx_text(SPAN, value, None),
+            ))
+        }
         ast::Expression::JSXElement(element) => Some(ast::JSXChild::Element(element)),
         ast::Expression::JSXFragment(fragment) => Some(ast::JSXChild::Fragment(fragment)),
         expression => {
