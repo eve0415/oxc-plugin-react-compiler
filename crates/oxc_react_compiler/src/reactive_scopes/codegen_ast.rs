@@ -1550,21 +1550,48 @@ fn codegen_terminal<'a>(
             let test_expr = codegen_place(cx, test);
 
             // Update expression.
-            let update_expr = if let Some(uv) = update_value {
-                codegen_instruction_value(cx, uv)
-            } else if let Some(update_block) = update {
-                let update_stmts = codegen_block(cx, update_block);
-                // Extract expression from last statement.
-                update_stmts.into_iter().last().and_then(|s| {
-                    if let ast::Statement::ExpressionStatement(es) = s {
-                        Some(es.unbox().expression)
-                    } else {
-                        None
+            let update_expr =
+                if let Some(uv) = update_value {
+                    // For StoreLocal/Reassign updates (e.g., `i = i + 1`), emit the
+                    // assignment expression, not just the RHS value.
+                    match uv.as_ref() {
+                        InstructionValue::StoreLocal { lvalue, value, .. }
+                        | InstructionValue::StoreContext { lvalue, value, .. }
+                            if matches!(lvalue.kind, InstructionKind::Reassign) =>
+                        {
+                            if let Some(rhs) = codegen_place(cx, value) {
+                                let name = identifier_name(&lvalue.place.identifier);
+                                Some(cx.builder.expression_assignment(
+                                SPAN,
+                                AssignmentOperator::Assign,
+                                ast::AssignmentTarget::from(
+                                    cx.builder
+                                        .simple_assignment_target_assignment_target_identifier(
+                                            SPAN,
+                                            cx.builder.ident(&name),
+                                        ),
+                                ),
+                                rhs,
+                            ))
+                            } else {
+                                None
+                            }
+                        }
+                        _ => codegen_instruction_value(cx, uv),
                     }
-                })
-            } else {
-                None
-            };
+                } else if let Some(update_block) = update {
+                    let update_stmts = codegen_block(cx, update_block);
+                    // Extract expression from last statement.
+                    update_stmts.into_iter().last().and_then(|s| {
+                        if let ast::Statement::ExpressionStatement(es) = s {
+                            Some(es.unbox().expression)
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                };
 
             let body_stmts = codegen_block(cx, loop_block);
             let body = cx
