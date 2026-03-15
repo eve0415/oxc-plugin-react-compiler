@@ -1,6 +1,6 @@
-# React Compiler Conformance — 96.8% parity rate
+# React Compiler Conformance — 96.9% parity rate
 
-**1696** parity_success, **56** parity_failure, **0** skipped
+**1697** parity_success, **55** parity_failure, **0** skipped
 
 ## Failed
 
@@ -40,7 +40,6 @@
 - `property-call-evaluation-order`: Output mismatch
 - `reactive-control-dependency-for-init`: Output mismatch
 - `readonly-object-method-calls-mutable-lambda`: Output mismatch
-- `reassignment-separate-scopes`: Fixture thread terminated unexpectedly
 - `recursive-function-expression`: Output mismatch
 - `renaming-jsx-tag-lowercase`: Output mismatch
 - `repro-dont-memoize-array-with-capturing-map-after-hook`: Output mismatch
@@ -1250,6 +1249,7 @@
 - `reassigned-phi-in-returned-function-expression`
 - `reassignment`
 - `reassignment-conditional`
+- `reassignment-separate-scopes`
 - `recursive-function`
 - `reduce-reactive-cond-deps-break-in-scope`
 - `reduce-reactive-cond-deps-cfg-nested-testifelse`
