@@ -1,6 +1,6 @@
-# React Compiler Conformance — 71.1% parity rate
+# React Compiler Conformance — 71.7% parity rate
 
-**1245** parity_success, **507** parity_failure, **0** skipped
+**1256** parity_success, **496** parity_failure, **0** skipped
 
 ## Failed
 
@@ -10,7 +10,6 @@
 - `align-scopes-nested-block-structure`: Output mismatch
 - `align-scopes-reactive-scope-overlaps-if`: Output mismatch
 - `align-scopes-reactive-scope-overlaps-label`: Output mismatch
-- `align-scopes-reactive-scope-overlaps-try`: Output mismatch
 - `align-scopes-trycatch-nested-overlapping-range`: Output mismatch
 - `align-scopes-within-nested-valueblock-in-array`: Output mismatch
 - `allocating-logical-expression-instruction-scope`: Output mismatch
@@ -30,7 +29,6 @@
 - `allow-ref-lazy-initialization-with-logical`: Output mismatch
 - `array-at-closure`: Output mismatch
 - `array-at-effect`: Output mismatch
-- `array-pattern-spread-creates-array`: Output mismatch
 - `array-property-call`: Output mismatch
 - `assume-invoked/conditional-call-chain`: Output mismatch
 - `assume-invoked/function-with-conditional-callsite-in-another-function`: Output mismatch
@@ -85,7 +83,6 @@
 - `destructuring-assignment-array-default`: Output mismatch
 - `destructuring-mixed-scope-and-local-variables-with-default`: Output mismatch
 - `destructuring-object-default`: Output mismatch
-- `destructuring-object-pattern-within-rest`: Output mismatch
 - `destructuring-with-conditional-as-default-value`: Output mismatch
 - `destructuring-with-typecast-as-default-value.flow`: Output mismatch
 - `do-while-compound-test`: Output mismatch
@@ -94,7 +91,6 @@
 - `dont-merge-if-dep-is-inner-declaration-of-previous-scope`: Output mismatch
 - `early-return-within-reactive-scope`: Output mismatch
 - `empty-catch-statement`: Output mismatch
-- `escape-analysis-destructured-rest-element`: Output mismatch
 - `escape-analysis-logical`: Output mismatch
 - `escape-analysis-not-conditional-test`: Expected upstream bailout (untransformed output), but compiler transformed output
 - `escape-analysis-not-switch-case`: Expected upstream bailout (untransformed output), but compiler transformed output
@@ -230,7 +226,6 @@
 - `nested-optional-member-expr`: Output mismatch
 - `nested-scopes-begin-same-instr-valueblock`: Output mismatch
 - `new-mutability/array-map-named-callback-cross-context`: Output mismatch
-- `new-mutability/capture-backedge-phi-with-later-mutation`: Output mismatch
 - `new-mutability/capturing-function-alias-computed-load-2-iife`: Output mismatch
 - `new-mutability/capturing-function-alias-computed-load-3-iife`: Output mismatch
 - `new-mutability/mutate-after-useeffect`: Output mismatch
@@ -254,10 +249,6 @@
 - `nullable-objects/array-map-named-chained-callbacks`: Output mismatch
 - `nullable-objects/array-map-simple`: Output mismatch
 - `nullable-objects/bug-invalid-array-map-manual`: Output mismatch
-- `obj-literal-mutated-after-if-else`: Output mismatch
-- `obj-mutated-after-if-else`: Output mismatch
-- `obj-mutated-after-if-else-with-alias`: Output mismatch
-- `obj-mutated-after-nested-if-else-with-alias`: Output mismatch
 - `object-expression-computed-member`: Output mismatch
 - `object-literal-method-call-in-ternary-test`: Output mismatch
 - `object-literal-method-derived-in-ternary-consequent`: Output mismatch
@@ -312,7 +303,6 @@
 - `propagate-scope-deps-hir-fork/ssa-renaming-ternary-with-mutation`: Output mismatch
 - `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-ternary`: Output mismatch
 - `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-ternary-with-mutation`: Output mismatch
-- `propagate-scope-deps-hir-fork/ssa-renaming-via-destructuring-with-mutation`: Output mismatch
 - `propagate-scope-deps-hir-fork/switch`: Output mismatch
 - `propagate-scope-deps-hir-fork/switch-non-final-default`: Output mismatch
 - `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch`: Output mismatch
@@ -443,7 +433,6 @@
 - `ssa-renaming-unconditional-ternary`: Output mismatch
 - `ssa-renaming-unconditional-ternary-with-mutation`: Output mismatch
 - `ssa-renaming-via-destructuring`: Output mismatch
-- `ssa-renaming-via-destructuring-with-mutation`: Output mismatch
 - `ssa-shadowing`: Output mismatch
 - `ssa-sibling-phis`: Output mismatch
 - `ssa-simple-phi`: Output mismatch
@@ -521,6 +510,7 @@
 - `alias-nested-member-path-mutate`
 - `aliased-nested-scope-fn-expr`
 - `aliased-nested-scope-truncated-dep`
+- `align-scopes-reactive-scope-overlaps-try`
 - `allow-assigning-ref-accessing-function-to-object-property-if-not-mutated`
 - `allow-assigning-to-global-in-function-spread-as-jsx`
 - `allow-global-mutation-unused-usecallback`
@@ -550,6 +540,7 @@
 - `array-map-mutable-array-non-mutating-lambda-mutated-result`
 - `array-map-noAlias-escaping-function`
 - `array-pattern-params`
+- `array-pattern-spread-creates-array`
 - `array-properties`
 - `array-push-effect`
 - `array-spread-later-mutated`
@@ -718,6 +709,7 @@
 - `destructuring-default-past-end-of-array`
 - `destructuring-mixed-scope-declarations-and-locals`
 - `destructuring-object-param-default`
+- `destructuring-object-pattern-within-rest`
 - `destructuring-property-inference`
 - `destructuring-same-property-identifier-names`
 - `do-while-break`
@@ -948,6 +940,7 @@
 - `error.validate-mutate-ref-arg-in-render`
 - `error.validate-object-entries-mutation`
 - `error.validate-object-values-mutation`
+- `escape-analysis-destructured-rest-element`
 - `escape-analysis-jsx-child`
 - `escape-analysis-non-escaping-interleaved-allocating-dependency`
 - `escape-analysis-non-escaping-interleaved-allocating-nested-dependency`
@@ -1189,6 +1182,7 @@
 - `new-mutability/array-push`
 - `new-mutability/basic-mutation`
 - `new-mutability/basic-mutation-via-function-expression`
+- `new-mutability/capture-backedge-phi-with-later-mutation`
 - `new-mutability/capture-in-function-expression-indirect`
 - `new-mutability/capturing-function-alias-computed-load-4-iife`
 - `new-mutability/capturing-function-alias-computed-load-iife`
@@ -1238,6 +1232,10 @@
 - `nullable-objects/return-object-of-functions`
 - `numeric-literal-as-object-property-key`
 - `obj-literal-cached-in-if-else`
+- `obj-literal-mutated-after-if-else`
+- `obj-mutated-after-if-else`
+- `obj-mutated-after-if-else-with-alias`
+- `obj-mutated-after-nested-if-else-with-alias`
 - `object-access-assignment`
 - `object-computed-access-assignment`
 - `object-entries-mutation`
@@ -1354,6 +1352,7 @@
 - `propagate-scope-deps-hir-fork/reactive-dependencies-non-optional-properties-inside-optional-chain`
 - `propagate-scope-deps-hir-fork/ssa-leave-case`
 - `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-with-mutation`
+- `propagate-scope-deps-hir-fork/ssa-renaming-via-destructuring-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-with-mutation`
 - `propagate-scope-deps-hir-fork/try-catch-maybe-null-dependency`
 - `propagate-scope-deps-hir-fork/try-catch-mutate-outer-value`
@@ -1599,6 +1598,7 @@
 - `ssa-property-mutate-alias`
 - `ssa-reassign`
 - `ssa-renaming-unconditional-with-mutation`
+- `ssa-renaming-via-destructuring-with-mutation`
 - `ssa-renaming-with-mutation`
 - `ssa-return`
 - `ssa-simple`

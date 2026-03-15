@@ -1619,6 +1619,7 @@ fn codegen_reactive_scope<'a>(
     for (name, id) in &decl_names {
         if !cx.declared.contains(id) {
             cx.declared.insert(*id);
+            cx.declared_names.insert(name.clone());
             let pattern = cx
                 .builder
                 .binding_pattern_binding_identifier(SPAN, cx.builder.ident(name));
@@ -1646,6 +1647,8 @@ fn codegen_reactive_scope<'a>(
         if !cx.declared.contains(&id) {
             cx.declared.insert(id);
             if let Some(name) = reassign.name.as_ref() {
+                let name_str = name.value().to_string();
+                cx.declared_names.insert(name_str.clone());
                 let pattern = cx
                     .builder
                     .binding_pattern_binding_identifier(SPAN, cx.builder.ident(name.value()));
