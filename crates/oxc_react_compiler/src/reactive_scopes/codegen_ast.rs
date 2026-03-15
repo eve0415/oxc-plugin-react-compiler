@@ -1741,29 +1741,40 @@ fn codegen_reactive_scope<'a>(
     // Also declare reassignment targets.
     for reassign in &scope.reassignments {
         let id = reassign.id;
-        if !cx.declared.contains(&id) {
-            cx.declared.insert(id);
+        let r_decl_id = reassign.declaration_id;
+        if !cx.declared.contains(&id) && !cx.declared_decl_ids.contains(&r_decl_id) {
             if let Some(name) = reassign.name.as_ref() {
                 let name_str = name.value().to_string();
-                cx.declared_names.insert(name_str.clone());
-                let pattern = cx
-                    .builder
-                    .binding_pattern_binding_identifier(SPAN, cx.builder.ident(name.value()));
-                stmts.push(ast::Statement::VariableDeclaration(
-                    cx.builder.alloc_variable_declaration(
-                        SPAN,
-                        ast::VariableDeclarationKind::Let,
-                        cx.builder.vec1(cx.builder.variable_declarator(
+                if cx.declared_names.contains(&name_str) {
+                    // Already declared by name (e.g., from DeclareLocal). Track ids only.
+                    cx.declared.insert(id);
+                    cx.declared_decl_ids.insert(r_decl_id);
+                } else {
+                    cx.declared.insert(id);
+                    cx.declared_decl_ids.insert(r_decl_id);
+                    cx.declared_names.insert(name_str);
+                    let pattern = cx
+                        .builder
+                        .binding_pattern_binding_identifier(SPAN, cx.builder.ident(name.value()));
+                    stmts.push(ast::Statement::VariableDeclaration(
+                        cx.builder.alloc_variable_declaration(
                             SPAN,
                             ast::VariableDeclarationKind::Let,
-                            pattern,
-                            NONE,
-                            None,
+                            cx.builder.vec1(cx.builder.variable_declarator(
+                                SPAN,
+                                ast::VariableDeclarationKind::Let,
+                                pattern,
+                                NONE,
+                                None,
+                                false,
+                            )),
                             false,
-                        )),
-                        false,
-                    ),
-                ));
+                        ),
+                    ));
+                }
+            } else {
+                cx.declared.insert(id);
+                cx.declared_decl_ids.insert(r_decl_id);
             }
         }
     }
