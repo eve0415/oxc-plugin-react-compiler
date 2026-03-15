@@ -58,8 +58,9 @@ struct CodegenContext<'a> {
     declared: HashSet<IdentifierId>,
     /// Variable names that have been declared (to avoid duplicate `let` for same name).
     declared_names: HashSet<String>,
-    /// Temp expressions: instructions whose lvalue is a temporary (used once, inlined).
-    temps: HashMap<IdentifierId, Option<ast::Expression<'a>>>,
+    /// Temp expressions: keyed by DeclarationId (shared across SSA uses) to match
+    /// upstream's `cx.temp.set(declarationId, value)` / `cx.temp.get(declarationId)`.
+    temps: HashMap<DeclarationId, Option<ast::Expression<'a>>>,
     /// Next cache slot index.
     next_cache_index: u32,
     /// Cache binding name (e.g., "$").
@@ -377,17 +378,18 @@ fn codegen_instruction<'a>(
         return Some(cx.builder.statement_expression(SPAN, expr));
     };
 
-    let id = lvalue.identifier.id;
+    let decl_id = lvalue.identifier.declaration_id;
 
     // Temp inlining decision (matches upstream codegenInstruction):
     // - Unnamed temporaries (name is None or Promoted) → inline into temp map
     // - Named identifiers → always emit as declaration/reassignment
     if is_temp_identifier(&lvalue.identifier) {
-        cx.temps.insert(id, Some(expr));
+        cx.temps.insert(decl_id, Some(expr));
         return None;
     }
 
     let name = identifier_name(&lvalue.identifier);
+    let id = lvalue.identifier.id;
 
     // Already declared → reassignment.
     if cx.declared.contains(&id) {
@@ -775,7 +777,7 @@ fn codegen_instruction_value<'a>(
                 };
                 if let Some(expr) = expr {
                     if let Some(lv) = &seq_instr.lvalue {
-                        cx.temps.insert(lv.identifier.id, Some(expr));
+                        cx.temps.insert(lv.identifier.declaration_id, Some(expr));
                     } else {
                         prefix_exprs.push(expr);
                     }
@@ -857,7 +859,8 @@ fn codegen_store<'a>(
         && !cx.declared.contains(&id)
         && !matches!(lvalue.kind, InstructionKind::Reassign)
     {
-        cx.temps.insert(id, Some(expr));
+        cx.temps
+            .insert(lvalue.place.identifier.declaration_id, Some(expr));
         return None;
     }
 
@@ -1324,11 +1327,11 @@ fn parse_regexp_flags(flags: &str) -> ast::RegExpFlags {
 // ---------------------------------------------------------------------------
 
 fn codegen_place<'a>(cx: &mut CodegenContext<'a>, place: &Place) -> Option<ast::Expression<'a>> {
-    let id = place.identifier.id;
+    let decl_id = place.identifier.declaration_id;
 
     // Check temp map first — inlined expression. Use clone_in for
     // multi-use temps (second+ reference gets a deep copy).
-    if let Some(temp_slot) = cx.temps.get_mut(&id)
+    if let Some(temp_slot) = cx.temps.get_mut(&decl_id)
         && let Some(expr) = temp_slot.as_ref()
     {
         return Some(expr.clone_in(cx.allocator));
@@ -1340,7 +1343,7 @@ fn codegen_place<'a>(cx: &mut CodegenContext<'a>, place: &Place) -> Option<ast::
     }
 
     // Fallback: use temp name.
-    Some(cx.ident_expr(&format!("t{}", id.0)))
+    Some(cx.ident_expr(&format!("t{}", decl_id.0)))
 }
 
 fn codegen_simple_assignment_target<'a>(
