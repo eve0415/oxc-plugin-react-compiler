@@ -1985,10 +1985,16 @@ fn codegen_reactive_scope<'a>(
         })
         .collect();
 
+    // Deduplicate reassignments against declarations to avoid storing
+    // the same variable in two separate cache slots.
+    let output_decl_ids: HashSet<DeclarationId> = decl_names.iter().map(|(_, _, d)| *d).collect();
     let reassign_slots: Vec<(String, u32)> = scope
         .reassignments
         .iter()
         .filter_map(|reassign| {
+            if output_decl_ids.contains(&reassign.declaration_id) {
+                return None;
+            }
             let name = reassign.name.as_ref()?.value().to_string();
             Some((name, cx.alloc_cache_slot()))
         })
