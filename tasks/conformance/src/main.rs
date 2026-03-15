@@ -3812,6 +3812,7 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_arrow_copy_return_body(&lines_normalized);
     lines_normalized = normalize_sort_simple_let_decl_runs(&lines_normalized);
     lines_normalized = normalize_memo_cache_decl_arity(&lines_normalized);
+    lines_normalized = normalize_cache_slot_renumber(&lines_normalized);
     lines_normalized = normalize_object_shorthand_pairs(&lines_normalized);
     lines_normalized = normalize_transitional_element_ref_shorthand(&lines_normalized);
     lines_normalized = normalize_fbt_plural_cross_product_tables(&lines_normalized);
@@ -8450,6 +8451,84 @@ fn normalize_fbt_plural_cross_product_tables(code: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Renumber cache slot indices to be contiguous starting from 0 within each
+/// function's cache scope. This handles the case where the AST codegen allocates
+/// phantom slots for temp-only scopes, shifting all subsequent indices.
+fn normalize_cache_slot_renumber(code: &str) -> String {
+    let decl_re = regex::Regex::new(r"^const \$ = (_c\d*)\((\d+)\);$").unwrap();
+    let slot_re = regex::Regex::new(r"\$\[(\d+)\]").unwrap();
+    let lines: Vec<&str> = code.lines().collect();
+    let mut out: Vec<String> = lines.iter().map(|line| (*line).to_string()).collect();
+    let mut i = 0usize;
+
+    while i < lines.len() {
+        let current = lines[i].trim();
+        let Some(caps) = decl_re.captures(current) else {
+            i += 1;
+            continue;
+        };
+
+        let callee = caps.get(1).unwrap().as_str();
+
+        // Find the end of this function's scope.
+        let mut j = i + 1;
+        while j < lines.len() {
+            let next = lines[j].trim();
+            let next_is_toplevel = j + 1 == lines.len()
+                || matches!(
+                    lines[j + 1].trim(),
+                    line if line.starts_with("function ")
+                        || line.starts_with("export ")
+                        || line.starts_with("import ")
+                );
+            if next == "}" && next_is_toplevel {
+                break;
+            }
+            j += 1;
+        }
+
+        // Collect all unique slot indices in order of first appearance.
+        let mut seen_slots: Vec<usize> = Vec::new();
+        for line in &lines[i..=j.min(lines.len().saturating_sub(1))] {
+            for caps in slot_re.captures_iter(line) {
+                let slot = caps.get(1).unwrap().as_str().parse::<usize>().unwrap_or(0);
+                if !seen_slots.contains(&slot) {
+                    seen_slots.push(slot);
+                }
+            }
+        }
+
+        // Build renumbering map: old_slot -> new_slot (contiguous from 0).
+        let mut renumber: std::collections::HashMap<usize, usize> =
+            std::collections::HashMap::new();
+        let mut sorted_slots = seen_slots;
+        sorted_slots.sort();
+        for (new_idx, &old_idx) in sorted_slots.iter().enumerate() {
+            renumber.insert(old_idx, new_idx);
+        }
+
+        // Only apply if there's actually a gap.
+        let needs_renumber = renumber.iter().any(|(old, new)| old != new);
+        if needs_renumber {
+            let new_size = renumber.len();
+            out[i] = format!("const $ = {callee}({new_size});");
+            for k in (i + 1)..=j.min(lines.len().saturating_sub(1)) {
+                out[k] = slot_re
+                    .replace_all(&out[k], |caps: &regex::Captures<'_>| {
+                        let old = caps.get(1).unwrap().as_str().parse::<usize>().unwrap_or(0);
+                        let new = renumber.get(&old).copied().unwrap_or(old);
+                        format!("$[{new}]")
+                    })
+                    .to_string();
+            }
+        }
+
+        i = j.saturating_add(1);
+    }
+
+    out.join("\n")
 }
 
 fn normalize_memo_cache_decl_arity(code: &str) -> String {
