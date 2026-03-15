@@ -876,7 +876,9 @@ fn codegen_store<'a>(
 
     match lvalue.kind {
         InstructionKind::Reassign => Some(emit_assignment_stmt(cx, &name, expr)),
-        InstructionKind::Function if matches!(&expr, ast::Expression::FunctionExpression(_)) => {
+        InstructionKind::Function | InstructionKind::HoistedFunction
+            if matches!(&expr, ast::Expression::FunctionExpression(_)) =>
+        {
             if let ast::Expression::FunctionExpression(func_alloc) = expr {
                 let mut func = func_alloc.unbox();
                 func.id = Some(cx.builder.binding_identifier(SPAN, cx.builder.ident(&name)));
@@ -1434,9 +1436,15 @@ fn codegen_terminal<'a>(
             let consequent_block = cx
                 .builder
                 .statement_block(SPAN, cx.builder.vec_from_iter(consequent_stmts));
-            let alternate_stmt = alternate_result.map(|alt_stmts| {
-                cx.builder
-                    .statement_block(SPAN, cx.builder.vec_from_iter(alt_stmts))
+            let alternate_stmt = alternate_result.and_then(|alt_stmts| {
+                if alt_stmts.is_empty() {
+                    None // Skip empty else clauses
+                } else {
+                    Some(
+                        cx.builder
+                            .statement_block(SPAN, cx.builder.vec_from_iter(alt_stmts)),
+                    )
+                }
             });
             vec![
                 cx.builder

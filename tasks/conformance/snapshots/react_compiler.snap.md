@@ -1,6 +1,6 @@
 # React Compiler Conformance — 73.3% parity rate
 
-**1284** parity_success, **468** parity_failure, **0** skipped
+**1285** parity_success, **467** parity_failure, **0** skipped
 
 ## Failed
 
@@ -252,7 +252,6 @@
 - `optional-member-expression-with-optional-member-expr-as-property`: Output mismatch
 - `original-reactive-scopes-fork/capture-ref-for-later-mutation`: Output mismatch
 - `partial-early-return-within-reactive-scope`: Output mismatch
-- `phi-reference-effects`: Output mismatch
 - `preserve-existing-memoization-guarantees/lambda-with-fbt-preserve-memoization`: Output mismatch
 - `preserve-memo-validation/prune-nonescaping-useMemo-mult-returns`: Output mismatch
 - `preserve-memo-validation/prune-nonescaping-useMemo-mult-returns-primitive`: Output mismatch
@@ -1269,6 +1268,7 @@
 - `overlapping-scopes-shadowing-within-block`
 - `overlapping-scopes-while`
 - `overlapping-scopes-within-block`
+- `phi-reference-effects`
 - `phi-type-inference-array-push`
 - `phi-type-inference-array-push-consecutive-phis`
 - `phi-type-inference-property-store`
