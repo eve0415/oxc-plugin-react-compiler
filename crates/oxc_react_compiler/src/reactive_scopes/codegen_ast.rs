@@ -78,6 +78,9 @@ struct CodegenContext<'a> {
     needs_structural_check: bool,
     /// Options controlling codegen behavior.
     options: CodegenOptions,
+    /// Function name for structural check diagnostics.
+    #[allow(dead_code)]
+    fn_name: String,
 }
 
 impl<'a> CodegenContext<'a> {
@@ -203,6 +206,7 @@ pub fn codegen_reactive_function<'a>(
         needs_function_hook_guard_wrapper: false,
         needs_structural_check: false,
         options,
+        fn_name: func.id.clone().unwrap_or_default(),
     };
 
     // Collect param names.
