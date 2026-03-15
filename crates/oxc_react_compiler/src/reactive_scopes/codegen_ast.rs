@@ -35,6 +35,8 @@ pub struct CodegenOptions {
     pub disable_memoization_features: bool,
     pub disable_memoization_for_debugging: bool,
     pub fbt_operands: HashSet<IdentifierId>,
+    /// Cache binding name override (e.g., "$0" when "$" is renamed to avoid conflicts).
+    pub cache_binding_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -194,7 +196,10 @@ pub fn codegen_reactive_function<'a>(
     func: &ReactiveFunction,
     options: CodegenOptions,
 ) -> CodegenFunctionResult<'a> {
-    let cache_binding = "$".to_string();
+    let cache_binding = options
+        .cache_binding_name
+        .clone()
+        .unwrap_or_else(|| "$".to_string());
 
     let mut cx = CodegenContext {
         builder,
@@ -3273,6 +3278,7 @@ fn lower_function_expression_via_reactive<'a>(
         disable_memoization_features: false,
         disable_memoization_for_debugging: false,
         fbt_operands: HashSet::new(),
+        cache_binding_name: None,
     };
 
     let result = codegen_reactive_function(cx.builder, cx.allocator, &reactive_fn, options);

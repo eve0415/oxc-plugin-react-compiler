@@ -3126,6 +3126,7 @@ fn try_build_compiled_function_body_from_reactive_ast<'a>(
         disable_memoization_features: cf.disable_memoization_features,
         disable_memoization_for_debugging: cf.disable_memoization_for_debugging,
         fbt_operands: cf.fbt_operands.clone(),
+        cache_binding_name: cf.cache_prologue.as_ref().map(|p| p.binding_name.clone()),
     };
     let result = crate::reactive_scopes::codegen_ast::codegen_reactive_function(
         builder,
