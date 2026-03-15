@@ -1,11 +1,10 @@
-# React Compiler Conformance — 88.5% parity rate
+# React Compiler Conformance — 89.6% parity rate
 
-**1551** parity_success, **201** parity_failure, **0** skipped
+**1569** parity_success, **183** parity_failure, **0** skipped
 
 ## Failed
 
 - `allow-passing-ref-to-render-helper-props-object`: Output mismatch
-- `array-at-closure`: Output mismatch
 - `assume-invoked/conditional-call-chain`: Output mismatch
 - `assume-invoked/function-with-conditional-callsite-in-another-function`: Output mismatch
 - `bailout-retry/bailout-capitalized-fn-call`: Output mismatch
@@ -24,8 +23,6 @@
 - `change-detect-reassign`: Output mismatch
 - `computed-call-evaluation-order`: Output mismatch
 - `console-readonly`: Output mismatch
-- `constant-prop-to-object-method`: Output mismatch
-- `constant-propagation-phi`: Output mismatch
 - `default-param-array-with-unary`: Output mismatch
 - `default-param-calls-global-function`: Output mismatch
 - `destructure-array-declaration-to-context-var`: Output mismatch
@@ -81,7 +78,6 @@
 - `infer-effect-dependencies/reactive-optional-chain`: Output mismatch
 - `infer-effect-dependencies/reactive-optional-chain-complex`: Output mismatch
 - `inline-jsx-transform`: Output mismatch
-- `jsx-lowercase-localvar-memberexpr-in-lambda`: Output mismatch
 - `jsx-outlining-child-stored-in-id`: Output mismatch
 - `jsx-outlining-dup-key-diff-value`: Output mismatch
 - `jsx-outlining-dupe-attr-after-rename`: Output mismatch
@@ -96,30 +92,24 @@
 - `log-pruned-memoization`: Output mismatch
 - `lower-context-access-hook-guard`: Output mismatch
 - `memoize-value-block-value-logical`: Output mismatch
-- `memoize-value-block-value-sequence`: Output mismatch
 - `meta-isms/repro-cx-assigned-to-temporary`: Output mismatch
 - `meta-isms/repro-cx-namespace-assigned-to-temporary`: Output mismatch
 - `mixedreadonly-mutating-map`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
-- `nested-function-shadowed-identifiers`: Output mismatch
 - `nested-optional-member-expr`: Output mismatch
 - `new-mutability/mutate-after-useeffect-optional-chain`: Output mismatch
 - `new-mutability/repro-compiler-infinite-loop`: Output mismatch
 - `new-mutability/repro-invalid-function-expression-effects-phi`: Output mismatch
 - `new-mutability/ssa-renaming-ternary-destruction`: Output mismatch
 - `new-mutability/useCallback-reordering-deplist-controlflow`: Output mismatch
-- `new-mutability/useCallback-reordering-depslist-assignment`: Output mismatch
-- `new-mutability/useMemo-reordering-depslist-assignment`: Output mismatch
 - `object-shorthand-method-nested`: Output mismatch
 - `option-enable-change-variable-codegen`: Output mismatch
 - `original-reactive-scopes-fork/capture-ref-for-later-mutation`: Output mismatch
 - `preserve-existing-memoization-guarantees/lambda-with-fbt-preserve-memoization`: Output mismatch
 - `preserve-memo-validation/useCallback-in-other-reactive-block`: Output mismatch
 - `preserve-memo-validation/useCallback-reordering-deplist-controlflow`: Output mismatch
-- `preserve-memo-validation/useCallback-reordering-depslist-assignment`: Output mismatch
 - `preserve-memo-validation/useMemo-conditional-access-alloc`: Output mismatch
 - `preserve-memo-validation/useMemo-conditional-access-noAlloc`: Output mismatch
-- `preserve-memo-validation/useMemo-reordering-depslist-assignment`: Output mismatch
 - `preserve-memo-validation/useMemo-reordering-depslist-controlflow`: Output mismatch
 - `primitive-reassigned-loop-force-scopes-enabled`: Output mismatch
 - `propagate-scope-deps-hir-fork/repro-invariant`: Output mismatch
@@ -134,7 +124,6 @@
 - `propagate-scope-deps-hir-fork/switch`: Output mismatch
 - `propagate-scope-deps-hir-fork/switch-non-final-default`: Output mismatch
 - `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch`: Output mismatch
-- `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch-escaping`: Output mismatch
 - `property-call-evaluation-order`: Output mismatch
 - `reactive-control-dependency-for-init`: Output mismatch
 - `reactive-control-dependency-for-test`: Output mismatch
@@ -167,8 +156,6 @@
 - `repro-unmerged-fbt-call-merge-overlapping-reactive-scopes`: Output mismatch
 - `repro-unreachable-code-early-return-in-useMemo`: Output mismatch
 - `reverse-postorder`: Output mismatch
-- `rules-of-hooks/rules-of-hooks-69521d94fa03`: Output mismatch
-- `rules-of-hooks/rules-of-hooks-c1e8c7f4c191`: Output mismatch
 - `same-variable-as-dep-and-redeclare`: Output mismatch
 - `same-variable-as-dep-and-redeclare-maybe-frozen`: Output mismatch
 - `sequence-expression`: Output mismatch
@@ -187,10 +174,7 @@
 - `switch-with-fallthrough`: Output mismatch
 - `todo-granular-iterator-semantics`: Output mismatch
 - `transform-fire/hook-guard`: Output mismatch
-- `try-catch-alias-try-values`: Output mismatch
 - `try-catch-try-value-modified-in-catch`: Output mismatch
-- `try-catch-try-value-modified-in-catch-escaping`: Output mismatch
-- `try-catch-with-catch-param`: Output mismatch
 - `type-annotations/type-annotation-as-array_.flow`: Output mismatch
 - `type-annotations/type-annotation-as-number_.flow`: Output mismatch
 - `type-annotations/type-annotation-satisfies-array`: Output mismatch
@@ -202,9 +186,7 @@
 - `useState-and-other-hook-unpruned-dependency`: Output mismatch
 - `useState-pruned-dependency-change-detect`: Output mismatch
 - `useState-unpruned-dependency`: Output mismatch
-- `valid-set-state-in-useEffect-from-ref`: Output mismatch
 - `valid-setState-in-effect-from-ref-function-call`: Output mismatch
-- `valid-setState-in-useLayoutEffect-from-ref`: Output mismatch
 
 ## Passed
 
@@ -252,6 +234,7 @@
 - `allow-ref-lazy-initialization-with-logical`
 - `allow-ref-type-cast-in-render`
 - `array-access-assignment`
+- `array-at-closure`
 - `array-at-effect`
 - `array-at-mutate-after-capture`
 - `array-concat-should-capture`
@@ -407,12 +390,14 @@
 - `constant-computed`
 - `constant-prop-across-objectmethod-def`
 - `constant-prop-colliding-identifier`
+- `constant-prop-to-object-method`
 - `constant-propagate-global-phis`
 - `constant-propagate-global-phis-constant`
 - `constant-propagation`
 - `constant-propagation-bit-ops`
 - `constant-propagation-for`
 - `constant-propagation-into-function-expressions`
+- `constant-propagation-phi`
 - `constant-propagation-string-concat`
 - `constant-propagation-template-literal`
 - `constant-propagation-unary`
@@ -921,6 +906,7 @@
 - `jsx-local-memberexpr-tag-conditional`
 - `jsx-local-tag-in-lambda`
 - `jsx-lowercase-localvar-memberexpr`
+- `jsx-lowercase-localvar-memberexpr-in-lambda`
 - `jsx-lowercase-memberexpr`
 - `jsx-member-expression`
 - `jsx-member-expression-tag-grouping`
@@ -971,6 +957,7 @@
 - `memoize-primitive-function-calls`
 - `memoize-value-block-value-conditional`
 - `memoize-value-block-value-logical-no-sequence`
+- `memoize-value-block-value-sequence`
 - `merge-consecutive-nested-scopes`
 - `merge-consecutive-scopes`
 - `merge-consecutive-scopes-deps-subset-of-decls`
@@ -998,6 +985,7 @@
 - `mutation-within-jsx`
 - `mutation-within-jsx-and-break`
 - `name-anonymous-functions-outline`
+- `nested-function-shadowed-identifiers`
 - `nested-function-with-param-as-captured-dep`
 - `nested-optional-chains`
 - `nested-scopes-begin-same-instr-valueblock`
@@ -1058,6 +1046,8 @@
 - `new-mutability/transitivity-phi-assign-or-capture`
 - `new-mutability/typed-identity-function-frozen-input`
 - `new-mutability/typed-identity-function-mutable-input`
+- `new-mutability/useCallback-reordering-depslist-assignment`
+- `new-mutability/useMemo-reordering-depslist-assignment`
 - `new-spread`
 - `no-emit/no-emit-lint-repro`
 - `no-emit/retry-no-emit`
@@ -1187,6 +1177,7 @@
 - `preserve-memo-validation/useCallback-infer-scope-global`
 - `preserve-memo-validation/useCallback-nonescaping`
 - `preserve-memo-validation/useCallback-nonescaping-invoked-callback-escaping-return`
+- `preserve-memo-validation/useCallback-reordering-depslist-assignment`
 - `preserve-memo-validation/useCallback-with-no-depslist`
 - `preserve-memo-validation/useMemo-alias-property-load-dep`
 - `preserve-memo-validation/useMemo-conditional-access-own-scope`
@@ -1199,6 +1190,7 @@
 - `preserve-memo-validation/useMemo-infer-scope-global`
 - `preserve-memo-validation/useMemo-inner-decl`
 - `preserve-memo-validation/useMemo-invoke-prop`
+- `preserve-memo-validation/useMemo-reordering-depslist-assignment`
 - `preserve-memo-validation/useMemo-with-no-depslist`
 - `primitive-alias-mutate`
 - `primitive-as-dep`
@@ -1233,6 +1225,7 @@
 - `propagate-scope-deps-hir-fork/ssa-renaming-with-mutation`
 - `propagate-scope-deps-hir-fork/try-catch-maybe-null-dependency`
 - `propagate-scope-deps-hir-fork/try-catch-mutate-outer-value`
+- `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch-escaping`
 - `propagate-scope-deps-hir-fork/useMemo-multiple-if-else`
 - `property-assignment`
 - `property-call-spread`
@@ -1472,12 +1465,14 @@
 - `rules-of-hooks/rules-of-hooks-347b0dae66f1`
 - `rules-of-hooks/rules-of-hooks-485bf041f55f`
 - `rules-of-hooks/rules-of-hooks-4f6c78a14bf7`
+- `rules-of-hooks/rules-of-hooks-69521d94fa03`
 - `rules-of-hooks/rules-of-hooks-7e52f5eec669`
 - `rules-of-hooks/rules-of-hooks-844a496db20b`
 - `rules-of-hooks/rules-of-hooks-8f1c2c3f71c9`
 - `rules-of-hooks/rules-of-hooks-93dc5d5e538a`
 - `rules-of-hooks/rules-of-hooks-9a47e97b5d13`
 - `rules-of-hooks/rules-of-hooks-9d7879272ff6`
+- `rules-of-hooks/rules-of-hooks-c1e8c7f4c191`
 - `rules-of-hooks/rules-of-hooks-c5d1f3143c4c`
 - `rules-of-hooks/rules-of-hooks-cfdfe5572fc7`
 - `rules-of-hooks/rules-of-hooks-df4d750736f3`
@@ -1620,12 +1615,15 @@
 - `transitive-freeze-function-expressions`
 - `trivial`
 - `try-catch`
+- `try-catch-alias-try-values`
 - `try-catch-empty-try`
 - `try-catch-in-nested-scope`
 - `try-catch-maybe-null-dependency`
 - `try-catch-mutate-outer-value`
 - `try-catch-try-immediately-returns`
 - `try-catch-try-immediately-throws-after-constant-propagation`
+- `try-catch-try-value-modified-in-catch-escaping`
+- `try-catch-with-catch-param`
 - `try-catch-with-return`
 - `try-catch-within-function-expression`
 - `try-catch-within-function-expression-returns-caught-value`
@@ -1745,10 +1743,12 @@
 - `useMemo-switch-return`
 - `useMemo-with-optional`
 - `useReducer-returned-dispatcher-is-non-reactive`
+- `valid-set-state-in-useEffect-from-ref`
 - `valid-setState-in-effect-from-ref-arithmetic`
 - `valid-setState-in-effect-from-ref-array-index`
 - `valid-setState-in-useEffect-listener`
 - `valid-setState-in-useEffect-listener-transitive`
+- `valid-setState-in-useLayoutEffect-from-ref`
 - `validate-no-set-state-in-render-uncalled-function-with-mutable-range-is-valid`
 - `validate-no-set-state-in-render-unconditional-lambda-which-conditionally-sets-state-ok`
 - `value-block-mutates-outer-value`

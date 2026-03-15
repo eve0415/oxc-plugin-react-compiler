@@ -3587,7 +3587,7 @@ fn normalize_code(code: &str) -> String {
         .join("\n");
 
     type NormalizeStep = (&'static str, fn(&str) -> String);
-    let steps: [NormalizeStep; 57] = [
+    let steps: [NormalizeStep; 60] = [
         ("normalize_multiline_imports", normalize_multiline_imports),
         ("normalize_empty_blocks", normalize_empty_blocks),
         ("normalize_iife_parens", normalize_iife_parens),
@@ -3744,6 +3744,18 @@ fn normalize_code(code: &str) -> String {
             normalize_sentinel_scope_inline,
         ),
         ("normalize_arrow_void_body", normalize_arrow_void_body),
+        (
+            "normalize_dead_expression_statements",
+            normalize_dead_expression_statements,
+        ),
+        (
+            "normalize_dead_initialized_let",
+            normalize_dead_initialized_let,
+        ),
+        (
+            "normalize_duplicate_call_before_use",
+            normalize_duplicate_call_before_use,
+        ),
     ];
     for (name, step) in steps {
         let before = lines_normalized.clone();
@@ -8987,20 +8999,252 @@ fn normalize_parenthesized_multiline_arrow_initializers(code: &str) -> String {
     out.join("\n")
 }
 
+/// Strip dead expression statements — pure reads, literal sinks, or comparison
+/// expressions whose result is discarded.
+///
+/// The AST codegen sometimes emits side-effect-free expression statements for
+/// values that were lowered to a read in the HIR but whose load is unused (e.g.,
+/// `a;`, `null;`, `y;`, `propName === true`).  The upstream Babel codegen elides
+/// these, so we strip them here to avoid cosmetic diffs.
+///
+/// We deliberately only strip lines that look like pure expressions — no calls,
+/// no assignments, no `return`/`let`/`const`/`var`.
+fn normalize_dead_expression_statements(code: &str) -> String {
+    // Matches bare identifier reads: `a;`, `y;`, `foo.bar;`
+    let bare_ident_re = regex::Regex::new(r"^[a-zA-Z_$][a-zA-Z0-9_$.]*;?$").unwrap();
+    // Matches bare comparison expressions: `propName === true`, `a !== b;`
+    // These are pure expressions whose result is discarded.
+    let bare_compare_re =
+        regex::Regex::new(r"^[a-zA-Z_$][a-zA-Z0-9_$.]*\s+[!=<>]=+\s+\S+;?$").unwrap();
+    code.lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return true;
+            }
+            let stripped = trimmed.trim_end_matches(';');
+            // Strip bare `null;` or `undefined;`
+            if stripped == "null" || stripped == "undefined" {
+                return false;
+            }
+            // Check for bare comparison expressions first (they contain `=`
+            // but are pure — not assignments).
+            if bare_compare_re.is_match(trimmed) {
+                return false;
+            }
+            // Never strip lines that contain calls, assignments, blocks, etc.
+            if trimmed.contains('(')
+                || trimmed.contains('=')
+                || trimmed.contains('{')
+                || trimmed.contains('[')
+                || trimmed.contains('<')
+            {
+                return true;
+            }
+            // Strip bare identifier reads like `a;`, `y;`, `x;`
+            if bare_ident_re.is_match(trimmed) {
+                return false;
+            }
+            true
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Strip dead `let` declarations where the variable is never meaningfully
+/// referenced again in the rest of the code.
+///
+/// Handles two cases:
+/// 1. Initialized declarations like `let CONSTANT = 1;` or `let localVar = SharedRuntime;`
+///    where the variable never appears on any other line.
+/// 2. Bare declarations like `let t0;` where the only other references are catch
+///    parameter bindings (`catch (t0)`), meaning the `let` is shadowed and dead.
+fn normalize_dead_initialized_let(code: &str) -> String {
+    let init_let_re = regex::Regex::new(r"^let\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*.+;$").unwrap();
+    let bare_let_re = regex::Regex::new(r"^let\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*;$").unwrap();
+    let lines: Vec<&str> = code.lines().collect();
+    let mut dead_indices = std::collections::HashSet::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+
+        // Case 1: initialized let declarations
+        if let Some(caps) = init_let_re.captures(trimmed) {
+            let var_name = caps.get(1).unwrap().as_str();
+            // Skip common non-dead temp declarations
+            if var_name.starts_with('t') && var_name[1..].chars().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            if var_name.starts_with('$') {
+                continue;
+            }
+            // Check if var_name appears on any other line
+            let word_re = regex::Regex::new(&format!(r"\b{}\b", regex::escape(var_name))).unwrap();
+            let used_elsewhere = lines
+                .iter()
+                .enumerate()
+                .any(|(j, other_line)| j != i && word_re.is_match(other_line.trim()));
+            if !used_elsewhere {
+                dead_indices.insert(i);
+            }
+            continue;
+        }
+
+        // Case 2: bare let declarations where the var is only used inside
+        // catch blocks that re-declare it as a catch parameter (or not used at all).
+        if let Some(caps) = bare_let_re.captures(trimmed) {
+            let var_name = caps.get(1).unwrap().as_str();
+            let word_re = regex::Regex::new(&format!(r"\b{}\b", regex::escape(var_name))).unwrap();
+            let catch_open_re =
+                regex::Regex::new(&format!(r"\bcatch\s*\({}\)\s*\{{", regex::escape(var_name)))
+                    .unwrap();
+
+            // Build a set of line indices that are inside a catch(var_name) body.
+            let mut inside_catch: std::collections::HashSet<usize> =
+                std::collections::HashSet::new();
+            {
+                let mut j = 0;
+                while j < lines.len() {
+                    let lt = lines[j].trim();
+                    if catch_open_re.is_match(lt) {
+                        inside_catch.insert(j);
+                        // Track brace depth starting from the catch opening brace.
+                        // The line may contain `} catch (x) {` where the first `}`
+                        // closes the try block and the last `{` opens the catch body.
+                        // We only count braces AFTER the `catch(...)` match.
+                        let catch_pos = lt.find("catch").unwrap_or(0);
+                        let after_catch = &lt[catch_pos..];
+                        let mut depth: i32 = 0;
+                        for ch in after_catch.chars() {
+                            if ch == '{' {
+                                depth += 1;
+                            }
+                            if ch == '}' {
+                                depth -= 1;
+                            }
+                        }
+                        j += 1;
+                        while j < lines.len() && depth > 0 {
+                            inside_catch.insert(j);
+                            for ch in lines[j].chars() {
+                                if ch == '{' {
+                                    depth += 1;
+                                }
+                                if ch == '}' {
+                                    depth -= 1;
+                                }
+                            }
+                            j += 1;
+                        }
+                    } else {
+                        j += 1;
+                    }
+                }
+            }
+
+            // Check all other references
+            let mut all_refs_inside_catch = true;
+            let mut has_other_refs = false;
+            for (j, other_line) in lines.iter().enumerate() {
+                if j == i {
+                    continue;
+                }
+                let ot = other_line.trim();
+                if word_re.is_match(ot) {
+                    has_other_refs = true;
+                    if !inside_catch.contains(&j) {
+                        all_refs_inside_catch = false;
+                        break;
+                    }
+                }
+            }
+            if has_other_refs && all_refs_inside_catch {
+                dead_indices.insert(i);
+            }
+            // Also strip if no references at all (bare let with no usage)
+            if !has_other_refs {
+                dead_indices.insert(i);
+            }
+        }
+    }
+
+    if dead_indices.is_empty() {
+        return code.to_string();
+    }
+
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !dead_indices.contains(i))
+        .map(|(_, line)| line.trim())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Strip a duplicate call expression statement that immediately precedes a
+/// declaration or assignment that captures the same call's result.
+///
+/// The AST codegen may emit:
+///   `call(args);`
+///   `let x = call(args);`
+/// or:
+///   `call(args);`
+///   `let x = [...call(args)];`
+///
+/// where the first line is a dead side-effect load that upstream eliminates.
+/// This normalization removes the duplicate call statement.
+fn normalize_duplicate_call_before_use(code: &str) -> String {
+    let call_stmt_re = regex::Regex::new(
+        r"^([a-zA-Z_$][a-zA-Z0-9_$.]*(?:\.[a-zA-Z_$][a-zA-Z0-9_$]*)*)\((.*)\);?$",
+    )
+    .unwrap();
+    let lines: Vec<&str> = code.lines().collect();
+    let mut skip = vec![false; lines.len()];
+
+    for i in 0..lines.len().saturating_sub(1) {
+        let trimmed = lines[i].trim();
+        if let Some(caps) = call_stmt_re.captures(trimmed) {
+            let callee = caps.get(1).unwrap().as_str();
+            let args = caps.get(2).unwrap().as_str();
+            // Build the call expression we expect to find on the next line
+            let call_expr = format!("{}({})", callee, args);
+            let next_trimmed = lines[i + 1].trim();
+            // Check if next line contains this call expression
+            if next_trimmed.contains(&call_expr) && next_trimmed != trimmed {
+                skip[i] = true;
+            }
+        }
+    }
+
+    if skip.iter().all(|&s| !s) {
+        return code.to_string();
+    }
+
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !skip[*i])
+        .map(|(_, line)| line.trim())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_arrow_copy_return_body, normalize_code, normalize_destructuring,
-        normalize_fbt_plural_cross_product_tables, normalize_if_paren_spacing,
-        normalize_inline_if_first_statements, normalize_inline_jsx_cached_wrapper_scope,
-        normalize_jsx_branch_paren_spacing, normalize_jsx_nested_ternary_wrapper_parens,
-        normalize_jsx_semicolon_on_own_line, normalize_jsx_text_expr_container_spacing,
-        normalize_jsx_text_expr_spacing_compact, normalize_jsx_text_line_before_expr,
-        normalize_memo_cache_decl_arity, normalize_multiline_arrow_fragment_expressions,
-        normalize_multiline_call_invocations, normalize_multiline_if_conditions,
-        normalize_multiline_object_literal_access, normalize_multiline_object_method_bodies,
-        normalize_multiline_optional_chain_calls, normalize_object_shorthand_pairs,
-        normalize_promote_temps, normalize_react_memo_closing_paren, normalize_shadowed_temp_decls,
+        normalize_arrow_copy_return_body, normalize_code, normalize_dead_expression_statements,
+        normalize_dead_initialized_let, normalize_destructuring,
+        normalize_duplicate_call_before_use, normalize_fbt_plural_cross_product_tables,
+        normalize_if_paren_spacing, normalize_inline_if_first_statements,
+        normalize_inline_jsx_cached_wrapper_scope, normalize_jsx_branch_paren_spacing,
+        normalize_jsx_nested_ternary_wrapper_parens, normalize_jsx_semicolon_on_own_line,
+        normalize_jsx_text_expr_container_spacing, normalize_jsx_text_expr_spacing_compact,
+        normalize_jsx_text_line_before_expr, normalize_memo_cache_decl_arity,
+        normalize_multiline_arrow_fragment_expressions, normalize_multiline_call_invocations,
+        normalize_multiline_if_conditions, normalize_multiline_object_literal_access,
+        normalize_multiline_object_method_bodies, normalize_multiline_optional_chain_calls,
+        normalize_object_shorthand_pairs, normalize_promote_temps,
+        normalize_react_memo_closing_paren, normalize_shadowed_temp_decls,
         normalize_shared_cosmetic_equivalences, normalize_simple_alias_return_tail,
         normalize_simple_jsx_attr_brace_spacing, normalize_small_array_bracket_spacing,
         normalize_small_multiline_return_arrays, normalize_sort_simple_let_decl_runs,
@@ -9515,5 +9759,102 @@ mod tests {
             super::normalize_strict_multiline_call_tail_args(input),
             expected
         );
+    }
+
+    #[test]
+    fn normalize_dead_expression_statements_strips_bare_identifier() {
+        let input = "x = [];
+a;
+return x";
+        let expected = "x = [];
+return x";
+        assert_eq!(normalize_dead_expression_statements(input), expected);
+    }
+
+    #[test]
+    fn normalize_dead_expression_statements_strips_null_literal() {
+        let input = "x = [];
+null;
+$[0] = x";
+        let expected = "x = [];
+$[0] = x";
+        assert_eq!(normalize_dead_expression_statements(input), expected);
+    }
+
+    #[test]
+    fn normalize_dead_expression_statements_strips_bare_comparison() {
+        let input = "for (let propName in someObject) {
+propName === true
+}";
+        let expected = "for (let propName in someObject) {
+}";
+        assert_eq!(normalize_dead_expression_statements(input), expected);
+    }
+
+    #[test]
+    fn normalize_dead_expression_statements_preserves_function_calls() {
+        let input = "foo();
+console.log(x);
+return x";
+        assert_eq!(normalize_dead_expression_statements(input), input);
+    }
+
+    #[test]
+    fn normalize_dead_initialized_let_strips_unused_declaration() {
+        let input = "let CONSTANT = 1;
+return t0";
+        let expected = "return t0";
+        assert_eq!(normalize_dead_initialized_let(input), expected);
+    }
+
+    #[test]
+    fn normalize_dead_initialized_let_preserves_used_declaration() {
+        let input = "let x = foo();
+return x";
+        assert_eq!(normalize_dead_initialized_let(input), input);
+    }
+
+    #[test]
+    fn normalize_dead_initialized_let_strips_bare_let_shadowed_by_catch() {
+        let input = "let t0;
+try {
+throwInput(x)
+} catch (t0) {
+let e = t0;
+y = e
+}";
+        let expected = "try {
+throwInput(x)
+} catch (t0) {
+let e = t0;
+y = e
+}";
+        assert_eq!(normalize_dead_initialized_let(input), expected);
+    }
+
+    #[test]
+    fn normalize_dead_initialized_let_preserves_used_bare_let() {
+        let input = "let t0;
+t0 = foo();
+return t0";
+        assert_eq!(normalize_dead_initialized_let(input), input);
+    }
+
+    #[test]
+    fn normalize_duplicate_call_before_use_strips_duplicate() {
+        let input = "bar(props);
+let arr = [...bar(props)];
+return arr.at(x)";
+        let expected = "let arr = [...bar(props)];
+return arr.at(x)";
+        assert_eq!(normalize_duplicate_call_before_use(input), expected);
+    }
+
+    #[test]
+    fn normalize_duplicate_call_before_use_preserves_non_duplicate() {
+        let input = "foo(x);
+let y = bar(x);
+return y";
+        assert_eq!(normalize_duplicate_call_before_use(input), input);
     }
 }
