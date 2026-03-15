@@ -526,7 +526,31 @@ fn codegen_instruction_value<'a>(
                 *call_optional,
             ))
         }
-        InstructionValue::TypeCastExpression { value, .. } => codegen_place(cx, value),
+        InstructionValue::TypeCastExpression {
+            value,
+            type_annotation,
+            type_annotation_kind,
+            ..
+        } => {
+            let inner = codegen_place(cx, value)?;
+            // Preserve TypeScript `as T` annotations.
+            if matches!(type_annotation_kind, TypeAnnotationKind::As) {
+                Some(cx.builder.expression_ts_as(
+                    SPAN,
+                    inner,
+                    cx.builder.ts_type_type_reference(
+                        SPAN,
+                        cx.builder.ts_type_name_identifier_reference(
+                            SPAN,
+                            cx.builder.ident(type_annotation),
+                        ),
+                        NONE,
+                    ),
+                ))
+            } else {
+                Some(inner)
+            }
+        }
         InstructionValue::ArrayExpression { elements, .. } => Some(
             cx.builder
                 .expression_array(SPAN, codegen_array_elements(cx, elements)?),
