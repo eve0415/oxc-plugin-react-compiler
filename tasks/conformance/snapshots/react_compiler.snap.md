@@ -1,6 +1,6 @@
-# React Compiler Conformance — 72.8% parity rate
+# React Compiler Conformance — 73.3% parity rate
 
-**1276** parity_success, **476** parity_failure, **0** skipped
+**1284** parity_success, **468** parity_failure, **0** skipped
 
 ## Failed
 
@@ -69,7 +69,6 @@
 - `constant-prop-to-object-method`: Output mismatch
 - `constant-propagate-global-phis`: Output mismatch
 - `constant-propagation-phi`: Output mismatch
-- `constant-propagation-unary-number`: Output mismatch
 - `dce-loop`: Output mismatch
 - `default-param-array-with-unary`: Output mismatch
 - `default-param-calls-global-function`: Output mismatch
@@ -92,7 +91,6 @@
 - `escape-analysis-logical`: Output mismatch
 - `escape-analysis-not-conditional-test`: Expected upstream bailout (untransformed output), but compiler transformed output
 - `expression-with-assignment-dynamic`: Output mismatch
-- `fast-refresh-refresh-on-const-changes-dev`: Output mismatch
 - `fast-refresh-reloading`: Output mismatch
 - `fbt/bug-fbt-plural-multiple-function-calls`: Output mismatch
 - `fbt/bug-fbt-plural-multiple-mixed-call-tag`: Output mismatch
@@ -117,7 +115,6 @@
 - `fbt/fbt-to-string`: Output mismatch
 - `fbt/fbt-whitespace-around-param-value`: Output mismatch
 - `fbt/fbt-whitespace-within-text`: Output mismatch
-- `fbt/fbtparam-text-must-use-expression-container`: Output mismatch
 - `fbt/fbtparam-with-jsx-element-content`: Output mismatch
 - `fbt/fbtparam-with-jsx-fragment-value`: Output mismatch
 - `fbt/lambda-with-fbt`: Output mismatch
@@ -168,8 +165,6 @@
 - `inner-memo-value-not-promoted-to-outer-scope-dynamic`: Output mismatch
 - `jsx-attribute-with-jsx-element-value`: Output mismatch
 - `jsx-attribute-with-jsx-fragment-value.flow`: Output mismatch
-- `jsx-bracket-in-text`: Output mismatch
-- `jsx-html-entity`: Output mismatch
 - `jsx-lowercase-localvar-memberexpr-in-lambda`: Output mismatch
 - `jsx-outlining-child-stored-in-id`: Output mismatch
 - `jsx-outlining-dup-key-diff-value`: Output mismatch
@@ -180,7 +175,6 @@
 - `jsx-outlining-separate-nested`: Output mismatch
 - `jsx-outlining-simple`: Output mismatch
 - `jsx-outlining-with-non-jsx-children`: Output mismatch
-- `jsx-preserve-escape-character`: Output mismatch
 - `jsx-spread`: Output mismatch
 - `jsx-string-attribute-expression-container`: Output mismatch
 - `jsx-string-attribute-non-ascii`: Output mismatch
@@ -237,7 +231,6 @@
 - `new-mutability/useMemo-reordering-depslist-assignment`: Output mismatch
 - `nonmutating-capture-in-unsplittable-memo-block`: Output mismatch
 - `nonoptional-load-from-optional-memberexpr`: Output mismatch
-- `nonreactive-noescaping-dependency-can-inline-into-consuming-scope`: Output mismatch
 - `nullable-objects/bug-invalid-array-map-manual`: Output mismatch
 - `object-expression-computed-member`: Output mismatch
 - `object-literal-method-call-in-ternary-test`: Output mismatch
@@ -261,7 +254,6 @@
 - `partial-early-return-within-reactive-scope`: Output mismatch
 - `phi-reference-effects`: Output mismatch
 - `preserve-existing-memoization-guarantees/lambda-with-fbt-preserve-memoization`: Output mismatch
-- `preserve-jsxtext-stringliteral-distinction`: Output mismatch
 - `preserve-memo-validation/prune-nonescaping-useMemo-mult-returns`: Output mismatch
 - `preserve-memo-validation/prune-nonescaping-useMemo-mult-returns-primitive`: Output mismatch
 - `preserve-memo-validation/useCallback-in-other-reactive-block`: Output mismatch
@@ -298,9 +290,6 @@
 - `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch-escaping`: Output mismatch
 - `propagate-scope-deps-hir-fork/useMemo-multiple-if-else`: Output mismatch
 - `property-call-evaluation-order`: Output mismatch
-- `quoted-strings-in-jsx-attribute`: Output mismatch
-- `quoted-strings-in-jsx-attribute-escaped`: Output mismatch
-- `quoted-strings-jsx-attribute-escaped-constant-propagation`: Output mismatch
 - `reactive-control-dependency-do-while-test`: Output mismatch
 - `reactive-control-dependency-for-init`: Output mismatch
 - `reactive-control-dependency-for-test`: Output mismatch
@@ -314,6 +303,7 @@
 - `reactive-ref-param`: Output mismatch
 - `reactivity-analysis-reactive-via-mutation-of-computed-load`: Output mismatch
 - `reactivity-analysis-reactive-via-mutation-of-property-load`: Output mismatch
+- `readonly-object-method-calls-mutable-lambda`: Output mismatch
 - `reassign-in-while-loop-condition`: Output mismatch
 - `reassigned-phi-in-returned-function-expression`: Output mismatch
 - `reassignment-separate-scopes`: Output mismatch
@@ -424,6 +414,7 @@
 - `temporary-at-start-of-value-block`: Output mismatch
 - `ternary-assignment-expression`: Output mismatch
 - `ternary-expression`: Expected upstream bailout (untransformed output), but compiler transformed output
+- `todo-granular-iterator-semantics`: Output mismatch
 - `todo.memoize-loops-that-produce-memoizeable-values`: Output mismatch
 - `transform-fire/bailout-validate-conditional-hook`: Output mismatch
 - `transform-fire/basic`: Output mismatch
@@ -453,6 +444,7 @@
 - `type-annotations/type-annotation-as-number_.flow`: Output mismatch
 - `type-annotations/type-annotation-satisfies-array`: Output mismatch
 - `type-cast-expression.flow`: Output mismatch
+- `type-inference-array-from`: Output mismatch
 - `unary-expr`: Output mismatch
 - `unlabeled-break-within-label-loop`: Output mismatch
 - `unused-conditional`: Output mismatch
@@ -648,6 +640,7 @@
 - `constant-propagation-string-concat`
 - `constant-propagation-template-literal`
 - `constant-propagation-unary`
+- `constant-propagation-unary-number`
 - `constant-propagation-while`
 - `constructor`
 - `context-variable-as-jsx-element-tag`
@@ -936,11 +929,13 @@
 - `expression-with-assignment`
 - `extend-scopes-if`
 - `fast-refresh-dont-refresh-const-changes-prod`
+- `fast-refresh-refresh-on-const-changes-dev`
 - `fbt/error.todo-fbt-as-local`
 - `fbt/error.todo-fbt-param-nested-fbt`
 - `fbt/error.todo-fbt-unknown-enum-value`
 - `fbt/error.todo-locally-require-fbt`
 - `fbt/error.todo-multiple-fbt-plural`
+- `fbt/fbtparam-text-must-use-expression-container`
 - `flatten-scopes-with-methodcall-hook`
 - `flow-enum-inline`
 - `for-empty-update`
@@ -1100,9 +1095,11 @@
 - `issue852`
 - `issue933-disjoint-set-infinite-loop`
 - `jsx-attribute-default-to-true`
+- `jsx-bracket-in-text`
 - `jsx-empty-expression`
 - `jsx-fragment`
 - `jsx-freeze`
+- `jsx-html-entity`
 - `jsx-local-memberexpr-tag`
 - `jsx-local-memberexpr-tag-conditional`
 - `jsx-local-tag-in-lambda`
@@ -1112,6 +1109,7 @@
 - `jsx-member-expression-tag-grouping`
 - `jsx-memberexpr-tag-in-lambda`
 - `jsx-namespaced-name`
+- `jsx-preserve-escape-character`
 - `jsx-preserve-whitespace`
 - `jsx-reactive-local-variable-member-expr`
 - `jump-poisoned/break-in-scope`
@@ -1215,6 +1213,7 @@
 - `no-flow-bailout-unrelated`
 - `noAlias-filter-on-array-prop`
 - `non-null-assertion`
+- `nonreactive-noescaping-dependency-can-inline-into-consuming-scope`
 - `nullable-objects/array-map-named-callback`
 - `nullable-objects/array-map-named-callback-cross-context`
 - `nullable-objects/array-map-named-chained-callbacks`
@@ -1273,6 +1272,7 @@
 - `phi-type-inference-array-push`
 - `phi-type-inference-array-push-consecutive-phis`
 - `phi-type-inference-property-store`
+- `preserve-jsxtext-stringliteral-distinction`
 - `preserve-memo-validation/error.false-positive-useMemo-dropped-infer-always-invalidating`
 - `preserve-memo-validation/error.false-positive-useMemo-infer-mutate-deps`
 - `preserve-memo-validation/error.false-positive-useMemo-overlap-scopes`
@@ -1355,6 +1355,9 @@
 - `prune-scopes-whose-deps-invalidate-new`
 - `prune-scopes-whose-deps-invalidate-object`
 - `prune-scopes-whose-deps-may-invalidate-array`
+- `quoted-strings-in-jsx-attribute`
+- `quoted-strings-in-jsx-attribute-escaped`
+- `quoted-strings-jsx-attribute-escaped-constant-propagation`
 - `react-namespace`
 - `reactive-control-dependency-do-while-indirect`
 - `reactive-control-dependency-forin-collection`
@@ -1385,7 +1388,6 @@
 - `reactivity-via-aliased-mutation-through-property-load`
 - `reactivity-via-readonly-alias-of-mutable-value`
 - `readonly-object-method-calls`
-- `readonly-object-method-calls-mutable-lambda`
 - `reanimated-no-memo-arg`
 - `reanimated-shared-value-writes`
 - `reassign-global-hook-arg`
@@ -1625,7 +1627,6 @@
 - `todo-function-expression-captures-value-later-frozen`
 - `todo-global-load-cached`
 - `todo-global-property-load-cached`
-- `todo-granular-iterator-semantics`
 - `todo.error.object-pattern-computed-key`
 - `todo.lower-context-access-array-destructuring`
 - `todo.lower-context-access-destructure-multiple`
@@ -1669,7 +1670,6 @@
 - `type-args-test-binary-operator`
 - `type-binary-operator`
 - `type-field-load`
-- `type-inference-array-from`
 - `type-provider-log`
 - `type-provider-log-default-import`
 - `type-provider-store-capture`

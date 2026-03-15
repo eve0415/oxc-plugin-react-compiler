@@ -2199,6 +2199,14 @@ fn all_pattern_vars_declared(cx: &CodegenContext<'_>, pattern: &Pattern) -> bool
     }
 }
 
+/// Try to inline a zero-dependency (sentinel) scope by storing its output
+/// expression in the temp map. Returns true if the scope was inlined (should
+/// be skipped in output), false if it should be emitted normally.
+///
+/// A sentinel scope can be inlined when:
+/// 1. It has zero dependencies (uses sentinel check, not dep comparison)
+/// 2. It has exactly one declaration
+/// 3. The body has a single expression-producing instruction
 /// Extract the collection Place from a for-of/for-in init block by scanning
 /// for `IteratorNext` or `NextPropertyOf` instructions.
 fn extract_for_collection(init: &ReactiveBlock) -> Option<Place> {

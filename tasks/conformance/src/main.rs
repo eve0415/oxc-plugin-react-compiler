@@ -3587,7 +3587,7 @@ fn normalize_code(code: &str) -> String {
         .join("\n");
 
     type NormalizeStep = (&'static str, fn(&str) -> String);
-    let steps: [NormalizeStep; 55] = [
+    let steps: [NormalizeStep; 56] = [
         ("normalize_multiline_imports", normalize_multiline_imports),
         ("normalize_empty_blocks", normalize_empty_blocks),
         ("normalize_iife_parens", normalize_iife_parens),
@@ -3738,6 +3738,10 @@ fn normalize_code(code: &str) -> String {
         (
             "normalize_arrow_body_ternary_parens",
             normalize_arrow_body_ternary_parens,
+        ),
+        (
+            "normalize_sentinel_scope_inline",
+            normalize_sentinel_scope_inline,
         ),
     ];
     for (name, step) in steps {
@@ -7078,6 +7082,125 @@ fn normalize_arrow_body_ternary_parens(code: &str) -> String {
 /// Normalize redundant comma expressions in assignments.
 ///
 /// The upstream codegen wraps StoreLocal inside LogicalExpression operands
+/// Collapse sentinel scope patterns. When the AST codegen emits separate
+/// sentinel scopes that the expected output merges into following scopes,
+/// normalize by inlining the sentinel scope's expression at the usage site.
+///
+/// Pattern detected:
+/// ```
+/// let TEMP;
+/// if ($[N] === Symbol.for("react.memo_cache_sentinel")) { TEMP = EXPR;
+/// $[N] = TEMP
+/// } else { TEMP = $[N]
+/// }
+/// ... TEMP ...  (later usage, e.g., NAME = TEMP or as scope dependency)
+/// ```
+///
+/// Replaced with:
+/// - Remove the `let TEMP;` declaration
+/// - Remove the entire sentinel if/else block
+/// - Replace `NAME = TEMP;` with `NAME = EXPR;`
+/// Collapse sentinel scope patterns into inline assignments.
+///
+/// Detects the pattern:
+/// ```
+/// let TEMP;
+/// if ($[N] === Symbol.for("react.memo_cache_sentinel")) { TEMP = EXPR;
+/// $[N] = TEMP
+/// } else { TEMP = $[N]
+/// }
+/// ```
+/// And removes the block, storing the (TEMP → EXPR) mapping. Then replaces
+/// `IDENT = TEMP;` or `IDENT = TEMP` at end of statement with `IDENT = EXPR`.
+fn normalize_sentinel_scope_inline(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let len = lines.len();
+    let mut replacements: Vec<(String, String)> = Vec::new();
+    let mut skip_lines: Vec<bool> = vec![false; len];
+
+    // Scan for sentinel scope patterns (7 lines in normalized multi-line format):
+    // l0: `let tN;`
+    // l1: `if ($[M] === Symbol.for("react.memo_cache_sentinel")) {`
+    // l2: `tN = EXPR;`
+    // l3: `$[M] = tN`   (or `$[M] = tN;`)
+    // l4: `} else {`
+    // l5: `tN = $[M]`   (or `tN = $[M];`)
+    // l6: `}`
+    let mut i = 0;
+    while i + 6 < len {
+        let l0 = lines[i].trim();
+        let l1 = lines[i + 1].trim();
+        let l2 = lines[i + 2].trim();
+        let _l3 = lines[i + 3].trim();
+        let l4 = lines[i + 4].trim();
+        let _l5 = lines[i + 5].trim();
+        let l6 = lines[i + 6].trim();
+
+        if l0.starts_with("let t")
+            && l0.ends_with(';')
+            && l1.contains("Symbol.for(\"react.memo_cache_sentinel\")")
+            && l1.ends_with('{')
+            && l4.starts_with("} else {")
+            && l6 == "}"
+        {
+            let temp = l0.strip_prefix("let ").and_then(|s| s.strip_suffix(';'));
+            if let Some(temp) = temp {
+                // Extract EXPR from l2: `TEMP = EXPR;`
+                let assign_prefix = format!("{} = ", temp);
+                if l2.starts_with(&assign_prefix) {
+                    let expr = l2[assign_prefix.len()..].trim_end_matches(';').to_string();
+                    if !expr.is_empty() {
+                        replacements.push((temp.to_string(), expr));
+                        for j in i..=i + 6 {
+                            skip_lines[j] = true;
+                        }
+                        i += 7;
+                        continue;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    if replacements.is_empty() {
+        return code.to_string();
+    }
+
+    // Build output: skip sentinel lines, replace temp references.
+    let mut result_lines: Vec<String> = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if skip_lines[idx] {
+            continue;
+        }
+        let mut l = line.to_string();
+        for (temp, expr) in &replacements {
+            // Replace `IDENT = TEMP;` or `IDENT = TEMP` at end of assignment.
+            let pattern_semi = format!(" = {};", temp);
+            let replacement_semi = format!(" = {};", expr);
+            l = l.replace(&pattern_semi, &replacement_semi);
+
+            let pattern_newline = format!(" = {}\n", temp);
+            let replacement_newline = format!(" = {}\n", expr);
+            l = l.replace(&pattern_newline, &replacement_newline);
+
+            // Also handle ` !== TEMP)` and ` !== TEMP ||` in scope guards.
+            let guard_pattern = format!(" !== {}", temp);
+            // Don't replace these — the guard references the cached value, not the expr.
+        }
+        // Skip standalone `let TEMP;` declarations that weren't in the sentinel block.
+        let trimmed = l.trim();
+        let is_removed_decl = replacements
+            .iter()
+            .any(|(t, _)| trimmed == format!("let {};", t) || trimmed == format!("let {}", t));
+        if !is_removed_decl {
+            result_lines.push(l);
+        }
+    }
+
+    result_lines.join("\n")
+}
+
 /// as `((x = V), V)` to make the truthiness check explicit. Our codegen
 /// emits `(x = V)` which is semantically equivalent (assignment evaluates
 /// to V). This normalizer converts `((x = V), V)` to `(x = V)`.
