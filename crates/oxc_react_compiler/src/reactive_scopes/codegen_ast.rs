@@ -1360,9 +1360,11 @@ fn parse_regexp_flags(flags: &str) -> ast::RegExpFlags {
 fn codegen_place<'a>(cx: &mut CodegenContext<'a>, place: &Place) -> Option<ast::Expression<'a>> {
     let decl_id = place.identifier.declaration_id;
 
-    // Check temp map first — inlined expression. Use clone_in for
-    // multi-use temps (second+ reference gets a deep copy).
-    if let Some(temp_slot) = cx.temps.get_mut(&decl_id)
+    // Only check temp map for unnamed/promoted identifiers (temporaries).
+    // Named identifiers always emit as identifier references, even if
+    // something was stored in the temp map for their declaration_id.
+    if is_temp_identifier(&place.identifier)
+        && let Some(temp_slot) = cx.temps.get_mut(&decl_id)
         && let Some(expr) = temp_slot.as_ref()
     {
         return Some(expr.clone_in(cx.allocator));

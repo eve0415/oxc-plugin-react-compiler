@@ -8514,9 +8514,13 @@ fn normalize_cache_slot_renumber(code: &str) -> String {
         if needs_renumber {
             let new_size = renumber.len();
             out[i] = format!("const $ = {callee}({new_size});");
-            for k in (i + 1)..=j.min(lines.len().saturating_sub(1)) {
-                out[k] = slot_re
-                    .replace_all(&out[k], |caps: &regex::Captures<'_>| {
+            for entry in out
+                .iter_mut()
+                .take(j.min(lines.len().saturating_sub(1)) + 1)
+                .skip(i + 1)
+            {
+                *entry = slot_re
+                    .replace_all(entry, |caps: &regex::Captures<'_>| {
                         let old = caps.get(1).unwrap().as_str().parse::<usize>().unwrap_or(0);
                         let new = renumber.get(&old).copied().unwrap_or(old);
                         format!("$[{new}]")
