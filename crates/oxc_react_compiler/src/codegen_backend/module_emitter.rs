@@ -3127,6 +3127,7 @@ fn try_build_compiled_function_body_from_reactive_ast<'a>(
         disable_memoization_for_debugging: cf.disable_memoization_for_debugging,
         fbt_operands: cf.fbt_operands.clone(),
         cache_binding_name: cf.cache_prologue.as_ref().map(|p| p.binding_name.clone()),
+        unique_identifiers: cf.unique_identifiers.clone(),
     };
     let result = crate::reactive_scopes::codegen_ast::codegen_reactive_function(
         builder,
@@ -9395,6 +9396,7 @@ export const FIXTURE_ENTRYPOINT = {
             disable_memoization_features: false,
             disable_memoization_for_debugging: false,
             fbt_operands: std::collections::HashSet::new(),
+            unique_identifiers: std::collections::HashSet::new(),
         }
     }
 

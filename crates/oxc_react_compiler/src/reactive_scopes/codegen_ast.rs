@@ -37,7 +37,9 @@ pub struct CodegenOptions {
     pub fbt_operands: HashSet<IdentifierId>,
     /// Cache binding name override (e.g., "$0" when "$" is renamed to avoid conflicts).
     pub cache_binding_name: Option<String>,
-    // unique_identifiers tracking is planned for future temp naming collision detection
+    /// Set of all used identifier names (from rename_variables). Used to resolve
+    /// temp naming collisions when the same Promoted name appears in different scopes.
+    pub unique_identifiers: HashSet<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3400,6 +3402,7 @@ fn lower_function_expression_via_reactive<'a>(
         disable_memoization_for_debugging: false,
         fbt_operands: HashSet::new(),
         cache_binding_name: None,
+        unique_identifiers: HashSet::new(),
     };
 
     let result = codegen_reactive_function(cx.builder, cx.allocator, &reactive_fn, options);

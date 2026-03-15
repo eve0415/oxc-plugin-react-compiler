@@ -2046,6 +2046,7 @@ struct PipelineOutput {
     has_lower_context_access: bool,
     retry_no_memo_mode: bool,
     fbt_operands: std::collections::HashSet<crate::hir::types::IdentifierId>,
+    unique_identifiers: std::collections::HashSet<String>,
 }
 
 /// Run the full HIR pipeline (from pruneMaybeThrows through codegen).
@@ -2559,7 +2560,7 @@ fn run_hir_pipeline(
     // Old codegen fallback has been removed to keep a single implementation path.
     // Only dememoize if this specific function had a validation error that was swallowed.
     let should_dememoize = retry_no_memo_mode && had_validation_error;
-    let (codegen_result, reactive_function) = run_reactive_passes(
+    let (codegen_result, reactive_function, unique_identifiers) = run_reactive_passes(
         hir_func,
         retry_no_memo_mode,
         should_dememoize,
@@ -2579,6 +2580,7 @@ fn run_hir_pipeline(
         has_lower_context_access,
         retry_no_memo_mode,
         fbt_operands,
+        unique_identifiers,
     })
 }
 
@@ -3376,6 +3378,7 @@ fn run_reactive_passes(
     (
         codegen_reactive::CodegenResult,
         crate::hir::types::ReactiveFunction,
+        std::collections::HashSet<String>,
     ),
     crate::error::CompilerError,
 > {
@@ -3482,6 +3485,7 @@ fn run_reactive_passes(
     crate::reactive_scopes::fuse_trailing_nullish_return_into_scope::fuse_trailing_nullish_return_into_scope(&mut reactive_fn);
 
     // Codegen from reactive function tree
+    let unique_identifiers_for_ast = unique_identifiers.clone();
     let mut codegen_result =
         codegen_reactive::codegen_reactive_function_with_options_and_fbt_operands(
             &reactive_fn,
@@ -3503,7 +3507,7 @@ fn run_reactive_passes(
     if let Some(err) = codegen_result.error.take() {
         return Err(err);
     }
-    Ok((codegen_result, reactive_fn))
+    Ok((codegen_result, reactive_fn, unique_identifiers_for_ast))
 }
 
 fn dememoize_reactive_block(block: &mut crate::hir::types::ReactiveBlock) {
@@ -6387,6 +6391,7 @@ fn try_compile_function<'a>(
         disable_memoization_features: pipeline_output.retry_no_memo_mode,
         disable_memoization_for_debugging: options.environment.disable_memoization_for_debugging,
         fbt_operands: pipeline_output.fbt_operands,
+        unique_identifiers: pipeline_output.unique_identifiers,
     }))
 }
 
@@ -6599,6 +6604,7 @@ fn try_compile_function_with_name<'a>(
         disable_memoization_features: pipeline_output.retry_no_memo_mode,
         disable_memoization_for_debugging: options.environment.disable_memoization_for_debugging,
         fbt_operands: pipeline_output.fbt_operands,
+        unique_identifiers: pipeline_output.unique_identifiers,
     }))
 }
 
@@ -6819,6 +6825,7 @@ fn try_compile_arrow<'a>(
         disable_memoization_features: pipeline_output.retry_no_memo_mode,
         disable_memoization_for_debugging: options.environment.disable_memoization_for_debugging,
         fbt_operands: pipeline_output.fbt_operands,
+        unique_identifiers: pipeline_output.unique_identifiers,
     }))
 }
 

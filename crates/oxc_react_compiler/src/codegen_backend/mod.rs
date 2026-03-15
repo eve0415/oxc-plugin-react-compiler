@@ -123,6 +123,7 @@ pub(crate) struct CompiledFunction {
     pub(crate) disable_memoization_features: bool,
     pub(crate) disable_memoization_for_debugging: bool,
     pub(crate) fbt_operands: std::collections::HashSet<crate::hir::types::IdentifierId>,
+    pub(crate) unique_identifiers: std::collections::HashSet<String>,
 }
 
 #[derive(Clone, Copy)]
