@@ -72,8 +72,6 @@ struct CodegenContext<'a> {
     needs_structural_check: bool,
     /// Options controlling codegen behavior.
     options: CodegenOptions,
-    /// Set of identifiers declared by reactive scopes (promoted temps).
-    scope_declarations: HashSet<IdentifierId>,
 }
 
 impl<'a> CodegenContext<'a> {
@@ -184,11 +182,6 @@ pub fn codegen_reactive_function<'a>(
     func: &ReactiveFunction,
     options: CodegenOptions,
 ) -> CodegenFunctionResult<'a> {
-    // Collect all scope declarations upfront so we know which identifiers are
-    // promoted (need explicit `let` declarations) vs temporaries (inlined).
-    let mut scope_declarations = HashSet::new();
-    collect_scope_declarations(&func.body, &mut scope_declarations);
-
     let cache_binding = "$".to_string();
 
     let mut cx = CodegenContext {
@@ -203,7 +196,6 @@ pub fn codegen_reactive_function<'a>(
         needs_function_hook_guard_wrapper: false,
         needs_structural_check: false,
         options,
-        scope_declarations,
     };
 
     // Collect param names.
@@ -386,34 +378,28 @@ fn codegen_instruction<'a>(
     };
 
     let id = lvalue.identifier.id;
-    let name = lvalue
-        .identifier
-        .name
-        .as_ref()
-        .map(|n| n.value().to_string());
 
-    // Temp inlining: if not a promoted scope declaration, store for inlining.
-    let is_scope_decl = cx.scope_declarations.contains(&id);
-    let is_promoted = name.is_some() && is_scope_decl;
-
-    if !is_promoted && !is_scope_decl {
+    // Temp inlining decision (matches upstream codegenInstruction):
+    // - Unnamed temporaries (name is None or Promoted) → inline into temp map
+    // - Named identifiers → always emit as declaration/reassignment
+    if is_temp_identifier(&lvalue.identifier) {
         cx.temps.insert(id, Some(expr));
         return None;
     }
 
-    let name = name.unwrap_or_else(|| format!("t{}", id.0));
+    let name = identifier_name(&lvalue.identifier);
 
     // Already declared → reassignment.
     if cx.declared.contains(&id) {
         return Some(emit_assignment_stmt(cx, &name, expr));
     }
 
-    // New declaration (expression-level always uses Let).
+    // New declaration (expression-level always uses Const to match upstream).
     cx.declared.insert(id);
     Some(emit_var_decl_stmt(
         cx,
         &name,
-        ast::VariableDeclarationKind::Let,
+        ast::VariableDeclarationKind::Const,
         Some(expr),
     ))
 }
@@ -864,14 +850,12 @@ fn codegen_store<'a>(
     let expr = codegen_place(cx, value)?;
     let id = lvalue.place.identifier.id;
 
-    // Temp inlining: if the target is a compiler-generated temp (name matches
-    // t0/t1/... pattern from rename_variables) and it's not a scope declaration,
-    // store for later inlining instead of emitting a declaration.
-    let is_scope_decl = cx.scope_declarations.contains(&id);
-    if !is_scope_decl
+    // Temp inlining: unnamed temporaries (Promoted by rename_variables) are
+    // stored for inline substitution, matching upstream behavior.
+    // Exception: Reassign kind always emits (it's modifying an existing variable).
+    if is_temp_identifier(&lvalue.place.identifier)
         && !cx.declared.contains(&id)
         && !matches!(lvalue.kind, InstructionKind::Reassign)
-        && is_compiler_temp_name(&lvalue.place.identifier)
     {
         cx.temps.insert(id, Some(expr));
         return None;
@@ -1230,16 +1214,13 @@ fn build_property_key_for_pattern<'a>(
 // Emit helpers
 // ---------------------------------------------------------------------------
 
-/// Check if an identifier is a compiler-generated temporary (name starts with
-/// 't' or 'T' followed by digits, as assigned by rename_variables).
-fn is_compiler_temp_name(identifier: &Identifier) -> bool {
-    if let Some(name) = identifier.name.as_ref() {
-        let s = name.value();
-        (s.starts_with('t') || s.starts_with('T'))
-            && s.len() > 1
-            && s[1..].chars().all(|c| c.is_ascii_digit())
-    } else {
-        true // unnamed identifiers are always temps
+/// Check if an identifier is a temporary (unnamed or promoted by rename_variables).
+/// Matches upstream's `identifier.name === null` check.
+fn is_temp_identifier(identifier: &Identifier) -> bool {
+    match &identifier.name {
+        None => true,
+        Some(IdentifierName::Promoted(_)) => true,
+        Some(IdentifierName::Named(_)) => false,
     }
 }
 
@@ -1732,8 +1713,8 @@ fn codegen_reactive_scope<'a>(
     let deps: Vec<(u32, ast::Expression<'a>)> = sorted_deps
         .iter()
         .filter_map(|dep| {
-            let slot = cx.alloc_cache_slot();
             let dep_expr = codegen_dependency_expr(cx, dep)?;
+            let slot = cx.alloc_cache_slot();
             Some((slot, dep_expr))
         })
         .collect();
@@ -1752,8 +1733,7 @@ fn codegen_reactive_scope<'a>(
         .iter()
         .filter_map(|reassign| {
             let name = reassign.name.as_ref()?.value().to_string();
-            let slot = cx.alloc_cache_slot();
-            Some((name, slot))
+            Some((name, cx.alloc_cache_slot()))
         })
         .collect();
 
@@ -2274,87 +2254,6 @@ fn extract_for_of_left<'a>(
             None
         }
     })
-}
-
-fn collect_scope_declarations(block: &ReactiveBlock, out: &mut HashSet<IdentifierId>) {
-    for stmt in block {
-        match stmt {
-            ReactiveStatement::Scope(scope_block) => {
-                for (id, _) in &scope_block.scope.declarations {
-                    out.insert(*id);
-                }
-                for reassign in &scope_block.scope.reassignments {
-                    out.insert(reassign.id);
-                }
-                collect_scope_declarations(&scope_block.instructions, out);
-            }
-            ReactiveStatement::PrunedScope(pruned) => {
-                collect_scope_declarations(&pruned.instructions, out);
-            }
-            ReactiveStatement::Terminal(term) => {
-                collect_terminal_scope_declarations(&term.terminal, out);
-            }
-            ReactiveStatement::Instruction(_) => {}
-        }
-    }
-}
-
-fn collect_terminal_scope_declarations(
-    terminal: &ReactiveTerminal,
-    out: &mut HashSet<IdentifierId>,
-) {
-    match terminal {
-        ReactiveTerminal::If {
-            consequent,
-            alternate,
-            ..
-        } => {
-            collect_scope_declarations(consequent, out);
-            if let Some(alt) = alternate {
-                collect_scope_declarations(alt, out);
-            }
-        }
-        ReactiveTerminal::Switch { cases, .. } => {
-            for case in cases {
-                if let Some(block) = &case.block {
-                    collect_scope_declarations(block, out);
-                }
-            }
-        }
-        ReactiveTerminal::While { loop_block, .. }
-        | ReactiveTerminal::DoWhile { loop_block, .. } => {
-            collect_scope_declarations(loop_block, out);
-        }
-        ReactiveTerminal::For {
-            init,
-            loop_block,
-            update,
-            ..
-        } => {
-            collect_scope_declarations(init, out);
-            collect_scope_declarations(loop_block, out);
-            if let Some(u) = update {
-                collect_scope_declarations(u, out);
-            }
-        }
-        ReactiveTerminal::ForOf {
-            init, loop_block, ..
-        }
-        | ReactiveTerminal::ForIn {
-            init, loop_block, ..
-        } => {
-            collect_scope_declarations(init, out);
-            collect_scope_declarations(loop_block, out);
-        }
-        ReactiveTerminal::Label { block, .. } => {
-            collect_scope_declarations(block, out);
-        }
-        ReactiveTerminal::Try { block, handler, .. } => {
-            collect_scope_declarations(block, out);
-            collect_scope_declarations(handler, out);
-        }
-        _ => {}
-    }
 }
 
 fn crate_label_name(block_id: BlockId) -> &'static str {
