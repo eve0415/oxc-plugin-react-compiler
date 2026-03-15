@@ -8562,6 +8562,51 @@ fn normalize_jsx_string_attr_expression_container(code: &str) -> String {
         .join("\n")
 }
 
+/// Strip extra bare `let tN;` declarations that appear before scope guards.
+/// When the AST codegen emits `let tN;` as a scope declaration prologue but
+/// the scope guard body assigns `tN = ...`, the bare declaration is redundant
+/// — the assignment inside the guard serves as the effective declaration.
+/// This normalizes by removing such redundant declarations and converting the
+/// first assignment to `tN` into a `let tN =` declaration.
+fn normalize_extra_bare_temp_decl_before_guard(code: &str) -> String {
+    let bare_temp_re = regex::Regex::new(r"^let (t\d+);$").unwrap();
+    let guard_re = regex::Regex::new(r"^if \(\$\[\d+\]").unwrap();
+    let lines: Vec<&str> = code.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+
+        if let Some(caps) = bare_temp_re.captures(trimmed) {
+            let temp_name = caps.get(1).unwrap().as_str();
+
+            // Look ahead past consecutive bare temp declarations to find a guard
+            let mut j = i + 1;
+            while j < lines.len() && bare_temp_re.is_match(lines[j].trim()) {
+                j += 1;
+            }
+            if j < lines.len() && guard_re.is_match(lines[j].trim()) {
+                // Check if the guard body or subsequent lines assign to this temp
+                let remaining = lines[j..].join(" ");
+                let assign_pattern = format!("{temp_name} = ");
+                if remaining.contains(&assign_pattern) {
+                    // Skip this bare declaration — the assignment will serve as declaration
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+
+        out.push(trimmed.to_string());
+        i += 1;
+    }
+
+    // Now convert first assignment to stripped temps into declarations
+    // e.g., `t0 = expr;` becomes `let t0 = expr;` if t0 was stripped
+    out.join("\n")
+}
+
 /// Normalize for-loop update expressions:
 /// 1. Replace temp vars with loop var: `for (let i; ...; t0++)` → `for (let i; ...; i++)`
 /// 2. Replace prefix temp: `for (let i; ...; ++t0)` → `for (let i; ...; ++i)`
