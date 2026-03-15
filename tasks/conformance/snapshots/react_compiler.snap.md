@@ -1,6 +1,6 @@
 # React Compiler Conformance — 97.1% parity rate
 
-**1701** parity_success, **51** parity_failure, **0** skipped
+**1702** parity_success, **50** parity_failure, **0** skipped
 
 ## Failed
 
@@ -47,7 +47,6 @@
 - `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`: Output mismatch
 - `repro-unreachable-code-early-return-in-useMemo`: Output mismatch
 - `sequence-expression`: Output mismatch
-- `simple`: Output mismatch
 - `switch`: Output mismatch
 - `todo-granular-iterator-semantics`: Output mismatch
 - `try-catch-try-value-modified-in-catch`: Output mismatch
@@ -1494,6 +1493,7 @@
 - `shapes-object-key`
 - `should-bailout-without-compilation-annotation-mode`
 - `should-bailout-without-compilation-infer-mode`
+- `simple`
 - `simple-alias`
 - `simple-function-1`
 - `simple-scope`
