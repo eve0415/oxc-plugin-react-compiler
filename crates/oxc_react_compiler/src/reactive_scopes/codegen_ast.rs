@@ -1654,7 +1654,8 @@ fn codegen_reactive_scope<'a>(
     let mut stmts = Vec::new();
 
     // Emit declarations for scope-declared variables (before the memoization guard).
-    let decl_names: Vec<(String, IdentifierId)> = scope
+    // Sort by name for deterministic output matching upstream.
+    let mut decl_names: Vec<(String, IdentifierId)> = scope
         .declarations
         .iter()
         .filter_map(|(id, decl)| {
@@ -1662,6 +1663,7 @@ fn codegen_reactive_scope<'a>(
             Some((name, *id))
         })
         .collect();
+    decl_names.sort_by(|a, b| a.0.cmp(&b.0));
 
     for (name, id) in &decl_names {
         if !cx.declared.contains(id) {

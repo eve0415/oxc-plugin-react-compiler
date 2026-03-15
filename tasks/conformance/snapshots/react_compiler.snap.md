@@ -1,6 +1,6 @@
-# React Compiler Conformance — 74.1% parity rate
+# React Compiler Conformance — 75.1% parity rate
 
-**1298** parity_success, **454** parity_failure, **0** skipped
+**1316** parity_success, **436** parity_failure, **0** skipped
 
 ## Failed
 
@@ -28,7 +28,6 @@
 - `allow-ref-initialization-undefined`: Expected upstream bailout (untransformed output), but compiler transformed output
 - `allow-ref-lazy-initialization-with-logical`: Output mismatch
 - `array-at-closure`: Output mismatch
-- `array-property-call`: Output mismatch
 - `assume-invoked/conditional-call-chain`: Output mismatch
 - `assume-invoked/function-with-conditional-callsite-in-another-function`: Output mismatch
 - `babel-repro-compact-negative-number`: Output mismatch
@@ -75,7 +74,6 @@
 - `destructure-default-array-with-unary`: Output mismatch
 - `destructure-in-branch-ssa`: Output mismatch
 - `destructure-object-declaration-to-context-var`: Output mismatch
-- `destructuring`: Output mismatch
 - `destructuring-array-default`: Output mismatch
 - `destructuring-assignment-array-default`: Output mismatch
 - `destructuring-mixed-scope-and-local-variables-with-default`: Output mismatch
@@ -85,7 +83,6 @@
 - `do-while-compound-test`: Output mismatch
 - `do-while-early-unconditional-break`: Output mismatch
 - `dominator`: Output mismatch
-- `dont-merge-if-dep-is-inner-declaration-of-previous-scope`: Output mismatch
 - `empty-catch-statement`: Output mismatch
 - `escape-analysis-logical`: Output mismatch
 - `escape-analysis-not-conditional-test`: Expected upstream bailout (untransformed output), but compiler transformed output
@@ -130,14 +127,12 @@
 - `functionexpr–conditional-access`: Output mismatch
 - `gating/codegen-instrument-forget-gating-test`: Output mismatch
 - `gating/gating-test-export-function-and-default`: Output mismatch
-- `global-types/set-constructor-arg`: Output mismatch
 - `hoisted-declaration-with-scope`: Output mismatch
 - `hoisting-setstate-captured-indirectly-jsx`: Output mismatch
 - `hook-inside-logical-expression`: Expected upstream bailout (untransformed output), but compiler transformed output
 - `hook-ref-callback`: Output mismatch
 - `idx-no-outlining`: Output mismatch
 - `import-as-local`: Output mismatch
-- `incompatible-destructuring-kinds`: Output mismatch
 - `infer-compile-hooks-with-multiple-params`: Output mismatch
 - `infer-effect-dependencies/helper-nonreactive`: Output mismatch
 - `infer-effect-dependencies/import-namespace-useEffect`: Output mismatch
@@ -160,7 +155,6 @@
 - `infer-effect-dependencies/reactive-variable`: Output mismatch
 - `infer-sequential-optional-chain-nonnull`: Output mismatch
 - `inline-jsx-transform`: Output mismatch
-- `inner-memo-value-not-promoted-to-outer-scope-dynamic`: Output mismatch
 - `jsx-attribute-with-jsx-element-value`: Output mismatch
 - `jsx-attribute-with-jsx-fragment-value.flow`: Output mismatch
 - `jsx-lowercase-localvar-memberexpr-in-lambda`: Output mismatch
@@ -180,12 +174,6 @@
 - `jsx-tag-evaluation-order-non-global`: Output mismatch
 - `jsx-ternary-local-variable`: Output mismatch
 - `jump-poisoned/loop-break-in-scope`: Output mismatch
-- `jump-poisoned/reduce-if-nonexhaustive-poisoned-deps`: Output mismatch
-- `jump-poisoned/reduce-if-nonexhaustive-poisoned-deps1`: Output mismatch
-- `jump-poisoned/return-in-scope`: Output mismatch
-- `jump-poisoned/return-poisons-outer-scope`: Output mismatch
-- `jump-unpoisoned/reduce-if-exhaustive-nonpoisoned-deps`: Output mismatch
-- `jump-unpoisoned/reduce-if-exhaustive-nonpoisoned-deps1`: Output mismatch
 - `labeled-break-within-label-loop`: Output mismatch
 - `lambda-array-access-member-expr-captured`: Output mismatch
 - `log-pruned-memoization`: Output mismatch
@@ -224,7 +212,6 @@
 - `new-mutability/useCallback-reordering-deplist-controlflow`: Output mismatch
 - `new-mutability/useCallback-reordering-depslist-assignment`: Output mismatch
 - `new-mutability/useMemo-reordering-depslist-assignment`: Output mismatch
-- `nonmutating-capture-in-unsplittable-memo-block`: Output mismatch
 - `nonoptional-load-from-optional-memberexpr`: Output mismatch
 - `nullable-objects/bug-invalid-array-map-manual`: Output mismatch
 - `object-expression-computed-member`: Output mismatch
@@ -302,7 +289,6 @@
 - `reassigned-phi-in-returned-function-expression`: Output mismatch
 - `reassignment-separate-scopes`: Output mismatch
 - `recursive-function-expression`: Output mismatch
-- `reduce-reactive-cond-deps-return-in-scope`: Output mismatch
 - `reduce-reactive-deps/cfg-condexpr`: Output mismatch
 - `reduce-reactive-deps/conditional-member-expr`: Output mismatch
 - `reduce-reactive-deps/conditional-member-expr`: Output mismatch
@@ -315,7 +301,6 @@
 - `reduce-reactive-deps/memberexpr-join-optional-chain2`: Output mismatch
 - `reduce-reactive-deps/memberexpr-join-optional-chain2`: Output mismatch
 - `reduce-reactive-deps/merge-uncond-optional-chain-and-cond`: Output mismatch
-- `reduce-reactive-deps/reduce-if-exhaustive-poisoned-deps`: Output mismatch
 - `reduce-reactive-deps/todo-infer-function-uncond-optionals-hoisted`: Output mismatch
 - `reduce-reactive-deps/todo-infer-function-uncond-optionals-hoisted`: Output mismatch
 - `reduce-reactive-deps/todo-merge-ssa-phi-access-nodes`: Output mismatch
@@ -350,7 +335,6 @@
 - `repro-propagate-type-of-ternary-nested`: Output mismatch
 - `repro-reassign-props`: Output mismatch
 - `repro-reassign-to-variable-without-mutable-range`: Output mismatch
-- `repro-ref-mutable-range`: Output mismatch
 - `repro-scope-missing-mutable-range`: Output mismatch
 - `repro-separate-scopes-for-divs`: Output mismatch
 - `repro-slow-validate-preserve-memo`: Output mismatch
@@ -414,11 +398,9 @@
 - `transform-fire/shared-hook-calls`: Output mismatch
 - `transitive-freeze-function-expressions`: Output mismatch
 - `try-catch-alias-try-values`: Output mismatch
-- `try-catch-in-nested-scope`: Output mismatch
 - `try-catch-try-value-modified-in-catch`: Output mismatch
 - `try-catch-try-value-modified-in-catch-escaping`: Output mismatch
 - `try-catch-with-catch-param`: Output mismatch
-- `try-catch-with-return`: Output mismatch
 - `ts-as-expression-default-value`: Output mismatch
 - `ts-instantiation-default-param`: Output mismatch
 - `ts-non-null-expression-default-value`: Output mismatch
@@ -501,6 +483,7 @@
 - `array-pattern-params`
 - `array-pattern-spread-creates-array`
 - `array-properties`
+- `array-property-call`
 - `array-push-effect`
 - `array-spread-later-mutated`
 - `array-spread-mutable-iterator`
@@ -662,6 +645,7 @@
 - `destructure-param-string-literal-key-invalid-identifier`
 - `destructure-string-literal-invalid-identifier-property-key`
 - `destructure-string-literal-property-key`
+- `destructuring`
 - `destructuring-array-param-default`
 - `destructuring-assignment`
 - `destructuring-default-at-array-hole`
@@ -679,6 +663,7 @@
 - `do-while-simple`
 - `dont-memoize-primitive-function-call-non-escaping`
 - `dont-memoize-primitive-function-call-non-escaping-useMemo`
+- `dont-merge-if-dep-is-inner-declaration-of-previous-scope`
 - `dont-merge-overlapping-scopes-store-const-used-later`
 - `dont-merge-overlapping-scopes-with-intermediate-reassignment`
 - `drop-methodcall-usecallback`
@@ -992,6 +977,7 @@
 - `global-types/repro-array-map-known-mutate-shape`
 - `global-types/set-add-mutate`
 - `global-types/set-constructor`
+- `global-types/set-constructor-arg`
 - `global-types/set-copy-constructor-mutate`
 - `global-types/set-for-of-iterate-values`
 - `global-types/set-foreach-mutate`
@@ -1045,6 +1031,7 @@
 - `immutable-hooks`
 - `inadvertent-mutability-readonly-class`
 - `inadvertent-mutability-readonly-lambda`
+- `incompatible-destructuring-kinds`
 - `independent`
 - `independent-across-if`
 - `independently-memoize-object-property`
@@ -1070,6 +1057,7 @@
 - `infer-property-delete`
 - `infer-skip-components-without-hooks-or-jsx`
 - `infer-types-through-type-cast.flow`
+- `inner-memo-value-not-promoted-to-outer-scope-dynamic`
 - `inner-memo-value-not-promoted-to-outer-scope-static`
 - `interdependent`
 - `interdependent-across-if`
@@ -1102,9 +1090,15 @@
 - `jsx-reactive-local-variable-member-expr`
 - `jump-poisoned/break-in-scope`
 - `jump-poisoned/break-poisons-outer-scope`
+- `jump-poisoned/reduce-if-nonexhaustive-poisoned-deps`
+- `jump-poisoned/reduce-if-nonexhaustive-poisoned-deps1`
+- `jump-poisoned/return-in-scope`
+- `jump-poisoned/return-poisons-outer-scope`
 - `jump-unpoisoned/else-branch-scope-unpoisoned`
 - `jump-unpoisoned/jump-target-within-scope-label`
 - `jump-unpoisoned/jump-target-within-scope-loop-break`
+- `jump-unpoisoned/reduce-if-exhaustive-nonpoisoned-deps`
+- `jump-unpoisoned/reduce-if-exhaustive-nonpoisoned-deps1`
 - `jump-unpoisoned/return-before-scope-starts`
 - `jump-unpoisoned/throw-before-scope-starts`
 - `labeled-break-within-label-switch`
@@ -1204,6 +1198,7 @@
 - `no-flow-bailout-unrelated`
 - `noAlias-filter-on-array-prop`
 - `non-null-assertion`
+- `nonmutating-capture-in-unsplittable-memo-block`
 - `nonreactive-noescaping-dependency-can-inline-into-consuming-scope`
 - `nullable-objects/array-map-named-callback`
 - `nullable-objects/array-map-named-callback-cross-context`
@@ -1391,6 +1386,7 @@
 - `recursive-function`
 - `reduce-reactive-cond-deps-break-in-scope`
 - `reduce-reactive-cond-deps-cfg-nested-testifelse`
+- `reduce-reactive-cond-deps-return-in-scope`
 - `reduce-reactive-deps/cfg-ifelse`
 - `reduce-reactive-deps/cfg-nested-ifelse`
 - `reduce-reactive-deps/cfg-nested-ifelse-missing`
@@ -1414,6 +1410,7 @@
 - `reduce-reactive-deps/no-uncond`
 - `reduce-reactive-deps/promote-uncond`
 - `reduce-reactive-deps/promote-uncond`
+- `reduce-reactive-deps/reduce-if-exhaustive-poisoned-deps`
 - `reduce-reactive-deps/subpath-order1`
 - `reduce-reactive-deps/subpath-order2`
 - `reduce-reactive-deps/superpath-order1`
@@ -1466,6 +1463,7 @@
 - `repro-object-fromEntries-entries`
 - `repro-object-pattern`
 - `repro-preds-undefined-try-catch-return-primitive`
+- `repro-ref-mutable-range`
 - `repro-renaming-conflicting-decls`
 - `repro-retain-source-when-bailout`
 - `repro-returned-inner-fn-mutates-context`
@@ -1648,10 +1646,12 @@
 - `trivial`
 - `try-catch`
 - `try-catch-empty-try`
+- `try-catch-in-nested-scope`
 - `try-catch-maybe-null-dependency`
 - `try-catch-mutate-outer-value`
 - `try-catch-try-immediately-returns`
 - `try-catch-try-immediately-throws-after-constant-propagation`
+- `try-catch-with-return`
 - `try-catch-within-function-expression`
 - `try-catch-within-function-expression-returns-caught-value`
 - `try-catch-within-mutable-range`
