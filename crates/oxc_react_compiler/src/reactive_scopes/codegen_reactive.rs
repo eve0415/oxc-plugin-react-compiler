@@ -27,8 +27,8 @@ use crate::hir::object_shape::BUILT_IN_ARRAY_ID;
 use crate::hir::types::*;
 use crate::hir::visitors;
 
-pub const MEMO_CACHE_SENTINEL: &str = "react.memo_cache_sentinel";
-pub const EARLY_RETURN_SENTINEL: &str = "react.early_return_sentinel";
+pub use super::codegen_ast::EARLY_RETURN_SENTINEL;
+pub use super::codegen_ast::MEMO_CACHE_SENTINEL;
 pub const HOOK_GUARD_IDENT: &str = "$dispatcherGuard";
 pub(crate) const INTERNAL_BLANK_LINE_MARKER: &str = "__REACT_COMPILER_INTERNAL_BLANK_LINE_MARKER__";
 pub(crate) const HOOK_GUARD_PUSH: u8 = 0;

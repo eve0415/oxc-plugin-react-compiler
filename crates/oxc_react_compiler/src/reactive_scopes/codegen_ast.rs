@@ -17,7 +17,10 @@ use crate::error::CompilerError;
 use crate::hir::types::*;
 use crate::reactive_scopes::build_codegen_shape::{CachePrologue, FastRefreshPrologue};
 
-use super::codegen_reactive::{EARLY_RETURN_SENTINEL, MEMO_CACHE_SENTINEL};
+/// Sentinel value for uninitialized cache slots.
+pub const MEMO_CACHE_SENTINEL: &str = "react.memo_cache_sentinel";
+/// Sentinel value for early return detection.
+pub const EARLY_RETURN_SENTINEL: &str = "react.early_return_sentinel";
 
 // ---------------------------------------------------------------------------
 // Options

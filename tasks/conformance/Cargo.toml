@@ -8,6 +8,10 @@ publish = false
 
 [dependencies]
 oxc_react_compiler = { path = "../../crates/oxc_react_compiler" }
+oxc_allocator = { workspace = true }
+oxc_codegen = { workspace = true }
+oxc_parser = { workspace = true }
+oxc_span = { workspace = true }
 regex = "1.12.3"
 rayon = "1.11.0"
 serde = { version = "1.0.228", features = ["derive"] }
