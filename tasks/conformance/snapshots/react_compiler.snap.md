@@ -1,6 +1,6 @@
-# React Compiler Conformance — 89.6% parity rate
+# React Compiler Conformance — 90.6% parity rate
 
-**1569** parity_success, **183** parity_failure, **0** skipped
+**1587** parity_success, **165** parity_failure, **0** skipped
 
 ## Failed
 
@@ -12,7 +12,6 @@
 - `bailout-retry/bailout-validate-preserve-memo`: Output mismatch
 - `bailout-retry/bailout-validate-prop-write`: Output mismatch
 - `bailout-retry/bailout-validate-ref-current-access`: Output mismatch
-- `bailout-retry/mutate-after-useeffect-granular-access`: Output mismatch
 - `bailout-retry/mutate-after-useeffect-optional-chain`: Output mismatch
 - `bug-ref-prefix-postfix-operator`: Output mismatch
 - `call-args-destructuring-assignment`: Output mismatch
@@ -67,7 +66,6 @@
 - `for-logical`: Output mismatch
 - `for-loop-let-undefined-decl`: Expected upstream bailout (untransformed output), but compiler transformed output
 - `for-multiple-variable-declarations-in-initializer`: Output mismatch
-- `for-return`: Output mismatch
 - `for-with-assignment-as-update`: Output mismatch
 - `function-param-assignment-pattern`: Output mismatch
 - `hoisting-repro-variable-used-in-assignment`: Output mismatch
@@ -89,12 +87,10 @@
 - `jsx-outlining-with-non-jsx-children`: Output mismatch
 - `jsx-string-attribute-expression-container`: Output mismatch
 - `jsx-tag-evaluation-order-non-global`: Output mismatch
-- `log-pruned-memoization`: Output mismatch
 - `lower-context-access-hook-guard`: Output mismatch
 - `memoize-value-block-value-logical`: Output mismatch
 - `meta-isms/repro-cx-assigned-to-temporary`: Output mismatch
 - `meta-isms/repro-cx-namespace-assigned-to-temporary`: Output mismatch
-- `mixedreadonly-mutating-map`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
 - `nested-optional-member-expr`: Output mismatch
 - `new-mutability/mutate-after-useeffect-optional-chain`: Output mismatch
@@ -114,7 +110,6 @@
 - `primitive-reassigned-loop-force-scopes-enabled`: Output mismatch
 - `propagate-scope-deps-hir-fork/repro-invariant`: Output mismatch
 - `propagate-scope-deps-hir-fork/repro-scope-missing-mutable-range`: Output mismatch
-- `propagate-scope-deps-hir-fork/ssa-cascading-eliminated-phis`: Output mismatch
 - `propagate-scope-deps-hir-fork/ssa-renaming-ternary`: Output mismatch
 - `propagate-scope-deps-hir-fork/ssa-renaming-ternary-destruction`: Output mismatch
 - `propagate-scope-deps-hir-fork/ssa-renaming-ternary-destruction-with-mutation`: Output mismatch
@@ -126,17 +121,11 @@
 - `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch`: Output mismatch
 - `property-call-evaluation-order`: Output mismatch
 - `reactive-control-dependency-for-init`: Output mismatch
-- `reactive-control-dependency-for-test`: Output mismatch
 - `reactive-control-dependency-for-update`: Output mismatch
-- `reactive-control-dependency-from-interleaved-reactivity-for-init`: Output mismatch
-- `reactive-control-dependency-from-interleaved-reactivity-for-test`: Output mismatch
 - `reactive-control-dependency-from-interleaved-reactivity-for-update`: Output mismatch
-- `reactive-control-dependency-reactive-after-fixpoint`: Output mismatch
 - `readonly-object-method-calls-mutable-lambda`: Output mismatch
 - `reassigned-phi-in-returned-function-expression`: Output mismatch
-- `reassignment-separate-scopes`: Output mismatch
 - `recursive-function-expression`: Output mismatch
-- `reduce-reactive-deps/hoist-deps-diff-ssa-instance`: Output mismatch
 - `reduce-reactive-deps/todo-infer-function-uncond-optionals-hoisted`: Output mismatch
 - `reduce-reactive-deps/todo-infer-function-uncond-optionals-hoisted`: Output mismatch
 - `ref-current-optional-field-no-added-to-dep`: Output mismatch
@@ -151,24 +140,18 @@
 - `repro-mutate-ref-in-function-passed-to-hook`: Output mismatch
 - `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`: Output mismatch
 - `repro-propagate-type-of-ternary-nested`: Output mismatch
-- `repro-reassign-props`: Output mismatch
 - `repro-scope-missing-mutable-range`: Output mismatch
 - `repro-unmerged-fbt-call-merge-overlapping-reactive-scopes`: Output mismatch
 - `repro-unreachable-code-early-return-in-useMemo`: Output mismatch
 - `reverse-postorder`: Output mismatch
-- `same-variable-as-dep-and-redeclare`: Output mismatch
-- `same-variable-as-dep-and-redeclare-maybe-frozen`: Output mismatch
 - `sequence-expression`: Output mismatch
 - `simple`: Output mismatch
-- `ssa-cascading-eliminated-phis`: Output mismatch
-- `ssa-renaming`: Output mismatch
 - `ssa-renaming-ternary`: Output mismatch
 - `ssa-renaming-ternary-destruction`: Output mismatch
 - `ssa-renaming-ternary-destruction-with-mutation`: Output mismatch
 - `ssa-renaming-ternary-with-mutation`: Output mismatch
 - `ssa-renaming-unconditional-ternary`: Output mismatch
 - `ssa-renaming-unconditional-ternary-with-mutation`: Output mismatch
-- `ssa-renaming-via-destructuring`: Output mismatch
 - `switch`: Output mismatch
 - `switch-non-final-default`: Output mismatch
 - `switch-with-fallthrough`: Output mismatch
@@ -182,7 +165,6 @@
 - `type-inference-array-from`: Output mismatch
 - `unused-conditional`: Output mismatch
 - `update-expression-in-sequence`: Output mismatch
-- `useMemo-simple-preserved-nomemo`: Output mismatch
 - `useState-and-other-hook-unpruned-dependency`: Output mismatch
 - `useState-pruned-dependency-change-detect`: Output mismatch
 - `useState-unpruned-dependency`: Output mismatch
@@ -294,6 +276,7 @@
 - `bailout-retry/error.use-no-memo`
 - `bailout-retry/infer-deps-on-retry`
 - `bailout-retry/mutate-after-useeffect`
+- `bailout-retry/mutate-after-useeffect-granular-access`
 - `bailout-retry/mutate-after-useeffect-ref-access`
 - `bailout-retry/no-fire-todo-syntax-shouldnt-throw`
 - `block-scoping-switch-dead-code`
@@ -730,6 +713,7 @@
 - `for-of-mutate-item-of-local-collection`
 - `for-of-nonmutating-loop-local-collection`
 - `for-of-simple`
+- `for-return`
 - `frozen-after-alias`
 - `function-declaration-reassign`
 - `function-declaration-redeclare`
@@ -944,6 +928,7 @@
 - `lambda-reassign-primitive`
 - `lambda-reassign-shadowed-primitive`
 - `lambda-return-expression`
+- `log-pruned-memoization`
 - `logical-expression`
 - `logical-expression-object`
 - `logical-reorder.flow`
@@ -971,6 +956,7 @@
 - `method-call`
 - `method-call-computed`
 - `method-call-fn-call`
+- `mixedreadonly-mutating-map`
 - `module-scoped-bindings`
 - `multi-directive`
 - `multiple-calls-to-hoisted-callback-from-other-callback`
@@ -1219,6 +1205,7 @@
 - `propagate-scope-deps-hir-fork/phi-type-inference-array-push-consecutive-phis`
 - `propagate-scope-deps-hir-fork/phi-type-inference-property-store`
 - `propagate-scope-deps-hir-fork/reactive-dependencies-non-optional-properties-inside-optional-chain`
+- `propagate-scope-deps-hir-fork/ssa-cascading-eliminated-phis`
 - `propagate-scope-deps-hir-fork/ssa-leave-case`
 - `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-via-destructuring-with-mutation`
@@ -1241,17 +1228,21 @@
 - `react-namespace`
 - `reactive-control-dependency-do-while-indirect`
 - `reactive-control-dependency-do-while-test`
+- `reactive-control-dependency-for-test`
 - `reactive-control-dependency-forin-collection`
 - `reactive-control-dependency-forof-collection`
 - `reactive-control-dependency-from-interleaved-reactivity-do-while`
 - `reactive-control-dependency-from-interleaved-reactivity-for-in`
+- `reactive-control-dependency-from-interleaved-reactivity-for-init`
 - `reactive-control-dependency-from-interleaved-reactivity-for-of`
+- `reactive-control-dependency-from-interleaved-reactivity-for-test`
 - `reactive-control-dependency-from-interleaved-reactivity-if`
 - `reactive-control-dependency-from-interleaved-reactivity-switch`
 - `reactive-control-dependency-from-interleaved-reactivity-while`
 - `reactive-control-dependency-if`
 - `reactive-control-dependency-on-context-variable`
 - `reactive-control-dependency-phi-setState-type`
+- `reactive-control-dependency-reactive-after-fixpoint`
 - `reactive-control-dependency-switch-case-test`
 - `reactive-control-dependency-switch-condition`
 - `reactive-control-dependency-via-mutation-if`
@@ -1283,6 +1274,7 @@
 - `reassign-primitive-in-context`
 - `reassignment`
 - `reassignment-conditional`
+- `reassignment-separate-scopes`
 - `recursive-function`
 - `reduce-reactive-cond-deps-break-in-scope`
 - `reduce-reactive-cond-deps-cfg-nested-testifelse`
@@ -1299,6 +1291,7 @@
 - `reduce-reactive-deps/conditional-member-expr`
 - `reduce-reactive-deps/context-var-granular-dep`
 - `reduce-reactive-deps/edge-case-merge-uncond-optional-chain-and-cond`
+- `reduce-reactive-deps/hoist-deps-diff-ssa-instance`
 - `reduce-reactive-deps/hoist-deps-diff-ssa-instance1`
 - `reduce-reactive-deps/infer-function-cond-access-local-var`
 - `reduce-reactive-deps/infer-function-cond-access-not-hoisted`
@@ -1392,6 +1385,7 @@
 - `repro-preds-undefined-try-catch-return-primitive`
 - `repro-preserve-memoization-inner-destructured-value-mistaken-as-dependency`
 - `repro-propagate-type-of-ternary-jsx`
+- `repro-reassign-props`
 - `repro-reassign-to-variable-without-mutable-range`
 - `repro-ref-mutable-range`
 - `repro-renaming-conflicting-decls`
@@ -1507,6 +1501,8 @@
 - `rules-of-hooks/todo.invalid.invalid-rules-of-hooks-ddeca9708b63`
 - `rules-of-hooks/todo.invalid.invalid-rules-of-hooks-e675f0a672d8`
 - `rules-of-hooks/todo.invalid.invalid-rules-of-hooks-e69ffce323c3`
+- `same-variable-as-dep-and-redeclare`
+- `same-variable-as-dep-and-redeclare-maybe-frozen`
 - `script-source-type`
 - `sequential-destructuring-assignment-to-scope-declarations`
 - `sequential-destructuring-both-mixed-local-and-scope-declaration`
@@ -1521,6 +1517,7 @@
 - `ssa-arrayexpression`
 - `ssa-call-jsx`
 - `ssa-call-jsx-2`
+- `ssa-cascading-eliminated-phis`
 - `ssa-complex-multiple-if`
 - `ssa-complex-single-if`
 - `ssa-for`
@@ -1548,7 +1545,9 @@
 - `ssa-property-mutate-alias`
 - `ssa-reassign`
 - `ssa-reassign-in-rval`
+- `ssa-renaming`
 - `ssa-renaming-unconditional-with-mutation`
+- `ssa-renaming-via-destructuring`
 - `ssa-renaming-via-destructuring-with-mutation`
 - `ssa-renaming-with-mutation`
 - `ssa-return`
@@ -1739,6 +1738,7 @@
 - `useMemo-return-empty`
 - `useMemo-simple`
 - `useMemo-simple-preserved`
+- `useMemo-simple-preserved-nomemo`
 - `useMemo-switch-no-fallthrough`
 - `useMemo-switch-return`
 - `useMemo-with-optional`

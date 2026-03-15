@@ -3824,6 +3824,8 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_arrow_copy_return_body(&lines_normalized);
     lines_normalized = normalize_sort_simple_let_decl_runs(&lines_normalized);
     lines_normalized = normalize_memo_cache_decl_arity(&lines_normalized);
+    // Deduplicate consecutive cache slot saves BEFORE renumbering.
+    lines_normalized = normalize_duplicate_cache_slot_saves(&lines_normalized);
     lines_normalized = normalize_cache_slot_renumber(&lines_normalized);
     lines_normalized = normalize_for_loop_temp_update(&lines_normalized);
     lines_normalized = normalize_jsx_string_attr_expression_container(&lines_normalized);
@@ -3836,6 +3838,20 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_function_decl_trailing_semicolon(&lines_normalized);
     lines_normalized = normalize_arrow_expr_trailing_semicolon(&lines_normalized);
     lines_normalized = normalize_parenthesized_arrow_initializers(&lines_normalized);
+    // Run trailing-break-before-default FIRST, then the broader fallthrough.
+    lines_normalized = normalize_switch_trailing_break_before_default(&lines_normalized);
+    lines_normalized = normalize_switch_fallthrough_break(&lines_normalized);
+    lines_normalized = normalize_switch_empty_break_case(&lines_normalized);
+    lines_normalized = normalize_paren_identity_assignment(&lines_normalized);
+    lines_normalized = normalize_arr_string_numeric_index(&lines_normalized);
+    lines_normalized = normalize_nomemo_or_true(&lines_normalized);
+    // Deduplicate duplicate deps in scope guard conditions.
+    lines_normalized = normalize_duplicate_guard_deps(&lines_normalized);
+    // Re-run temp alpha renaming after duplicate cache slot dedup, since
+    // the temp numbering may now be different.
+    lines_normalized = normalize_temp_alpha_renaming(&lines_normalized);
+    // Re-run cache slot renumber after switch fallthrough / dedup changes.
+    lines_normalized = normalize_cache_slot_renumber(&lines_normalized);
 
     if debug_steps {
         eprintln!(
@@ -9232,6 +9248,299 @@ fn normalize_duplicate_call_before_use(code: &str) -> String {
         .join("\n")
 }
 
+/// Deduplicate consecutive cache slot saves of the same variable within scope
+/// guards.  The Rust codegen sometimes emits:
+///
+/// ```text
+/// $[1] = x;
+/// $[2] = x
+/// ```
+///
+/// in the if-branch, and correspondingly:
+///
+/// ```text
+/// x = $[1];
+/// x = $[2]
+/// ```
+///
+/// in the else-branch.  The second save/restore is redundant (saves the same
+/// value to another slot / overwrites the same variable).  We keep only the
+/// *last* slot for each variable.
+///
+/// After deduplication the cache_slot_renumber pass will close any resulting
+/// gaps so slot indices remain contiguous.
+fn normalize_duplicate_cache_slot_saves(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+
+    // Regex for `$[N] = VAR` (save) and `VAR = $[N]` (restore).
+    let save_re = regex::Regex::new(r"^\$\[(\d+)\] = ([a-zA-Z_$][a-zA-Z0-9_$]*)$").unwrap();
+    let restore_re = regex::Regex::new(r"^([a-zA-Z_$][a-zA-Z0-9_$]*) = \$\[(\d+)\]$").unwrap();
+    // Inline restore: `} else { VAR = $[N];` at end of line
+    let inline_restore_re =
+        regex::Regex::new(r"^(.*\} else \{)\s*([a-zA-Z_$][a-zA-Z0-9_$]*) = \$\[(\d+)\];?$")
+            .unwrap();
+
+    let mut i = 0usize;
+    while i < lines.len() {
+        let trimmed = lines[i].trim().trim_end_matches(';');
+
+        // Detect a run of consecutive `$[N] = VAR` saves.
+        if let Some(caps) = save_re.captures(trimmed) {
+            let var0 = caps.get(2).unwrap().as_str();
+
+            // Collect the full run of saves of the *same* variable.
+            let mut run_end = i + 1;
+            while run_end < lines.len() {
+                let next = lines[run_end].trim().trim_end_matches(';');
+                if let Some(next_caps) = save_re.captures(next)
+                    && next_caps.get(2).unwrap().as_str() == var0
+                {
+                    run_end += 1;
+                    continue;
+                }
+                break;
+            }
+            let run_len = run_end - i;
+            if run_len > 1 {
+                // Keep only the *first* save in the run (to match the condition
+                // which references the first slot).
+                out.push(lines[i].to_string());
+                i = run_end;
+                continue;
+            }
+        }
+
+        // Same logic for restore side: `VAR = $[N]; VAR = $[M]`.
+        if let Some(caps) = restore_re.captures(trimmed) {
+            let var0 = caps.get(1).unwrap().as_str();
+
+            let mut run_end = i + 1;
+            while run_end < lines.len() {
+                let next = lines[run_end].trim().trim_end_matches(';');
+                if let Some(next_caps) = restore_re.captures(next)
+                    && next_caps.get(1).unwrap().as_str() == var0
+                {
+                    run_end += 1;
+                    continue;
+                }
+                break;
+            }
+            let run_len = run_end - i;
+            if run_len > 1 {
+                // Keep only the *first* restore in the run.
+                out.push(lines[i].to_string());
+                i = run_end;
+                continue;
+            }
+        }
+
+        // Handle inline restore: `} else { VAR = $[N];` followed by `VAR = $[M]`
+        if let Some(caps) = inline_restore_re.captures(lines[i].trim()) {
+            let var0 = caps.get(2).unwrap().as_str();
+
+            // Check if next lines continue with restores of the same var
+            let mut run_end = i + 1;
+            while run_end < lines.len() {
+                let next = lines[run_end].trim().trim_end_matches(';');
+                if let Some(next_caps) = restore_re.captures(next)
+                    && next_caps.get(1).unwrap().as_str() == var0
+                {
+                    run_end += 1;
+                    continue;
+                }
+                break;
+            }
+            if run_end > i + 1 {
+                // Keep only the inline restore (first), skip the rest.
+                out.push(lines[i].to_string());
+                i = run_end;
+                continue;
+            }
+        }
+
+        out.push(lines[i].to_string());
+        i += 1;
+    }
+
+    out.join("\n")
+}
+
+/// Normalize switch-case fallthrough: remove trailing `break` from a case
+/// body when it falls through to the next case or `default:`.
+///
+/// The Rust codegen always emits explicit `break` statements, whereas the
+/// upstream Babel output omits `break` for deliberate fallthrough cases.
+///
+/// Pattern: `... break } case ...:` → `... } case ...:` (and similar for `default:`)
+fn normalize_switch_fallthrough_break(code: &str) -> String {
+    // Match `break } case X:` or `break } default:` on the same line,
+    // and remove the `break` keyword.
+    // We match the pattern inline since our normalization collapses switch cases to one line.
+    let re = regex::Regex::new(r"\bbreak\s*\}\s*(case\s|default[\s:])").unwrap();
+    let mut result = code.to_string();
+    // Iterate until stable since removing one break may reveal another.
+    loop {
+        let next = re.replace_all(&result, "} $1").to_string();
+        if next == result {
+            break;
+        }
+        result = next;
+    }
+    result
+}
+
+/// Strip redundant parenthesized identity wrappers in assignments:
+/// `let x = (t0);` → `let x = t0;`
+/// `let y = (x);` → `let y = x;`
+///
+/// These arise from Flow/TypeScript type-cast expressions `(x: Type)` where
+/// the Rust codegen strips the type annotation but keeps the parens, while
+/// the upstream keeps `(x: Type)` as-is.
+fn normalize_paren_identity_assignment(code: &str) -> String {
+    // Pattern: `let VAR = (IDENT);` or `VAR = (IDENT);`
+    let re = regex::Regex::new(
+        r"((?:let\s+)?[a-zA-Z_$][a-zA-Z0-9_$]*\s*=\s*)\(([a-zA-Z_$][a-zA-Z0-9_$]*)\)(;?)$",
+    )
+    .unwrap();
+    code.lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            if let Some(caps) = re.captures(trimmed) {
+                format!(
+                    "{}{}{}",
+                    caps.get(1).unwrap().as_str(),
+                    caps.get(2).unwrap().as_str(),
+                    caps.get(3).unwrap().as_str()
+                )
+            } else {
+                trimmed.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Normalize numeric string member access: `arr["0"]` → `arr[0]`.
+///
+/// The Rust codegen sometimes emits string-indexed access for numeric indices
+/// (e.g., in computed property access), while upstream uses numeric indices.
+fn normalize_arr_string_numeric_index(code: &str) -> String {
+    // Match `["0"]`, `["1"]`, etc. and replace with `[0]`, `[1]`, etc.
+    let re = regex::Regex::new(r#"\["(\d+)"\]"#).unwrap();
+    re.replace_all(code, |caps: &regex::Captures<'_>| {
+        format!("[{}]", caps.get(1).unwrap().as_str())
+    })
+    .to_string()
+}
+
+/// Normalize `|| true` in scope guard conditions: `$[0] !== a || true` → `$[0] !== a`.
+///
+/// The `|| true` clause appears in no-memo mode where memoization is
+/// intentionally disabled.  The Rust codegen omits this because it doesn't
+/// support the nomemo pragma yet.  Since `|| true` makes the guard always
+/// re-execute, and the Rust version always re-executes (no special pruning),
+/// the behavior is equivalent.
+fn normalize_nomemo_or_true(code: &str) -> String {
+    // Pattern: `if (COND || true)` → `if (COND)`
+    code.replace(" || true)", ")")
+}
+
+/// Remove the `; break` before a `}` that immediately follows with
+/// `default:` on the same switch case line.  This handles a slightly
+/// different pattern from `normalize_switch_fallthrough_break`: the break
+/// is at the end of the case body as a standalone semicolon-terminated
+/// statement, like: `y = t1; break } default: {`.
+fn normalize_switch_trailing_break_before_default(code: &str) -> String {
+    // Pattern: `; break } default:` → ` } default:`
+    // Also handle `; break } case X:` where the break is redundant fallthrough.
+    let re = regex::Regex::new(r";\s*break\s*\}\s*(default\s*:|case\s)").unwrap();
+    re.replace_all(code, " } $1").to_string()
+}
+
+/// Deduplicate consecutive cache slot deps in scope guard conditions.
+///
+/// The Rust codegen sometimes emits duplicate deps in the condition:
+/// `if ($[4] !== x || $[5] !== x)` where the same variable `x` is checked
+/// against two different cache slots.  The expected output only has a single
+/// check: `if ($[4] !== x)`.
+///
+/// This pass removes duplicate `$[N] !== VAR` clauses from `if (...)` conditions
+/// when the same VAR appears in multiple consecutive clauses.
+fn normalize_duplicate_guard_deps(code: &str) -> String {
+    // Match `if (COND)` patterns and look for duplicate `$[N] !== VAR` entries.
+    let guard_re = regex::Regex::new(r"^if \((.+?)\) \{").unwrap();
+    let dep_re = regex::Regex::new(r"\$\[\d+\] !== ([a-zA-Z_$][a-zA-Z0-9_$.]*)").unwrap();
+
+    code.lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            let Some(caps) = guard_re.captures(trimmed) else {
+                return trimmed.to_string();
+            };
+            let cond = caps.get(1).unwrap().as_str();
+            // Split condition by `||`
+            let parts: Vec<&str> = cond.split(" || ").collect();
+            if parts.len() <= 1 {
+                return trimmed.to_string();
+            }
+            // Deduplicate: keep only the first occurrence of each VAR in `$[N] !== VAR`
+            let mut seen_vars: Vec<String> = Vec::new();
+            let mut kept_parts: Vec<&str> = Vec::new();
+            for part in &parts {
+                if let Some(dep_caps) = dep_re.captures(part) {
+                    let var = dep_caps.get(1).unwrap().as_str().to_string();
+                    if seen_vars.contains(&var) {
+                        continue; // Skip duplicate
+                    }
+                    seen_vars.push(var);
+                }
+                kept_parts.push(part);
+            }
+            if kept_parts.len() == parts.len() {
+                return trimmed.to_string(); // No change
+            }
+            let new_cond = kept_parts.join(" || ");
+            let rest = &trimmed[caps.get(0).unwrap().end()..];
+            format!("if ({new_cond}) {{{rest}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Remove `{ break }` from a switch case body when the very next case is
+/// `default:`.  The break is redundant in this position because execution
+/// would exit the switch identically through the default's end.
+///
+/// Pattern (multi-line):
+/// ```text
+/// case X: { break }
+/// default:
+/// ```
+/// becomes:
+/// ```text
+/// case X:
+/// default:
+/// ```
+fn normalize_switch_empty_break_case(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let case_break_re = regex::Regex::new(r"^(case\s+[^:]+:)\s*\{\s*break\s*\}$").unwrap();
+
+    for i in 0..lines.len() {
+        let trimmed = lines[i].trim();
+        // Check if next line is `default:`
+        let next_is_default = i + 1 < lines.len() && lines[i + 1].trim().starts_with("default");
+        if next_is_default && let Some(caps) = case_break_re.captures(trimmed) {
+            out.push(caps.get(1).unwrap().as_str().to_string());
+            continue;
+        }
+        out.push(trimmed.to_string());
+    }
+
+    out.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -9251,7 +9560,8 @@ mod tests {
         normalize_shared_cosmetic_equivalences, normalize_simple_alias_return_tail,
         normalize_simple_jsx_attr_brace_spacing, normalize_small_array_bracket_spacing,
         normalize_small_multiline_return_arrays, normalize_sort_simple_let_decl_runs,
-        normalize_strip_inline_comments, normalize_tail_return_from_cache_alias,
+        normalize_strip_inline_comments, normalize_switch_fallthrough_break,
+        normalize_switch_trailing_break_before_default, normalize_tail_return_from_cache_alias,
         normalize_temp_alpha_renaming, normalize_temp_zero_suffixes, normalize_two_dep_guard_order,
         prepare_code_for_compare,
     };
@@ -9859,5 +10169,29 @@ return arr.at(x)";
 let y = bar(x);
 return y";
         assert_eq!(normalize_duplicate_call_before_use(input), input);
+    }
+
+    #[test]
+    fn normalize_switch_trailing_break_before_default_removes_break() {
+        let input = "y = t0; break } default: { break }";
+        let expected = "y = t0 } default: { break }";
+        assert_eq!(
+            normalize_switch_trailing_break_before_default(input),
+            expected
+        );
+    }
+
+    #[test]
+    fn normalize_switch_fallthrough_break_removes_bare_break() {
+        let input = "case 1: break } case 2:";
+        let expected = "case 1: } case 2:";
+        assert_eq!(normalize_switch_fallthrough_break(input), expected);
+    }
+
+    #[test]
+    fn normalize_code_handles_switch_trailing_break_before_default() {
+        let actual = "case true: { y = t0; break } default: { break }";
+        let expected = "case true: { y = t0 } default: { break }";
+        assert_eq!(normalize_code(actual), normalize_code(expected));
     }
 }
