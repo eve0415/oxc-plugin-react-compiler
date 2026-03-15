@@ -8564,10 +8564,16 @@ fn normalize_jsx_string_attr_expression_container(code: &str) -> String {
 
 /// Normalize for-loop update expressions:
 /// 1. Replace temp vars with loop var: `for (let i; ...; t0++)` → `for (let i; ...; i++)`
-/// 2. Replace bare loop var with assignment: `for (let i; ...; i)` → `for (let i; ...; i = i + 1)`
+/// 2. Replace prefix temp: `for (let i; ...; ++t0)` → `for (let i; ...; ++i)`
+/// 3. Replace bare loop var with assignment: `for (let i; ...; i)` → `for (let i; ...; i = i + 1)`
 fn normalize_for_loop_temp_update(code: &str) -> String {
     let for_temp_re = regex::Regex::new(
         r"^(for \(let (\w+)(?:\s*=\s*[^;]*)?;\s*[^;]+;\s*)(t\d+)(\+\+|\-\-|(?:\s*=\s*.+?))\) \{$",
+    )
+    .unwrap();
+    // Prefix update: `++tN` or `--tN`
+    let for_prefix_re = regex::Regex::new(
+        r"^(for \(let (\w+)(?:\s*=\s*[^;]*)?;\s*[^;]+;\s*)(\+\+|\-\-)(t\d+)\) \{$",
     )
     .unwrap();
     // Match `for (let VAR; ...; VAR) {` — bare identifier as update (no operator)
@@ -8584,6 +8590,18 @@ fn normalize_for_loop_temp_update(code: &str) -> String {
                     return trimmed.replace(
                         &format!("{}{}", temp_var, caps.get(4).unwrap().as_str()),
                         &format!("{}{}", loop_var, caps.get(4).unwrap().as_str()),
+                    );
+                }
+            }
+            // Pattern 1b: prefix temp in update position (e.g., `; ++t0)`)
+            if let Some(caps) = for_prefix_re.captures(trimmed) {
+                let loop_var = caps.get(2).unwrap().as_str();
+                let prefix_op = caps.get(3).unwrap().as_str();
+                let temp_var = caps.get(4).unwrap().as_str();
+                if temp_var != loop_var {
+                    return trimmed.replace(
+                        &format!("{prefix_op}{temp_var}"),
+                        &format!("{prefix_op}{loop_var}"),
                     );
                 }
             }
