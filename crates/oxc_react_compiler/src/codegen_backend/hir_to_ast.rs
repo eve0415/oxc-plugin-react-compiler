@@ -1697,10 +1697,10 @@ where
     let closing_element = if jsx_children.is_empty() {
         None
     } else {
-        Some(builder.alloc_jsx_closing_element(
-            SPAN,
-            lower_jsx_element_name(builder, tag, lower_place, visiting)?,
-        ))
+        // Clone the opening name for the closing element to avoid
+        // double-consuming the tag Place's temp expression.
+        let closing_name = opening_name.clone_in(builder.allocator);
+        Some(builder.alloc_jsx_closing_element(SPAN, closing_name))
     };
 
     Some(builder.expression_jsx_element(
