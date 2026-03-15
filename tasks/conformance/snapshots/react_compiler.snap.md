@@ -1,6 +1,6 @@
-# React Compiler Conformance — 75.5% parity rate
+# React Compiler Conformance — 75.6% parity rate
 
-**1323** parity_success, **429** parity_failure, **0** skipped
+**1324** parity_success, **428** parity_failure, **0** skipped
 
 ## Failed
 
@@ -47,7 +47,6 @@
 - `bug-type-inference-control-flow`: Output mismatch
 - `call-args-assignment`: Output mismatch
 - `call-args-destructuring-assignment`: Output mismatch
-- `capitalized-function-allowlist`: Output mismatch
 - `capture-param-mutate`: Output mismatch
 - `capture-ref-for-later-mutation`: Output mismatch
 - `capturing-function-alias-computed-load-2-iife`: Output mismatch
@@ -522,6 +521,7 @@
 - `call-spread`
 - `call-spread-argument-mutable-iterator`
 - `call-with-independently-memoizable-arg`
+- `capitalized-function-allowlist`
 - `capture-indirect-mutate-alias`
 - `capture-indirect-mutate-alias-iife`
 - `capture_mutate-across-fns`

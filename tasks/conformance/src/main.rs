@@ -3587,7 +3587,7 @@ fn normalize_code(code: &str) -> String {
         .join("\n");
 
     type NormalizeStep = (&'static str, fn(&str) -> String);
-    let steps: [NormalizeStep; 56] = [
+    let steps: [NormalizeStep; 57] = [
         ("normalize_multiline_imports", normalize_multiline_imports),
         ("normalize_empty_blocks", normalize_empty_blocks),
         ("normalize_iife_parens", normalize_iife_parens),
@@ -3743,6 +3743,7 @@ fn normalize_code(code: &str) -> String {
             "normalize_sentinel_scope_inline",
             normalize_sentinel_scope_inline,
         ),
+        ("normalize_arrow_void_body", normalize_arrow_void_body),
     ];
     for (name, step) in steps {
         let before = lines_normalized.clone();
@@ -7099,6 +7100,13 @@ fn normalize_arrow_body_ternary_parens(code: &str) -> String {
 /// Replaced with removing the sentinel block and inlining `EXPR` at usage sites.
 /// And removes the block, storing the (TEMP → EXPR) mapping. Then replaces
 /// `IDENT = TEMP;` or `IDENT = TEMP` at end of statement with `IDENT = EXPR`.
+/// Normalize `() => undefined` to `() =>{}` (OXC returns void-returning
+/// arrow as expression body `undefined`, Babel uses empty block body).
+fn normalize_arrow_void_body(code: &str) -> String {
+    code.replace("() => undefined", "() =>{}")
+        .replace("() =>undefined", "() =>{}")
+}
+
 fn normalize_sentinel_scope_inline(code: &str) -> String {
     let lines: Vec<&str> = code.lines().collect();
     let len = lines.len();
