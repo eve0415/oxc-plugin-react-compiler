@@ -3064,10 +3064,6 @@ fn build_compiled_function_body<'a>(
     {
         function_body
     } else if let Some(function_body) =
-        try_build_compiled_function_body_from_hir(builder, cf, state)
-    {
-        function_body
-    } else if let Some(function_body) =
         try_build_compiled_function_body_from_shape(builder, allocator, source_type, cf)
     {
         function_body
@@ -3140,6 +3136,7 @@ fn try_build_compiled_function_body_from_reactive_ast<'a>(
     Some(builder.function_body(SPAN, builder.vec(), result.body))
 }
 
+#[allow(dead_code)]
 fn try_build_compiled_function_body_from_hir<'a>(
     builder: AstBuilder<'a>,
     cf: &CompiledFunction,
