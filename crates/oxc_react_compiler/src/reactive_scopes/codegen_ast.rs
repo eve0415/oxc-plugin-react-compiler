@@ -3194,7 +3194,8 @@ fn fuse_scope_body_ternaries<'a>(cx: &mut CodegenContext<'a>, stmts: &mut Vec<as
             }
         };
 
-        // Look ahead for setup statements and a ternary using test_name.
+        // Look ahead for setup statements (expressions and temp declarations)
+        // and a ternary using test_name.
         let mut ternary_idx = None;
         for (j, stmt) in stmts.iter().enumerate().skip(i + 1) {
             if let ast::Statement::ExpressionStatement(es) = stmt
@@ -3204,8 +3205,13 @@ fn fuse_scope_body_ternaries<'a>(cx: &mut CodegenContext<'a>, stmts: &mut Vec<as
             {
                 ternary_idx = Some(j);
                 break;
-            } else if !matches!(stmt, ast::Statement::ExpressionStatement(_)) {
-                break; // Non-expression statement breaks the pattern
+            } else if matches!(
+                stmt,
+                ast::Statement::ExpressionStatement(_) | ast::Statement::VariableDeclaration(_)
+            ) {
+                continue; // Expression statements and temp declarations are OK
+            } else {
+                break; // Other statement types break the pattern
             }
         }
 
@@ -3227,12 +3233,44 @@ fn fuse_scope_body_ternaries<'a>(cx: &mut CodegenContext<'a>, stmts: &mut Vec<as
         };
 
         // Collect setup expressions between the declaration and the ternary.
+        // Also handle temp variable declarations (`let t1 = EXPR;`) by
+        // converting them to assignment expressions for sequence fusion.
         let setup_count = ternary_pos - 1 - i; // positions shifted after remove
         let mut setup_exprs: Vec<ast::Expression<'a>> = Vec::new();
+        let mut temp_decls: HashMap<String, ast::Expression<'a>> = HashMap::new();
         for _ in 0..setup_count {
             let setup_stmt = stmts.remove(i);
-            if let ast::Statement::ExpressionStatement(es) = setup_stmt {
-                setup_exprs.push(es.unbox().expression);
+            match setup_stmt {
+                ast::Statement::ExpressionStatement(es) => {
+                    setup_exprs.push(es.unbox().expression);
+                }
+                ast::Statement::VariableDeclaration(mut decl) => {
+                    // Convert `let tN = EXPR` to an assignment expression and
+                    // record the temp for later inlining into the ternary.
+                    for d in decl.declarations.drain(..) {
+                        if let ast::BindingPattern::BindingIdentifier(id) = &d.id {
+                            let name = id.name.to_string();
+                            if let Some(init) = d.init {
+                                temp_decls.insert(name.clone(), init.clone_in(cx.allocator));
+                                // Emit as assignment expression for sequence.
+                                let assign = cx.builder.expression_assignment(
+                                    SPAN,
+                                    AssignmentOperator::Assign,
+                                    ast::AssignmentTarget::from(
+                                        cx.builder
+                                            .simple_assignment_target_assignment_target_identifier(
+                                                SPAN,
+                                                cx.builder.ident(&name),
+                                            ),
+                                    ),
+                                    init,
+                                );
+                                setup_exprs.push(assign);
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -3242,6 +3280,84 @@ fn fuse_scope_body_ternaries<'a>(cx: &mut CodegenContext<'a>, stmts: &mut Vec<as
         {
             // Replace test identifier with the real test expression.
             cond.test = real_test;
+
+            // Check if the consequent is a temp identifier that was declared in setup.
+            // Pattern: `x = []; let t1 = EXPR; x = []; t0 ? t1 : ALT`
+            // → split setup at t1 decl, inline t1, setup1 → consequent, setup2 → alternate
+            let cons_temp_name = if let ast::Expression::Identifier(id) = &cond.consequent {
+                let n = id.name.to_string();
+                if n.starts_with('t') && n.len() > 1 && n[1..].chars().all(|c| c.is_ascii_digit()) {
+                    Some(n)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some(ref temp_name) = cons_temp_name
+                && let Some(temp_expr) = temp_decls.get(temp_name)
+            {
+                // The consequent is a temp reference. Replace it with the temp's value.
+                cond.consequent = temp_expr.clone_in(cx.allocator);
+
+                // Split setup_exprs at the temp's assignment.
+                // Everything before (including the temp assignment) → consequent setup
+                // Everything after → alternate setup
+                let split_pos = setup_exprs
+                    .iter()
+                    .position(|expr| {
+                        if let ast::Expression::AssignmentExpression(assign) = expr
+                            && let ast::AssignmentTarget::AssignmentTargetIdentifier(id) =
+                                &assign.left
+                        {
+                            id.name.as_str() == temp_name.as_str()
+                        } else {
+                            false
+                        }
+                    })
+                    .map(|p| p + 1)
+                    .unwrap_or(setup_exprs.len());
+
+                let alt_setup: Vec<ast::Expression<'a>> = setup_exprs.drain(split_pos..).collect();
+                // Remove the temp assignment itself from consequent setup
+                // (it's been inlined into the consequent)
+                if let Some(ast::Expression::AssignmentExpression(assign)) = setup_exprs.last()
+                    && let ast::AssignmentTarget::AssignmentTargetIdentifier(id) = &assign.left
+                    && id.name.as_str() == temp_name.as_str()
+                {
+                    setup_exprs.pop();
+                }
+
+                // Build consequent sequence: (setup1, CONS_EXPR)
+                if !setup_exprs.is_empty() {
+                    let cons = std::mem::replace(
+                        &mut cond.consequent,
+                        cx.builder.expression_null_literal(SPAN),
+                    );
+                    setup_exprs.push(cons);
+                    cond.consequent = cx
+                        .builder
+                        .expression_sequence(SPAN, cx.builder.vec_from_iter(setup_exprs));
+                }
+
+                // Build alternate sequence: (setup2, ALT_EXPR)
+                if !alt_setup.is_empty() {
+                    let alt = std::mem::replace(
+                        &mut cond.alternate,
+                        cx.builder.expression_null_literal(SPAN),
+                    );
+                    let mut alt_seq = alt_setup;
+                    alt_seq.push(alt);
+                    cond.alternate = cx
+                        .builder
+                        .expression_sequence(SPAN, cx.builder.vec_from_iter(alt_seq));
+                }
+
+                // Skip normal fusion since we handled it here.
+                // Don't increment i — process same position again.
+                continue;
+            }
 
             // Fuse setup expressions into the consequent as a sequence.
             if !setup_exprs.is_empty() {
