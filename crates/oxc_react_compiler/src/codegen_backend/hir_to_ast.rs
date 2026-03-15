@@ -1859,10 +1859,22 @@ where
             Some(Some(ast::JSXAttributeValue::StringLiteral(literal)))
         }
         ast::Expression::JSXElement(element) => {
-            Some(Some(ast::JSXAttributeValue::Element(element)))
+            // Wrap JSX elements in expression containers: value={<Foo/>}
+            Some(Some(ast::JSXAttributeValue::ExpressionContainer(
+                builder.alloc_jsx_expression_container(
+                    SPAN,
+                    ast::JSXExpression::from(ast::Expression::JSXElement(element)),
+                ),
+            )))
         }
         ast::Expression::JSXFragment(fragment) => {
-            Some(Some(ast::JSXAttributeValue::Fragment(fragment)))
+            // Wrap JSX fragments in expression containers: value={<>...</>}
+            Some(Some(ast::JSXAttributeValue::ExpressionContainer(
+                builder.alloc_jsx_expression_container(
+                    SPAN,
+                    ast::JSXExpression::from(ast::Expression::JSXFragment(fragment)),
+                ),
+            )))
         }
         expression => Some(Some(ast::JSXAttributeValue::ExpressionContainer(
             builder.alloc_jsx_expression_container(SPAN, ast::JSXExpression::from(expression)),
