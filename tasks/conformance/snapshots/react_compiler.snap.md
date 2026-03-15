@@ -1,6 +1,6 @@
-# React Compiler Conformance — 96.9% parity rate
+# React Compiler Conformance — 97.1% parity rate
 
-**1697** parity_success, **55** parity_failure, **0** skipped
+**1701** parity_success, **51** parity_failure, **0** skipped
 
 ## Failed
 
@@ -33,8 +33,6 @@
 - `preserve-memo-validation/useMemo-conditional-access-alloc`: Output mismatch
 - `preserve-memo-validation/useMemo-conditional-access-noAlloc`: Output mismatch
 - `propagate-scope-deps-hir-fork/repro-invariant`: Output mismatch
-- `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-ternary`: Output mismatch
-- `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-ternary-with-mutation`: Output mismatch
 - `propagate-scope-deps-hir-fork/switch`: Output mismatch
 - `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch`: Output mismatch
 - `property-call-evaluation-order`: Output mismatch
@@ -50,8 +48,6 @@
 - `repro-unreachable-code-early-return-in-useMemo`: Output mismatch
 - `sequence-expression`: Output mismatch
 - `simple`: Output mismatch
-- `ssa-renaming-unconditional-ternary`: Output mismatch
-- `ssa-renaming-unconditional-ternary-with-mutation`: Output mismatch
 - `switch`: Output mismatch
 - `todo-granular-iterator-semantics`: Output mismatch
 - `try-catch-try-value-modified-in-catch`: Output mismatch
@@ -1178,6 +1174,8 @@
 - `propagate-scope-deps-hir-fork/ssa-renaming-ternary-destruction`
 - `propagate-scope-deps-hir-fork/ssa-renaming-ternary-destruction-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-ternary-with-mutation`
+- `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-ternary`
+- `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-ternary-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-via-destructuring-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-with-mutation`
@@ -1536,6 +1534,8 @@
 - `ssa-renaming-ternary-destruction`
 - `ssa-renaming-ternary-destruction-with-mutation`
 - `ssa-renaming-ternary-with-mutation`
+- `ssa-renaming-unconditional-ternary`
+- `ssa-renaming-unconditional-ternary-with-mutation`
 - `ssa-renaming-unconditional-with-mutation`
 - `ssa-renaming-via-destructuring`
 - `ssa-renaming-via-destructuring-with-mutation`
