@@ -1,6 +1,6 @@
-# React Compiler Conformance — 96.0% parity rate
+# React Compiler Conformance — 96.1% parity rate
 
-**1682** parity_success, **70** parity_failure, **0** skipped
+**1684** parity_success, **68** parity_failure, **0** skipped
 
 ## Failed
 
@@ -8,7 +8,6 @@
 - `assume-invoked/conditional-call-chain`: Output mismatch
 - `assume-invoked/function-with-conditional-callsite-in-another-function`: Output mismatch
 - `call-args-destructuring-assignment`: Output mismatch
-- `change-detect-reassign`: Output mismatch
 - `computed-call-evaluation-order`: Output mismatch
 - `default-param-array-with-unary`: Output mismatch
 - `default-param-calls-global-function`: Output mismatch
@@ -73,7 +72,6 @@
 - `type-annotations/type-annotation-satisfies-array`: Output mismatch
 - `type-inference-array-from`: Output mismatch
 - `update-expression-in-sequence`: Output mismatch
-- `useState-unpruned-dependency`: Output mismatch
 
 ## Passed
 
@@ -261,6 +259,7 @@
 - `capturing-variable-in-nested-function`
 - `chained-assignment-context-variable`
 - `chained-assignment-expressions`
+- `change-detect-reassign`
 - `class-component-with-render-helper`
 - `codegen-emit-imports-same-source`
 - `codegen-emit-make-read-only`
@@ -1742,6 +1741,7 @@
 - `useReducer-returned-dispatcher-is-non-reactive`
 - `useState-and-other-hook-unpruned-dependency`
 - `useState-pruned-dependency-change-detect`
+- `useState-unpruned-dependency`
 - `valid-set-state-in-useEffect-from-ref`
 - `valid-setState-in-effect-from-ref-arithmetic`
 - `valid-setState-in-effect-from-ref-array-index`
