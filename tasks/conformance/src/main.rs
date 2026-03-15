@@ -7096,20 +7096,7 @@ fn normalize_arrow_body_ternary_parens(code: &str) -> String {
 /// ... TEMP ...  (later usage, e.g., NAME = TEMP or as scope dependency)
 /// ```
 ///
-/// Replaced with:
-/// - Remove the `let TEMP;` declaration
-/// - Remove the entire sentinel if/else block
-/// - Replace `NAME = TEMP;` with `NAME = EXPR;`
-/// Collapse sentinel scope patterns into inline assignments.
-///
-/// Detects the pattern:
-/// ```
-/// let TEMP;
-/// if ($[N] === Symbol.for("react.memo_cache_sentinel")) { TEMP = EXPR;
-/// $[N] = TEMP
-/// } else { TEMP = $[N]
-/// }
-/// ```
+/// Replaced with removing the sentinel block and inlining `EXPR` at usage sites.
 /// And removes the block, storing the (TEMP → EXPR) mapping. Then replaces
 /// `IDENT = TEMP;` or `IDENT = TEMP` at end of statement with `IDENT = EXPR`.
 fn normalize_sentinel_scope_inline(code: &str) -> String {
@@ -7151,8 +7138,8 @@ fn normalize_sentinel_scope_inline(code: &str) -> String {
                     let expr = l2[assign_prefix.len()..].trim_end_matches(';').to_string();
                     if !expr.is_empty() {
                         replacements.push((temp.to_string(), expr));
-                        for j in i..=i + 6 {
-                            skip_lines[j] = true;
+                        for skip in &mut skip_lines[i..=i + 6] {
+                            *skip = true;
                         }
                         i += 7;
                         continue;
@@ -7185,7 +7172,7 @@ fn normalize_sentinel_scope_inline(code: &str) -> String {
             l = l.replace(&pattern_newline, &replacement_newline);
 
             // Also handle ` !== TEMP)` and ` !== TEMP ||` in scope guards.
-            let guard_pattern = format!(" !== {}", temp);
+            let _guard_pattern = format!(" !== {}", temp);
             // Don't replace these — the guard references the cached value, not the expr.
         }
         // Skip standalone `let TEMP;` declarations that weren't in the sentinel block.
