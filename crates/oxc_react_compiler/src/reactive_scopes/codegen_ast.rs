@@ -92,6 +92,10 @@ struct CodegenContext<'a> {
     /// Pre-computed DeclarationId → display name from string codegen.
     /// Only used to resolve identifier references — does NOT affect temp inlining.
     name_overrides: HashMap<DeclarationId, String>,
+    /// Stack of name scopes for block-scoped declaration tracking.
+    /// When entering an If/For/While block, push a new frame.
+    /// When leaving, pop and remove those names from declared_names.
+    name_scope_stack: Vec<Vec<String>>,
 }
 
 impl<'a> CodegenContext<'a> {
@@ -190,6 +194,29 @@ impl<'a> CodegenContext<'a> {
         self.builder
             .expression_identifier(SPAN, self.builder.ident(name))
     }
+
+    /// Push a new name scope frame (entering a block like if/for/while).
+    fn push_name_scope(&mut self) {
+        self.name_scope_stack.push(Vec::new());
+    }
+
+    /// Pop a name scope frame (leaving a block). Names declared in this
+    /// frame are removed from declared_names so they can be re-declared
+    /// in sibling scopes without collision.
+    fn pop_name_scope(&mut self) {
+        if let Some(frame) = self.name_scope_stack.pop() {
+            for name in frame {
+                self.declared_names.remove(&name);
+            }
+        }
+    }
+
+    /// Register a name in the current scope frame (for later removal on pop).
+    fn register_scoped_name(&mut self, name: &str) {
+        if let Some(frame) = self.name_scope_stack.last_mut() {
+            frame.push(name.to_string());
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +248,7 @@ pub fn codegen_reactive_function<'a>(
         needs_structural_check: false,
         options,
         name_overrides: HashMap::new(),
+        name_scope_stack: Vec::new(),
         fn_name: func.id.clone().unwrap_or_default(),
     };
 
@@ -1515,6 +1543,7 @@ fn emit_var_decl_stmt_inner<'a>(
         // Different DeclarationId — allow new declaration (block-scoped shadowing).
     }
     cx.declared_names.insert(name.to_string());
+    cx.register_scoped_name(name);
     if let Some(did) = decl_id {
         cx.declared_decl_ids.insert(did);
     }
@@ -1651,8 +1680,15 @@ fn codegen_terminal<'a>(
             let Some(test_expr) = codegen_place(cx, test) else {
                 return vec![];
             };
+            cx.push_name_scope();
             let consequent_stmts = codegen_block(cx, consequent);
-            let alternate_result = alternate.as_ref().map(|alt| codegen_block(cx, alt));
+            cx.pop_name_scope();
+            let alternate_result = alternate.as_ref().map(|alt| {
+                cx.push_name_scope();
+                let stmts = codegen_block(cx, alt);
+                cx.pop_name_scope();
+                stmts
+            });
             // Skip empty if/else blocks — emit test as expression statement.
             if consequent_stmts.is_empty()
                 && alternate_result.as_ref().is_some_and(|a| a.is_empty())
@@ -1719,7 +1755,9 @@ fn codegen_terminal<'a>(
             let Some(test_expr) = codegen_place(cx, test) else {
                 return vec![];
             };
+            cx.push_name_scope();
             let body_stmts = codegen_block(cx, loop_block);
+            cx.pop_name_scope();
             let body = cx
                 .builder
                 .statement_block(SPAN, cx.builder.vec_from_iter(body_stmts));
@@ -1731,7 +1769,9 @@ fn codegen_terminal<'a>(
             let Some(test_expr) = codegen_place(cx, test) else {
                 return vec![];
             };
+            cx.push_name_scope();
             let body_stmts = codegen_block(cx, loop_block);
+            cx.pop_name_scope();
             let body = cx
                 .builder
                 .statement_block(SPAN, cx.builder.vec_from_iter(body_stmts));
@@ -1827,7 +1867,9 @@ fn codegen_terminal<'a>(
                 None
             };
 
+            cx.push_name_scope();
             let body_stmts = codegen_block(cx, loop_block);
+            cx.pop_name_scope();
             let body = cx
                 .builder
                 .statement_block(SPAN, cx.builder.vec_from_iter(body_stmts));
@@ -1951,6 +1993,7 @@ fn codegen_reactive_scope<'a>(
             cx.declared.insert(*id);
             cx.declared_decl_ids.insert(*decl_id);
             cx.declared_names.insert(name.clone());
+            cx.register_scoped_name(name);
             let pattern = cx
                 .builder
                 .binding_pattern_binding_identifier(SPAN, cx.builder.ident(name));
@@ -1986,7 +2029,8 @@ fn codegen_reactive_scope<'a>(
                 } else {
                     cx.declared.insert(id);
                     cx.declared_decl_ids.insert(r_decl_id);
-                    cx.declared_names.insert(name_str);
+                    cx.declared_names.insert(name_str.clone());
+                    cx.register_scoped_name(&name_str);
                     let pattern = cx
                         .builder
                         .binding_pattern_binding_identifier(SPAN, cx.builder.ident(name.value()));
