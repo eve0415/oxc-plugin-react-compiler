@@ -488,11 +488,13 @@ fn codegen_instruction<'a>(
 
     // New declaration (expression-level always uses Const to match upstream).
     cx.declared.insert(id);
-    Some(emit_var_decl_stmt(
+    cx.declared_decl_ids.insert(decl_id);
+    Some(emit_var_decl_stmt_inner(
         cx,
         &name,
         ast::VariableDeclarationKind::Const,
         Some(expr),
+        Some(decl_id),
     ))
 }
 
@@ -1037,7 +1039,13 @@ fn codegen_declare<'a>(cx: &mut CodegenContext<'a>, lvalue: &LValue) -> Option<a
     cx.declared.insert(id);
     cx.declared_decl_ids.insert(decl_id);
     let kind = variable_declaration_kind(lvalue.kind).unwrap_or(ast::VariableDeclarationKind::Let);
-    Some(emit_var_decl_stmt(cx, &name, kind, None))
+    Some(emit_var_decl_stmt_inner(
+        cx,
+        &name,
+        kind,
+        None,
+        Some(decl_id),
+    ))
 }
 
 fn codegen_store<'a>(
@@ -1095,7 +1103,13 @@ fn codegen_store<'a>(
                     }
                     _ => ast::VariableDeclarationKind::Let,
                 };
-                Some(emit_var_decl_stmt(cx, &name, decl_kind, Some(expr)))
+                Some(emit_var_decl_stmt_inner(
+                    cx,
+                    &name,
+                    decl_kind,
+                    Some(expr),
+                    Some(lvalue.place.identifier.declaration_id),
+                ))
             }
         }
     }
@@ -1470,23 +1484,40 @@ fn emit_assignment_stmt<'a>(
     )
 }
 
+#[allow(dead_code)]
 fn emit_var_decl_stmt<'a>(
     cx: &mut CodegenContext<'a>,
     name: &str,
     kind: ast::VariableDeclarationKind,
     init: Option<ast::Expression<'a>>,
 ) -> ast::Statement<'a> {
-    // Prevent duplicate `let`/`const` for the same name (can happen when
-    // scope declarations and StoreLocal target the same variable via
-    // different IdentifierIds after renaming).
+    emit_var_decl_stmt_inner(cx, name, kind, init, None)
+}
+
+fn emit_var_decl_stmt_inner<'a>(
+    cx: &mut CodegenContext<'a>,
+    name: &str,
+    kind: ast::VariableDeclarationKind,
+    init: Option<ast::Expression<'a>>,
+    decl_id: Option<DeclarationId>,
+) -> ast::Statement<'a> {
+    // Prevent duplicate `let`/`const` for the same logical variable.
+    // When a DIFFERENT DeclarationId uses the same name (block-scoped shadowing),
+    // allow the new declaration — this is valid JS.
     if cx.declared_names.contains(name) {
-        if let Some(expr) = init {
-            return emit_assignment_stmt(cx, name, expr);
+        let is_same_variable = decl_id.is_some_and(|did| cx.declared_decl_ids.contains(&did));
+        if is_same_variable {
+            if let Some(expr) = init {
+                return emit_assignment_stmt(cx, name, expr);
+            }
+            return cx.builder.statement_empty(SPAN);
         }
-        // Bare duplicate — emit as empty statement that codegen will elide.
-        return cx.builder.statement_empty(SPAN);
+        // Different DeclarationId — allow new declaration (block-scoped shadowing).
     }
     cx.declared_names.insert(name.to_string());
+    if let Some(did) = decl_id {
+        cx.declared_decl_ids.insert(did);
+    }
     let pattern = cx
         .builder
         .binding_pattern_binding_identifier(SPAN, cx.builder.ident(name));
