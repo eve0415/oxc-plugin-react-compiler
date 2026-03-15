@@ -407,6 +407,29 @@ fn codegen_instruction<'a>(
             return codegen_store(cx, lvalue, value);
         }
         InstructionValue::StoreContext { lvalue, value, .. } => {
+            // Same chained-assignment logic as StoreLocal above.
+            if matches!(lvalue.kind, InstructionKind::Reassign)
+                && let Some(outer_lv) = &instr.lvalue
+                && is_temp_identifier(&outer_lv.identifier)
+            {
+                let rhs = codegen_place(cx, value)?;
+                let assign_name = identifier_name(&lvalue.place.identifier);
+                let assign_expr = cx.builder.expression_assignment(
+                    SPAN,
+                    AssignmentOperator::Assign,
+                    ast::AssignmentTarget::from(
+                        cx.builder
+                            .simple_assignment_target_assignment_target_identifier(
+                                SPAN,
+                                cx.builder.ident(&assign_name),
+                            ),
+                    ),
+                    rhs,
+                );
+                cx.temps
+                    .insert(outer_lv.identifier.declaration_id, Some(assign_expr));
+                return None;
+            }
             return codegen_store(cx, lvalue, value);
         }
         InstructionValue::Destructure { lvalue, value, .. } => {
