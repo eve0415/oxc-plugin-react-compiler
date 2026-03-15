@@ -68,7 +68,7 @@ pub(crate) struct CompiledParamPrefixStatement {
     pub(crate) init: CompiledInitializer,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct CompiledOutlinedFunction {
     pub(crate) name: String,
     pub(crate) params: Vec<CompiledParam>,
@@ -78,6 +78,8 @@ pub(crate) struct CompiledOutlinedFunction {
     pub(crate) needs_function_hook_guard_wrapper: bool,
     pub(crate) is_async: bool,
     pub(crate) is_generator: bool,
+    #[allow(dead_code)]
+    pub(crate) reactive_function: Option<crate::hir::types::ReactiveFunction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -57,6 +57,8 @@ struct RenderedOutlinedFunction {
     needs_function_hook_guard_wrapper: bool,
     is_async: bool,
     is_generator: bool,
+    #[allow(dead_code)]
+    reactive_function: Option<crate::hir::types::ReactiveFunction>,
 }
 
 pub(crate) fn emit_module(
@@ -5745,6 +5747,8 @@ fn build_rendered_outlined_function_statement<'a>(
     outlined: &RenderedOutlinedFunction,
     state: &AstRenderState,
 ) -> Option<ast::Statement<'a>> {
+    // Outlined functions currently use shape-based codegen.
+    // The reactive_function is stored for future AST codegen migration.
     let mut body = try_build_function_body_from_shape(
         builder,
         allocator,
@@ -6901,6 +6905,7 @@ fn collect_rendered_outlined_functions(cf: &CompiledFunction) -> Vec<RenderedOut
             needs_function_hook_guard_wrapper: outlined_function.needs_function_hook_guard_wrapper,
             is_async: outlined_function.is_async,
             is_generator: outlined_function.is_generator,
+            reactive_function: outlined_function.reactive_function.clone(),
         })
         .collect()
 }
@@ -10003,6 +10008,7 @@ export const FIXTURE_ENTRYPOINT = {
             needs_function_hook_guard_wrapper: false,
             is_async: true,
             is_generator: false,
+            reactive_function: None,
         }];
 
         let rewritten =

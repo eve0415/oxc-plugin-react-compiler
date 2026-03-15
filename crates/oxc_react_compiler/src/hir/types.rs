@@ -1209,7 +1209,7 @@ pub struct ReactiveScopeDependency {
 
 /// A reactive function is the tree-shaped output of the reactive scope analysis.
 /// It's the input to the codegen phase.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ReactiveFunction {
     pub loc: SourceLocation,
     pub id: Option<String>,

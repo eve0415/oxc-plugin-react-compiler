@@ -1784,7 +1784,7 @@ fn codegen_outlined_function(
     }
 
     let retry_no_memo_mode = RETRY_NO_MEMO_MODE.with(|flag| flag.get());
-    let direct_codegen = || {
+    let direct_codegen = || -> Option<(codegen_reactive::CodegenResult, crate::hir::types::ReactiveFunction)> {
         let mut reactive_fn = build_reactive_function::build_reactive_function(func.clone());
         prune_unused_labels_reactive::prune_unused_labels(&mut reactive_fn);
         prune_unused_lvalues::prune_unused_lvalues(&mut reactive_fn);
@@ -1796,17 +1796,18 @@ fn codegen_outlined_function(
             enable_change_variable_codegen,
             Some(reserved_names),
         );
-        Some(codegen_reactive::codegen_reactive_function_with_options(
+        let codegen_result = codegen_reactive::codegen_reactive_function_with_options(
             &reactive_fn,
             unique_identifiers,
             retry_no_memo_mode,
             enable_change_variable_codegen,
             false,
             false,
-        ))
+        );
+        Some((codegen_result, reactive_fn))
     };
 
-    let codegen = if matches!(
+    let (codegen, outlined_reactive_fn) = if matches!(
         func.fn_type,
         crate::hir::types::ReactFunctionType::Component
     ) {
@@ -1815,13 +1816,18 @@ fn codegen_outlined_function(
             func.id.as_deref().unwrap_or("<outlined>"),
             func.env.config(),
         ) {
-            Ok(pipeline_output) if pipeline_output.codegen_result.error.is_none() => {
-                pipeline_output.codegen_result
+            Ok(pipeline_output) if pipeline_output.codegen_result.error.is_none() => (
+                pipeline_output.codegen_result,
+                Some(pipeline_output.reactive_function),
+            ),
+            _ => {
+                let (cr, rf) = direct_codegen()?;
+                (cr, Some(rf))
             }
-            _ => direct_codegen()?,
         }
     } else {
-        direct_codegen()?
+        let (cr, rf) = direct_codegen()?;
+        (cr, Some(rf))
     };
 
     if codegen.error.is_some() {
@@ -1880,6 +1886,7 @@ fn codegen_outlined_function(
         needs_function_hook_guard_wrapper: codegen.needs_function_hook_guard_wrapper,
         is_async: func.async_,
         is_generator: func.generator,
+        reactive_function: outlined_reactive_fn,
     })
 }
 
