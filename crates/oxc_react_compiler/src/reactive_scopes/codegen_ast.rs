@@ -29,6 +29,9 @@ pub struct CodegenOptions {
     pub enable_change_detection_for_debugging: bool,
     pub enable_reset_cache_on_source_file_changes: bool,
     pub fast_refresh_source_hash: Option<String>,
+    pub disable_memoization_features: bool,
+    pub disable_memoization_for_debugging: bool,
+    pub fbt_operands: HashSet<IdentifierId>,
 }
 
 // ---------------------------------------------------------------------------

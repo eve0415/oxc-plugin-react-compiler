@@ -56,7 +56,7 @@ pub fn set_fast_refresh_source_hash(hash: Option<String>) {
     });
 }
 
-fn get_fast_refresh_source_hash() -> Option<String> {
+pub fn get_fast_refresh_source_hash() -> Option<String> {
     FAST_REFRESH_SOURCE_HASH.with(|slot| slot.borrow().clone())
 }
 

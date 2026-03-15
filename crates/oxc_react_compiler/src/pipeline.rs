@@ -2038,6 +2038,7 @@ struct PipelineOutput {
     has_inferred_effect: bool,
     has_lower_context_access: bool,
     retry_no_memo_mode: bool,
+    fbt_operands: std::collections::HashSet<crate::hir::types::IdentifierId>,
 }
 
 /// Run the full HIR pipeline (from pruneMaybeThrows through codegen).
@@ -2570,6 +2571,7 @@ fn run_hir_pipeline(
         has_inferred_effect,
         has_lower_context_access,
         retry_no_memo_mode,
+        fbt_operands,
     })
 }
 
@@ -6365,6 +6367,19 @@ fn try_compile_function<'a>(
         needs_hook_guards: codegen_result.needs_hook_guards,
         needs_structural_check_import: codegen_result.needs_structural_check_import,
         needs_lower_context_access: pipeline_output.has_lower_context_access,
+        enable_change_variable_codegen: options.environment.enable_change_variable_codegen,
+        enable_emit_hook_guards: options.environment.enable_emit_hook_guards,
+        enable_change_detection_for_debugging: options
+            .environment
+            .enable_change_detection_for_debugging,
+        enable_reset_cache_on_source_file_changes: options
+            .environment
+            .enable_reset_cache_on_source_file_changes
+            .unwrap_or(false),
+        fast_refresh_source_hash: codegen_reactive::get_fast_refresh_source_hash(),
+        disable_memoization_features: pipeline_output.retry_no_memo_mode,
+        disable_memoization_for_debugging: options.environment.disable_memoization_for_debugging,
+        fbt_operands: pipeline_output.fbt_operands,
     }))
 }
 
@@ -6564,6 +6579,19 @@ fn try_compile_function_with_name<'a>(
         needs_hook_guards: codegen_result.needs_hook_guards,
         needs_structural_check_import: codegen_result.needs_structural_check_import,
         needs_lower_context_access: pipeline_output.has_lower_context_access,
+        enable_change_variable_codegen: options.environment.enable_change_variable_codegen,
+        enable_emit_hook_guards: options.environment.enable_emit_hook_guards,
+        enable_change_detection_for_debugging: options
+            .environment
+            .enable_change_detection_for_debugging,
+        enable_reset_cache_on_source_file_changes: options
+            .environment
+            .enable_reset_cache_on_source_file_changes
+            .unwrap_or(false),
+        fast_refresh_source_hash: codegen_reactive::get_fast_refresh_source_hash(),
+        disable_memoization_features: pipeline_output.retry_no_memo_mode,
+        disable_memoization_for_debugging: options.environment.disable_memoization_for_debugging,
+        fbt_operands: pipeline_output.fbt_operands,
     }))
 }
 
@@ -6771,6 +6799,19 @@ fn try_compile_arrow<'a>(
         needs_hook_guards: codegen_result.needs_hook_guards,
         needs_structural_check_import: codegen_result.needs_structural_check_import,
         needs_lower_context_access: pipeline_output.has_lower_context_access,
+        enable_change_variable_codegen: options.environment.enable_change_variable_codegen,
+        enable_emit_hook_guards: options.environment.enable_emit_hook_guards,
+        enable_change_detection_for_debugging: options
+            .environment
+            .enable_change_detection_for_debugging,
+        enable_reset_cache_on_source_file_changes: options
+            .environment
+            .enable_reset_cache_on_source_file_changes
+            .unwrap_or(false),
+        fast_refresh_source_hash: codegen_reactive::get_fast_refresh_source_hash(),
+        disable_memoization_features: pipeline_output.retry_no_memo_mode,
+        disable_memoization_for_debugging: options.environment.disable_memoization_for_debugging,
+        fbt_operands: pipeline_output.fbt_operands,
     }))
 }
 

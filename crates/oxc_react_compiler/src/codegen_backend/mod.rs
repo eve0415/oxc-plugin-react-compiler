@@ -112,6 +112,15 @@ pub(crate) struct CompiledFunction {
     pub(crate) needs_hook_guards: bool,
     pub(crate) needs_structural_check_import: bool,
     pub(crate) needs_lower_context_access: bool,
+    // --- AST codegen pipeline options ---
+    pub(crate) enable_change_variable_codegen: bool,
+    pub(crate) enable_emit_hook_guards: bool,
+    pub(crate) enable_change_detection_for_debugging: bool,
+    pub(crate) enable_reset_cache_on_source_file_changes: bool,
+    pub(crate) fast_refresh_source_hash: Option<String>,
+    pub(crate) disable_memoization_features: bool,
+    pub(crate) disable_memoization_for_debugging: bool,
+    pub(crate) fbt_operands: std::collections::HashSet<crate::hir::types::IdentifierId>,
 }
 
 #[derive(Clone, Copy)]

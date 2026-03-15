@@ -3120,11 +3120,14 @@ fn try_build_compiled_function_body_from_reactive_ast<'a>(
     }
     let reactive_fn = cf.reactive_function.as_ref()?;
     let options = crate::reactive_scopes::codegen_ast::CodegenOptions {
-        enable_change_variable_codegen: false,
-        enable_emit_hook_guards: false,
-        enable_change_detection_for_debugging: false,
-        enable_reset_cache_on_source_file_changes: false,
-        fast_refresh_source_hash: None,
+        enable_change_variable_codegen: cf.enable_change_variable_codegen,
+        enable_emit_hook_guards: cf.enable_emit_hook_guards,
+        enable_change_detection_for_debugging: cf.enable_change_detection_for_debugging,
+        enable_reset_cache_on_source_file_changes: cf.enable_reset_cache_on_source_file_changes,
+        fast_refresh_source_hash: cf.fast_refresh_source_hash.clone(),
+        disable_memoization_features: cf.disable_memoization_features,
+        disable_memoization_for_debugging: cf.disable_memoization_for_debugging,
+        fbt_operands: cf.fbt_operands.clone(),
     };
     let result = crate::reactive_scopes::codegen_ast::codegen_reactive_function(
         builder,
@@ -9381,6 +9384,14 @@ export const FIXTURE_ENTRYPOINT = {
             needs_hook_guards: false,
             needs_structural_check_import: false,
             needs_lower_context_access: false,
+            enable_change_variable_codegen: false,
+            enable_emit_hook_guards: false,
+            enable_change_detection_for_debugging: false,
+            enable_reset_cache_on_source_file_changes: false,
+            fast_refresh_source_hash: None,
+            disable_memoization_features: false,
+            disable_memoization_for_debugging: false,
+            fbt_operands: std::collections::HashSet::new(),
         }
     }
 
