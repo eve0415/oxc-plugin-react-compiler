@@ -2852,6 +2852,68 @@ fn extract_for_of_left<'a>(
     })
 }
 
+/// Mark all terminal labels in a reactive block as implicit, preventing
+/// them from being emitted as JavaScript labels. Used for inner function
+/// expressions where CFG block IDs should not become visible labels.
+fn suppress_labels_recursive(block: &mut ReactiveBlock) {
+    for stmt in block.iter_mut() {
+        match stmt {
+            ReactiveStatement::Terminal(term_stmt) => {
+                if let Some(label) = &mut term_stmt.label {
+                    label.implicit = true;
+                }
+                match &mut term_stmt.terminal {
+                    ReactiveTerminal::If {
+                        consequent,
+                        alternate,
+                        ..
+                    } => {
+                        suppress_labels_recursive(consequent);
+                        if let Some(alt) = alternate {
+                            suppress_labels_recursive(alt);
+                        }
+                    }
+                    ReactiveTerminal::Switch { cases, .. } => {
+                        for case in cases {
+                            if let Some(block) = &mut case.block {
+                                suppress_labels_recursive(block);
+                            }
+                        }
+                    }
+                    ReactiveTerminal::For {
+                        init, loop_block, ..
+                    } => {
+                        suppress_labels_recursive(init);
+                        suppress_labels_recursive(loop_block);
+                    }
+                    ReactiveTerminal::While { loop_block, .. }
+                    | ReactiveTerminal::DoWhile { loop_block, .. }
+                    | ReactiveTerminal::ForOf { loop_block, .. }
+                    | ReactiveTerminal::ForIn { loop_block, .. } => {
+                        suppress_labels_recursive(loop_block);
+                    }
+                    ReactiveTerminal::Try {
+                        block: try_block,
+                        handler,
+                        ..
+                    } => {
+                        suppress_labels_recursive(try_block);
+                        suppress_labels_recursive(handler);
+                    }
+                    _ => {}
+                }
+            }
+            ReactiveStatement::Scope(scope_block) => {
+                suppress_labels_recursive(&mut scope_block.instructions);
+            }
+            ReactiveStatement::PrunedScope(pruned) => {
+                suppress_labels_recursive(&mut pruned.instructions);
+            }
+            _ => {}
+        }
+    }
+}
+
 fn crate_label_name(block_id: BlockId) -> &'static str {
     // Leak a string for the label name. In production, this would use an arena.
     let s = format!("bb{}", block_id.0);
@@ -3164,8 +3226,12 @@ fn lower_function_expression_via_reactive<'a>(
     expr_type: FunctionExpressionType,
 ) -> Option<ast::Expression<'a>> {
     let hir_func = &lowered_func.func;
-    let reactive_fn =
+    let mut reactive_fn =
         crate::reactive_scopes::build_reactive_function::build_reactive_function(hir_func.clone());
+
+    // Mark all terminal labels as implicit for inner functions — these are
+    // CFG block IDs that shouldn't be emitted as visible JavaScript labels.
+    suppress_labels_recursive(&mut reactive_fn.body);
 
     let options = CodegenOptions {
         enable_change_variable_codegen: false,
