@@ -7100,11 +7100,11 @@ fn normalize_arrow_body_ternary_parens(code: &str) -> String {
 /// Replaced with removing the sentinel block and inlining `EXPR` at usage sites.
 /// And removes the block, storing the (TEMP → EXPR) mapping. Then replaces
 /// `IDENT = TEMP;` or `IDENT = TEMP` at end of statement with `IDENT = EXPR`.
-/// Normalize `() => undefined` to `() =>{}` (OXC returns void-returning
-/// arrow as expression body `undefined`, Babel uses empty block body).
+/// Normalize `() => undefined` to `() =>{}` and `return undefined` to `return`.
 fn normalize_arrow_void_body(code: &str) -> String {
     code.replace("() => undefined", "() =>{}")
         .replace("() =>undefined", "() =>{}")
+        .replace("return undefined", "return")
 }
 
 fn normalize_sentinel_scope_inline(code: &str) -> String {

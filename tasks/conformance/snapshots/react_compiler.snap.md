@@ -1,6 +1,6 @@
-# React Compiler Conformance — 78.1% parity rate
+# React Compiler Conformance — 78.2% parity rate
 
-**1369** parity_success, **383** parity_failure, **0** skipped
+**1370** parity_success, **382** parity_failure, **0** skipped
 
 ## Failed
 
@@ -39,7 +39,6 @@
 - `bailout-retry/mutate-after-useeffect-optional-chain`: Output mismatch
 - `bailout-retry/mutate-after-useeffect-ref-access`: Output mismatch
 - `bailout-retry/no-fire-todo-syntax-shouldnt-throw`: Output mismatch
-- `block-scoping-switch-dead-code`: Output mismatch
 - `bug-ref-prefix-postfix-operator`: Output mismatch
 - `bug-type-inference-control-flow`: Output mismatch
 - `call-args-assignment`: Output mismatch
@@ -471,6 +470,7 @@
 - `bailout-retry/error.untransformed-fire-reference`
 - `bailout-retry/error.use-no-memo`
 - `bailout-retry/error.use-no-memo`
+- `block-scoping-switch-dead-code`
 - `block-scoping-switch-variable-scoping`
 - `bug-capturing-func-maybealias-captured-mutate`
 - `bug-separate-memoization-due-to-callback-capturing`
