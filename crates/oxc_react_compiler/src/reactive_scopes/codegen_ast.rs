@@ -344,10 +344,33 @@ fn codegen_instruction<'a>(
     cx: &mut CodegenContext<'a>,
     instr: &ReactiveInstruction,
 ) -> Option<ast::Statement<'a>> {
+    // ── Statement-level variants (self-contained, use InstructionValue's lvalue) ──
+    match &instr.value {
+        InstructionValue::DeclareLocal { lvalue, .. }
+        | InstructionValue::DeclareContext { lvalue, .. } => {
+            return codegen_declare(cx, lvalue);
+        }
+        InstructionValue::StoreLocal { lvalue, value, .. }
+        | InstructionValue::StoreContext { lvalue, value, .. } => {
+            return codegen_store(cx, lvalue, value);
+        }
+        InstructionValue::Destructure { lvalue, value, .. } => {
+            return codegen_destructure(cx, lvalue, value);
+        }
+        InstructionValue::Debugger { .. } => {
+            return Some(cx.builder.statement_debugger(SPAN));
+        }
+        InstructionValue::StartMemoize { .. } | InstructionValue::FinishMemoize { .. } => {
+            return None;
+        }
+        _ => {}
+    }
+
+    // ── Expression-level variants ──
     let expr = codegen_instruction_value(cx, &instr.value)?;
 
+    // No lvalue → expression statement.
     let Some(lvalue) = &instr.lvalue else {
-        // No lvalue: emit as expression statement.
         return Some(cx.builder.statement_expression(SPAN, expr));
     };
 
@@ -358,61 +381,30 @@ fn codegen_instruction<'a>(
         .as_ref()
         .map(|n| n.value().to_string());
 
-    // If this is a temporary (not a scope declaration and has no user-visible name,
-    // or is a compiler-generated temp), store in temp map for inlining.
+    // Temp inlining: if not a promoted scope declaration, store for inlining.
     let is_scope_decl = cx.scope_declarations.contains(&id);
     let is_promoted = name.is_some() && is_scope_decl;
 
     if !is_promoted && !is_scope_decl {
-        // Store as temp for inlining.
         cx.temps.insert(id, Some(expr));
         return None;
     }
 
     let name = name.unwrap_or_else(|| format!("t{}", id.0));
 
+    // Already declared → reassignment.
     if cx.declared.contains(&id) {
-        // Reassignment.
-        Some(
-            cx.builder.statement_expression(
-                SPAN,
-                cx.builder.expression_assignment(
-                    SPAN,
-                    AssignmentOperator::Assign,
-                    ast::AssignmentTarget::from(
-                        cx.builder
-                            .simple_assignment_target_assignment_target_identifier(
-                                SPAN,
-                                cx.builder.ident(&name),
-                            ),
-                    ),
-                    expr,
-                ),
-            ),
-        )
-    } else {
-        // First declaration.
-        cx.declared.insert(id);
-        let kind = ast::VariableDeclarationKind::Let;
-        let pattern = cx
-            .builder
-            .binding_pattern_binding_identifier(SPAN, cx.builder.ident(&name));
-        Some(ast::Statement::VariableDeclaration(
-            cx.builder.alloc_variable_declaration(
-                SPAN,
-                kind,
-                cx.builder.vec1(cx.builder.variable_declarator(
-                    SPAN,
-                    kind,
-                    pattern,
-                    NONE,
-                    Some(expr),
-                    false,
-                )),
-                false,
-            ),
-        ))
+        return Some(emit_assignment_stmt(cx, &name, expr));
     }
+
+    // New declaration (expression-level always uses Let).
+    cx.declared.insert(id);
+    Some(emit_var_decl_stmt(
+        cx,
+        &name,
+        ast::VariableDeclarationKind::Let,
+        Some(expr),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -725,9 +717,569 @@ fn codegen_instruction_value<'a>(
                 cx.builder.identifier_name(SPAN, cx.builder.ident(property)),
             ))
         }
-        InstructionValue::Debugger { .. } => None, // handled as statement
-        _ => None,
+        InstructionValue::RegExpLiteral { pattern, flags, .. } => {
+            let re_flags = parse_regexp_flags(flags);
+            let regex = ast::RegExp {
+                pattern: ast::RegExpPattern {
+                    text: cx.builder.atom(pattern),
+                    pattern: None,
+                },
+                flags: re_flags,
+            };
+            Some(cx.builder.expression_reg_exp_literal(SPAN, regex, None))
+        }
+        InstructionValue::TaggedTemplateExpression {
+            tag, raw, cooked, ..
+        } => {
+            let tag_expr = codegen_place(cx, tag)?;
+            let quasi = cx.builder.template_literal(
+                SPAN,
+                cx.builder.vec1(cx.builder.template_element(
+                    SPAN,
+                    ast::TemplateElementValue {
+                        raw: cx.builder.atom(raw),
+                        cooked: cooked.as_ref().map(|v| cx.builder.atom(v)),
+                    },
+                    true,
+                    false,
+                )),
+                cx.builder.vec(),
+            );
+            Some(
+                cx.builder
+                    .expression_tagged_template(SPAN, tag_expr, NONE, quasi),
+            )
+        }
+        InstructionValue::Await { value, .. } => {
+            Some(cx.builder.expression_await(SPAN, codegen_place(cx, value)?))
+        }
+        InstructionValue::GetIterator { collection, .. } => codegen_place(cx, collection),
+        InstructionValue::IteratorNext { collection, .. } => codegen_place(cx, collection),
+        InstructionValue::NextPropertyOf { value, .. } => codegen_place(cx, value),
+        InstructionValue::ObjectMethod { lowered_func, .. } => {
+            super::super::codegen_backend::hir_to_ast::lower_function_expression_ast(
+                cx.builder,
+                None,
+                lowered_func,
+                FunctionExpressionType::FunctionExpression,
+            )
+        }
+        InstructionValue::ReactiveSequenceExpression {
+            instructions,
+            value,
+            ..
+        } => {
+            let mut prefix_exprs: Vec<ast::Expression<'a>> = Vec::new();
+            for seq_instr in instructions {
+                let expr = match &seq_instr.value {
+                    InstructionValue::StoreLocal { value: v, .. }
+                    | InstructionValue::StoreContext { value: v, .. } => codegen_place(cx, v),
+                    _ => codegen_instruction_value(cx, &seq_instr.value),
+                };
+                if let Some(expr) = expr {
+                    if let Some(lv) = &seq_instr.lvalue {
+                        cx.temps.insert(lv.identifier.id, Some(expr));
+                    } else {
+                        prefix_exprs.push(expr);
+                    }
+                }
+            }
+            let final_expr = codegen_instruction_value(cx, value)?;
+            if prefix_exprs.is_empty() {
+                Some(final_expr)
+            } else {
+                prefix_exprs.push(final_expr);
+                Some(
+                    cx.builder
+                        .expression_sequence(SPAN, cx.builder.vec_from_iter(prefix_exprs)),
+                )
+            }
+        }
+        InstructionValue::ReactiveOptionalExpression { value, .. } => {
+            codegen_instruction_value(cx, value)
+        }
+        InstructionValue::ReactiveLogicalExpression {
+            operator,
+            left,
+            right,
+            ..
+        } => Some(cx.builder.expression_logical(
+            SPAN,
+            codegen_instruction_value(cx, left)?,
+            lower_logical_operator(*operator),
+            codegen_instruction_value(cx, right)?,
+        )),
+        InstructionValue::ReactiveConditionalExpression {
+            test,
+            consequent,
+            alternate,
+            ..
+        } => Some(cx.builder.expression_conditional(
+            SPAN,
+            codegen_instruction_value(cx, test)?,
+            codegen_instruction_value(cx, consequent)?,
+            codegen_instruction_value(cx, alternate)?,
+        )),
+        // Statement-level variants handled in codegen_instruction before reaching here.
+        InstructionValue::Debugger { .. }
+        | InstructionValue::DeclareLocal { .. }
+        | InstructionValue::DeclareContext { .. }
+        | InstructionValue::Destructure { .. }
+        | InstructionValue::StartMemoize { .. }
+        | InstructionValue::FinishMemoize { .. } => None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Statement-level instruction helpers
+// ---------------------------------------------------------------------------
+
+fn codegen_declare<'a>(cx: &mut CodegenContext<'a>, lvalue: &LValue) -> Option<ast::Statement<'a>> {
+    let name = lvalue.place.identifier.name.as_ref()?.value().to_string();
+    let id = lvalue.place.identifier.id;
+    if cx.declared.contains(&id) {
+        return None;
+    }
+    cx.declared.insert(id);
+    let kind = variable_declaration_kind(lvalue.kind).unwrap_or(ast::VariableDeclarationKind::Let);
+    Some(emit_var_decl_stmt(cx, &name, kind, None))
+}
+
+fn codegen_store<'a>(
+    cx: &mut CodegenContext<'a>,
+    lvalue: &LValue,
+    value: &Place,
+) -> Option<ast::Statement<'a>> {
+    let expr = codegen_place(cx, value)?;
+    let id = lvalue.place.identifier.id;
+    let name = identifier_name(&lvalue.place.identifier);
+
+    match lvalue.kind {
+        InstructionKind::Reassign => Some(emit_assignment_stmt(cx, &name, expr)),
+        InstructionKind::Function if matches!(&expr, ast::Expression::FunctionExpression(_)) => {
+            if let ast::Expression::FunctionExpression(func_alloc) = expr {
+                let mut func = func_alloc.unbox();
+                func.id = Some(cx.builder.binding_identifier(SPAN, cx.builder.ident(&name)));
+                func.r#type = ast::FunctionType::FunctionDeclaration;
+                cx.declared.insert(id);
+                Some(ast::Statement::FunctionDeclaration(cx.builder.alloc(func)))
+            } else {
+                unreachable!()
+            }
+        }
+        kind => {
+            if cx.declared.contains(&id) {
+                Some(emit_assignment_stmt(cx, &name, expr))
+            } else {
+                cx.declared.insert(id);
+                let decl_kind = match kind {
+                    InstructionKind::Const | InstructionKind::HoistedConst => {
+                        ast::VariableDeclarationKind::Const
+                    }
+                    InstructionKind::Function | InstructionKind::HoistedFunction => {
+                        ast::VariableDeclarationKind::Const
+                    }
+                    _ => ast::VariableDeclarationKind::Let,
+                };
+                Some(emit_var_decl_stmt(cx, &name, decl_kind, Some(expr)))
+            }
+        }
+    }
+}
+
+fn codegen_destructure<'a>(
+    cx: &mut CodegenContext<'a>,
+    lvalue: &LValuePattern,
+    value: &Place,
+) -> Option<ast::Statement<'a>> {
+    let rhs = codegen_place(cx, value)?;
+    let kind = variable_declaration_kind(lvalue.kind);
+    if let Some(kind) = kind {
+        // Declaration: const [a, b] = expr;
+        let pattern = build_binding_pattern_from_pattern(cx, &lvalue.pattern)?;
+        Some(ast::Statement::VariableDeclaration(
+            cx.builder.alloc_variable_declaration(
+                SPAN,
+                kind,
+                cx.builder.vec1(cx.builder.variable_declarator(
+                    SPAN,
+                    kind,
+                    pattern,
+                    NONE,
+                    Some(rhs),
+                    false,
+                )),
+                false,
+            ),
+        ))
+    } else {
+        // Reassignment: [a, b] = expr;
+        let target = build_assignment_target_from_pattern(cx, &lvalue.pattern)?;
+        Some(
+            cx.builder.statement_expression(
+                SPAN,
+                cx.builder
+                    .expression_assignment(SPAN, AssignmentOperator::Assign, target, rhs),
+            ),
+        )
+    }
+}
+
+fn build_binding_pattern_from_pattern<'a>(
+    cx: &mut CodegenContext<'a>,
+    pattern: &Pattern,
+) -> Option<ast::BindingPattern<'a>> {
+    match pattern {
+        Pattern::Array(arr) => {
+            let mut elements = cx.builder.vec();
+            let mut rest = None;
+            for (index, item) in arr.items.iter().enumerate() {
+                match item {
+                    ArrayElement::Place(place) => {
+                        if rest.is_some() {
+                            return None;
+                        }
+                        let name = identifier_name(&place.identifier);
+                        cx.declared.insert(place.identifier.id);
+                        elements.push(Some(
+                            cx.builder
+                                .binding_pattern_binding_identifier(SPAN, cx.builder.ident(&name)),
+                        ));
+                    }
+                    ArrayElement::Spread(place) => {
+                        if rest.is_some() || index + 1 != arr.items.len() {
+                            return None;
+                        }
+                        let name = identifier_name(&place.identifier);
+                        cx.declared.insert(place.identifier.id);
+                        rest =
+                            Some(cx.builder.alloc_binding_rest_element(
+                                SPAN,
+                                cx.builder.binding_pattern_binding_identifier(
+                                    SPAN,
+                                    cx.builder.ident(&name),
+                                ),
+                            ));
+                    }
+                    ArrayElement::Hole => {
+                        if rest.is_some() {
+                            return None;
+                        }
+                        elements.push(None);
+                    }
+                }
+            }
+            Some(
+                cx.builder
+                    .binding_pattern_array_pattern(SPAN, elements, rest),
+            )
+        }
+        Pattern::Object(obj) => {
+            let mut properties = cx.builder.vec();
+            let mut rest = None;
+            for (index, prop) in obj.properties.iter().enumerate() {
+                match prop {
+                    ObjectPropertyOrSpread::Property(property) => {
+                        if rest.is_some() {
+                            return None;
+                        }
+                        let target_name = identifier_name(&property.place.identifier);
+                        cx.declared.insert(property.place.identifier.id);
+                        let (key, computed) = build_property_key_for_pattern(cx, &property.key)?;
+                        let shorthand = matches!(
+                            &property.key,
+                            ObjectPropertyKey::Identifier(name) if name == &target_name
+                        );
+                        properties.push(cx.builder.binding_property(
+                            SPAN,
+                            key,
+                            cx.builder.binding_pattern_binding_identifier(
+                                SPAN,
+                                cx.builder.ident(&target_name),
+                            ),
+                            shorthand,
+                            computed,
+                        ));
+                    }
+                    ObjectPropertyOrSpread::Spread(place) => {
+                        if rest.is_some() || index + 1 != obj.properties.len() {
+                            return None;
+                        }
+                        let name = identifier_name(&place.identifier);
+                        cx.declared.insert(place.identifier.id);
+                        rest =
+                            Some(cx.builder.alloc_binding_rest_element(
+                                SPAN,
+                                cx.builder.binding_pattern_binding_identifier(
+                                    SPAN,
+                                    cx.builder.ident(&name),
+                                ),
+                            ));
+                    }
+                }
+            }
+            Some(
+                cx.builder
+                    .binding_pattern_object_pattern(SPAN, properties, rest),
+            )
+        }
+    }
+}
+
+fn build_assignment_target_from_pattern<'a>(
+    cx: &mut CodegenContext<'a>,
+    pattern: &Pattern,
+) -> Option<ast::AssignmentTarget<'a>> {
+    match pattern {
+        Pattern::Array(arr) => {
+            let mut elements = cx.builder.vec();
+            let mut rest = None;
+            for (index, item) in arr.items.iter().enumerate() {
+                match item {
+                    ArrayElement::Place(place) => {
+                        if rest.is_some() {
+                            return None;
+                        }
+                        let name = identifier_name(&place.identifier);
+                        elements.push(Some(ast::AssignmentTargetMaybeDefault::from(
+                            ast::AssignmentTarget::from(
+                                cx.builder
+                                    .simple_assignment_target_assignment_target_identifier(
+                                        SPAN,
+                                        cx.builder.ident(&name),
+                                    ),
+                            ),
+                        )));
+                    }
+                    ArrayElement::Spread(place) => {
+                        if rest.is_some() || index + 1 != arr.items.len() {
+                            return None;
+                        }
+                        let name = identifier_name(&place.identifier);
+                        rest = Some(
+                            cx.builder.alloc_assignment_target_rest(
+                                SPAN,
+                                ast::AssignmentTarget::from(
+                                    cx.builder
+                                        .simple_assignment_target_assignment_target_identifier(
+                                            SPAN,
+                                            cx.builder.ident(&name),
+                                        ),
+                                ),
+                            ),
+                        );
+                    }
+                    ArrayElement::Hole => {
+                        if rest.is_some() {
+                            return None;
+                        }
+                        elements.push(None);
+                    }
+                }
+            }
+            Some(ast::AssignmentTarget::from(
+                cx.builder
+                    .assignment_target_pattern_array_assignment_target(SPAN, elements, rest),
+            ))
+        }
+        Pattern::Object(obj) => {
+            let mut properties = cx.builder.vec();
+            let mut rest = None;
+            for (index, prop) in obj.properties.iter().enumerate() {
+                match prop {
+                    ObjectPropertyOrSpread::Property(property) => {
+                        if rest.is_some() {
+                            return None;
+                        }
+                        let target_name = identifier_name(&property.place.identifier);
+                        if matches!(
+                            &property.key,
+                            ObjectPropertyKey::Identifier(name) if name == &target_name
+                        ) {
+                            properties.push(
+                                cx.builder
+                                    .assignment_target_property_assignment_target_property_identifier(
+                                        SPAN,
+                                        cx.builder.identifier_reference(
+                                            SPAN,
+                                            cx.builder.ident(&target_name),
+                                        ),
+                                        None,
+                                    ),
+                            );
+                            continue;
+                        }
+                        let (key, computed) = build_property_key_for_pattern(cx, &property.key)?;
+                        properties.push(
+                            cx.builder
+                                .assignment_target_property_assignment_target_property_property(
+                                SPAN,
+                                key,
+                                ast::AssignmentTargetMaybeDefault::from(
+                                    ast::AssignmentTarget::from(
+                                        cx.builder
+                                            .simple_assignment_target_assignment_target_identifier(
+                                                SPAN,
+                                                cx.builder.ident(&target_name),
+                                            ),
+                                    ),
+                                ),
+                                computed,
+                            ),
+                        );
+                    }
+                    ObjectPropertyOrSpread::Spread(place) => {
+                        if rest.is_some() || index + 1 != obj.properties.len() {
+                            return None;
+                        }
+                        let name = identifier_name(&place.identifier);
+                        rest = Some(
+                            cx.builder.alloc_assignment_target_rest(
+                                SPAN,
+                                ast::AssignmentTarget::from(
+                                    cx.builder
+                                        .simple_assignment_target_assignment_target_identifier(
+                                            SPAN,
+                                            cx.builder.ident(&name),
+                                        ),
+                                ),
+                            ),
+                        );
+                    }
+                }
+            }
+            Some(ast::AssignmentTarget::from(
+                cx.builder
+                    .assignment_target_pattern_object_assignment_target(SPAN, properties, rest),
+            ))
+        }
+    }
+}
+
+fn build_property_key_for_pattern<'a>(
+    cx: &mut CodegenContext<'a>,
+    key: &ObjectPropertyKey,
+) -> Option<(ast::PropertyKey<'a>, bool)> {
+    match key {
+        ObjectPropertyKey::Identifier(name) => Some((
+            cx.builder
+                .property_key_static_identifier(SPAN, cx.builder.ident(name)),
+            false,
+        )),
+        ObjectPropertyKey::String(name) if is_identifier_name(name) => Some((
+            cx.builder
+                .property_key_static_identifier(SPAN, cx.builder.ident(name)),
+            false,
+        )),
+        ObjectPropertyKey::String(name) => Some((
+            ast::PropertyKey::from(cx.builder.expression_string_literal(
+                SPAN,
+                cx.builder.atom(name),
+                None,
+            )),
+            false,
+        )),
+        ObjectPropertyKey::Number(val) => Some((
+            ast::PropertyKey::from(cx.builder.expression_numeric_literal(
+                SPAN,
+                *val,
+                None,
+                NumberBase::Decimal,
+            )),
+            false,
+        )),
+        ObjectPropertyKey::Computed(place) => {
+            Some((ast::PropertyKey::from(codegen_place(cx, place)?), true))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Emit helpers
+// ---------------------------------------------------------------------------
+
+fn identifier_name(identifier: &Identifier) -> String {
+    identifier
+        .name
+        .as_ref()
+        .map(|n| n.value().to_string())
+        .unwrap_or_else(|| format!("t{}", identifier.id.0))
+}
+
+fn variable_declaration_kind(kind: InstructionKind) -> Option<ast::VariableDeclarationKind> {
+    match kind {
+        InstructionKind::Const | InstructionKind::HoistedConst => {
+            Some(ast::VariableDeclarationKind::Const)
+        }
+        InstructionKind::Let | InstructionKind::Catch | InstructionKind::HoistedLet => {
+            Some(ast::VariableDeclarationKind::Let)
+        }
+        InstructionKind::Reassign
+        | InstructionKind::Function
+        | InstructionKind::HoistedFunction => None,
+    }
+}
+
+fn emit_assignment_stmt<'a>(
+    cx: &mut CodegenContext<'a>,
+    name: &str,
+    expr: ast::Expression<'a>,
+) -> ast::Statement<'a> {
+    cx.builder.statement_expression(
+        SPAN,
+        cx.builder.expression_assignment(
+            SPAN,
+            AssignmentOperator::Assign,
+            ast::AssignmentTarget::from(
+                cx.builder
+                    .simple_assignment_target_assignment_target_identifier(
+                        SPAN,
+                        cx.builder.ident(name),
+                    ),
+            ),
+            expr,
+        ),
+    )
+}
+
+fn emit_var_decl_stmt<'a>(
+    cx: &mut CodegenContext<'a>,
+    name: &str,
+    kind: ast::VariableDeclarationKind,
+    init: Option<ast::Expression<'a>>,
+) -> ast::Statement<'a> {
+    let pattern = cx
+        .builder
+        .binding_pattern_binding_identifier(SPAN, cx.builder.ident(name));
+    ast::Statement::VariableDeclaration(
+        cx.builder.alloc_variable_declaration(
+            SPAN,
+            kind,
+            cx.builder.vec1(
+                cx.builder
+                    .variable_declarator(SPAN, kind, pattern, NONE, init, false),
+            ),
+            false,
+        ),
+    )
+}
+
+fn parse_regexp_flags(flags: &str) -> ast::RegExpFlags {
+    let mut result = ast::RegExpFlags::empty();
+    for c in flags.chars() {
+        result |= match c {
+            'g' => ast::RegExpFlags::G,
+            'i' => ast::RegExpFlags::I,
+            'm' => ast::RegExpFlags::M,
+            's' => ast::RegExpFlags::S,
+            'u' => ast::RegExpFlags::U,
+            'y' => ast::RegExpFlags::Y,
+            'd' => ast::RegExpFlags::D,
+            'v' => ast::RegExpFlags::V,
+            _ => ast::RegExpFlags::empty(),
+        };
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -946,7 +1498,11 @@ fn codegen_terminal<'a>(
         } => {
             let init_stmts = codegen_block(cx, init);
             let left = init_stmts.into_iter().last().and_then(|s| {
-                if let ast::Statement::VariableDeclaration(decl) = s {
+                if let ast::Statement::VariableDeclaration(mut decl) = s {
+                    // Strip initializer — for-of left side is pattern only.
+                    for declarator in decl.declarations.iter_mut() {
+                        declarator.init = None;
+                    }
                     Some(ast::ForStatementLeft::VariableDeclaration(decl))
                 } else {
                     None
@@ -1365,8 +1921,13 @@ fn codegen_reactive_scope<'a>(
             cx.builder.statement_if(
                 SPAN,
                 test,
-                cx.builder
-                    .statement_return(SPAN, Some(cx.ident_expr(&name))),
+                cx.builder.statement_block(
+                    SPAN,
+                    cx.builder.vec1(
+                        cx.builder
+                            .statement_return(SPAN, Some(cx.ident_expr(&name))),
+                    ),
+                ),
                 None,
             ),
         );
@@ -1438,11 +1999,32 @@ fn codegen_method_call_callee<'a>(
     property: &Place,
     receiver_optional: bool,
 ) -> Option<ast::Expression<'a>> {
-    // Check if the property is a PropertyLoad on the receiver.
-    let prop_id = property.identifier.id;
-    if let Some(Some(_prop_expr)) = cx.temps.get(&prop_id) {
-        // If it's a member expression on the same receiver, use it directly.
-        // Otherwise, fall through to computed member.
+    let prop_expr = codegen_place(cx, property)?;
+
+    // If the property already resolved to a member expression (e.g., x.push
+    // from a PropertyLoad temp), use it directly as the callee — the receiver
+    // binding is already embedded in the member expression.
+    if matches!(
+        &prop_expr,
+        ast::Expression::StaticMemberExpression(_) | ast::Expression::ComputedMemberExpression(_)
+    ) {
+        return Some(prop_expr);
+    }
+
+    // If the property is a string literal that is a valid identifier,
+    // build a static member expression (x.push instead of x["push"]).
+    if let ast::Expression::StringLiteral(lit) = &prop_expr
+        && is_identifier_name(&lit.value)
+    {
+        return Some(ast::Expression::from(
+            cx.builder.member_expression_static(
+                SPAN,
+                codegen_place(cx, receiver)?,
+                cx.builder
+                    .identifier_name(SPAN, cx.builder.ident(lit.value.as_str())),
+                receiver_optional,
+            ),
+        ));
     }
 
     // Default: computed member expression.
@@ -1450,7 +2032,7 @@ fn codegen_method_call_callee<'a>(
         cx.builder.member_expression_computed(
             SPAN,
             codegen_place(cx, receiver)?,
-            codegen_place(cx, property)?,
+            prop_expr,
             receiver_optional,
         ),
     ))
