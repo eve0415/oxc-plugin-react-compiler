@@ -2,7 +2,7 @@
 name: interview
 description: Interview user in-depth to create a detailed spec. Use when gathering requirements for new features, understanding project needs, or planning implementation details.
 argument-hint: [instructions]
-allowed-tools: AskUserQuestion, Write
+allowed-tools: AskUserQuestion, Write, Read, using-superpowers, superpowers:brainstorm, superpowers:write-plan
 model: opus
 ---
 
