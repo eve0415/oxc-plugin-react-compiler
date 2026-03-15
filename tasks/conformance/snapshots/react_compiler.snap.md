@@ -1,6 +1,6 @@
-# React Compiler Conformance — 96.1% parity rate
+# React Compiler Conformance — 96.3% parity rate
 
-**1684** parity_success, **68** parity_failure, **0** skipped
+**1687** parity_success, **65** parity_failure, **0** skipped
 
 ## Failed
 
@@ -47,9 +47,6 @@
 - `readonly-object-method-calls-mutable-lambda`: Output mismatch
 - `reassignment-separate-scopes`: Fixture thread terminated unexpectedly
 - `recursive-function-expression`: Output mismatch
-- `rename-source-variables`: Output mismatch
-- `rename-source-variables-nested-function`: Output mismatch
-- `rename-source-variables-nested-object-method`: Output mismatch
 - `renaming-jsx-tag-lowercase`: Output mismatch
 - `repro-dont-memoize-array-with-capturing-map-after-hook`: Output mismatch
 - `repro-dont-memoize-array-with-mutable-map-after-hook`: Output mismatch
@@ -1327,6 +1324,9 @@
 - `ref-parameter-mutate-in-effect`
 - `regexp-literal`
 - `relay-transitive-mixeddata`
+- `rename-source-variables`
+- `rename-source-variables-nested-function`
+- `rename-source-variables-nested-object-method`
 - `reordering-across-blocks`
 - `repro`
 - `repro-aliased-capture-aliased-mutate`
