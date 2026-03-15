@@ -3263,6 +3263,7 @@ fn lower_function_expression_via_reactive<'a>(
     let result = codegen_reactive_function(cx.builder, cx.allocator, &reactive_fn, options);
 
     let mut directives = cx.builder.vec();
+    let directives_empty = hir_func.directives.is_empty();
     for directive in &hir_func.directives {
         directives.push(
             cx.builder.directive(
@@ -3315,9 +3316,32 @@ fn lower_function_expression_via_reactive<'a>(
 
     match expr_type {
         FunctionExpressionType::ArrowFunctionExpression => {
+            // Detect single-return-expression bodies and convert to expression arrows.
+            let (is_expression, body) = if directives_empty
+                && body.statements.len() == 1
+                && matches!(body.statements[0], ast::Statement::ReturnStatement(_))
+            {
+                if let ast::Statement::ReturnStatement(ret) = &body.statements[0] {
+                    if let Some(arg) = &ret.argument {
+                        let expr = arg.clone_in(cx.allocator);
+                        let expr_body = cx.builder.alloc(cx.builder.function_body(
+                            SPAN,
+                            cx.builder.vec(),
+                            cx.builder.vec1(cx.builder.statement_expression(SPAN, expr)),
+                        ));
+                        (true, expr_body)
+                    } else {
+                        (false, body)
+                    }
+                } else {
+                    (false, body)
+                }
+            } else {
+                (false, body)
+            };
             Some(cx.builder.expression_arrow_function(
                 SPAN,
-                false,
+                is_expression,
                 hir_func.async_,
                 NONE,
                 cx.builder.alloc(params),
