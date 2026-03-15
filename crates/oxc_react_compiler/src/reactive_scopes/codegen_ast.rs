@@ -2351,3 +2351,49 @@ fn lower_update_operator(
 ) -> oxc_syntax::operator::UpdateOperator {
     super::super::codegen_backend::hir_to_ast::lower_update_operator(op)
 }
+
+#[allow(dead_code)]
+fn dump_reactive_block(block: &ReactiveBlock, indent: usize) {
+    let pad = "  ".repeat(indent);
+    for stmt in block.iter() {
+        match stmt {
+            ReactiveStatement::Instruction(instr) => {
+                let lv = instr
+                    .lvalue
+                    .as_ref()
+                    .map(|p| identifier_name(&p.identifier))
+                    .unwrap_or_default();
+                eprintln!(
+                    "{pad}Instr({lv}): {:?}",
+                    std::mem::discriminant(&instr.value)
+                );
+            }
+            ReactiveStatement::Terminal(term) => {
+                eprintln!(
+                    "{pad}Terminal: {:?}",
+                    std::mem::discriminant(&term.terminal)
+                );
+            }
+            ReactiveStatement::Scope(scope) => {
+                let decls: Vec<String> = scope
+                    .scope
+                    .declarations
+                    .values()
+                    .map(|d| {
+                        d.identifier
+                            .name
+                            .as_ref()
+                            .map(|n| n.value().to_string())
+                            .unwrap_or_default()
+                    })
+                    .collect();
+                eprintln!("{pad}Scope(decls={decls:?}):");
+                dump_reactive_block(&scope.instructions, indent + 1);
+            }
+            ReactiveStatement::PrunedScope(pruned) => {
+                eprintln!("{pad}PrunedScope:");
+                dump_reactive_block(&pruned.instructions, indent + 1);
+            }
+        }
+    }
+}
