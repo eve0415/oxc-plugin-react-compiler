@@ -235,6 +235,16 @@ pub fn codegen_reactive_function<'a>(
         }
     }
 
+    // Allocate fast-refresh slot BEFORE body codegen so it gets slot 0
+    // (matching upstream behavior in CodegenReactiveFunction.ts).
+    let fast_refresh_slot = if cx.options.enable_reset_cache_on_source_file_changes
+        && cx.options.fast_refresh_source_hash.is_some()
+    {
+        Some(cx.alloc_cache_slot())
+    } else {
+        None
+    };
+
     let mut body_stmts = codegen_block(&mut cx, &func.body);
 
     // Strip trailing void return (`return;` or `return undefined`).
@@ -254,13 +264,15 @@ pub fn codegen_reactive_function<'a>(
 
     // Build cache prologue if needed.
     let cache_prologue = if needs_cache_import {
-        let fast_refresh = cx.options.fast_refresh_source_hash.as_ref().map(|hash| {
-            let index = cx.next_cache_index; // Use current index for fast refresh slot
-            FastRefreshPrologue {
-                cache_index: index,
-                hash: hash.clone(),
-                index_binding_name: format!("${}", cache_binding),
-            }
+        let fast_refresh = fast_refresh_slot.and_then(|slot| {
+            cx.options
+                .fast_refresh_source_hash
+                .as_ref()
+                .map(|hash| FastRefreshPrologue {
+                    cache_index: slot,
+                    hash: hash.clone(),
+                    index_binding_name: format!("${}", cache_binding),
+                })
         });
         Some(CachePrologue {
             binding_name: cache_binding,
