@@ -899,7 +899,12 @@ fn codegen_destructure<'a>(
     value: &Place,
 ) -> Option<ast::Statement<'a>> {
     let rhs = codegen_place(cx, value)?;
-    let kind = variable_declaration_kind(lvalue.kind);
+    let mut kind = variable_declaration_kind(lvalue.kind);
+    // If all pattern variables are already declared (by scope prologue),
+    // treat as reassignment even if the original kind was Let/Const.
+    if kind.is_some() && all_pattern_vars_declared(cx, &lvalue.pattern) {
+        kind = None;
+    }
     if let Some(kind) = kind {
         // Declaration: const [a, b] = expr;
         let pattern = build_binding_pattern_from_pattern(cx, &lvalue.pattern)?;
@@ -2127,6 +2132,28 @@ fn codegen_object_property_key<'a>(
             false,
             true,
         )),
+    }
+}
+
+fn all_pattern_vars_declared(cx: &CodegenContext<'_>, pattern: &Pattern) -> bool {
+    match pattern {
+        Pattern::Array(arr) => arr.items.iter().all(|item| match item {
+            ArrayElement::Place(p) | ArrayElement::Spread(p) => {
+                let name = identifier_name(&p.identifier);
+                cx.declared_names.contains(&name)
+            }
+            ArrayElement::Hole => true,
+        }),
+        Pattern::Object(obj) => obj.properties.iter().all(|prop| match prop {
+            ObjectPropertyOrSpread::Property(p) => {
+                let name = identifier_name(&p.place.identifier);
+                cx.declared_names.contains(&name)
+            }
+            ObjectPropertyOrSpread::Spread(p) => {
+                let name = identifier_name(&p.identifier);
+                cx.declared_names.contains(&name)
+            }
+        }),
     }
 }
 
