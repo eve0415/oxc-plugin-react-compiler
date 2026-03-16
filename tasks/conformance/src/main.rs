@@ -7307,23 +7307,42 @@ fn normalize_sentinel_scope_inline(code: &str) -> String {
         };
 
         // Find `} else {` and the final `}` to determine scope boundaries.
+        // Count ALL braces in each line (not just at boundaries) to handle
+        // inline constructs like `() => { ... }` on a single line.
         let mut else_line = None;
         let mut end_line = None;
         let mut depth = 1i32;
         for (j, &scan_line) in lines.iter().enumerate().skip(i + 2) {
             let lt = scan_line.trim();
-            if lt == "}" {
-                depth -= 1;
-                if depth == 0 {
-                    end_line = Some(j);
-                    break;
+            // Count braces in the line, excluding those inside string literals.
+            let mut in_string = false;
+            let mut string_char = ' ';
+            let mut open = 0i32;
+            let mut close = 0i32;
+            let bytes = lt.as_bytes();
+            for k in 0..bytes.len() {
+                let ch = bytes[k] as char;
+                if in_string {
+                    if ch == string_char && (k == 0 || bytes[k - 1] != b'\\') {
+                        in_string = false;
+                    }
+                } else if ch == '"' || ch == '\'' || ch == '`' {
+                    in_string = true;
+                    string_char = ch;
+                } else if ch == '{' {
+                    open += 1;
+                } else if ch == '}' {
+                    close += 1;
                 }
-            } else if lt.starts_with("} else {") {
-                if depth == 1 {
-                    else_line = Some(j);
-                }
-            } else if lt.ends_with('{') {
-                depth += 1;
+            }
+            // Check for `} else {` before updating depth.
+            if lt.starts_with("} else {") && depth == 1 {
+                else_line = Some(j);
+            }
+            depth += open - close;
+            if depth == 0 {
+                end_line = Some(j);
+                break;
             }
         }
 
