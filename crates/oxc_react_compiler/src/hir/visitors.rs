@@ -131,7 +131,7 @@ pub fn map_terminal_operands(terminal: &mut Terminal, mut f: impl FnMut(&mut Pla
     }
 }
 
-fn for_each_value_operand(value: &InstructionValue, f: &mut impl FnMut(&Place)) {
+pub(crate) fn for_each_value_operand(value: &InstructionValue, f: &mut impl FnMut(&Place)) {
     match value {
         InstructionValue::LoadLocal { place, .. } | InstructionValue::LoadContext { place, .. } => {
             f(place);

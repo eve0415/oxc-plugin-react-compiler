@@ -2195,6 +2195,40 @@ fn find_temp_matching_dep(
     None
 }
 
+/// Check if the scope body contains ANY PropertyLoad or ComputedLoad instructions
+/// at any nesting level. If so, the body likely computes its own property chains
+/// and the extraction of external temps would be incorrect.
+fn body_has_any_property_loads(instructions: &ReactiveBlock) -> bool {
+    for stmt in instructions {
+        if let ReactiveStatement::Instruction(instr) = stmt
+            && value_has_any_property_load(&instr.value)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn value_has_any_property_load(value: &InstructionValue) -> bool {
+    match value {
+        InstructionValue::PropertyLoad { .. } | InstructionValue::ComputedLoad { .. } => true,
+        InstructionValue::ReactiveOptionalExpression { value, .. } => {
+            value_has_any_property_load(value)
+        }
+        InstructionValue::ReactiveSequenceExpression {
+            instructions,
+            value,
+            ..
+        } => {
+            instructions
+                .iter()
+                .any(|i| value_has_any_property_load(&i.value))
+                || value_has_any_property_load(value)
+        }
+        _ => false,
+    }
+}
+
 /// Allocate a fresh `tN` temp name that doesn't conflict with existing declarations.
 fn alloc_fresh_temp_name(cx: &CodegenContext) -> String {
     let mut idx = 0u32;
@@ -2417,7 +2451,9 @@ fn codegen_reactive_scope<'a>(
         if !dep.path.iter().any(|e| e.optional) {
             continue;
         }
-        if let Some(final_decl_id) = find_temp_matching_dep(cx, dep) {
+        if let Some(final_decl_id) = find_temp_matching_dep(cx, dep)
+            && !body_has_any_property_loads(instructions)
+        {
             let temp_name = alloc_fresh_temp_name(cx);
             if let Some(Some(dep_expr_ref)) = cx.temps.get(&final_decl_id) {
                 let dep_expr = dep_expr_ref.clone_in(cx.allocator);
