@@ -72,7 +72,6 @@ pub(crate) struct CompiledParamPrefixStatement {
 pub(crate) struct CompiledOutlinedFunction {
     pub(crate) name: String,
     pub(crate) params: Vec<CompiledParam>,
-    pub(crate) body_shape: crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
     pub(crate) directives: Vec<String>,
     pub(crate) cache_prologue: Option<crate::reactive_scopes::codegen_ast::CachePrologue>,
     pub(crate) needs_function_hook_guard_wrapper: bool,
@@ -80,6 +79,9 @@ pub(crate) struct CompiledOutlinedFunction {
     pub(crate) is_generator: bool,
     #[allow(dead_code)]
     pub(crate) reactive_function: Option<crate::hir::types::ReactiveFunction>,
+    /// The outlined function's own unique identifiers from its rename_variables pass.
+    /// Used instead of the parent function's unique_identifiers to ensure independent naming.
+    pub(crate) unique_identifiers: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,7 +96,6 @@ pub(crate) struct CompiledFunction {
     pub(crate) name: String,
     pub(crate) start: u32,
     pub(crate) end: u32,
-    pub(crate) generated_body_shape: crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
     pub(crate) reactive_function: Option<crate::hir::types::ReactiveFunction>,
     pub(crate) needs_cache_import: bool,
     pub(crate) compiled_params: Option<Vec<CompiledParam>>,

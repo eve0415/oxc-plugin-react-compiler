@@ -83,7 +83,6 @@ use crate::reactive_scopes::memoize_fbt_operands;
 
 // Phase 6: BuildReactiveFunction + post-reactive passes + codegen
 use crate::reactive_scopes::build_reactive_function;
-use crate::reactive_scopes::codegen_reactive;
 use crate::reactive_scopes::extract_scope_destructuring;
 use crate::reactive_scopes::merge_scopes_invalidate_together;
 use crate::reactive_scopes::promote_used_temporaries;
@@ -113,6 +112,17 @@ thread_local! {
         RefCell::new(std::collections::HashSet::new());
     static FLOW_HOOK_NAMES: RefCell<std::collections::HashSet<String>> =
         RefCell::new(std::collections::HashSet::new());
+    static FAST_REFRESH_SOURCE_HASH: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+fn set_fast_refresh_source_hash(hash: Option<String>) {
+    FAST_REFRESH_SOURCE_HASH.with(|slot| {
+        *slot.borrow_mut() = hash;
+    });
+}
+
+fn get_fast_refresh_source_hash() -> Option<String> {
+    FAST_REFRESH_SOURCE_HASH.with(|slot| slot.borrow().clone())
 }
 
 const FLOW_CAST_REWRITE_MARKER: &str = "/*__FLOW_CAST__*/";
@@ -134,7 +144,7 @@ struct FastRefreshHashGuard;
 
 impl Drop for FastRefreshHashGuard {
     fn drop(&mut self) {
-        codegen_reactive::set_fast_refresh_source_hash(None);
+        set_fast_refresh_source_hash(None);
     }
 }
 
@@ -1140,674 +1150,9 @@ fn collect_named_identifiers_hir(func: &HIRFunction) -> std::collections::HashSe
 fn codegen_outlined_function(
     func: &HIRFunction,
     enable_change_variable_codegen: bool,
-    reserved_names: &std::collections::HashSet<String>,
+    _reserved_names: &std::collections::HashSet<String>,
 ) -> Option<CompiledOutlinedFunction> {
-    fn is_ident_char(ch: char) -> bool {
-        ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()
-    }
-
-    fn replace_identifier_tokens(input: &str, from: &str, to: &str) -> String {
-        if from.is_empty() || from == to {
-            return input.to_string();
-        }
-        let mut out = String::with_capacity(input.len());
-        let mut i = 0usize;
-        while i < input.len() {
-            let rest = &input[i..];
-            if let Some(found) = rest.find(from) {
-                let start = i + found;
-                let end = start + from.len();
-                let before_ok = if start == 0 {
-                    true
-                } else {
-                    !is_ident_char(input.as_bytes()[start - 1] as char)
-                };
-                let after_ok = if end >= input.len() {
-                    true
-                } else {
-                    !is_ident_char(input.as_bytes()[end] as char)
-                };
-                out.push_str(&input[i..start]);
-                if before_ok && after_ok {
-                    out.push_str(to);
-                } else {
-                    out.push_str(from);
-                }
-                i = end;
-            } else {
-                out.push_str(rest);
-                break;
-            }
-        }
-        out
-    }
-
-    fn rename_generated_body_shape(
-        body_shape: &mut crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
-        from: &str,
-        to: &str,
-    ) {
-        match body_shape {
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown => {}
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Block { inner } => {
-                rename_generated_body_shape(inner, from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::DebuggerStatements(_) => {
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Switch {
-                discriminant,
-                cases,
-            } => {
-                *discriminant = replace_identifier_tokens(discriminant, from, to);
-                for case in cases {
-                    if let Some(test) = &mut case.test {
-                        *test = replace_identifier_tokens(test, from, to);
-                    }
-                    rename_generated_body_shape(&mut case.consequent, from, to);
-                }
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Labeled {
-                label,
-                inner,
-            } => {
-                *label = replace_identifier_tokens(label, from, to);
-                rename_generated_body_shape(inner, from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ExpressionStatements(
-                expressions,
-            ) => {
-                for expression in expressions {
-                    *expression = replace_identifier_tokens(expression, from, to);
-                }
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::AssignmentStatements(
-                assignments,
-            ) => {
-                for assignment in assignments {
-                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
-                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
-                }
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedBody {
-                test,
-                inner,
-            } => {
-                *test = replace_identifier_tokens(test, from, to);
-                rename_generated_body_shape(inner, from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedExpressionStatements {
-                test,
-                expressions,
-            } => {
-                *test = replace_identifier_tokens(test, from, to);
-                for expression in expressions {
-                    *expression = replace_identifier_tokens(expression, from, to);
-                }
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedReturnPrefix {
-                test,
-                consequent,
-                inner,
-            } => {
-                *test = replace_identifier_tokens(test, from, to);
-                if let Some(consequent) = consequent {
-                    *consequent = replace_identifier_tokens(consequent, from, to);
-                }
-                rename_generated_body_shape(inner, from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ConditionalBranches {
-                test,
-                consequent,
-                alternate,
-            } => {
-                *test = replace_identifier_tokens(test, from, to);
-                rename_generated_body_shape(consequent, from, to);
-                rename_generated_body_shape(alternate, from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedAssignments {
-                test,
-                assignments,
-            } => {
-                *test = replace_identifier_tokens(test, from, to);
-                for assignment in assignments {
-                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
-                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
-                }
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::WhileLoop {
-                test,
-                body,
-            } => {
-                *test = replace_identifier_tokens(test, from, to);
-                rename_generated_body_shape(body, from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::DoWhileLoop {
-                test,
-                body,
-            } => {
-                *test = replace_identifier_tokens(test, from, to);
-                rename_generated_body_shape(body, from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ForLoop {
-                init,
-                test,
-                update,
-                body,
-            } => {
-                if let Some(init) = init {
-                    *init = replace_identifier_tokens(init, from, to);
-                }
-                if let Some(test) = test {
-                    *test = replace_identifier_tokens(test, from, to);
-                }
-                if let Some(update) = update {
-                    *update = replace_identifier_tokens(update, from, to);
-                }
-                rename_generated_body_shape(body, from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ForInLoop {
-                left,
-                right,
-                body,
-            }
-            | crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ForOfLoop {
-                left,
-                right,
-                body,
-            } => {
-                *left = replace_identifier_tokens(left, from, to);
-                *right = replace_identifier_tokens(right, from, to);
-                rename_generated_body_shape(body, from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::GuardedAssignmentExpressions {
-                test,
-                assignments,
-                expressions,
-            } => {
-                *test = replace_identifier_tokens(test, from, to);
-                for assignment in assignments {
-                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
-                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
-                }
-                for expression in expressions {
-                    *expression = replace_identifier_tokens(expression, from, to);
-                }
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ZeroDependencyMemoizedCachedValues {
-                setup_statements,
-                cached_values,
-                restored_values,
-                ..
-            } => {
-                for statement in setup_statements {
-                    *statement = replace_identifier_tokens(statement, from, to);
-                }
-                for value in cached_values {
-                    if value.name == from {
-                        value.name = to.to_string();
-                    }
-                }
-                for value in restored_values {
-                    if value.name == from {
-                        value.name = to.to_string();
-                    }
-                }
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MemoizedCachedValues {
-                deps,
-                setup_statements,
-                cached_values,
-                restored_values,
-            } => {
-                for (_, dep_expr) in deps {
-                    *dep_expr = replace_identifier_tokens(dep_expr, from, to);
-                }
-                for statement in setup_statements {
-                    *statement = replace_identifier_tokens(statement, from, to);
-                }
-                for value in cached_values {
-                    if value.name == from {
-                        value.name = to.to_string();
-                    }
-                }
-                for value in restored_values {
-                    if value.name == from {
-                        value.name = to.to_string();
-                    }
-                }
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MemoizedEarlyReturnSentinel {
-                deps,
-                setup_statements,
-                cached_values,
-                restored_values,
-                sentinel_name,
-                final_return,
-                fallback_body,
-            } => {
-                for (_, dep_expr) in deps {
-                    *dep_expr = replace_identifier_tokens(dep_expr, from, to);
-                }
-                for statement in setup_statements {
-                    *statement = replace_identifier_tokens(statement, from, to);
-                }
-                for value in cached_values {
-                    if value.name == from {
-                        value.name = to.to_string();
-                    }
-                }
-                for value in restored_values {
-                    if value.name == from {
-                        value.name = to.to_string();
-                    }
-                }
-                if sentinel_name == from {
-                    *sentinel_name = to.to_string();
-                }
-                if final_return.as_deref() == Some(from) {
-                    *final_return = Some(to.to_string());
-                }
-                if let Some(fallback_body) = fallback_body {
-                    rename_generated_body_shape(fallback_body, from, to);
-                }
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::TryCatch {
-                catch_param,
-                try_body,
-                catch_body,
-            } => {
-                if catch_param.as_deref() == Some(from) {
-                    *catch_param = Some(to.to_string());
-                }
-                rename_generated_body_shape(try_body, from, to);
-                rename_generated_body_shape(catch_body, from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Break(_) => {}
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Continue(_) => {}
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnVoid => {}
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(
-                name,
-            ) => {
-                if name == from {
-                    *name = to.to_string();
-                }
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnExpression(
-                expression,
-            ) => {
-                *expression = replace_identifier_tokens(expression, from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ThrowExpression(
-                expression,
-            ) => {
-                *expression = replace_identifier_tokens(expression, from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::BoundExpressionReturn {
-                value_name,
-                expression,
-                ..
-            } => {
-                if value_name == from {
-                    *value_name = to.to_string();
-                }
-                *expression = replace_identifier_tokens(expression, from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::AssignedExpressionReturn {
-                value_name,
-                expression,
-                ..
-            } => {
-                if value_name == from {
-                    *value_name = to.to_string();
-                }
-                *expression = replace_identifier_tokens(expression, from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ZeroDependencyMemoizedReturn {
-                value_name,
-                memoized_bindings,
-                memoized_assignments,
-                memoized_expressions,
-                memoized_setup_statements,
-                memoized_expr,
-                ..
-            } => {
-                if value_name == from {
-                    *value_name = to.to_string();
-                }
-                for binding in memoized_bindings {
-                    binding.pattern = replace_identifier_tokens(&binding.pattern, from, to);
-                    binding.expression = replace_identifier_tokens(&binding.expression, from, to);
-                }
-                for assignment in memoized_assignments {
-                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
-                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
-                }
-                for expression in memoized_expressions {
-                    *expression = replace_identifier_tokens(expression, from, to);
-                }
-                for statement in memoized_setup_statements {
-                    *statement = replace_identifier_tokens(statement, from, to);
-                }
-                if let Some(memoized_expr) = memoized_expr {
-                    *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
-                }
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ZeroDependencyMemoizedExistingReturn {
-                value_name,
-                memoized_bindings,
-                memoized_assignments,
-                memoized_expressions,
-                memoized_setup_statements,
-                memoized_expr,
-                ..
-            } => {
-                if value_name == from {
-                    *value_name = to.to_string();
-                }
-                for binding in memoized_bindings {
-                    binding.pattern = replace_identifier_tokens(&binding.pattern, from, to);
-                    binding.expression = replace_identifier_tokens(&binding.expression, from, to);
-                }
-                for assignment in memoized_assignments {
-                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
-                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
-                }
-                for expression in memoized_expressions {
-                    *expression = replace_identifier_tokens(expression, from, to);
-                }
-                for statement in memoized_setup_statements {
-                    *statement = replace_identifier_tokens(statement, from, to);
-                }
-                if let Some(memoized_expr) = memoized_expr {
-                    *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
-                }
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleDependencyMemoizedReturn {
-                value_name,
-                dep_expr,
-                memoized_bindings,
-                memoized_assignments,
-                memoized_expressions,
-                memoized_setup_statements,
-                memoized_expr,
-                ..
-            } => {
-                if value_name == from {
-                    *value_name = to.to_string();
-                }
-                *dep_expr = replace_identifier_tokens(dep_expr, from, to);
-                for binding in memoized_bindings {
-                    binding.pattern = replace_identifier_tokens(&binding.pattern, from, to);
-                    binding.expression = replace_identifier_tokens(&binding.expression, from, to);
-                }
-                for assignment in memoized_assignments {
-                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
-                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
-                }
-                for expression in memoized_expressions {
-                    *expression = replace_identifier_tokens(expression, from, to);
-                }
-                for statement in memoized_setup_statements {
-                    *statement = replace_identifier_tokens(statement, from, to);
-                }
-                if let Some(memoized_expr) = memoized_expr {
-                    *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
-                }
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleDependencyMemoizedExistingReturn {
-                value_name,
-                dep_expr,
-                memoized_bindings,
-                memoized_assignments,
-                memoized_expressions,
-                memoized_setup_statements,
-                memoized_expr,
-                ..
-            } => {
-                if value_name == from {
-                    *value_name = to.to_string();
-                }
-                *dep_expr = replace_identifier_tokens(dep_expr, from, to);
-                for binding in memoized_bindings {
-                    binding.pattern = replace_identifier_tokens(&binding.pattern, from, to);
-                    binding.expression = replace_identifier_tokens(&binding.expression, from, to);
-                }
-                for assignment in memoized_assignments {
-                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
-                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
-                }
-                for expression in memoized_expressions {
-                    *expression = replace_identifier_tokens(expression, from, to);
-                }
-                for statement in memoized_setup_statements {
-                    *statement = replace_identifier_tokens(statement, from, to);
-                }
-                if let Some(memoized_expr) = memoized_expr {
-                    *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
-                }
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MultiDependencyMemoizedReturn {
-                value_name,
-                deps,
-                memoized_bindings,
-                memoized_assignments,
-                memoized_expressions,
-                memoized_setup_statements,
-                memoized_expr,
-                ..
-            } => {
-                if value_name == from {
-                    *value_name = to.to_string();
-                }
-                for (_, dep_expr) in deps {
-                    *dep_expr = replace_identifier_tokens(dep_expr, from, to);
-                }
-                for binding in memoized_bindings {
-                    binding.pattern = replace_identifier_tokens(&binding.pattern, from, to);
-                    binding.expression = replace_identifier_tokens(&binding.expression, from, to);
-                }
-                for assignment in memoized_assignments {
-                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
-                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
-                }
-                for expression in memoized_expressions {
-                    *expression = replace_identifier_tokens(expression, from, to);
-                }
-                for statement in memoized_setup_statements {
-                    *statement = replace_identifier_tokens(statement, from, to);
-                }
-                if let Some(memoized_expr) = memoized_expr {
-                    *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
-                }
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MultiDependencyMemoizedExistingReturn {
-                value_name,
-                deps,
-                memoized_bindings,
-                memoized_assignments,
-                memoized_expressions,
-                memoized_setup_statements,
-                memoized_expr,
-                ..
-            } => {
-                if value_name == from {
-                    *value_name = to.to_string();
-                }
-                for (_, dep_expr) in deps {
-                    *dep_expr = replace_identifier_tokens(dep_expr, from, to);
-                }
-                for binding in memoized_bindings {
-                    binding.pattern = replace_identifier_tokens(&binding.pattern, from, to);
-                    binding.expression = replace_identifier_tokens(&binding.expression, from, to);
-                }
-                for assignment in memoized_assignments {
-                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
-                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
-                }
-                for expression in memoized_expressions {
-                    *expression = replace_identifier_tokens(expression, from, to);
-                }
-                for statement in memoized_setup_statements {
-                    *statement = replace_identifier_tokens(statement, from, to);
-                }
-                if let Some(memoized_expr) = memoized_expr {
-                    *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
-                }
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::MemoizedComputedReturn {
-                value_name,
-                value_kind: _,
-                deps,
-                computation,
-                ..
-            } => {
-                if value_name == from {
-                    *value_name = to.to_string();
-                }
-                for (_, dep_expr) in deps {
-                    *dep_expr = replace_identifier_tokens(dep_expr, from, to);
-                }
-                rename_generated_body_shape(computation.as_mut(), from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::WrappedReturnExpression {
-                source_name,
-                expression,
-                inner,
-            } => {
-                if source_name == from {
-                    *source_name = to.to_string();
-                }
-                *expression = replace_identifier_tokens(expression, from, to);
-                rename_generated_body_shape(inner.as_mut(), from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::AssignedAliasReturn {
-                alias_name,
-                source_name,
-                inner,
-            } => {
-                if alias_name == from {
-                    *alias_name = to.to_string();
-                }
-                if source_name == from {
-                    *source_name = to.to_string();
-                }
-                rename_generated_body_shape(inner.as_mut(), from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::AliasedReturn {
-                alias_name,
-                source_name,
-                inner,
-                ..
-            } => {
-                if alias_name == from {
-                    *alias_name = to.to_string();
-                }
-                if source_name == from {
-                    *source_name = to.to_string();
-                }
-                rename_generated_body_shape(inner.as_mut(), from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedDeclarations {
-                declarations,
-                inner,
-            } => {
-                for declaration in declarations {
-                    declaration.pattern = replace_identifier_tokens(&declaration.pattern, from, to);
-                }
-                rename_generated_body_shape(inner.as_mut(), from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedBindings {
-                bindings,
-                inner,
-            } => {
-                for binding in bindings {
-                    binding.pattern = replace_identifier_tokens(&binding.pattern, from, to);
-                    binding.expression = replace_identifier_tokens(&binding.expression, from, to);
-                }
-                rename_generated_body_shape(inner.as_mut(), from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedExpressionStatements {
-                expressions,
-                inner,
-            } => {
-                for expression in expressions {
-                    *expression = replace_identifier_tokens(expression, from, to);
-                }
-                rename_generated_body_shape(inner.as_mut(), from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::PrefixedAssignments {
-                assignments,
-                inner,
-            } => {
-                for assignment in assignments {
-                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
-                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
-                }
-                rename_generated_body_shape(inner.as_mut(), from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Sequential {
-                prefix,
-                inner,
-            } => {
-                rename_generated_body_shape(prefix.as_mut(), from, to);
-                rename_generated_body_shape(inner.as_mut(), from, to);
-            }
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
-                value_name,
-                temp_name,
-                memoized_bindings,
-                memoized_assignments,
-                memoized_expressions,
-                memoized_expr,
-                ..
-            } => {
-                if value_name == from {
-                    *value_name = to.to_string();
-                }
-                if temp_name == from {
-                    *temp_name = to.to_string();
-                }
-                for binding in memoized_bindings {
-                    binding.pattern = replace_identifier_tokens(&binding.pattern, from, to);
-                    binding.expression = replace_identifier_tokens(&binding.expression, from, to);
-                }
-                for assignment in memoized_assignments {
-                    assignment.target = replace_identifier_tokens(&assignment.target, from, to);
-                    assignment.value = replace_identifier_tokens(&assignment.value, from, to);
-                }
-                for expression in memoized_expressions {
-                    *expression = replace_identifier_tokens(expression, from, to);
-                }
-                *memoized_expr = replace_identifier_tokens(memoized_expr, from, to);
-            }
-        }
-    }
-
-    let retry_no_memo_mode = RETRY_NO_MEMO_MODE.with(|flag| flag.get());
-    let direct_codegen = || -> Option<(codegen_reactive::CodegenResult, crate::hir::types::ReactiveFunction)> {
-        let mut reactive_fn = build_reactive_function::build_reactive_function(func.clone());
-        prune_unused_labels_reactive::prune_unused_labels(&mut reactive_fn);
-        prune_unused_lvalues::prune_unused_lvalues(&mut reactive_fn);
-        if prune_hoisted_contexts::prune_hoisted_contexts(&mut reactive_fn).is_err() {
-            return None;
-        }
-        let unique_identifiers = rename_variables::rename_variables(
-            &mut reactive_fn,
-            enable_change_variable_codegen,
-            Some(reserved_names),
-        );
-        let codegen_result = codegen_reactive::codegen_reactive_function_with_options(
-            &reactive_fn,
-            unique_identifiers,
-            retry_no_memo_mode,
-            enable_change_variable_codegen,
-            false,
-            false,
-        );
-        Some((codegen_result, reactive_fn))
-    };
-
-    let (codegen, outlined_reactive_fn) = if matches!(
+    let (codegen, outlined_reactive_fn, own_unique_identifiers) = if matches!(
         func.fn_type,
         crate::hir::types::ReactFunctionType::Component
     ) {
@@ -1816,155 +1161,132 @@ fn codegen_outlined_function(
             func.id.as_deref().unwrap_or("<outlined>"),
             func.env.config(),
         ) {
-            Ok(pipeline_output) if pipeline_output.codegen_result.error.is_none() => (
-                pipeline_output.codegen_result,
-                Some(pipeline_output.reactive_function),
-            ),
+            Ok(pipeline_output) if pipeline_output.codegen_result.error.is_none() => {
+                let ui = pipeline_output.unique_identifiers.clone();
+                (
+                    pipeline_output.codegen_result,
+                    Some(pipeline_output.reactive_function),
+                    ui,
+                )
+            }
             _ => {
-                let (cr, rf) = direct_codegen()?;
-                (cr, Some(rf))
+                let mut reactive_fn =
+                    build_reactive_function::build_reactive_function(func.clone());
+                prune_unused_labels_reactive::prune_unused_labels(&mut reactive_fn);
+                prune_unused_lvalues::prune_unused_lvalues(&mut reactive_fn);
+                if prune_hoisted_contexts::prune_hoisted_contexts(&mut reactive_fn).is_err() {
+                    return None;
+                }
+                promote_used_temporaries::promote_used_temporaries(&mut reactive_fn);
+                let unique_identifiers = rename_variables::rename_variables(
+                    &mut reactive_fn,
+                    enable_change_variable_codegen,
+                    None,
+                );
+                let ui = unique_identifiers.clone();
+                let alloc = oxc_allocator::Allocator::default();
+                let bld = oxc_ast::AstBuilder::new(&alloc);
+                let meta = crate::reactive_scopes::codegen_ast::codegen_reactive_function(
+                    bld,
+                    &alloc,
+                    &reactive_fn,
+                    crate::reactive_scopes::codegen_ast::CodegenOptions {
+                        enable_change_variable_codegen,
+                        enable_emit_hook_guards: false,
+                        enable_change_detection_for_debugging: false,
+                        enable_reset_cache_on_source_file_changes: false,
+                        fast_refresh_source_hash: None,
+                        disable_memoization_features: RETRY_NO_MEMO_MODE.with(|flag| flag.get()),
+                        disable_memoization_for_debugging: false,
+                        fbt_operands: Default::default(),
+                        cache_binding_name: None,
+                        unique_identifiers,
+                        param_name_overrides: std::collections::HashMap::new(),
+                        enable_name_anonymous_functions: false,
+                    },
+                )
+                .metadata();
+                if meta.error.is_some() {
+                    return None;
+                }
+                (meta, Some(reactive_fn), ui)
             }
         }
     } else {
-        let (cr, rf) = direct_codegen()?;
-        (cr, Some(rf))
-    };
-
-    if codegen.error.is_some() {
-        return None;
-    }
-
-    let mut rendered_params = Vec::with_capacity(func.params.len());
-    let mut rename_pairs: Vec<(String, String)> = Vec::new();
-    let mut unnamed_counter = 0usize;
-    for (index, param) in func.params.iter().enumerate() {
-        let (source_name, is_spread, was_unnamed) = match param {
-            crate::hir::types::Argument::Place(p) => match &p.identifier.name {
-                Some(name) => (name.value().to_string(), false, false),
-                None => {
-                    let current = format!("t{}", unnamed_counter);
-                    unnamed_counter += 1;
-                    (current, false, true)
-                }
-            },
-            crate::hir::types::Argument::Spread(p) => match &p.identifier.name {
-                Some(name) => (name.value().to_string(), true, false),
-                None => {
-                    let current = format!("t{}", unnamed_counter);
-                    unnamed_counter += 1;
-                    (current, true, true)
-                }
-            },
-        };
-        let emitted_name = codegen
-            .param_names
-            .get(index)
-            .cloned()
-            .unwrap_or_else(|| source_name.clone());
-        if was_unnamed && emitted_name != source_name {
-            rename_pairs.push((emitted_name.clone(), source_name.clone()));
+        let mut reactive_fn = build_reactive_function::build_reactive_function(func.clone());
+        prune_unused_labels_reactive::prune_unused_labels(&mut reactive_fn);
+        prune_unused_lvalues::prune_unused_lvalues(&mut reactive_fn);
+        if prune_hoisted_contexts::prune_hoisted_contexts(&mut reactive_fn).is_err() {
+            return None;
         }
-        rendered_params.push(CompiledParam {
-            name: source_name,
-            is_rest: is_spread,
-        });
-    }
-    let mut body_shape = codegen.body_shape;
-    for (from, to) in rename_pairs {
-        rename_generated_body_shape(&mut body_shape, &from, &to);
-    }
+        promote_used_temporaries::promote_used_temporaries(&mut reactive_fn);
+        let unique_identifiers = rename_variables::rename_variables(
+            &mut reactive_fn,
+            enable_change_variable_codegen,
+            None,
+        );
+        let ui = unique_identifiers.clone();
+        let alloc = oxc_allocator::Allocator::default();
+        let bld = oxc_ast::AstBuilder::new(&alloc);
+        let meta = crate::reactive_scopes::codegen_ast::codegen_reactive_function(
+            bld,
+            &alloc,
+            &reactive_fn,
+            crate::reactive_scopes::codegen_ast::CodegenOptions {
+                enable_change_variable_codegen,
+                enable_emit_hook_guards: false,
+                enable_change_detection_for_debugging: false,
+                enable_reset_cache_on_source_file_changes: false,
+                fast_refresh_source_hash: None,
+                disable_memoization_features: RETRY_NO_MEMO_MODE.with(|flag| flag.get()),
+                disable_memoization_for_debugging: false,
+                fbt_operands: Default::default(),
+                cache_binding_name: None,
+                unique_identifiers,
+                param_name_overrides: std::collections::HashMap::new(),
+                enable_name_anonymous_functions: false,
+            },
+        )
+        .metadata();
+        if meta.error.is_some() {
+            return None;
+        }
+        (meta, Some(reactive_fn), ui)
+    };
+    let rendered_params: Vec<CompiledParam> = func
+        .params
+        .iter()
+        .enumerate()
+        .map(|(index, param)| {
+            let is_rest = matches!(param, crate::hir::types::Argument::Spread(_));
+            let source_name = match param {
+                crate::hir::types::Argument::Place(p) | crate::hir::types::Argument::Spread(p) => p
+                    .identifier
+                    .name
+                    .as_ref()
+                    .map(|n| n.value().to_string())
+                    .unwrap_or_default(),
+            };
+            // Use param name from codegen (handles rename_variables renaming).
+            let name = codegen
+                .param_names
+                .get(index)
+                .cloned()
+                .unwrap_or(source_name);
+            CompiledParam { name, is_rest }
+        })
+        .collect();
     Some(CompiledOutlinedFunction {
         name: func.id.as_ref()?.clone(),
         params: rendered_params,
-        body_shape,
-        directives: func
-            .directives
-            .iter()
-            .map(|directive| format!("\"{directive}\""))
-            .collect(),
+        directives: func.directives.iter().map(|d| format!("\"{d}\"")).collect(),
         cache_prologue: codegen.cache_prologue.clone(),
         needs_function_hook_guard_wrapper: codegen.needs_function_hook_guard_wrapper,
         is_async: func.async_,
         is_generator: func.generator,
         reactive_function: outlined_reactive_fn,
+        unique_identifiers: own_unique_identifiers,
     })
-}
-
-/// Upstream parity guard: outlined functions are codegen'd through the reactive
-/// path, which may raise invariants for unnamed temporaries. Validate that path
-/// before emitting outlined code with the legacy string emitter.
-fn validate_outlined_function_codegen(
-    func: &HIRFunction,
-    enable_change_variable_codegen: bool,
-    reserved_names: &std::collections::HashSet<String>,
-) -> Result<(), crate::error::CompilerError> {
-    let retry_no_memo_mode = RETRY_NO_MEMO_MODE.with(|flag| flag.get());
-
-    let mut reactive_fn = build_reactive_function::build_reactive_function(func.clone());
-    prune_unused_labels_reactive::prune_unused_labels(&mut reactive_fn);
-    prune_unused_lvalues::prune_unused_lvalues(&mut reactive_fn);
-    prune_hoisted_contexts::prune_hoisted_contexts(&mut reactive_fn)?;
-
-    let unique_identifiers = rename_variables::rename_variables(
-        &mut reactive_fn,
-        enable_change_variable_codegen,
-        Some(reserved_names),
-    );
-    for (index, param) in reactive_fn.params.iter().enumerate() {
-        let (place, is_spread_param) = match param {
-            crate::hir::types::Argument::Place(p) => (p, false),
-            crate::hir::types::Argument::Spread(p) => (p, true),
-        };
-        let name = match &place.identifier.name {
-            Some(crate::hir::types::IdentifierName::Named(name)) => name.as_str(),
-            Some(crate::hir::types::IdentifierName::Promoted(name)) => name.as_str(),
-            None => "<unnamed>",
-        };
-        if std::env::var("DEBUG_BAILOUT_REASON").is_ok() {
-            let current_file = CURRENT_FILENAME.with(|cell| cell.borrow().to_string());
-            eprintln!(
-                "[DEBUG_BAILOUT_REASON] file={} outlined_param idx={} id={} decl={} spread={} name={}",
-                current_file,
-                index,
-                place.identifier.id.0,
-                place.identifier.declaration_id.0,
-                is_spread_param,
-                name,
-            );
-        }
-        if is_spread_param && place.identifier.name.is_none() {
-            if std::env::var("DEBUG_BAILOUT_REASON").is_ok() {
-                let current_file = CURRENT_FILENAME.with(|cell| cell.borrow().to_string());
-                eprintln!(
-                    "[DEBUG_BAILOUT_REASON] file={} outlined_spread_param_invariant id={} decl={}",
-                    current_file, place.identifier.id.0, place.identifier.declaration_id.0,
-                );
-            }
-            return Err(crate::error::CompilerError::Bail(crate::error::BailOut {
-                reason:
-                    "Expected temporaries to be promoted to named identifiers in an earlier pass"
-                        .to_string(),
-                diagnostics: vec![crate::error::CompilerDiagnostic {
-                    severity: crate::error::DiagnosticSeverity::Invariant,
-                    message: format!("identifier {} is unnamed.", place.identifier.id.0),
-                }],
-            }));
-        }
-    }
-    let codegen = codegen_reactive::codegen_reactive_function_with_options(
-        &reactive_fn,
-        unique_identifiers,
-        retry_no_memo_mode,
-        enable_change_variable_codegen,
-        false,
-        false,
-    );
-
-    if let Some(err) = codegen.error {
-        return Err(err);
-    }
-
-    Ok(())
 }
 
 fn outlined_function_needs_backend_render(
@@ -1972,12 +1294,7 @@ fn outlined_function_needs_backend_render(
     hir_function: &HIRFunction,
 ) -> bool {
     let _ = hir_function;
-    // Render if we have a reactive_function (AST codegen) OR a valid body_shape.
     outlined_function.reactive_function.is_some()
-        || !matches!(
-            outlined_function.body_shape,
-            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown
-        )
 }
 
 fn dedupe_outlined_functions(outlined: &mut Vec<CompiledOutlinedFunction>) {
@@ -2038,7 +1355,7 @@ fn dedupe_hir_outlined_functions(outlined: &mut Vec<(String, HIRFunction)>) {
 
 /// Result of running the HIR pipeline.
 struct PipelineOutput {
-    codegen_result: codegen_reactive::CodegenResult,
+    codegen_result: crate::reactive_scopes::codegen_ast::CodegenMetadata,
     reactive_function: crate::hir::types::ReactiveFunction,
     final_hir_snapshot: HIRFunction,
     hir_outlined: Vec<optimization::outline_functions::OutlinedFunction>,
@@ -2558,7 +1875,7 @@ fn run_hir_pipeline(
     let mut reserved_removed_names: std::collections::HashSet<String> = pre_dce_named_identifiers;
     reserved_removed_names.retain(|name| !post_hir_named_identifiers.contains(name));
 
-    // New reactive codegen path: buildReactiveFunction + post-reactive passes + codegen_reactive.
+    // New reactive codegen path: buildReactiveFunction + post-reactive passes + codegen.
     // Old codegen fallback has been removed to keep a single implementation path.
     // Only dememoize if this specific function had a validation error that was swallowed.
     let should_dememoize = retry_no_memo_mode && had_validation_error;
@@ -3368,7 +2685,7 @@ fn dump_reactive_scope_block_with_depth(body: &crate::hir::types::ReactiveBlock,
     }
 }
 
-/// Run buildReactiveFunction + all post-reactive passes + codegen_reactive.
+/// Run buildReactiveFunction + all post-reactive passes + AST codegen.
 fn run_reactive_passes(
     hir_func: HIRFunction,
     retry_no_memo_mode: bool,
@@ -3378,7 +2695,7 @@ fn run_reactive_passes(
     fbt_operands: &std::collections::HashSet<crate::hir::types::IdentifierId>,
 ) -> Result<
     (
-        codegen_reactive::CodegenResult,
+        crate::reactive_scopes::codegen_ast::CodegenMetadata,
         crate::hir::types::ReactiveFunction,
         std::collections::HashSet<String>,
     ),
@@ -3486,10 +2803,9 @@ fn run_reactive_passes(
     // the preceding memoized scope when they are structurally equivalent.
     crate::reactive_scopes::fuse_trailing_nullish_return_into_scope::fuse_trailing_nullish_return_into_scope(&mut reactive_fn);
 
-    // Codegen: AST-only in production. String codegen in test/debug for body_shape.
+    // Codegen: pure AST path.
     let unique_identifiers_for_ast = unique_identifiers.clone();
-    let allow_string = cfg!(test) || std::env::var("REACT_COMPILER_STRING_CODEGEN").is_ok();
-    let ast_meta = {
+    let mut codegen_result = {
         let alloc = oxc_allocator::Allocator::default();
         let bld = oxc_ast::AstBuilder::new(&alloc);
         let opts = crate::reactive_scopes::codegen_ast::CodegenOptions {
@@ -3499,7 +2815,7 @@ fn run_reactive_passes(
             enable_reset_cache_on_source_file_changes: env_config
                 .enable_reset_cache_on_source_file_changes
                 .unwrap_or(false),
-            fast_refresh_source_hash: codegen_reactive::get_fast_refresh_source_hash(),
+            fast_refresh_source_hash: get_fast_refresh_source_hash(),
             disable_memoization_features: retry_no_memo_mode,
             disable_memoization_for_debugging: env_config.disable_memoization_for_debugging,
             fbt_operands: fbt_operands.clone(),
@@ -3515,50 +2831,6 @@ fn run_reactive_passes(
             opts,
         )
         .metadata()
-    };
-    let mut codegen_result = if allow_string {
-        let mut cr = codegen_reactive::codegen_reactive_function_with_options_and_fbt_operands(
-            &reactive_fn,
-            unique_identifiers,
-            codegen_reactive::CodegenReactiveOptions {
-                disable_memoization_features: retry_no_memo_mode,
-                disable_memoization_for_debugging: env_config.disable_memoization_for_debugging,
-                enable_change_variable_codegen: env_config.enable_change_variable_codegen,
-                enable_emit_hook_guards: env_config.enable_emit_hook_guards,
-                enable_change_detection_for_debugging: env_config
-                    .enable_change_detection_for_debugging,
-                enable_reset_cache_on_source_file_changes: env_config
-                    .enable_reset_cache_on_source_file_changes
-                    .unwrap_or(false),
-                enable_name_anonymous_functions: env_config.enable_name_anonymous_functions,
-            },
-            fbt_operands.clone(),
-        );
-        // Override all metadata with AST; keep body_shape from string codegen.
-        cr.param_names = ast_meta.param_names;
-        cr.cache_size = ast_meta.cache_size;
-        cr.needs_cache_import = ast_meta.needs_cache_import;
-        cr.needs_hook_guards = ast_meta.needs_hook_guards;
-        cr.needs_function_hook_guard_wrapper = ast_meta.needs_function_hook_guard_wrapper;
-        cr.needs_structural_check_import = ast_meta.needs_structural_check_import;
-        cr.cache_prologue = ast_meta.cache_prologue;
-        cr
-    } else {
-        // Production: pure AST metadata, zero string codegen for main function.
-        use crate::reactive_scopes::build_codegen_shape::{CodegenResult, GeneratedBodyShape};
-        CodegenResult {
-            body_shape: GeneratedBodyShape::Unknown,
-            cache_size: ast_meta.cache_size,
-            needs_cache_import: ast_meta.needs_cache_import,
-            param_names: ast_meta.param_names,
-            needs_freeze_import: false,
-            has_fire_rewrite: false,
-            needs_hook_guards: ast_meta.needs_hook_guards,
-            needs_function_hook_guard_wrapper: ast_meta.needs_function_hook_guard_wrapper,
-            needs_structural_check_import: ast_meta.needs_structural_check_import,
-            cache_prologue: ast_meta.cache_prologue,
-            error: ast_meta.error,
-        }
     };
     if let Some(err) = codegen_result.error.take() {
         return Err(err);
@@ -4229,7 +3501,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
     } else {
         None
     };
-    codegen_reactive::set_fast_refresh_source_hash(fast_refresh_hash);
+    set_fast_refresh_source_hash(fast_refresh_hash);
     macro_rules! untransformed_result {
         ($code:expr) => {{
             return CompileResult {
@@ -6351,20 +5623,6 @@ fn try_compile_function<'a>(
         .collect();
     let mut outlined = Vec::new();
     for of in &pipeline_output.hir_outlined {
-        if let Err(e) = validate_outlined_function_codegen(
-            &of.func,
-            options.environment.enable_change_variable_codegen,
-            &pipeline_output.reserved_removed_names,
-        ) {
-            if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
-                eprintln!(
-                    "[PIPELINE_FAIL] {}: outlined {} failed reactive codegen: {:?}",
-                    name, of.name, e
-                );
-            }
-            FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
-            return Ok(None);
-        }
         let Some(outlined_function) = codegen_outlined_function(
             &of.func,
             options.environment.enable_change_variable_codegen,
@@ -6408,13 +5666,11 @@ fn try_compile_function<'a>(
 
     let needs_cache_import =
         codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
-    let generated_body_shape = codegen_result.body_shape.clone();
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
         start: func.span.start,
         end: func.span.end,
-        generated_body_shape,
         reactive_function: Some(pipeline_output.reactive_function),
         needs_cache_import,
         compiled_params,
@@ -6443,7 +5699,7 @@ fn try_compile_function<'a>(
             .environment
             .enable_reset_cache_on_source_file_changes
             .unwrap_or(false),
-        fast_refresh_source_hash: codegen_reactive::get_fast_refresh_source_hash(),
+        fast_refresh_source_hash: get_fast_refresh_source_hash(),
         disable_memoization_features: pipeline_output.retry_no_memo_mode,
         disable_memoization_for_debugging: options.environment.disable_memoization_for_debugging,
         fbt_operands: pipeline_output.fbt_operands,
@@ -6565,20 +5821,6 @@ fn try_compile_function_with_name<'a>(
         .collect();
     let mut outlined = Vec::new();
     for of in &pipeline_output.hir_outlined {
-        if let Err(e) = validate_outlined_function_codegen(
-            &of.func,
-            options.environment.enable_change_variable_codegen,
-            &pipeline_output.reserved_removed_names,
-        ) {
-            if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
-                eprintln!(
-                    "[PIPELINE_FAIL] {}: outlined {} failed reactive codegen: {:?}",
-                    name, of.name, e
-                );
-            }
-            FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
-            return Ok(None);
-        }
         let Some(outlined_function) = codegen_outlined_function(
             &of.func,
             options.environment.enable_change_variable_codegen,
@@ -6622,13 +5864,11 @@ fn try_compile_function_with_name<'a>(
 
     let needs_cache_import =
         codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
-    let generated_body_shape = codegen_result.body_shape.clone();
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
         start: func.span.start,
         end: func.span.end,
-        generated_body_shape,
         reactive_function: Some(pipeline_output.reactive_function),
         needs_cache_import,
         compiled_params,
@@ -6657,7 +5897,7 @@ fn try_compile_function_with_name<'a>(
             .environment
             .enable_reset_cache_on_source_file_changes
             .unwrap_or(false),
-        fast_refresh_source_hash: codegen_reactive::get_fast_refresh_source_hash(),
+        fast_refresh_source_hash: get_fast_refresh_source_hash(),
         disable_memoization_features: pipeline_output.retry_no_memo_mode,
         disable_memoization_for_debugging: options.environment.disable_memoization_for_debugging,
         fbt_operands: pipeline_output.fbt_operands,
@@ -6787,20 +6027,6 @@ fn try_compile_arrow<'a>(
         .collect();
     let mut outlined = Vec::new();
     for of in &pipeline_output.hir_outlined {
-        if let Err(e) = validate_outlined_function_codegen(
-            &of.func,
-            options.environment.enable_change_variable_codegen,
-            &pipeline_output.reserved_removed_names,
-        ) {
-            if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
-                eprintln!(
-                    "[PIPELINE_FAIL] {}: outlined {} failed reactive codegen: {:?}",
-                    name, of.name, e
-                );
-            }
-            FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
-            return Ok(None);
-        }
         let Some(outlined_function) = codegen_outlined_function(
             &of.func,
             options.environment.enable_change_variable_codegen,
@@ -6844,13 +6070,11 @@ fn try_compile_arrow<'a>(
 
     let needs_cache_import =
         codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
-    let generated_body_shape = codegen_result.body_shape.clone();
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
         start: arrow.span.start,
         end: arrow.span.end,
-        generated_body_shape,
         reactive_function: Some(pipeline_output.reactive_function),
         needs_cache_import,
         compiled_params,
@@ -6879,7 +6103,7 @@ fn try_compile_arrow<'a>(
             .environment
             .enable_reset_cache_on_source_file_changes
             .unwrap_or(false),
-        fast_refresh_source_hash: codegen_reactive::get_fast_refresh_source_hash(),
+        fast_refresh_source_hash: get_fast_refresh_source_hash(),
         disable_memoization_features: pipeline_output.retry_no_memo_mode,
         disable_memoization_for_debugging: options.environment.disable_memoization_for_debugging,
         fbt_operands: pipeline_output.fbt_operands,
@@ -6898,6 +6122,7 @@ struct ParamsResult {
     hir_outlined_functions: Vec<(String, HIRFunction)>,
 }
 
+#[allow(dead_code)]
 fn extract_simple_default_binding_candidate(
     statement: &CompiledParamPrefixStatement,
 ) -> Option<(String, String, String)> {
@@ -6916,6 +6141,7 @@ fn extract_simple_default_binding_candidate(
     }
 }
 
+#[allow(dead_code)]
 fn is_valid_binding_identifier(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -7050,6 +6276,7 @@ fn align_params_result_with_codegen(params_result: &mut ParamsResult, param_name
     }
 }
 
+#[allow(dead_code)]
 fn is_outlined_temp_expr(expr: &str) -> bool {
     let trimmed = expr.trim();
     if !trimmed.starts_with("_temp") {
@@ -7059,6 +6286,7 @@ fn is_outlined_temp_expr(expr: &str) -> bool {
     suffix.is_empty() || suffix.chars().all(|ch| ch.is_ascii_digit())
 }
 
+#[allow(dead_code)]
 fn rewrite_inline_empty_arrow_callback(expr: &str) -> (String, Vec<(String, HIRFunction)>) {
     let trimmed = expr.trim();
     for source_type in [
@@ -7101,6 +6329,7 @@ fn rewrite_inline_empty_arrow_callback(expr: &str) -> (String, Vec<(String, HIRF
     (trimmed.to_string(), vec![])
 }
 
+#[allow(dead_code)]
 struct InlineEmptyArrowCallbackRewriter<'a> {
     builder: oxc_ast::AstBuilder<'a>,
     replacements: usize,
@@ -7121,6 +6350,7 @@ impl<'a> VisitMut<'a> for InlineEmptyArrowCallbackRewriter<'a> {
     }
 }
 
+#[allow(dead_code)]
 fn is_inline_empty_arrow_expression(expression: &ast::Expression<'_>) -> bool {
     let ast::Expression::ArrowFunctionExpression(arrow) = expression.without_parentheses() else {
         return false;
@@ -7132,6 +6362,7 @@ fn is_inline_empty_arrow_expression(expression: &ast::Expression<'_>) -> bool {
         && arrow.body.statements.is_empty()
 }
 
+#[allow(dead_code)]
 fn codegen_expression_source(expression: &ast::Expression<'_>) -> String {
     let allocator = oxc_allocator::Allocator::default();
     let builder = oxc_ast::AstBuilder::new(&allocator);
@@ -7156,6 +6387,7 @@ fn codegen_expression_source(expression: &ast::Expression<'_>) -> String {
     trimmed.strip_suffix(';').unwrap_or(trimmed).to_string()
 }
 
+#[allow(dead_code)]
 type DefaultParamCacheSynthesis = (SynthesizedDefaultParamCache, Vec<(String, HIRFunction)>);
 
 struct PreparedGeneratedBody {
@@ -7165,104 +6397,17 @@ struct PreparedGeneratedBody {
 }
 
 fn prepare_generated_body(
-    codegen_result: &codegen_reactive::CodegenResult,
-    prefix_statements: &[CompiledParamPrefixStatement],
+    codegen_result: &crate::reactive_scopes::codegen_ast::CodegenMetadata,
+    _prefix_statements: &[CompiledParamPrefixStatement],
 ) -> PreparedGeneratedBody {
-    let mut synthesized_default_param_cache = None;
-    let mut synthesized_hir_outlined_functions: Vec<(String, HIRFunction)> = vec![];
-    if let Some((synthesized_cache_plan, synthesized_hir_outlined)) =
-        synthesize_default_param_cache_body(&codegen_result.body_shape, prefix_statements)
-    {
-        synthesized_default_param_cache = Some(synthesized_cache_plan);
-        synthesized_hir_outlined_functions = synthesized_hir_outlined;
-    }
-    let cache_prologue = if synthesized_default_param_cache.is_some() {
-        Some(crate::reactive_scopes::codegen_ast::CachePrologue {
-            binding_name: "$".to_string(),
-            size: 2,
-            fast_refresh: None,
-        })
-    } else {
-        codegen_result.cache_prologue.clone()
-    };
-
     PreparedGeneratedBody {
-        synthesized_default_param_cache,
-        synthesized_hir_outlined_functions,
-        cache_prologue,
+        synthesized_default_param_cache: None,
+        synthesized_hir_outlined_functions: vec![],
+        cache_prologue: codegen_result.cache_prologue.clone(),
     }
 }
 
-fn synthesize_default_param_cache_body(
-    body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
-    prefix_statements: &[CompiledParamPrefixStatement],
-) -> Option<DefaultParamCacheSynthesis> {
-    let debug_default_param_cache = std::env::var("DEBUG_DEFAULT_PARAM_CACHE").is_ok();
-    let mut candidates = prefix_statements
-        .iter()
-        .filter_map(extract_simple_default_binding_candidate);
-    let (name, temp, expr) = candidates.next()?;
-    if candidates.next().is_some() {
-        if debug_default_param_cache {
-            eprintln!("[DEFAULT_PARAM_CACHE] skip: multiple simple default candidates");
-        }
-        return None;
-    }
-    if is_outlined_temp_expr(&expr) {
-        if debug_default_param_cache {
-            eprintln!("[DEFAULT_PARAM_CACHE] skip: outlined-temp expr={}", expr);
-        }
-        return None;
-    }
-
-    let (rewritten_expr, hir_outlined_functions) = match body_shape {
-        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::ReturnIdentifier(return_name)
-            if return_name == &name =>
-        {
-            if debug_default_param_cache {
-                eprintln!(
-                    "[DEFAULT_PARAM_CACHE] synthesize simple-return name={} temp={} expr={}",
-                    name, temp, expr
-                );
-            }
-            rewrite_inline_empty_arrow_callback(&expr)
-        }
-        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::SingleSlotMemoizedReturn {
-            value_name,
-            temp_name,
-            memoized_expr,
-            ..
-        } if value_name == &name && temp_name == &temp => {
-            if is_outlined_temp_expr(memoized_expr) {
-                if debug_default_param_cache {
-                    eprintln!(
-                        "[DEFAULT_PARAM_CACHE] skip: memoized outlined-temp expr={}",
-                        memoized_expr
-                    );
-                }
-                return None;
-            }
-            if debug_default_param_cache {
-                eprintln!(
-                    "[DEFAULT_PARAM_CACHE] synthesize memoized-single-slot name={} temp={} expr={}",
-                    name, temp, memoized_expr
-                );
-            }
-            rewrite_inline_empty_arrow_callback(memoized_expr)
-        }
-        _ => return None,
-    };
-
-    Some((
-        SynthesizedDefaultParamCache {
-            value_name: name,
-            temp_name: temp,
-            value_expr: rewritten_expr,
-        },
-        hir_outlined_functions,
-    ))
-}
-
+#[allow(dead_code)]
 fn synthesized_empty_outlined_arrow_hir(name: &str) -> (String, HIRFunction) {
     let temp_undefined = crate::hir::types::Place {
         identifier: crate::hir::types::make_temporary_identifier(
@@ -7696,6 +6841,7 @@ fn collect_binding_pattern_names<'a>(
 
 /// Check if a statement contains any identifier references that are NOT own params
 /// and NOT known globals. Returns true if potential captures exist.
+#[allow(dead_code)]
 fn has_non_global_references_stmt(
     stmt: &ast::Statement,
     own_params: &std::collections::HashSet<&str>,
@@ -7745,6 +6891,7 @@ fn has_non_global_references_stmt(
 
 /// Check if an expression contains any identifier references that are NOT own params
 /// and NOT known globals.
+#[allow(dead_code)]
 fn has_non_global_references_expr(
     expr: &ast::Expression,
     own_params: &std::collections::HashSet<&str>,
@@ -7833,6 +6980,7 @@ fn has_non_global_references_expr(
 }
 
 /// Check if a name is a known JavaScript global.
+#[allow(dead_code)]
 fn is_known_global(name: &str) -> bool {
     matches!(
         name,

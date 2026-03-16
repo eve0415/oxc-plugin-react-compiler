@@ -41,6 +41,12 @@ pub const MEMO_CACHE_SENTINEL: &str = "react.memo_cache_sentinel";
 pub const EARLY_RETURN_SENTINEL: &str = "react.early_return_sentinel";
 /// Marker function name for Flow type casts; module_emitter restores `(value: Type)` syntax.
 const FLOW_CAST_MARKER_HELPER: &str = "__REACT_COMPILER_FLOW_CAST__";
+/// Internal blank line marker used by module_emitter for formatting.
+pub(crate) const INTERNAL_BLANK_LINE_MARKER: &str = "__REACT_COMPILER_INTERNAL_BLANK_LINE_MARKER__";
+/// Hook guard push operation constant.
+pub(crate) const HOOK_GUARD_PUSH: u8 = 0;
+/// Hook guard pop operation constant.
+pub(crate) const HOOK_GUARD_POP: u8 = 1;
 
 // ---------------------------------------------------------------------------
 // Options

@@ -346,7 +346,8 @@ fn emit_selector_fn(
     temp_alloc: &mut TempPlaceAllocator,
     keys: &[String],
 ) -> Option<Instruction> {
-    let obj = create_temporary_place(temp_alloc);
+    let mut obj = create_temporary_place(temp_alloc);
+    promote_temporary(&mut obj.identifier);
 
     let mut instructions: Vec<Instruction> = Vec::new();
     let mut elements: Vec<Place> = Vec::new();
@@ -416,4 +417,15 @@ fn emit_selector_fn(
         effects: None,
         loc: SourceLocation::Generated,
     })
+}
+
+/// Promote a temporary identifier to a named identifier.
+/// Mirrors upstream `promoteTemporary` which sets name to `#t{declarationId}`.
+fn promote_temporary(identifier: &mut Identifier) {
+    if identifier.name.is_none() {
+        identifier.name = Some(IdentifierName::Promoted(format!(
+            "#t{}",
+            identifier.declaration_id.0
+        )));
+    }
 }

@@ -1,9 +1,10 @@
-# React Compiler Conformance — 100.0% parity rate
+# React Compiler Conformance — 99.9% parity rate
 
-**1752** parity_success, **0** parity_failure, **0** skipped
+**1751** parity_success, **1** parity_failure, **0** skipped
 
 ## Failed
 
+- `error.bug-invariant-unnamed-temporary`: Expected upstream error/bailout, but compiler returned transformed output
 
 ## Passed
 
@@ -333,7 +334,6 @@
 - `error.bug-invariant-expected-consistent-destructuring`
 - `error.bug-invariant-local-or-context-references`
 - `error.bug-invariant-unexpected-terminal-in-optional`
-- `error.bug-invariant-unnamed-temporary`
 - `error.call-args-destructuring-asignment-complex`
 - `error.capitalized-function-call`
 - `error.capitalized-function-call-aliased`
