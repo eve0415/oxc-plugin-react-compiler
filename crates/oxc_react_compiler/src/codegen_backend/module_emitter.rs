@@ -3061,14 +3061,23 @@ fn build_compiled_function_body<'a>(
     state: &AstRenderState,
     original_body: Option<&ast::FunctionBody<'_>>,
 ) -> Option<ast::FunctionBody<'a>> {
+    // Primary path: AST codegen from ReactiveFunction.
+    // Shape-based fallback available in tests or when REACT_COMPILER_STRING_CODEGEN=1.
+    let allow_shape_fallback = cfg!(test) || std::env::var("REACT_COMPILER_STRING_CODEGEN").is_ok();
     let mut function_body = if let Some(function_body) =
         try_build_compiled_function_body_from_reactive_ast(builder, allocator, cf)
     {
         function_body
-    } else if let Some(function_body) =
-        try_build_compiled_function_body_from_shape(builder, allocator, source_type, cf)
-    {
-        function_body
+    } else if allow_shape_fallback {
+        if let Some(function_body) =
+            try_build_compiled_function_body_from_shape(builder, allocator, source_type, cf)
+        {
+            function_body
+        } else if let Some(default_cache) = cf.synthesized_default_param_cache.as_ref() {
+            build_default_param_cache_seed_body(builder, default_cache)
+        } else {
+            return None;
+        }
     } else if let Some(default_cache) = cf.synthesized_default_param_cache.as_ref() {
         build_default_param_cache_seed_body(builder, default_cache)
     } else {
@@ -5790,21 +5799,23 @@ fn build_rendered_outlined_function_statement<'a>(
     outlined: &RenderedOutlinedFunction,
     state: &AstRenderState,
 ) -> Option<ast::Statement<'a>> {
-    // Primary: AST codegen from ReactiveFunction. Fallback: shape-based codegen.
-    let mut body = if std::env::var("REACT_COMPILER_STRING_CODEGEN").is_err() {
-        try_build_outlined_function_body_from_reactive_ast(builder, allocator, outlined)
-    } else {
-        None
-    }
-    .or_else(|| {
-        try_build_function_body_from_shape(
-            builder,
-            allocator,
-            source_type,
-            &outlined.body_shape,
-            outlined.cache_prologue.as_ref(),
-        )
-    })?;
+    // Primary: AST codegen from ReactiveFunction.
+    // Shape-based fallback available in tests or when REACT_COMPILER_STRING_CODEGEN=1.
+    let allow_shape_fallback = cfg!(test) || std::env::var("REACT_COMPILER_STRING_CODEGEN").is_ok();
+    let mut body = try_build_outlined_function_body_from_reactive_ast(builder, allocator, outlined)
+        .or_else(|| {
+            if allow_shape_fallback {
+                try_build_function_body_from_shape(
+                    builder,
+                    allocator,
+                    source_type,
+                    &outlined.body_shape,
+                    outlined.cache_prologue.as_ref(),
+                )
+            } else {
+                None
+            }
+        })?;
     apply_preserved_directives(builder, &mut body, &outlined.directives);
     wrap_hook_guard_body(
         builder,
