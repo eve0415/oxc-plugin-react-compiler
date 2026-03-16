@@ -53,7 +53,7 @@ struct RenderedOutlinedFunction {
     params: Vec<CompiledParam>,
     body_shape: crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
     directives: Vec<String>,
-    cache_prologue: Option<crate::reactive_scopes::codegen_reactive::CachePrologue>,
+    cache_prologue: Option<crate::reactive_scopes::codegen_ast::CachePrologue>,
     needs_function_hook_guard_wrapper: bool,
     is_async: bool,
     is_generator: bool,
@@ -3433,7 +3433,7 @@ fn build_generated_switch_cases<'a>(
     allocator: &'a Allocator,
     source_type: SourceType,
     cases: &[crate::reactive_scopes::codegen_reactive::GeneratedSwitchCase],
-    cache_prologue: Option<&crate::reactive_scopes::codegen_reactive::CachePrologue>,
+    cache_prologue: Option<&crate::reactive_scopes::codegen_ast::CachePrologue>,
 ) -> Option<oxc_allocator::Vec<'a, ast::SwitchCase<'a>>> {
     let mut rendered_cases = builder.vec();
     for case in cases {
@@ -3708,7 +3708,7 @@ fn try_build_function_body_from_shape<'a>(
     allocator: &'a Allocator,
     source_type: SourceType,
     body_shape: &crate::reactive_scopes::codegen_reactive::GeneratedBodyShape,
-    cache_prologue: Option<&crate::reactive_scopes::codegen_reactive::CachePrologue>,
+    cache_prologue: Option<&crate::reactive_scopes::codegen_ast::CachePrologue>,
 ) -> Option<ast::FunctionBody<'a>> {
     match body_shape {
         crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown => None,
@@ -6343,7 +6343,7 @@ fn prepend_cache_prologue_statements<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
     body: &mut ast::FunctionBody<'a>,
-    cache_prologue: Option<&crate::reactive_scopes::codegen_reactive::CachePrologue>,
+    cache_prologue: Option<&crate::reactive_scopes::codegen_ast::CachePrologue>,
     state: &AstRenderState,
 ) {
     let Some(cache_prologue) = cache_prologue else {
@@ -10093,7 +10093,7 @@ export const FIXTURE_ENTRYPOINT = {
         compiled_function.is_function_declaration = true;
         compiled_function.needs_cache_import = true;
         compiled_function.cache_prologue =
-            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+            Some(crate::reactive_scopes::codegen_ast::CachePrologue {
                 binding_name: "$".to_string(),
                 size: 2,
                 fast_refresh: None,
@@ -10313,7 +10313,7 @@ export const FIXTURE_ENTRYPOINT = {
             };
         compiled_function.needs_cache_import = true;
         compiled_function.cache_prologue =
-            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+            Some(crate::reactive_scopes::codegen_ast::CachePrologue {
                 binding_name: "$".to_string(),
                 size: 1,
                 fast_refresh: None,
@@ -10358,7 +10358,7 @@ export const FIXTURE_ENTRYPOINT = {
             };
         compiled_function.needs_cache_import = true;
         compiled_function.cache_prologue =
-            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+            Some(crate::reactive_scopes::codegen_ast::CachePrologue {
                 binding_name: "$".to_string(),
                 size: 1,
                 fast_refresh: None,
@@ -10415,7 +10415,7 @@ export const FIXTURE_ENTRYPOINT = {
             };
         compiled_function.needs_cache_import = true;
         compiled_function.cache_prologue =
-            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+            Some(crate::reactive_scopes::codegen_ast::CachePrologue {
                 binding_name: "$".to_string(),
                 size: 2,
                 fast_refresh: None,
@@ -10474,7 +10474,7 @@ export const FIXTURE_ENTRYPOINT = {
             };
         compiled_function.needs_cache_import = true;
         compiled_function.cache_prologue =
-            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+            Some(crate::reactive_scopes::codegen_ast::CachePrologue {
                 binding_name: "$".to_string(),
                 size: 2,
                 fast_refresh: None,
@@ -10542,7 +10542,7 @@ export const FIXTURE_ENTRYPOINT = {
             };
         compiled_function.needs_cache_import = true;
         compiled_function.cache_prologue =
-            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+            Some(crate::reactive_scopes::codegen_ast::CachePrologue {
                 binding_name: "$0".to_string(),
                 size: 2,
                 fast_refresh: None,
@@ -10618,7 +10618,7 @@ export const FIXTURE_ENTRYPOINT = {
             };
         compiled_function.needs_cache_import = true;
         compiled_function.cache_prologue =
-            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+            Some(crate::reactive_scopes::codegen_ast::CachePrologue {
                 binding_name: "$".to_string(),
                 size: 3,
                 fast_refresh: None,
@@ -10795,7 +10795,7 @@ export const FIXTURE_ENTRYPOINT = {
             };
         compiled_function.needs_cache_import = true;
         compiled_function.cache_prologue =
-            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+            Some(crate::reactive_scopes::codegen_ast::CachePrologue {
                 binding_name: "$".to_string(),
                 size: 1,
                 fast_refresh: None,
@@ -10850,7 +10850,7 @@ export const FIXTURE_ENTRYPOINT = {
             };
         compiled_function.needs_cache_import = true;
         compiled_function.cache_prologue =
-            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+            Some(crate::reactive_scopes::codegen_ast::CachePrologue {
                 binding_name: "$".to_string(),
                 size: 2,
                 fast_refresh: None,
@@ -10901,7 +10901,7 @@ export const FIXTURE_ENTRYPOINT = {
             &allocator,
             source_type_for_filename("fixture.jsx"),
             &body_shape,
-            Some(&crate::reactive_scopes::codegen_reactive::CachePrologue {
+            Some(&crate::reactive_scopes::codegen_ast::CachePrologue {
                 binding_name: "$".to_string(),
                 size: 1,
                 fast_refresh: None,
@@ -10954,7 +10954,7 @@ export const FIXTURE_ENTRYPOINT = {
             &allocator,
             source_type_for_filename("fixture.jsx"),
             &body_shape,
-            Some(&crate::reactive_scopes::codegen_reactive::CachePrologue {
+            Some(&crate::reactive_scopes::codegen_ast::CachePrologue {
                 binding_name: "$".to_string(),
                 size: 1,
                 fast_refresh: None,
@@ -11006,7 +11006,7 @@ export const FIXTURE_ENTRYPOINT = {
             &allocator,
             source_type_for_filename("fixture.jsx"),
             &body_shape,
-            Some(&crate::reactive_scopes::codegen_reactive::CachePrologue {
+            Some(&crate::reactive_scopes::codegen_ast::CachePrologue {
                 binding_name: "$".to_string(),
                 size: 2,
                 fast_refresh: None,
@@ -11063,7 +11063,7 @@ export const FIXTURE_ENTRYPOINT = {
             &allocator,
             source_type_for_filename("fixture.jsx"),
             &body_shape,
-            Some(&crate::reactive_scopes::codegen_reactive::CachePrologue {
+            Some(&crate::reactive_scopes::codegen_ast::CachePrologue {
                 binding_name: "$".to_string(),
                 size: 3,
                 fast_refresh: None,
@@ -11141,7 +11141,7 @@ export const FIXTURE_ENTRYPOINT = {
             };
         compiled_function.needs_cache_import = true;
         compiled_function.cache_prologue =
-            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+            Some(crate::reactive_scopes::codegen_ast::CachePrologue {
                 binding_name: "$".to_string(),
                 size: 5,
                 fast_refresh: None,
@@ -11202,7 +11202,7 @@ export const FIXTURE_ENTRYPOINT = {
             };
         compiled_function.needs_cache_import = true;
         compiled_function.cache_prologue =
-            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+            Some(crate::reactive_scopes::codegen_ast::CachePrologue {
                 binding_name: "$".to_string(),
                 size: 2,
                 fast_refresh: None,
@@ -11255,7 +11255,7 @@ export const FIXTURE_ENTRYPOINT = {
             };
         compiled_function.needs_cache_import = true;
         compiled_function.cache_prologue =
-            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+            Some(crate::reactive_scopes::codegen_ast::CachePrologue {
                 binding_name: "$".to_string(),
                 size: 3,
                 fast_refresh: None,
@@ -11301,7 +11301,7 @@ export const FIXTURE_ENTRYPOINT = {
             };
         compiled_function.needs_cache_import = true;
         compiled_function.cache_prologue =
-            Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+            Some(crate::reactive_scopes::codegen_ast::CachePrologue {
                 binding_name: "$".to_string(),
                 size: 1,
                 fast_refresh: None,

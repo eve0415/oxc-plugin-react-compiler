@@ -7102,7 +7102,7 @@ type DefaultParamCacheSynthesis = (SynthesizedDefaultParamCache, Vec<(String, HI
 struct PreparedGeneratedBody {
     synthesized_default_param_cache: Option<SynthesizedDefaultParamCache>,
     synthesized_hir_outlined_functions: Vec<(String, HIRFunction)>,
-    cache_prologue: Option<crate::reactive_scopes::codegen_reactive::CachePrologue>,
+    cache_prologue: Option<crate::reactive_scopes::codegen_ast::CachePrologue>,
 }
 
 fn prepare_generated_body(
@@ -7118,7 +7118,7 @@ fn prepare_generated_body(
         synthesized_hir_outlined_functions = synthesized_hir_outlined;
     }
     let cache_prologue = if synthesized_default_param_cache.is_some() {
-        Some(crate::reactive_scopes::codegen_reactive::CachePrologue {
+        Some(crate::reactive_scopes::codegen_ast::CachePrologue {
             binding_name: "$".to_string(),
             size: 2,
             fast_refresh: None,

@@ -16,7 +16,24 @@ use oxc_syntax::operator::{AssignmentOperator, BinaryOperator, LogicalOperator};
 
 use crate::error::CompilerError;
 use crate::hir::types::*;
-use crate::reactive_scopes::build_codegen_shape::{CachePrologue, FastRefreshPrologue};
+
+// ---------------------------------------------------------------------------
+// Cache prologue types (shared between codegen_ast and module_emitter)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FastRefreshPrologue {
+    pub cache_index: u32,
+    pub hash: String,
+    pub index_binding_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachePrologue {
+    pub binding_name: String,
+    pub size: u32,
+    pub fast_refresh: Option<FastRefreshPrologue>,
+}
 
 /// Sentinel value for uninitialized cache slots.
 pub const MEMO_CACHE_SENTINEL: &str = "react.memo_cache_sentinel";

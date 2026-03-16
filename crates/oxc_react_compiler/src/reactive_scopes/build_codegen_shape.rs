@@ -8,20 +8,8 @@ use oxc_ast::ast;
 
 use crate::error::CompilerError;
 
-/// Result of codegen for a reactive function.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FastRefreshPrologue {
-    pub cache_index: u32,
-    pub hash: String,
-    pub index_binding_name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CachePrologue {
-    pub binding_name: String,
-    pub size: u32,
-    pub fast_refresh: Option<FastRefreshPrologue>,
-}
+// CachePrologue and FastRefreshPrologue are now defined in codegen_ast.rs.
+pub use super::codegen_ast::{CachePrologue, FastRefreshPrologue};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GeneratedBodyShape {
