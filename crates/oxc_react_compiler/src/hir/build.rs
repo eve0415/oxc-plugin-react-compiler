@@ -4686,37 +4686,14 @@ fn emit_store_for_maybe_default<'a>(
         }
         js::AssignmentTargetMaybeDefault::AssignmentTargetWithDefault(awd) => {
             // Pattern: [a = defaultVal] = arr
-            // Emit: default = <init>
-            //       undef = undefined
-            //       test = temp === undefined
-            //       result = test ? default : temp
-            //       <store result into binding>
-            let loc = span_to_loc(awd.span);
-            let default_place = lower_expr_to_temp(builder, &awd.init, semantic, source);
-            let undef_place = lower_value_to_temporary(
+            // Use block-based Branch for proper reactive scope analysis.
+            let result_place = emit_default_value_branch(
                 builder,
-                hir::InstructionValue::Primitive {
-                    value: hir::PrimitiveValue::Undefined,
-                    loc: loc.clone(),
-                },
-            );
-            let test_place = lower_value_to_temporary(
-                builder,
-                hir::InstructionValue::BinaryExpression {
-                    operator: hir::BinaryOperator::StrictEq,
-                    left: temp_place.clone(),
-                    right: undef_place,
-                    loc: loc.clone(),
-                },
-            );
-            let result_place = lower_value_to_temporary(
-                builder,
-                hir::InstructionValue::Ternary {
-                    test: test_place,
-                    consequent: default_place,
-                    alternate: temp_place,
-                    loc: loc.clone(),
-                },
+                temp_place,
+                &awd.init,
+                semantic,
+                source,
+                &span_to_loc(awd.span),
             );
             emit_store_for_target(builder, result_place, &awd.binding, semantic, source);
         }
