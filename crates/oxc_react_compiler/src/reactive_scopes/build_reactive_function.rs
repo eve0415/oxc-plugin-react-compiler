@@ -837,11 +837,75 @@ impl Driver {
 
                 self.cx.unschedule_all(&schedule_ids);
 
-                let test_place = Self::effective_value_place(&test_result);
+                let mut test_place = Self::effective_value_place(&test_result);
 
                 // Emit test instructions as leading statements (they populate
                 // the temp map so codegen can inline the test expression).
-                for instr in test_result.instructions {
+                // Also detect orphaned side-effecting temps (from sequence
+                // expressions like `while ((foo(), true))`) and wrap them
+                // into a ReactiveSequenceExpression that codegen inlines.
+                let mut test_instrs = test_result.instructions;
+                if test_instrs.len() > 1 {
+                    let last = test_instrs.last().unwrap().clone();
+                    let prefix_slice = &test_instrs[..test_instrs.len() - 1];
+                    let has_orphaned = prefix_slice.iter().any(|instr| {
+                        if let Some(lv) = &instr.lvalue
+                            && lv.identifier.name.is_none()
+                            && matches!(
+                                instr.value,
+                                InstructionValue::CallExpression { .. }
+                                    | InstructionValue::MethodCall { .. }
+                                    | InstructionValue::PostfixUpdate { .. }
+                                    | InstructionValue::PrefixUpdate { .. }
+                            )
+                        {
+                            // Check against ALL other instructions (prefix + last),
+                            // not just the last, to avoid false positives when a
+                            // prefix instruction is consumed by another prefix instruction.
+                            let others: Vec<_> = prefix_slice
+                                .iter()
+                                .chain(std::iter::once(&last))
+                                .filter(|i| {
+                                    i.lvalue.as_ref().map(|ilv| ilv.identifier.declaration_id)
+                                        != Some(lv.identifier.declaration_id)
+                                })
+                                .cloned()
+                                .collect();
+                            !is_decl_id_referenced_in_instructions(
+                                lv.identifier.declaration_id,
+                                &others,
+                            )
+                        } else {
+                            false
+                        }
+                    });
+                    if has_orphaned {
+                        let prefix: Vec<_> = prefix_slice.to_vec();
+                        let seq_value = InstructionValue::ReactiveSequenceExpression {
+                            instructions: prefix,
+                            id: last.id,
+                            value: Box::new(last.value.clone()),
+                            loc: loc.clone(),
+                        };
+                        // Replace last instruction with the sequence
+                        // and update test_place to match its lvalue so
+                        // codegen picks up the comma expression.
+                        let seq_lvalue = last.lvalue.clone().unwrap_or_else(|| test_place.clone());
+                        let seq_instr = ReactiveInstruction {
+                            id: last.id,
+                            lvalue: Some(seq_lvalue.clone()),
+                            value: seq_value,
+                            loc: loc.clone(),
+                        };
+                        // Remove the flat prefix instructions and the
+                        // original last; emit only the sequence wrapper.
+                        test_instrs.clear();
+                        test_instrs.push(seq_instr);
+                        // Update test_place to point to the sequence.
+                        test_place = seq_lvalue;
+                    }
+                }
+                for instr in test_instrs {
                     block_value.push(ReactiveStatement::Instruction(Box::new(instr)));
                 }
 
@@ -1209,6 +1273,7 @@ impl Driver {
                                     | InstructionValue::MethodCall { .. }
                                     | InstructionValue::PostfixUpdate { .. }
                                     | InstructionValue::PrefixUpdate { .. }
+                                    | InstructionValue::StoreLocal { .. }
                             )
                         {
                             let others: Vec<_> = prefix

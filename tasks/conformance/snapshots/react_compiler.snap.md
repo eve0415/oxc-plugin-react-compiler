@@ -1,14 +1,12 @@
-# React Compiler Conformance — 99.7% parity rate
+# React Compiler Conformance — 99.8% parity rate
 
-**1747** parity_success, **5** parity_failure, **0** skipped
+**1749** parity_success, **3** parity_failure, **0** skipped
 
 ## Failed
 
 - `hoist-destruct`: Expected transformed output, but compiler bailed out/skipped
 - `hoisting-setstate-captured-indirectly-jsx`: Expected transformed output, but compiler bailed out/skipped
 - `inline-jsx-transform`: Output mismatch
-- `jsx-tag-evaluation-order-non-global`: Output mismatch
-- `sequence-expression`: Output mismatch
 
 ## Passed
 
@@ -821,6 +819,7 @@
 - `jsx-string-attribute-expression-container`
 - `jsx-string-attribute-non-ascii`
 - `jsx-tag-evaluation-order`
+- `jsx-tag-evaluation-order-non-global`
 - `jsx-ternary-local-variable`
 - `jump-poisoned/break-in-scope`
 - `jump-poisoned/break-poisons-outer-scope`
@@ -1480,6 +1479,7 @@
 - `same-variable-as-dep-and-redeclare`
 - `same-variable-as-dep-and-redeclare-maybe-frozen`
 - `script-source-type`
+- `sequence-expression`
 - `sequential-destructuring-assignment-to-scope-declarations`
 - `sequential-destructuring-both-mixed-local-and-scope-declaration`
 - `sequentially-constant-progagatable-if-test-conditions`
