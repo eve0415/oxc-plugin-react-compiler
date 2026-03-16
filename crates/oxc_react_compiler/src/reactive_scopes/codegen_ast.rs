@@ -2131,6 +2131,13 @@ fn codegen_reactive_scope<'a>(
     scope: &ReactiveScope,
     instructions: &ReactiveBlock,
 ) -> Vec<ast::Statement<'a>> {
+    // Skip scopes with no declarations and no reassignments — they produce
+    // no memoized output and should not allocate cache slots.
+    // This matches string codegen which also skips such scopes.
+    if scope.declarations.is_empty() && scope.reassignments.is_empty() {
+        return codegen_block(cx, instructions);
+    }
+
     let mut stmts = Vec::new();
 
     // Collect catch binding declaration_ids from Try terminals in this scope.

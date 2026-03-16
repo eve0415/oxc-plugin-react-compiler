@@ -3533,13 +3533,14 @@ fn run_reactive_passes(
         )
         .metadata();
         // Replace metadata fields with AST codegen values.
-        // String codegen remains authoritative for: body_shape (test fallback),
-        // needs_cache_import (1 Flow fixture mismatch), cache_size, has_fire_rewrite,
-        // needs_freeze_import.
+        // String codegen provides: body_shape (test fallback), needs_cache_import
+        // (1 Flow edge case), has_fire_rewrite, needs_freeze_import.
         codegen_result.param_names = meta.param_names;
+        codegen_result.cache_size = meta.cache_size;
         codegen_result.needs_hook_guards = meta.needs_hook_guards;
         codegen_result.needs_function_hook_guard_wrapper = meta.needs_function_hook_guard_wrapper;
         codegen_result.needs_structural_check_import = meta.needs_structural_check_import;
+        codegen_result.cache_prologue = meta.cache_prologue;
     }
     if let Some(err) = codegen_result.error.take() {
         return Err(err);
