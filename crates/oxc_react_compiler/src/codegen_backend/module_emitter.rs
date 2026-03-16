@@ -3064,10 +3064,10 @@ fn build_compiled_function_body<'a>(
     // Primary path: AST codegen from ReactiveFunction.
     // Shape-based fallback available in tests or when REACT_COMPILER_STRING_CODEGEN=1.
     let allow_shape_fallback = cfg!(test) || std::env::var("REACT_COMPILER_STRING_CODEGEN").is_ok();
-    let mut function_body = if let Some(function_body) =
-        try_build_compiled_function_body_from_reactive_ast(builder, allocator, cf)
-    {
-        function_body
+    // Run AST codegen, capturing cache prologue for _c(N) alignment.
+    let ast_result = try_run_reactive_ast_codegen(builder, allocator, cf);
+    let mut function_body = if let Some((body, _)) = ast_result.as_ref() {
+        body.clone_in(allocator)
     } else if allow_shape_fallback {
         if let Some(function_body) =
             try_build_compiled_function_body_from_shape(builder, allocator, source_type, cf)
@@ -3084,6 +3084,12 @@ fn build_compiled_function_body<'a>(
         return None;
     };
 
+    // Use the AST codegen's cache prologue (matches the body it generated).
+    // Fall back to pipeline prologue for shape-based path.
+    let effective_prologue = ast_result
+        .and_then(|(_, p)| p)
+        .or_else(|| cf.cache_prologue.clone());
+
     normalize_use_fire_binding_temps_ast(builder, &mut function_body, cf);
     wrap_function_hook_guard_body(builder, allocator, &mut function_body, cf, state);
     apply_preserved_directives(builder, &mut function_body, &cf.directives);
@@ -3091,7 +3097,7 @@ fn build_compiled_function_body<'a>(
         builder,
         allocator,
         &mut function_body,
-        cf.cache_prologue.as_ref(),
+        effective_prologue.as_ref(),
         state,
     );
     prepend_synthesized_default_param_cache_statements(
@@ -3117,13 +3123,15 @@ fn build_compiled_function_body<'a>(
     Some(function_body)
 }
 
-fn try_build_compiled_function_body_from_reactive_ast<'a>(
+/// Run AST codegen and return both the function body and cache prologue.
+fn try_run_reactive_ast_codegen<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
     cf: &CompiledFunction,
-) -> Option<ast::FunctionBody<'a>> {
-    // Direct ReactiveFunction → AST codegen (default path).
-    // Set REACT_COMPILER_STRING_CODEGEN=1 to fall back to the legacy string path.
+) -> Option<(
+    ast::FunctionBody<'a>,
+    Option<crate::reactive_scopes::codegen_ast::CachePrologue>,
+)> {
     if std::env::var("REACT_COMPILER_STRING_CODEGEN").is_ok() {
         return None;
     }
@@ -3147,7 +3155,8 @@ fn try_build_compiled_function_body_from_reactive_ast<'a>(
         reactive_fn,
         options,
     );
-    Some(builder.function_body(SPAN, builder.vec(), result.body))
+    let body = builder.function_body(SPAN, builder.vec(), result.body);
+    Some((body, result.cache_prologue))
 }
 
 fn try_build_outlined_function_body_from_reactive_ast<'a>(

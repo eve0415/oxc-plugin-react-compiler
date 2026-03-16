@@ -386,7 +386,9 @@ pub fn codegen_reactive_function<'a>(
     let needs_cache_import = cache_size > 0;
 
     // Build cache prologue if needed.
-    let cache_prologue = if needs_cache_import {
+    // When disable_memoization_features is true (bailout-retry mode),
+    // no cache import is needed — the function runs without memoization.
+    let cache_prologue = if needs_cache_import && !cx.options.disable_memoization_features {
         let fast_refresh = fast_refresh_slot.and_then(|slot| {
             cx.options
                 .fast_refresh_source_hash
@@ -394,7 +396,7 @@ pub fn codegen_reactive_function<'a>(
                 .map(|hash| FastRefreshPrologue {
                     cache_index: slot,
                     hash: hash.clone(),
-                    index_binding_name: format!("${}", cache_binding),
+                    index_binding_name: "$i".to_string(),
                 })
         });
         Some(CachePrologue {
