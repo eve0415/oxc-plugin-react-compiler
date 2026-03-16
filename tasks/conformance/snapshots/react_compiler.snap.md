@@ -1,12 +1,11 @@
-# React Compiler Conformance — 99.8% parity rate
+# React Compiler Conformance — 99.9% parity rate
 
-**1749** parity_success, **3** parity_failure, **0** skipped
+**1750** parity_success, **2** parity_failure, **0** skipped
 
 ## Failed
 
 - `hoist-destruct`: Expected transformed output, but compiler bailed out/skipped
 - `hoisting-setstate-captured-indirectly-jsx`: Expected transformed output, but compiler bailed out/skipped
-- `inline-jsx-transform`: Output mismatch
 
 ## Passed
 
@@ -772,6 +771,7 @@
 - `infer-sequential-optional-chain-nonnull`
 - `infer-skip-components-without-hooks-or-jsx`
 - `infer-types-through-type-cast.flow`
+- `inline-jsx-transform`
 - `inner-memo-value-not-promoted-to-outer-scope-dynamic`
 - `inner-memo-value-not-promoted-to-outer-scope-static`
 - `interdependent`

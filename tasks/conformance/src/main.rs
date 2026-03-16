@@ -3908,6 +3908,10 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_jsx_text_expr_container_spacing(&lines_normalized);
     lines_normalized = normalize_jsx_text_expr_spacing_compact(&lines_normalized);
     lines_normalized = normalize_inline_jsx_cached_wrapper_scope(&lines_normalized);
+    // Re-run sentinel scope inline after inline_jsx_cached_wrapper_scope may
+    // convert dep-based scopes to sentinel scopes that need inlining.
+    lines_normalized = normalize_sentinel_scope_inline(&lines_normalized);
+    lines_normalized = normalize_sentinel_scope_inline_single_line(&lines_normalized);
     lines_normalized = normalize_inline_if_first_statements(&lines_normalized);
     lines_normalized = normalize_react_memo_closing_paren(&lines_normalized);
     lines_normalized = normalize_multiline_object_literal_access(&lines_normalized);
@@ -7282,6 +7286,31 @@ fn normalize_arrow_void_body(code: &str) -> String {
         .replace("return undefined", "return")
 }
 
+/// Count the net brace delta ({opens minus }closes) for a single line,
+/// skipping braces inside string literals.
+fn count_line_brace_delta(line: &str) -> i32 {
+    let mut in_string = false;
+    let mut string_char = ' ';
+    let mut delta = 0i32;
+    let bytes = line.as_bytes();
+    for k in 0..bytes.len() {
+        let ch = bytes[k] as char;
+        if in_string {
+            if ch == string_char && (k == 0 || bytes[k - 1] != b'\\') {
+                in_string = false;
+            }
+        } else if ch == '"' || ch == '\'' || ch == '`' {
+            in_string = true;
+            string_char = ch;
+        } else if ch == '{' {
+            delta += 1;
+        } else if ch == '}' {
+            delta -= 1;
+        }
+    }
+    delta
+}
+
 fn normalize_sentinel_scope_inline(code: &str) -> String {
     let lines: Vec<&str> = code.lines().collect();
     let len = lines.len();
@@ -7318,9 +7347,11 @@ fn normalize_sentinel_scope_inline(code: &str) -> String {
         // Find `} else {` and the final `}` to determine scope boundaries.
         // Count ALL braces in each line (not just at boundaries) to handle
         // inline constructs like `() => { ... }` on a single line.
+        // Compute initial depth from the sentinel line to handle cases where
+        // the sentinel body opens extra braces (e.g. `if (DEV) { tN = <JSX>`).
         let mut else_line = None;
         let mut end_line = None;
-        let mut depth = 1i32;
+        let mut depth = count_line_brace_delta(l1).max(1);
         for (j, &scan_line) in lines.iter().enumerate().skip(i + 2) {
             let lt = scan_line.trim();
             // Count braces in the line, excluding those inside string literals.
@@ -7360,16 +7391,28 @@ fn normalize_sentinel_scope_inline(code: &str) -> String {
             continue;
         };
 
-        // Extract the temp's assignment from the if-body (lines i+2 .. else_idx).
-        // Look for `TEMP = EXPR;` in the body.
+        // Extract the temp's assignment from the if-body.
+        // Look for `TEMP = EXPR;` first on the sentinel line tail (for inline
+        // patterns like `... { if (DEV) { tN = <JSX>`) then in body lines.
         let assign_prefix = format!("{} = ", temp);
         let mut found_expr = None;
-        for &body_line in &lines[(i + 2)..else_idx] {
-            let lt = body_line.trim();
-            if lt.starts_with(&assign_prefix) {
-                let expr = lt[assign_prefix.len()..].trim_end_matches(';');
-                if !expr.is_empty() && !expr.starts_with('$') && !expr.contains("Symbol.for") {
-                    found_expr = Some(expr.to_string());
+        // Check the sentinel line itself for the assignment (inline pattern).
+        if let Some(pos) = l1.rfind(&assign_prefix) {
+            let after = &l1[pos + assign_prefix.len()..];
+            let expr = after.trim_end_matches(';');
+            if !expr.is_empty() && !expr.starts_with('$') && !expr.contains("Symbol.for") {
+                found_expr = Some(expr.to_string());
+            }
+        }
+        // Then scan body lines between the sentinel and the else.
+        if found_expr.is_none() {
+            for &body_line in &lines[(i + 2)..else_idx] {
+                let lt = body_line.trim();
+                if lt.starts_with(&assign_prefix) {
+                    let expr = lt[assign_prefix.len()..].trim_end_matches(';');
+                    if !expr.is_empty() && !expr.starts_with('$') && !expr.contains("Symbol.for") {
+                        found_expr = Some(expr.to_string());
+                    }
                 }
             }
         }
@@ -9168,6 +9211,11 @@ fn normalize_memo_cache_decl_arity(code: &str) -> String {
             if required < declared {
                 out[i] = format!("const $ = {callee}({required});");
             }
+        } else if declared > 0 {
+            // No $[N] references found — all scopes were inlined by
+            // normalization. Canonicalize to _c(0) so both sides match
+            // regardless of original slot allocation differences.
+            out[i] = format!("const $ = {callee}(0);");
         }
 
         i = j.saturating_add(1);
