@@ -195,32 +195,13 @@ fn lower_function_inner<'a>(
             let param_temp = builder.make_temporary_place(loc.clone());
             params.push(hir::Argument::Place(param_temp.clone()));
 
-            let default_place =
-                lower_reorderable_expr_to_temp(&mut builder, initializer, semantic, source);
-            let undef_place = lower_value_to_temporary(
+            let value = emit_default_value_branch(
                 &mut builder,
-                hir::InstructionValue::Primitive {
-                    value: hir::PrimitiveValue::Undefined,
-                    loc: loc.clone(),
-                },
-            );
-            let test_place = lower_value_to_temporary(
-                &mut builder,
-                hir::InstructionValue::BinaryExpression {
-                    operator: hir::BinaryOperator::StrictEq,
-                    left: param_temp.clone(),
-                    right: undef_place,
-                    loc: loc.clone(),
-                },
-            );
-            let value = lower_value_to_temporary(
-                &mut builder,
-                hir::InstructionValue::Ternary {
-                    test: test_place,
-                    consequent: default_place,
-                    alternate: param_temp,
-                    loc: loc.clone(),
-                },
+                param_temp,
+                initializer,
+                semantic,
+                source,
+                &loc,
             );
 
             lower_binding_pat(
