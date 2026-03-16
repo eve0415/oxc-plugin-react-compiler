@@ -318,21 +318,27 @@ pub fn codegen_reactive_function<'a>(
         fn_name: func.id.clone().unwrap_or_default(),
     };
 
-    // Collect param names.
+    // Pre-collect preferred names: scan body for named references to
+    // declaration_ids that may be unnamed in the param list.
+    let preferred_names = collect_preferred_decl_names(&func.body);
+
+    // Collect param names (matching string codegen's identifier_name_with_cx behavior).
+    // Unnamed params check preferred_names first, then fall back to "tN".
     let param_names: Vec<String> = func
         .params
         .iter()
-        .filter_map(|arg| match arg {
-            Argument::Place(place) => place
-                .identifier
-                .name
-                .as_ref()
-                .map(|n| n.value().to_string()),
-            Argument::Spread(place) => place
-                .identifier
-                .name
-                .as_ref()
-                .map(|n| n.value().to_string()),
+        .map(|arg| {
+            let ident = match arg {
+                Argument::Place(place) => &place.identifier,
+                Argument::Spread(place) => &place.identifier,
+            };
+            if let Some(name) = ident.name.as_ref() {
+                name.value().to_string()
+            } else if let Some(preferred) = preferred_names.get(&ident.declaration_id) {
+                preferred.clone()
+            } else {
+                format!("t{}", ident.id.0)
+            }
         })
         .collect();
 
@@ -4085,4 +4091,92 @@ fn parse_ts_type<'a>(
         builder.ts_type_name_identifier_reference(SPAN, builder.ident(type_source)),
         NONE,
     )
+}
+
+/// Collect preferred declaration names from a reactive block.
+/// Maps DeclarationId → first named reference found in the body.
+/// Used to resolve unnamed param identifiers to their preferred display name.
+fn collect_preferred_decl_names(block: &ReactiveBlock) -> HashMap<DeclarationId, String> {
+    let mut names = HashMap::new();
+    collect_preferred_decl_names_impl(block, &mut names);
+    names
+}
+
+fn collect_preferred_decl_names_impl(
+    block: &ReactiveBlock,
+    names: &mut HashMap<DeclarationId, String>,
+) {
+    for stmt in block.iter() {
+        match stmt {
+            ReactiveStatement::Instruction(instr) => {
+                if let Some(lvalue) = &instr.lvalue
+                    && let Some(name) = lvalue.identifier.name.as_ref()
+                {
+                    names
+                        .entry(lvalue.identifier.declaration_id)
+                        .or_insert_with(|| name.value().to_string());
+                }
+            }
+            ReactiveStatement::Scope(scope) => {
+                collect_preferred_decl_names_impl(&scope.instructions, names);
+            }
+            ReactiveStatement::PrunedScope(scope) => {
+                collect_preferred_decl_names_impl(&scope.instructions, names);
+            }
+            ReactiveStatement::Terminal(term_stmt) => {
+                collect_preferred_decl_names_in_terminal(&term_stmt.terminal, names);
+            }
+        }
+    }
+}
+
+fn collect_preferred_decl_names_in_terminal(
+    terminal: &ReactiveTerminal,
+    names: &mut HashMap<DeclarationId, String>,
+) {
+    match terminal {
+        ReactiveTerminal::If {
+            consequent,
+            alternate,
+            ..
+        } => {
+            collect_preferred_decl_names_impl(consequent, names);
+            if let Some(alt) = alternate {
+                collect_preferred_decl_names_impl(alt, names);
+            }
+        }
+        ReactiveTerminal::Switch { cases, .. } => {
+            for case in cases {
+                if let Some(block) = &case.block {
+                    collect_preferred_decl_names_impl(block, names);
+                }
+            }
+        }
+        ReactiveTerminal::For {
+            init,
+            update,
+            loop_block,
+            ..
+        } => {
+            collect_preferred_decl_names_impl(init, names);
+            if let Some(update) = update {
+                collect_preferred_decl_names_impl(update, names);
+            }
+            collect_preferred_decl_names_impl(loop_block, names);
+        }
+        ReactiveTerminal::While { loop_block, .. }
+        | ReactiveTerminal::DoWhile { loop_block, .. }
+        | ReactiveTerminal::ForOf { loop_block, .. }
+        | ReactiveTerminal::ForIn { loop_block, .. }
+        | ReactiveTerminal::Label {
+            block: loop_block, ..
+        } => {
+            collect_preferred_decl_names_impl(loop_block, names);
+        }
+        ReactiveTerminal::Try { block, handler, .. } => {
+            collect_preferred_decl_names_impl(block, names);
+            collect_preferred_decl_names_impl(handler, names);
+        }
+        _ => {}
+    }
 }
