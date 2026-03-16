@@ -124,6 +124,7 @@ pub(crate) struct CompiledFunction {
     pub(crate) disable_memoization_for_debugging: bool,
     pub(crate) fbt_operands: std::collections::HashSet<crate::hir::types::IdentifierId>,
     pub(crate) unique_identifiers: std::collections::HashSet<String>,
+    pub(crate) enable_name_anonymous_functions: bool,
 }
 
 #[derive(Clone, Copy)]

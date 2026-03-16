@@ -3506,6 +3506,7 @@ fn run_reactive_passes(
             cache_binding_name: None,
             unique_identifiers: unique_identifiers_for_ast.clone(),
             param_name_overrides: std::collections::HashMap::new(),
+            enable_name_anonymous_functions: env_config.enable_name_anonymous_functions,
         };
         crate::reactive_scopes::codegen_ast::codegen_reactive_function(
             bld,
@@ -6447,6 +6448,7 @@ fn try_compile_function<'a>(
         disable_memoization_for_debugging: options.environment.disable_memoization_for_debugging,
         fbt_operands: pipeline_output.fbt_operands,
         unique_identifiers: pipeline_output.unique_identifiers,
+        enable_name_anonymous_functions: options.environment.enable_name_anonymous_functions,
     }))
 }
 
@@ -6660,6 +6662,7 @@ fn try_compile_function_with_name<'a>(
         disable_memoization_for_debugging: options.environment.disable_memoization_for_debugging,
         fbt_operands: pipeline_output.fbt_operands,
         unique_identifiers: pipeline_output.unique_identifiers,
+        enable_name_anonymous_functions: options.environment.enable_name_anonymous_functions,
     }))
 }
 
@@ -6881,6 +6884,7 @@ fn try_compile_arrow<'a>(
         disable_memoization_for_debugging: options.environment.disable_memoization_for_debugging,
         fbt_operands: pipeline_output.fbt_operands,
         unique_identifiers: pipeline_output.unique_identifiers,
+        enable_name_anonymous_functions: options.environment.enable_name_anonymous_functions,
     }))
 }
 

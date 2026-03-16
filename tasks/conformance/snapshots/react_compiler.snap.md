@@ -1,6 +1,6 @@
-# React Compiler Conformance — 99.0% parity rate
+# React Compiler Conformance — 99.1% parity rate
 
-**1735** parity_success, **17** parity_failure, **0** skipped
+**1737** parity_success, **15** parity_failure, **0** skipped
 
 ## Failed
 
@@ -9,10 +9,8 @@
 - `fbt/fbtparam-with-jsx-fragment-value`: Output mismatch
 - `hoist-destruct`: Expected transformed output, but compiler bailed out/skipped
 - `hoisting-setstate-captured-indirectly-jsx`: Expected transformed output, but compiler bailed out/skipped
-- `infer-effect-dependencies/import-namespace-useEffect`: Output mismatch
 - `inline-jsx-transform`: Output mismatch
 - `jsx-tag-evaluation-order-non-global`: Output mismatch
-- `name-anonymous-functions`: Output mismatch
 - `propagate-scope-deps-hir-fork/repro-invariant`: Output mismatch
 - `propagate-scope-deps-hir-fork/switch`: Output mismatch
 - `property-call-evaluation-order`: Output mismatch
@@ -746,6 +744,7 @@
 - `infer-effect-dependencies/error.wrong-index`
 - `infer-effect-dependencies/error.wrong-index-no-func`
 - `infer-effect-dependencies/helper-nonreactive`
+- `infer-effect-dependencies/import-namespace-useEffect`
 - `infer-effect-dependencies/infer-deps-custom-config`
 - `infer-effect-dependencies/infer-effect-dependencies`
 - `infer-effect-dependencies/nonreactive-dep`
@@ -901,6 +900,7 @@
 - `mutation-within-capture-and-mutablerange`
 - `mutation-within-jsx`
 - `mutation-within-jsx-and-break`
+- `name-anonymous-functions`
 - `name-anonymous-functions-outline`
 - `nested-function-shadowed-identifiers`
 - `nested-function-with-param-as-captured-dep`

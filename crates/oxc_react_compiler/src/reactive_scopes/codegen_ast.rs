@@ -63,6 +63,8 @@ pub struct CodegenOptions {
     /// DeclarationId → name overrides for outlined function parameters whose
     /// identifiers are unnamed in the ReactiveFunction IR.
     pub param_name_overrides: HashMap<DeclarationId, String>,
+    /// Wrap anonymous function expressions with generated name hints.
+    pub enable_name_anonymous_functions: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -838,13 +840,19 @@ fn codegen_instruction_value<'a>(
             expr_type,
             ..
         } => {
-            let result = super::super::codegen_backend::hir_to_ast::lower_function_expression_ast(
-                cx.builder,
-                name.as_deref(),
-                lowered_func,
-                *expr_type,
-            );
-            if result.is_some() {
+            // When enableNameAnonymousFunctions is active, skip the hir_to_ast fast path
+            // so that nested function expressions also get name wrapping via the reactive path.
+            let result = if cx.options.enable_name_anonymous_functions {
+                None
+            } else {
+                super::super::codegen_backend::hir_to_ast::lower_function_expression_ast(
+                    cx.builder,
+                    name.as_deref(),
+                    lowered_func,
+                    *expr_type,
+                )
+            };
+            let expr = if result.is_some() {
                 result
             } else {
                 lower_function_expression_via_reactive(
@@ -853,6 +861,21 @@ fn codegen_instruction_value<'a>(
                     lowered_func,
                     *expr_type,
                 )
+            };
+            // Wrap anonymous functions with name hints when enableNameAnonymousFunctions is on.
+            if let Some(inner_expr) = expr {
+                if cx.options.enable_name_anonymous_functions
+                    && name.is_none()
+                    && let Some(name_hint) = lowered_func.func.id.as_deref()
+                {
+                    Some(wrap_named_anonymous_function_expression(
+                        cx.builder, inner_expr, name_hint,
+                    ))
+                } else {
+                    Some(inner_expr)
+                }
+            } else {
+                None
             }
         }
         InstructionValue::JsxExpression {
@@ -4054,6 +4077,7 @@ fn lower_function_expression_via_reactive<'a>(
         cache_binding_name: None,
         unique_identifiers: HashSet::new(),
         param_name_overrides: HashMap::new(),
+        enable_name_anonymous_functions: cx.options.enable_name_anonymous_functions,
     };
 
     let result = codegen_reactive_function(cx.builder, cx.allocator, &reactive_fn, options);
@@ -4159,6 +4183,39 @@ fn lower_function_expression_via_reactive<'a>(
             Some(body),
         )),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Anonymous function naming
+// ---------------------------------------------------------------------------
+
+/// Wrap an anonymous function expression with a named object pattern:
+/// `{ "name_hint": <expr> }["name_hint"]`
+fn wrap_named_anonymous_function_expression<'a>(
+    builder: AstBuilder<'a>,
+    expression: ast::Expression<'a>,
+    name_hint: &str,
+) -> ast::Expression<'a> {
+    let key_literal = builder.expression_string_literal(SPAN, builder.atom(name_hint), None);
+    let property = builder.object_property_kind_object_property(
+        SPAN,
+        ast::PropertyKind::Init,
+        ast::PropertyKey::from(builder.expression_string_literal(
+            SPAN,
+            builder.atom(name_hint),
+            None,
+        )),
+        expression,
+        false,
+        false,
+        false,
+    );
+    ast::Expression::from(builder.member_expression_computed(
+        SPAN,
+        builder.expression_object(SPAN, builder.vec1(property)),
+        key_literal,
+        false,
+    ))
 }
 
 // ---------------------------------------------------------------------------

@@ -2069,6 +2069,16 @@ impl GlobalRegistry {
             }),
         );
 
+        // AUTODEPS: upstream includes this in REACT_APIS which is spread into the
+        // React object shape.  PropertyLoad from `React.AUTODEPS` must resolve to
+        // the BuiltInAutoDepsId so that infer_effect_dependencies can detect it.
+        react_props.insert(
+            "AUTODEPS".to_string(),
+            PropertyType::Object {
+                shape_id: BUILT_IN_AUTODEPS_ID,
+            },
+        );
+
         // Register the React shape
         let react_shape_id: ShapeId = "React";
         self.shapes.insert(

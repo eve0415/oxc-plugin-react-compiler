@@ -3148,6 +3148,7 @@ fn try_run_reactive_ast_codegen<'a>(
         cache_binding_name: cf.cache_prologue.as_ref().map(|p| p.binding_name.clone()),
         unique_identifiers: cf.unique_identifiers.clone(),
         param_name_overrides: std::collections::HashMap::new(),
+        enable_name_anonymous_functions: cf.enable_name_anonymous_functions,
     };
     let result = crate::reactive_scopes::codegen_ast::codegen_reactive_function(
         builder,
@@ -3190,6 +3191,7 @@ fn try_build_outlined_function_body_from_reactive_ast<'a>(
             .map(|p| p.binding_name.clone()),
         unique_identifiers: outlined.unique_identifiers.clone(),
         param_name_overrides,
+        enable_name_anonymous_functions: false,
     };
     let result = crate::reactive_scopes::codegen_ast::codegen_reactive_function(
         builder,
@@ -9469,6 +9471,7 @@ export const FIXTURE_ENTRYPOINT = {
             disable_memoization_for_debugging: false,
             fbt_operands: std::collections::HashSet::new(),
             unique_identifiers: std::collections::HashSet::new(),
+            enable_name_anonymous_functions: false,
         }
     }
 
