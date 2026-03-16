@@ -1,6 +1,6 @@
-# React Compiler Conformance — 97.3% parity rate
+# React Compiler Conformance — 97.5% parity rate
 
-**1705** parity_success, **47** parity_failure, **0** skipped
+**1708** parity_success, **44** parity_failure, **0** skipped
 
 ## Failed
 
@@ -34,7 +34,6 @@
 - `preserve-memo-validation/useMemo-conditional-access-noAlloc`: Output mismatch
 - `propagate-scope-deps-hir-fork/repro-invariant`: Output mismatch
 - `propagate-scope-deps-hir-fork/switch`: Output mismatch
-- `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch`: Output mismatch
 - `property-call-evaluation-order`: Output mismatch
 - `readonly-object-method-calls-mutable-lambda`: Output mismatch
 - `recursive-function-expression`: Output mismatch
@@ -44,11 +43,9 @@
 - `repro-invalid-reactivity-value-block`: Output mismatch
 - `repro-mutate-ref-in-function-passed-to-hook`: Output mismatch
 - `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`: Output mismatch
-- `repro-unreachable-code-early-return-in-useMemo`: Output mismatch
 - `sequence-expression`: Output mismatch
 - `switch`: Output mismatch
 - `todo-granular-iterator-semantics`: Output mismatch
-- `try-catch-try-value-modified-in-catch`: Output mismatch
 - `type-inference-array-from`: Output mismatch
 - `update-expression-in-sequence`: Output mismatch
 
@@ -1178,6 +1175,7 @@
 - `propagate-scope-deps-hir-fork/switch-non-final-default`
 - `propagate-scope-deps-hir-fork/try-catch-maybe-null-dependency`
 - `propagate-scope-deps-hir-fork/try-catch-mutate-outer-value`
+- `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch`
 - `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch-escaping`
 - `propagate-scope-deps-hir-fork/useMemo-multiple-if-else`
 - `property-assignment`
@@ -1376,6 +1374,7 @@
 - `repro-slow-validate-preserve-memo`
 - `repro-undefined-expression-of-jsxexpressioncontainer`
 - `repro-unmerged-fbt-call-merge-overlapping-reactive-scopes`
+- `repro-unreachable-code-early-return-in-useMemo`
 - `repro-useMemo-if-else-both-early-return`
 - `resolve-react-hooks-based-on-import-name`
 - `rest-param-with-array-pattern`
@@ -1612,6 +1611,7 @@
 - `try-catch-mutate-outer-value`
 - `try-catch-try-immediately-returns`
 - `try-catch-try-immediately-throws-after-constant-propagation`
+- `try-catch-try-value-modified-in-catch`
 - `try-catch-try-value-modified-in-catch-escaping`
 - `try-catch-with-catch-param`
 - `try-catch-with-return`
