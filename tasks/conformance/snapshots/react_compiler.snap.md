@@ -1,6 +1,6 @@
-# React Compiler Conformance — 97.1% parity rate
+# React Compiler Conformance — 97.3% parity rate
 
-**1702** parity_success, **50** parity_failure, **0** skipped
+**1705** parity_success, **47** parity_failure, **0** skipped
 
 ## Failed
 
@@ -36,7 +36,6 @@
 - `propagate-scope-deps-hir-fork/switch`: Output mismatch
 - `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch`: Output mismatch
 - `property-call-evaluation-order`: Output mismatch
-- `reactive-control-dependency-for-init`: Output mismatch
 - `readonly-object-method-calls-mutable-lambda`: Output mismatch
 - `recursive-function-expression`: Output mismatch
 - `renaming-jsx-tag-lowercase`: Output mismatch
@@ -50,8 +49,6 @@
 - `switch`: Output mismatch
 - `todo-granular-iterator-semantics`: Output mismatch
 - `try-catch-try-value-modified-in-catch`: Output mismatch
-- `type-annotations/type-annotation-as-array_.flow`: Output mismatch
-- `type-annotations/type-annotation-satisfies-array`: Output mismatch
 - `type-inference-array-from`: Output mismatch
 - `update-expression-in-sequence`: Output mismatch
 
@@ -1197,6 +1194,7 @@
 - `react-namespace`
 - `reactive-control-dependency-do-while-indirect`
 - `reactive-control-dependency-do-while-test`
+- `reactive-control-dependency-for-init`
 - `reactive-control-dependency-for-test`
 - `reactive-control-dependency-for-update`
 - `reactive-control-dependency-forin-collection`
@@ -1635,8 +1633,10 @@
 - `type-alias.flow`
 - `type-annotations/todo_type-annotations-props`
 - `type-annotations/type-annotation-as-array`
+- `type-annotations/type-annotation-as-array_.flow`
 - `type-annotations/type-annotation-as-number`
 - `type-annotations/type-annotation-as-number_.flow`
+- `type-annotations/type-annotation-satisfies-array`
 - `type-annotations/type-annotation-satisfies-number`
 - `type-annotations/type-annotation-var-array`
 - `type-annotations/type-annotation-var-array_.flow`
