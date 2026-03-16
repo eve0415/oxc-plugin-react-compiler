@@ -2108,19 +2108,51 @@ fn codegen_reactive_scope<'a>(
         .collect();
     decl_names.sort_by(|a, b| a.0.cmp(&b.0));
 
+    // Collect dependency declaration_ids to detect dep/output name collisions.
+    let dep_decl_ids: HashSet<DeclarationId> = scope
+        .dependencies
+        .iter()
+        .map(|d| d.identifier.declaration_id)
+        .collect();
+
+    // Pre-compute shifted output names for scope declarations that collide with deps.
+    let mut shifted_names: HashMap<DeclarationId, String> = HashMap::new();
+    for (name, _, decl_id) in &decl_names {
+        let is_temp = name.starts_with('t')
+            && name.len() >= 2
+            && name[1..].chars().all(|c| c.is_ascii_digit());
+        if is_temp && dep_decl_ids.contains(decl_id) {
+            let start = name[1..].parse::<u32>().unwrap_or(0) + 1;
+            let mut idx = start;
+            let fresh = loop {
+                let candidate = format!("t{idx}");
+                if !cx.declared_names.contains(&candidate)
+                    && !cx.options.unique_identifiers.contains(&candidate)
+                {
+                    break candidate;
+                }
+                idx += 1;
+            };
+            cx.decl_names.insert(*decl_id, fresh.clone());
+            cx.declared_names.insert(fresh.clone());
+            shifted_names.insert(*decl_id, fresh);
+        }
+    }
+
     // Collect scope variable declarations.
     // When enable_change_variable_codegen is active with deps, these are deferred
     // to emit after the change variable declarations.
     let mut scope_decl_stmts: Vec<ast::Statement<'a>> = Vec::new();
     for (name, id, decl_id) in &decl_names {
+        let emit_name = shifted_names.get(decl_id).unwrap_or(name);
         if !cx.declared.contains(id) && !cx.declared_decl_ids.contains(decl_id) {
             cx.declared.insert(*id);
             cx.declared_decl_ids.insert(*decl_id);
-            cx.declared_names.insert(name.clone());
-            cx.register_scoped_name(name);
+            cx.declared_names.insert(emit_name.clone());
+            cx.register_scoped_name(emit_name);
             let pattern = cx
                 .builder
-                .binding_pattern_binding_identifier(SPAN, cx.builder.ident(name));
+                .binding_pattern_binding_identifier(SPAN, cx.builder.ident(emit_name));
             scope_decl_stmts.push(ast::Statement::VariableDeclaration(
                 cx.builder.alloc_variable_declaration(
                     SPAN,
@@ -2200,12 +2232,16 @@ fn codegen_reactive_scope<'a>(
         })
         .collect();
 
-    // Allocate cache slots for outputs.
+    // Allocate cache slots for outputs (using shifted names for dep-colliding declarations).
     let output_slots: Vec<(String, u32)> = decl_names
         .iter()
-        .map(|(name, _, _)| {
+        .map(|(name, _, decl_id)| {
             let slot = cx.alloc_cache_slot();
-            (name.clone(), slot)
+            let final_name = shifted_names
+                .get(decl_id)
+                .cloned()
+                .unwrap_or_else(|| name.clone());
+            (final_name, slot)
         })
         .collect();
 
