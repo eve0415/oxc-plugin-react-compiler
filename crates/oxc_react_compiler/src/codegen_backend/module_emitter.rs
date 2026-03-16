@@ -3065,10 +3065,17 @@ fn build_compiled_function_body<'a>(
         try_build_compiled_function_body_from_reactive_ast(builder, allocator, cf)
     {
         function_body
-    } else if let Some(function_body) =
-        try_build_compiled_function_body_from_shape(builder, allocator, source_type, cf)
-    {
-        function_body
+    } else if std::env::var("REACT_COMPILER_STRING_CODEGEN").is_ok() {
+        // Legacy shape-based fallback (only when explicitly requested).
+        if let Some(function_body) =
+            try_build_compiled_function_body_from_shape(builder, allocator, source_type, cf)
+        {
+            function_body
+        } else if let Some(default_cache) = cf.synthesized_default_param_cache.as_ref() {
+            build_default_param_cache_seed_body(builder, default_cache)
+        } else {
+            return None;
+        }
     } else if let Some(default_cache) = cf.synthesized_default_param_cache.as_ref() {
         build_default_param_cache_seed_body(builder, default_cache)
     } else {
