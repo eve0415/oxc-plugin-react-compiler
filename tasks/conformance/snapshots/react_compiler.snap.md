@@ -1,10 +1,9 @@
-# React Compiler Conformance — 97.5% parity rate
+# React Compiler Conformance — 97.7% parity rate
 
-**1708** parity_success, **44** parity_failure, **0** skipped
+**1712** parity_success, **40** parity_failure, **0** skipped
 
 ## Failed
 
-- `allow-passing-ref-to-render-helper-props-object`: Output mismatch
 - `assume-invoked/conditional-call-chain`: Output mismatch
 - `assume-invoked/function-with-conditional-callsite-in-another-function`: Output mismatch
 - `call-args-destructuring-assignment`: Output mismatch
@@ -26,8 +25,6 @@
 - `infer-effect-dependencies/import-namespace-useEffect`: Output mismatch
 - `inline-jsx-transform`: Output mismatch
 - `jsx-tag-evaluation-order-non-global`: Output mismatch
-- `meta-isms/repro-cx-assigned-to-temporary`: Output mismatch
-- `meta-isms/repro-cx-namespace-assigned-to-temporary`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
 - `nested-optional-member-expr`: Output mismatch
 - `preserve-memo-validation/useMemo-conditional-access-alloc`: Output mismatch
@@ -40,7 +37,6 @@
 - `renaming-jsx-tag-lowercase`: Output mismatch
 - `repro-dont-memoize-array-with-capturing-map-after-hook`: Output mismatch
 - `repro-dont-memoize-array-with-mutable-map-after-hook`: Output mismatch
-- `repro-invalid-reactivity-value-block`: Output mismatch
 - `repro-mutate-ref-in-function-passed-to-hook`: Output mismatch
 - `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`: Output mismatch
 - `sequence-expression`: Output mismatch
@@ -85,6 +81,7 @@
 - `allow-mutating-ref-property-in-callback-passed-to-jsx`
 - `allow-mutating-ref-property-in-callback-passed-to-jsx-indirect`
 - `allow-passing-ref-to-render-helper`
+- `allow-passing-ref-to-render-helper-props-object`
 - `allow-passing-refs-as-props`
 - `allow-reassignment-to-global-function-jsx-prop`
 - `allow-ref-access-in-effect`
@@ -894,6 +891,8 @@
 - `merge-nested-scopes-with-same-inputs`
 - `merge-scopes-callback`
 - `merged-scopes-are-valid-effect-deps`
+- `meta-isms/repro-cx-assigned-to-temporary`
+- `meta-isms/repro-cx-namespace-assigned-to-temporary`
 - `meta-isms/repro-cx-namespace-nesting`
 - `method-call`
 - `method-call-computed`
@@ -1339,6 +1338,7 @@
 - `repro-invalid-phi-as-dependency`
 - `repro-invalid-pruned-scope-leaks-value`
 - `repro-invalid-pruned-scope-leaks-value-via-alias`
+- `repro-invalid-reactivity-value-block`
 - `repro-invalid-scope-merging-value-blocks`
 - `repro-local-mutation-of-new-object-from-destructured-prop`
 - `repro-memoize-array-with-immutable-map-after-hook`
