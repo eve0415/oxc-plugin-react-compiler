@@ -152,6 +152,10 @@ struct CodegenContext<'a> {
     /// When entering an If/For/While block, push a new frame.
     /// When leaving, pop and remove those names from declared_names.
     name_scope_stack: Vec<Vec<String>>,
+    /// DeclarationIds for optional chain deps that were pre-extracted to temp variables.
+    /// Prevents cx.temps from being overwritten when the corresponding PropertyLoad
+    /// is processed during body codegen.
+    extracted_optional_deps: HashSet<DeclarationId>,
 }
 
 impl<'a> CodegenContext<'a> {
@@ -323,6 +327,7 @@ pub fn codegen_reactive_function<'a>(
         decl_names: initial_decl_names,
         name_scope_stack: Vec::new(),
         fn_name: func.id.clone().unwrap_or_default(),
+        extracted_optional_deps: HashSet::new(),
     };
 
     // Pre-collect preferred names: scan body for named references to
@@ -617,7 +622,9 @@ fn codegen_instruction<'a>(
     // - Unnamed temporaries (name is None or Promoted) → inline into temp map
     // - Named identifiers → always emit as declaration/reassignment
     if is_temp_identifier(&lvalue.identifier) {
-        cx.temps.insert(decl_id, Some(expr));
+        if !cx.extracted_optional_deps.contains(&decl_id) {
+            cx.temps.insert(decl_id, Some(expr));
+        }
         return None;
     }
 
@@ -2123,6 +2130,86 @@ fn codegen_terminal<'a>(
 }
 
 // ---------------------------------------------------------------------------
+// Optional chain dependency extraction helpers
+// ---------------------------------------------------------------------------
+
+/// Check if an AST expression structurally matches a dependency path.
+/// Walks the member expression chain backward and compares each step with the
+/// dep path entries (property name and optional flag).
+fn expr_matches_dep_path(expr: &ast::Expression, dep: &ReactiveScopeDependency) -> bool {
+    let mut current = expr;
+    let mut path_idx = dep.path.len();
+
+    while path_idx > 0 {
+        path_idx -= 1;
+        let entry = &dep.path[path_idx];
+        match current {
+            ast::Expression::StaticMemberExpression(member) => {
+                if member.property.name.as_str() != entry.property {
+                    return false;
+                }
+                if member.optional != entry.optional {
+                    return false;
+                }
+                current = &member.object;
+            }
+            ast::Expression::ComputedMemberExpression(member) => {
+                if let ast::Expression::NumericLiteral(lit) = &member.expression {
+                    if lit.value.to_string() != entry.property {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+                if member.optional != entry.optional {
+                    return false;
+                }
+                current = &member.object;
+            }
+            _ => return false,
+        }
+    }
+
+    // Check root identifier.
+    if let ast::Expression::Identifier(ident) = current
+        && let Some(name) = dep.identifier.name.as_ref()
+    {
+        return ident.name.as_str() == name.value();
+    }
+    false
+}
+
+/// Search `cx.temps` for a DeclarationId whose stored expression matches
+/// the given optional-chain dependency path.
+fn find_temp_matching_dep(
+    cx: &CodegenContext,
+    dep: &ReactiveScopeDependency,
+) -> Option<DeclarationId> {
+    for (&decl_id, expr_opt) in &cx.temps {
+        if let Some(expr) = expr_opt
+            && expr_matches_dep_path(expr, dep)
+        {
+            return Some(decl_id);
+        }
+    }
+    None
+}
+
+/// Allocate a fresh `tN` temp name that doesn't conflict with existing declarations.
+fn alloc_fresh_temp_name(cx: &CodegenContext) -> String {
+    let mut idx = 0u32;
+    loop {
+        let candidate = format!("t{idx}");
+        if !cx.declared_names.contains(&candidate)
+            && !cx.options.unique_identifiers.contains(&candidate)
+        {
+            return candidate;
+        }
+        idx += 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Reactive scope (memoization)
 // ---------------------------------------------------------------------------
 
@@ -2313,20 +2400,69 @@ fn codegen_reactive_scope<'a>(
         }
     }
 
-    // Emit scope declarations now (will be deferred for change variable codegen).
+    // Build dependency comparison: $[slot] !== dep_expr || ...
+    // Sort dependencies by their rendered name to match upstream ordering.
+    let mut sorted_deps: Vec<&ReactiveScopeDependency> = scope.dependencies.iter().collect();
+    sorted_deps.sort_by_key(|d| dep_sort_key(d));
+
+    // Extract optional-chain dependencies into temp variables.
+    // The upstream compiler places PropertyLoad chains before the scope and
+    // the scope depends on the resulting temp. Our pipeline places the
+    // PropertyLoads before the scope too (already processed, results in cx.temps),
+    // but the scope tracks a path dependency. We fix this by finding the
+    // corresponding temp in cx.temps, giving it a name, and emitting a
+    // declaration before the scope declarations.
+    let mut optional_chain_temps: HashMap<usize, String> = HashMap::new();
+    for (dep_idx, dep) in sorted_deps.iter().enumerate() {
+        if !dep.path.iter().any(|e| e.optional) {
+            continue;
+        }
+        if let Some(final_decl_id) = find_temp_matching_dep(cx, dep) {
+            let temp_name = alloc_fresh_temp_name(cx);
+            if let Some(Some(dep_expr_ref)) = cx.temps.get(&final_decl_id) {
+                let dep_expr = dep_expr_ref.clone_in(cx.allocator);
+                let pattern = cx
+                    .builder
+                    .binding_pattern_binding_identifier(SPAN, cx.builder.ident(&temp_name));
+                stmts.push(ast::Statement::VariableDeclaration(
+                    cx.builder.alloc_variable_declaration(
+                        SPAN,
+                        ast::VariableDeclarationKind::Let,
+                        cx.builder.vec1(cx.builder.variable_declarator(
+                            SPAN,
+                            ast::VariableDeclarationKind::Let,
+                            pattern,
+                            NONE,
+                            Some(dep_expr),
+                            false,
+                        )),
+                        false,
+                    ),
+                ));
+                // Replace the temp expression so body codegen uses the name.
+                cx.temps
+                    .insert(final_decl_id, Some(cx.ident_expr(&temp_name)));
+                cx.declared_names.insert(temp_name.clone());
+                optional_chain_temps.insert(dep_idx, temp_name);
+            }
+        }
+    }
+
+    // Emit scope declarations (after optional chain extractions).
     let defer_decls = cx.options.enable_change_variable_codegen && !scope.dependencies.is_empty();
     if !defer_decls {
         stmts.append(&mut scope_decl_stmts);
     }
 
-    // Build dependency comparison: $[slot] !== dep_expr || ...
-    // Sort dependencies by their rendered name to match upstream ordering.
-    let mut sorted_deps: Vec<&ReactiveScopeDependency> = scope.dependencies.iter().collect();
-    sorted_deps.sort_by_key(|d| dep_sort_key(d));
     let deps: Vec<(u32, ast::Expression<'a>)> = sorted_deps
         .iter()
-        .filter_map(|dep| {
-            let dep_expr = codegen_dependency_expr(cx, dep)?;
+        .enumerate()
+        .filter_map(|(i, dep)| {
+            let dep_expr = if let Some(temp_name) = optional_chain_temps.get(&i) {
+                cx.ident_expr(temp_name)
+            } else {
+                codegen_dependency_expr(cx, dep)?
+            };
             let slot = cx.alloc_cache_slot();
             Some((slot, dep_expr))
         })
