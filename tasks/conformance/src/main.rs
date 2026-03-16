@@ -2198,10 +2198,27 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> Fix
             false,
         );
         let postprocessed = normalize_post_babel_export_spacing(&postprocessed);
-        let actual_source = format_code_for_compare(&fixture.input_path, &postprocessed);
-        let expected_source = format_code_for_compare(&fixture.input_path, &expected_code);
-        let actual = prepare_code_for_compare(&actual_source, strict_output);
-        let expected = prepare_code_for_compare(&expected_source, strict_output);
+        // Try OXC reprint comparison: parse+reprint both sides to canonicalize formatting.
+        // If both reprint successfully AND match, use that (fast path, zero normalizations).
+        // Otherwise fall back to the old normalization pipeline.
+        let st = source_type_from_path(&fixture.input_path);
+        let reprint_match = match (
+            oxc_reprint(&postprocessed, st),
+            oxc_reprint(&expected_code, st),
+        ) {
+            (Some(a), Some(e)) if a == e => Some((a, e)),
+            _ => None,
+        };
+        let (actual, expected) = if let Some(pair) = reprint_match {
+            pair
+        } else {
+            let actual_source = format_code_for_compare(&fixture.input_path, &postprocessed);
+            let expected_source = format_code_for_compare(&fixture.input_path, &expected_code);
+            (
+                prepare_code_for_compare(&actual_source, strict_output),
+                prepare_code_for_compare(&expected_source, strict_output),
+            )
+        };
 
         match expected_state.unwrap_or(ExpectedState::Transform) {
             ExpectedState::Transform => {
@@ -2475,6 +2492,32 @@ fn format_with_oxfmt(input_path: &Path, code: &str) -> Result<String, String> {
     response
         .code
         .ok_or_else(|| "oxfmt response missing formatted code".to_string())
+}
+
+/// Parse `code` with OXC and reprint it via `oxc_codegen`, canonicalizing formatting.
+/// Returns `None` if parsing fails (e.g. Flow-annotated code that OXC can't handle).
+fn oxc_reprint(code: &str, source_type: oxc_span::SourceType) -> Option<String> {
+    let allocator = oxc_allocator::Allocator::default();
+    let parsed = oxc_parser::Parser::new(&allocator, code, source_type).parse();
+    if parsed.panicked || !parsed.errors.is_empty() {
+        return None;
+    }
+    let reprinted = oxc_codegen::Codegen::new().build(&parsed.program).code;
+    Some(reprinted)
+}
+
+/// Derive an OXC `SourceType` from a fixture input file path.
+fn source_type_from_path(input_path: &Path) -> oxc_span::SourceType {
+    let ext = input_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("js");
+    match ext {
+        "tsx" => oxc_span::SourceType::tsx(),
+        "ts" => oxc_span::SourceType::ts().with_jsx(true),
+        "jsx" => oxc_span::SourceType::jsx(),
+        _ => oxc_span::SourceType::mjs().with_jsx(true),
+    }
 }
 
 fn format_code_for_compare(input_path: &Path, code: &str) -> String {
