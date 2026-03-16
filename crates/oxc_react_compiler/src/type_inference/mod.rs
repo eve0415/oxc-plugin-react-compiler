@@ -202,8 +202,14 @@ pub fn infer_types(func: &mut HIRFunction) {
         }
     }
 
-    // Multiple passes to propagate through phi nodes and loads
-    for _pass in 0..3 {
+    // Multiple passes to propagate through phi nodes, loads, and type casts.
+    // Run until convergence (no type changes) with a max pass count as safety bound.
+    // Backward propagation through chains like:
+    //   BinaryExpr -> LoadLocal -> StoreLocal -> TypeCast -> LoadLocal -> StoreLocal
+    // requires one pass per hop, so the limit must cover the longest expected chain.
+    let max_passes = 8;
+    for _pass in 0..max_passes {
+        let snapshot: HashMap<IdentifierId, Type> = id_types.clone();
         for (_bid, block) in &func.body.blocks {
             // Process phis conservatively. Upstream keeps per-identifier type
             // variables and only resolves a phi when all operands provide
@@ -321,6 +327,36 @@ pub fn infer_types(func: &mut HIRFunction) {
                                     get_type(context_place.identifier.id, &id_types)
                                 );
                             }
+                        }
+                    }
+                    // TypeCastExpression: upstream generates equation(left, value.identifier.type)
+                    // which is a bidirectional constraint (same as LoadLocal). When
+                    // enableUseTypeAnnotations is off, the cast is transparent and the lvalue
+                    // should share the same type as the value. Mirror LoadLocal's bidirectional
+                    // propagation so types flow through casts within a single pass.
+                    InstructionValue::TypeCastExpression { value, type_, .. }
+                        if !func.env.config().enable_use_type_annotations
+                            || matches!(type_, Type::Poly | Type::TypeVar { .. }) =>
+                    {
+                        let source_ty = get_type(value.identifier.id, &id_types);
+                        if !matches!(source_ty, Type::Poly | Type::TypeVar { .. }) {
+                            assign_type_to_identifier_or_single_write_declaration(
+                                &instr.lvalue.identifier,
+                                source_ty,
+                                &declaration_ids,
+                                &store_local_decl_writes,
+                                &mut id_types,
+                            );
+                        }
+                        let dest_ty = get_type(lv_id, &id_types);
+                        if !matches!(dest_ty, Type::Poly | Type::TypeVar { .. }) {
+                            assign_type_to_identifier_or_single_write_declaration(
+                                &value.identifier,
+                                dest_ty,
+                                &declaration_ids,
+                                &store_local_decl_writes,
+                                &mut id_types,
+                            );
                         }
                     }
                     InstructionValue::PropertyLoad {
@@ -756,6 +792,11 @@ pub fn infer_types(func: &mut HIRFunction) {
                     ty
                 );
             }
+        }
+
+        // Early exit when types have converged (no changes this pass).
+        if id_types == snapshot {
+            break;
         }
     }
 
@@ -1573,7 +1614,13 @@ fn append_type_operands(operands: &mut Vec<Type>, ty: Type) {
                 }
             }
         }
-        other => push_unique_type(operands, other),
+        other => {
+            // Skip unknown/unresolved types (Poly, TypeVar) so they don't
+            // pollute Phi unions with concrete types during merge.
+            if let Some(normalized) = normalize_known_type(other) {
+                push_unique_type(operands, normalized);
+            }
+        }
     }
 }
 
