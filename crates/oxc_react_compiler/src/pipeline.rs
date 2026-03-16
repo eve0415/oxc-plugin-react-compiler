@@ -3533,8 +3533,8 @@ fn run_reactive_passes(
         )
         .metadata();
         // Replace metadata fields with AST codegen values.
-        // String codegen provides: body_shape (test fallback), needs_cache_import
-        // (1 Flow edge case), has_fire_rewrite, needs_freeze_import.
+        // String codegen still provides: body_shape (test fallback),
+        // needs_cache_import (1 Flow fixture where AST over-allocates).
         codegen_result.param_names = meta.param_names;
         codegen_result.cache_size = meta.cache_size;
         codegen_result.needs_hook_guards = meta.needs_hook_guards;

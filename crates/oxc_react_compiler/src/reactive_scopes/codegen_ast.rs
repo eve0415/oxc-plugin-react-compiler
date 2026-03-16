@@ -2133,8 +2133,19 @@ fn codegen_reactive_scope<'a>(
 ) -> Vec<ast::Statement<'a>> {
     // Skip scopes with no declarations and no reassignments — they produce
     // no memoized output and should not allocate cache slots.
-    // This matches string codegen which also skips such scopes.
     if scope.declarations.is_empty() && scope.reassignments.is_empty() {
+        return codegen_block(cx, instructions);
+    }
+
+    // Inline zero-dep scopes whose declarations are all truly unnamed.
+    // This matches string codegen's behavior for trivial scopes.
+    if scope.dependencies.is_empty()
+        && scope.reassignments.is_empty()
+        && scope
+            .declarations
+            .values()
+            .all(|d| d.identifier.name.is_none())
+    {
         return codegen_block(cx, instructions);
     }
 
