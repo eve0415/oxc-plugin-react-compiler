@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use oxc_allocator::{Allocator, CloneIn};
 use oxc_ast::{AstBuilder, NONE, ast};
+use oxc_parser::Parser;
 use oxc_span::SPAN;
 use oxc_syntax::identifier::is_identifier_name;
 use oxc_syntax::number::NumberBase;
@@ -21,6 +22,8 @@ use crate::reactive_scopes::build_codegen_shape::{CachePrologue, FastRefreshProl
 pub const MEMO_CACHE_SENTINEL: &str = "react.memo_cache_sentinel";
 /// Sentinel value for early return detection.
 pub const EARLY_RETURN_SENTINEL: &str = "react.early_return_sentinel";
+/// Marker function name for Flow type casts; module_emitter restores `(value: Type)` syntax.
+const FLOW_CAST_MARKER_HELPER: &str = "__REACT_COMPILER_FLOW_CAST__";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -645,22 +648,31 @@ fn codegen_instruction_value<'a>(
             ..
         } => {
             let inner = codegen_place(cx, value)?;
-            // Preserve TypeScript `as T` annotations.
-            if matches!(type_annotation_kind, TypeAnnotationKind::As) {
-                Some(cx.builder.expression_ts_as(
-                    SPAN,
-                    inner,
-                    cx.builder.ts_type_type_reference(
-                        SPAN,
-                        cx.builder.ts_type_name_identifier_reference(
+            let ts_type = parse_ts_type(cx.allocator, &cx.builder, type_annotation);
+            match type_annotation_kind {
+                TypeAnnotationKind::As => Some(cx.builder.expression_ts_as(SPAN, inner, ts_type)),
+                TypeAnnotationKind::Satisfies => {
+                    Some(cx.builder.expression_ts_satisfies(SPAN, inner, ts_type))
+                }
+                TypeAnnotationKind::Cast => {
+                    // Flow cast: emit `__REACT_COMPILER_FLOW_CAST__<T>(value)`.
+                    // module_emitter restores this to `(value: T)` syntax.
+                    let type_args = cx
+                        .builder
+                        .alloc_ts_type_parameter_instantiation(SPAN, cx.builder.vec1(ts_type));
+                    Some(
+                        cx.builder.expression_call(
                             SPAN,
-                            cx.builder.ident(type_annotation),
+                            cx.builder.expression_identifier(
+                                SPAN,
+                                cx.builder.ident(FLOW_CAST_MARKER_HELPER),
+                            ),
+                            Some(type_args),
+                            cx.builder.vec1(ast::Argument::from(inner)),
+                            false,
                         ),
-                        NONE,
-                    ),
-                ))
-            } else {
-                Some(inner)
+                    )
+                }
             }
         }
         InstructionValue::ArrayExpression { elements, .. } => Some(
@@ -1825,11 +1837,15 @@ fn codegen_terminal<'a>(
                 // Process all instructions into the temp map / statement list.
                 let update_stmts = codegen_block(cx, update_block);
 
-                // Prefer: find the assignment expression produced by the
+                // Prefer: find the assignment/update expression produced by the
                 // StoreLocal/Reassign in the emitted statements.
                 let assign_expr = update_stmts.iter().rev().find_map(|s| {
                     if let ast::Statement::ExpressionStatement(es) = s {
-                        if matches!(&es.expression, ast::Expression::AssignmentExpression(_)) {
+                        if matches!(
+                            &es.expression,
+                            ast::Expression::AssignmentExpression(_)
+                                | ast::Expression::UpdateExpression(_)
+                        ) {
                             Some(es.expression.clone_in(cx.allocator))
                         } else {
                             None
@@ -2962,21 +2978,31 @@ fn extract_for_collection(init: &ReactiveBlock) -> Option<Place> {
 }
 
 /// Extract the for-of/for-in left-hand side from processed init statements.
+/// Handles both `VariableDeclaration` (new binding) and assignment expressions
+/// (pre-declared loop variable).
 fn extract_for_of_left<'a>(
-    _cx: &mut CodegenContext<'a>,
+    cx: &mut CodegenContext<'a>,
     init_stmts: Vec<ast::Statement<'a>>,
 ) -> Option<ast::ForStatementLeft<'a>> {
-    init_stmts.into_iter().find_map(|s| {
-        if let ast::Statement::VariableDeclaration(mut decl) = s {
-            // Strip initializer — for-of/for-in left side is pattern only.
-            for declarator in decl.declarations.iter_mut() {
-                declarator.init = None;
+    for s in init_stmts {
+        match s {
+            ast::Statement::VariableDeclaration(mut decl) => {
+                // Strip initializer — for-of/for-in left side is pattern only.
+                for declarator in decl.declarations.iter_mut() {
+                    declarator.init = None;
+                }
+                return Some(ast::ForStatementLeft::VariableDeclaration(decl));
             }
-            Some(ast::ForStatementLeft::VariableDeclaration(decl))
-        } else {
-            None
+            ast::Statement::ExpressionStatement(expr_stmt) => {
+                let expr = expr_stmt.unbox().expression;
+                if let Some(target) = super::super::codegen_backend::hir_to_ast::expression_to_simple_assignment_target(cx.builder, expr).map(ast::AssignmentTarget::from) {
+                    return Some(ast::ForStatementLeft::from(target));
+                }
+            }
+            _ => {}
         }
-    })
+    }
+    None
 }
 
 /// Mark all terminal labels in a reactive block as implicit, preventing
@@ -3854,4 +3880,40 @@ fn wrap_hook_guard_iife<'a>(
 
     cx.builder
         .expression_call(SPAN, function_expr, NONE, cx.builder.vec(), false)
+}
+
+/// Parse a type annotation string (e.g. `"Foo"`, `"Foo<Bar>"`, `"Foo | Bar"`) into an OXC
+/// `TSType` AST node.  Falls back to a simple `TSTypeReference` with an identifier when
+/// parsing fails (e.g. Flow-specific syntax OXC can't handle).
+fn parse_ts_type<'a>(
+    allocator: &'a Allocator,
+    builder: &AstBuilder<'a>,
+    type_source: &str,
+) -> ast::TSType<'a> {
+    let wrapper = format!("const __t: {type_source} = null;");
+    let parsed = Parser::new(
+        allocator,
+        allocator.alloc_str(&wrapper),
+        oxc_span::SourceType::ts().with_jsx(true),
+    )
+    .parse();
+    if !parsed.panicked
+        && parsed.errors.is_empty()
+        && let Some(ast::Statement::VariableDeclaration(decl)) =
+            parsed.program.body.into_iter().next()
+        && let Some(annotation) = decl
+            .unbox()
+            .declarations
+            .into_iter()
+            .next()
+            .and_then(|d| d.type_annotation)
+    {
+        return annotation.unbox().type_annotation;
+    }
+    // Fallback: bare identifier reference type.
+    builder.ts_type_type_reference(
+        SPAN,
+        builder.ts_type_name_identifier_reference(SPAN, builder.ident(type_source)),
+        NONE,
+    )
 }
