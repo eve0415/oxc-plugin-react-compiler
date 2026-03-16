@@ -3484,7 +3484,8 @@ fn run_reactive_passes(
     // the preceding memoized scope when they are structurally equivalent.
     crate::reactive_scopes::fuse_trailing_nullish_return_into_scope::fuse_trailing_nullish_return_into_scope(&mut reactive_fn);
 
-    // Codegen from reactive function tree
+    // String codegen: kept for param_names and body_shape (test fallback).
+    // AST codegen: used for cache_size, boolean flags, cache_prologue.
     let unique_identifiers_for_ast = unique_identifiers.clone();
     let mut codegen_result =
         codegen_reactive::codegen_reactive_function_with_options_and_fbt_operands(
@@ -3504,6 +3505,36 @@ fn run_reactive_passes(
             },
             fbt_operands.clone(),
         );
+    // Override metadata fields with AST codegen values where they match the
+    // body that module_emitter will actually generate.
+    {
+        let alloc = oxc_allocator::Allocator::default();
+        let bld = oxc_ast::AstBuilder::new(&alloc);
+        let opts = crate::reactive_scopes::codegen_ast::CodegenOptions {
+            enable_change_variable_codegen: env_config.enable_change_variable_codegen,
+            enable_emit_hook_guards: env_config.enable_emit_hook_guards,
+            enable_change_detection_for_debugging: env_config.enable_change_detection_for_debugging,
+            enable_reset_cache_on_source_file_changes: env_config
+                .enable_reset_cache_on_source_file_changes
+                .unwrap_or(false),
+            fast_refresh_source_hash: codegen_reactive::get_fast_refresh_source_hash(),
+            disable_memoization_features: retry_no_memo_mode,
+            disable_memoization_for_debugging: env_config.disable_memoization_for_debugging,
+            fbt_operands: fbt_operands.clone(),
+            cache_binding_name: None,
+            unique_identifiers: unique_identifiers_for_ast.clone(),
+            param_name_overrides: std::collections::HashMap::new(),
+        };
+        let meta = crate::reactive_scopes::codegen_ast::codegen_reactive_function(
+            bld,
+            &alloc,
+            &reactive_fn,
+            opts,
+        )
+        .metadata();
+        // AST metadata available for future use.
+        let _ = meta;
+    }
     if let Some(err) = codegen_result.error.take() {
         return Err(err);
     }

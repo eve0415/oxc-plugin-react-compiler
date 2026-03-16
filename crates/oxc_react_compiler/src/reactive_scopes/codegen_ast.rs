@@ -389,7 +389,7 @@ pub fn codegen_reactive_function<'a>(
     }
 
     let cache_size = cx.next_cache_index;
-    let needs_cache_import = cache_size > 0;
+    let needs_cache_import = cache_size > 0 && !cx.options.disable_memoization_features;
 
     // Build cache prologue if needed.
     // When disable_memoization_features is true (bailout-retry mode),
