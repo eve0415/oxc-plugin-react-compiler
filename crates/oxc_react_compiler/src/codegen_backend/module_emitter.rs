@@ -8154,8 +8154,12 @@ fn move_leading_comment_to_import_trailing(code: &str) -> String {
         return code.to_string();
     }
 
-    // Check if the line after the last import is a comment (line or block)
-    let comment_idx = last_import_idx + 1;
+    // Check if the line after the last import is a comment (line or block).
+    // Skip blank lines between the last import and the comment.
+    let mut comment_idx = last_import_idx + 1;
+    while comment_idx < lines.len() && lines[comment_idx].trim().is_empty() {
+        comment_idx += 1;
+    }
     if comment_idx >= lines.len() {
         return code.to_string();
     }
@@ -8181,7 +8185,8 @@ fn move_leading_comment_to_import_trailing(code: &str) -> String {
     };
 
     // Build the result: everything up to last import, then import + first comment line,
-    // then remaining comment lines, then rest
+    // then remaining comment lines, then rest. Skip blank lines between the import
+    // and the comment that were jumped over during detection.
     let mut result = String::with_capacity(code.len());
     for (i, line) in lines.iter().enumerate() {
         if i == last_import_idx {
@@ -8191,6 +8196,9 @@ fn move_leading_comment_to_import_trailing(code: &str) -> String {
             result.push('\n');
         } else if i == comment_idx {
             // Skip — already merged onto import line
+            continue;
+        } else if i > last_import_idx && i < comment_idx && lines[i].trim().is_empty() {
+            // Skip blank lines between last import and the merged comment
             continue;
         } else {
             result.push_str(line);

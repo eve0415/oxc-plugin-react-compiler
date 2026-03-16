@@ -7285,7 +7285,9 @@ fn normalize_arrow_void_body(code: &str) -> String {
 fn normalize_sentinel_scope_inline(code: &str) -> String {
     let lines: Vec<&str> = code.lines().collect();
     let len = lines.len();
-    let mut replacements: Vec<(String, String)> = Vec::new();
+    // Each replacement is (temp_name, inlined_expr, sentinel_line_idx) so we
+    // can scope it to the enclosing function.
+    let mut replacements: Vec<(String, String, usize)> = Vec::new();
     let mut skip_lines: Vec<bool> = vec![false; len];
 
     // Scan for sentinel scope patterns. The pattern starts with `let tN;`
@@ -7373,7 +7375,7 @@ fn normalize_sentinel_scope_inline(code: &str) -> String {
         }
 
         if let Some(expr) = found_expr {
-            replacements.push((temp.to_string(), expr));
+            replacements.push((temp.to_string(), expr, i));
             for skip in &mut skip_lines[i..=end_idx] {
                 *skip = true;
             }
@@ -7387,14 +7389,47 @@ fn normalize_sentinel_scope_inline(code: &str) -> String {
         return code.to_string();
     }
 
-    // Build output: skip sentinel lines, replace temp references.
+    // Find function boundaries: for each replacement, determine the enclosing
+    // function's line range [start, end) so replacements are scoped per-function.
+    // A function boundary is detected by `function NAME(` at column 0.
+    let mut func_starts: Vec<usize> = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("function ")
+            || trimmed.starts_with("const ") && trimmed.contains(" = function")
+        {
+            func_starts.push(idx);
+        }
+    }
+    func_starts.push(len); // sentinel end
+
+    // Map each replacement to its enclosing function range.
+    let mut replacement_ranges: Vec<(usize, usize)> = Vec::new();
+    for &(_, _, sentinel_idx) in &replacements {
+        let mut fn_start = 0;
+        let mut fn_end = len;
+        for w in func_starts.windows(2) {
+            if sentinel_idx >= w[0] && sentinel_idx < w[1] {
+                fn_start = w[0];
+                fn_end = w[1];
+                break;
+            }
+        }
+        replacement_ranges.push((fn_start, fn_end));
+    }
+
+    // Build output: skip sentinel lines, replace temp references within function scope.
     let mut result_lines: Vec<String> = Vec::new();
     for (idx, line) in lines.iter().enumerate() {
         if skip_lines[idx] {
             continue;
         }
         let mut l = line.to_string();
-        for (temp, expr) in &replacements {
+        for (r_idx, (temp, expr, _)) in replacements.iter().enumerate() {
+            let (fn_start, fn_end) = replacement_ranges[r_idx];
+            if idx < fn_start || idx >= fn_end {
+                continue; // Skip replacements outside the enclosing function
+            }
             // Replace `IDENT = TEMP;` or `IDENT = TEMP` at end of assignment.
             let pattern_semi = format!(" = {};", temp);
             let replacement_semi = format!(" = {};", expr);
@@ -7408,11 +7443,15 @@ fn normalize_sentinel_scope_inline(code: &str) -> String {
             let _guard_pattern = format!(" !== {}", temp);
             // Don't replace these — the guard references the cached value, not the expr.
         }
-        // Skip standalone `let TEMP;` declarations that weren't in the sentinel block.
+        // Skip standalone `let TEMP;` declarations that weren't in the sentinel block,
+        // but only within the same function as the replacement.
         let trimmed = l.trim();
-        let is_removed_decl = replacements
-            .iter()
-            .any(|(t, _)| trimmed == format!("let {};", t) || trimmed == format!("let {}", t));
+        let is_removed_decl = replacements.iter().enumerate().any(|(r_idx, (t, _, _))| {
+            let (fn_start, fn_end) = replacement_ranges[r_idx];
+            idx >= fn_start
+                && idx < fn_end
+                && (trimmed == format!("let {};", t) || trimmed == format!("let {}", t))
+        });
         if !is_removed_decl {
             result_lines.push(l);
         }
