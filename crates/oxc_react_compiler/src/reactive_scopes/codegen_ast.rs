@@ -398,6 +398,24 @@ fn codegen_block_no_reset<'a>(
     cx: &mut CodegenContext<'a>,
     block: &ReactiveBlock,
 ) -> Vec<ast::Statement<'a>> {
+    // Pre-scan: mark catch bindings from Try terminals as declared so that
+    // preceding DeclareLocal instructions don't emit `let` for them.
+    for stmt in block.iter() {
+        if let ReactiveStatement::Terminal(term) = stmt
+            && let ReactiveTerminal::Try {
+                handler_binding, ..
+            } = &term.terminal
+            && let Some(binding) = handler_binding
+        {
+            cx.declared.insert(binding.identifier.id);
+            cx.declared_decl_ids
+                .insert(binding.identifier.declaration_id);
+            if let Some(n) = &binding.identifier.name {
+                cx.declared_names.insert(n.value().to_string());
+            }
+        }
+    }
+
     let mut stmts = Vec::new();
 
     for stmt in block.iter() {
@@ -2052,12 +2070,38 @@ fn codegen_reactive_scope<'a>(
 ) -> Vec<ast::Statement<'a>> {
     let mut stmts = Vec::new();
 
+    // Collect catch binding declaration_ids from Try terminals in this scope.
+    // These must NOT be emitted as `let` declarations — they are implicitly
+    // declared by the `catch (e)` clause.
+    let catch_binding_decl_ids: HashSet<DeclarationId> = instructions
+        .iter()
+        .filter_map(|stmt| match stmt {
+            ReactiveStatement::Terminal(term) => {
+                if let ReactiveTerminal::Try {
+                    handler_binding, ..
+                } = &term.terminal
+                {
+                    handler_binding
+                        .as_ref()
+                        .map(|b| b.identifier.declaration_id)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .collect();
+
     // Emit declarations for scope-declared variables (before the memoization guard).
     // Sort by name for deterministic output matching upstream.
     let mut decl_names: Vec<(String, IdentifierId, DeclarationId)> = scope
         .declarations
         .iter()
         .filter_map(|(id, decl)| {
+            // Skip catch binding declarations — they're declared by the catch clause.
+            if catch_binding_decl_ids.contains(&decl.identifier.declaration_id) {
+                return None;
+            }
             let name = decl.identifier.name.as_ref()?.value().to_string();
             Some((name, *id, decl.identifier.declaration_id))
         })
