@@ -1,6 +1,6 @@
-# React Compiler Conformance — 98.7% parity rate
+# React Compiler Conformance — 98.9% parity rate
 
-**1730** parity_success, **22** parity_failure, **0** skipped
+**1732** parity_success, **20** parity_failure, **0** skipped
 
 ## Failed
 
@@ -10,7 +10,6 @@
 - `computed-call-evaluation-order`: Output mismatch
 - `fbt/fbtparam-with-jsx-fragment-value`: Output mismatch
 - `hoist-destruct`: Expected transformed output, but compiler bailed out/skipped
-- `hoisting-repro-variable-used-in-assignment`: Output mismatch
 - `hoisting-setstate-captured-indirectly-jsx`: Expected transformed output, but compiler bailed out/skipped
 - `infer-effect-dependencies/import-namespace-useEffect`: Output mismatch
 - `infer-types-through-type-cast.flow`: Output mismatch
@@ -20,7 +19,6 @@
 - `propagate-scope-deps-hir-fork/repro-invariant`: Output mismatch
 - `propagate-scope-deps-hir-fork/switch`: Output mismatch
 - `property-call-evaluation-order`: Output mismatch
-- `recursive-function-expression`: Output mismatch
 - `repro-mutate-ref-in-function-passed-to-hook`: Output mismatch
 - `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`: Output mismatch
 - `sequence-expression`: Output mismatch
@@ -707,6 +705,7 @@
 - `hoisting-reassigned-twice-let-declaration`
 - `hoisting-recursive-call`
 - `hoisting-recursive-call-within-lambda`
+- `hoisting-repro-variable-used-in-assignment`
 - `hoisting-simple-const-declaration`
 - `hoisting-simple-function-expression`
 - `hoisting-simple-let-declaration`
@@ -1238,6 +1237,7 @@
 - `reassignment-conditional`
 - `reassignment-separate-scopes`
 - `recursive-function`
+- `recursive-function-expression`
 - `reduce-reactive-cond-deps-break-in-scope`
 - `reduce-reactive-cond-deps-cfg-nested-testifelse`
 - `reduce-reactive-cond-deps-return-in-scope`
