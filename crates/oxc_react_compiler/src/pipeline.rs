@@ -3486,30 +3486,10 @@ fn run_reactive_passes(
     // the preceding memoized scope when they are structurally equivalent.
     crate::reactive_scopes::fuse_trailing_nullish_return_into_scope::fuse_trailing_nullish_return_into_scope(&mut reactive_fn);
 
-    // String codegen: kept for param_names and body_shape (test fallback).
-    // AST codegen: used for cache_size, boolean flags, cache_prologue.
+    // Codegen: AST-only in production. String codegen in test/debug for body_shape.
     let unique_identifiers_for_ast = unique_identifiers.clone();
-    let mut codegen_result =
-        codegen_reactive::codegen_reactive_function_with_options_and_fbt_operands(
-            &reactive_fn,
-            unique_identifiers,
-            codegen_reactive::CodegenReactiveOptions {
-                disable_memoization_features: retry_no_memo_mode,
-                disable_memoization_for_debugging: env_config.disable_memoization_for_debugging,
-                enable_change_variable_codegen: env_config.enable_change_variable_codegen,
-                enable_emit_hook_guards: env_config.enable_emit_hook_guards,
-                enable_change_detection_for_debugging: env_config
-                    .enable_change_detection_for_debugging,
-                enable_reset_cache_on_source_file_changes: env_config
-                    .enable_reset_cache_on_source_file_changes
-                    .unwrap_or(false),
-                enable_name_anonymous_functions: env_config.enable_name_anonymous_functions,
-            },
-            fbt_operands.clone(),
-        );
-    // Override metadata fields with AST codegen values where they match the
-    // body that module_emitter will actually generate.
-    {
+    let allow_string = cfg!(test) || std::env::var("REACT_COMPILER_STRING_CODEGEN").is_ok();
+    let ast_meta = {
         let alloc = oxc_allocator::Allocator::default();
         let bld = oxc_ast::AstBuilder::new(&alloc);
         let opts = crate::reactive_scopes::codegen_ast::CodegenOptions {
@@ -3527,23 +3507,58 @@ fn run_reactive_passes(
             unique_identifiers: unique_identifiers_for_ast.clone(),
             param_name_overrides: std::collections::HashMap::new(),
         };
-        let meta = crate::reactive_scopes::codegen_ast::codegen_reactive_function(
+        crate::reactive_scopes::codegen_ast::codegen_reactive_function(
             bld,
             &alloc,
             &reactive_fn,
             opts,
         )
-        .metadata();
-        // Replace metadata fields with AST codegen values.
-        // String codegen still provides: body_shape (test fallback),
-        // needs_cache_import (1 Flow fixture where AST over-allocates).
-        codegen_result.param_names = meta.param_names;
-        codegen_result.cache_size = meta.cache_size;
-        codegen_result.needs_hook_guards = meta.needs_hook_guards;
-        codegen_result.needs_function_hook_guard_wrapper = meta.needs_function_hook_guard_wrapper;
-        codegen_result.needs_structural_check_import = meta.needs_structural_check_import;
-        codegen_result.cache_prologue = meta.cache_prologue;
-    }
+        .metadata()
+    };
+    let mut codegen_result = if allow_string {
+        let mut cr = codegen_reactive::codegen_reactive_function_with_options_and_fbt_operands(
+            &reactive_fn,
+            unique_identifiers,
+            codegen_reactive::CodegenReactiveOptions {
+                disable_memoization_features: retry_no_memo_mode,
+                disable_memoization_for_debugging: env_config.disable_memoization_for_debugging,
+                enable_change_variable_codegen: env_config.enable_change_variable_codegen,
+                enable_emit_hook_guards: env_config.enable_emit_hook_guards,
+                enable_change_detection_for_debugging: env_config
+                    .enable_change_detection_for_debugging,
+                enable_reset_cache_on_source_file_changes: env_config
+                    .enable_reset_cache_on_source_file_changes
+                    .unwrap_or(false),
+                enable_name_anonymous_functions: env_config.enable_name_anonymous_functions,
+            },
+            fbt_operands.clone(),
+        );
+        // Override all metadata with AST; keep body_shape from string codegen.
+        cr.param_names = ast_meta.param_names;
+        cr.cache_size = ast_meta.cache_size;
+        cr.needs_cache_import = ast_meta.needs_cache_import;
+        cr.needs_hook_guards = ast_meta.needs_hook_guards;
+        cr.needs_function_hook_guard_wrapper = ast_meta.needs_function_hook_guard_wrapper;
+        cr.needs_structural_check_import = ast_meta.needs_structural_check_import;
+        cr.cache_prologue = ast_meta.cache_prologue;
+        cr
+    } else {
+        // Production: pure AST metadata, zero string codegen for main function.
+        use crate::reactive_scopes::build_codegen_shape::{CodegenResult, GeneratedBodyShape};
+        CodegenResult {
+            body_shape: GeneratedBodyShape::Unknown,
+            cache_size: ast_meta.cache_size,
+            needs_cache_import: ast_meta.needs_cache_import,
+            param_names: ast_meta.param_names,
+            needs_freeze_import: false,
+            has_fire_rewrite: false,
+            needs_hook_guards: ast_meta.needs_hook_guards,
+            needs_function_hook_guard_wrapper: ast_meta.needs_function_hook_guard_wrapper,
+            needs_structural_check_import: ast_meta.needs_structural_check_import,
+            cache_prologue: ast_meta.cache_prologue,
+            error: ast_meta.error,
+        }
+    };
     if let Some(err) = codegen_result.error.take() {
         return Err(err);
     }

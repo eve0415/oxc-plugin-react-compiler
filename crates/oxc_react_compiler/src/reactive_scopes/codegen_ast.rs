@@ -2148,19 +2148,22 @@ fn codegen_reactive_scope<'a>(
         return codegen_block(cx, instructions);
     }
 
-    // Inline zero-dep scopes whose outputs are all primitive-typed AND whose
-    // body only contains trivial instructions plus calls (calls to pure/global
-    // functions that return primitives).
+    // Inline zero-dep single-declaration scopes with strictly trivial body
+    // (no calls, no JSX, no allocations). AND primitive-typed scopes with
+    // trivial+calls body. Both are safe to inline since they can't produce
+    // objects/arrays that need referential stability.
     if scope.dependencies.is_empty()
         && scope.reassignments.is_empty()
-        && !scope.declarations.is_empty()
-        && scope
-            .declarations
-            .values()
-            .all(|d| matches!(d.identifier.type_, Type::Primitive))
-        && scope_body_is_trivial_or_calls(instructions)
+        && scope.declarations.len() == 1
     {
-        return codegen_block(cx, instructions);
+        let decl = scope.declarations.values().next().unwrap();
+        let is_prim = matches!(decl.identifier.type_, Type::Primitive);
+        if is_prim && scope_body_is_trivial_or_calls(instructions) {
+            return codegen_block(cx, instructions);
+        }
+        if scope_body_is_strictly_trivial(instructions) {
+            return codegen_block(cx, instructions);
+        }
     }
 
     let mut stmts = Vec::new();
@@ -4127,6 +4130,27 @@ fn scope_body_is_trivial_or_calls(instructions: &ReactiveBlock) -> bool {
                 | InstructionValue::MethodCall { .. }
                 | InstructionValue::PropertyLoad { .. }
                 | InstructionValue::Destructure { .. }
+        ),
+        _ => false,
+    })
+}
+
+/// Strictly trivial body: no calls at all, only loads/stores/operators.
+fn scope_body_is_strictly_trivial(instructions: &ReactiveBlock) -> bool {
+    instructions.iter().all(|s| match s {
+        ReactiveStatement::Instruction(instr) => matches!(
+            &instr.value,
+            InstructionValue::Primitive { .. }
+                | InstructionValue::LoadLocal { .. }
+                | InstructionValue::LoadContext { .. }
+                | InstructionValue::StoreLocal { .. }
+                | InstructionValue::StoreContext { .. }
+                | InstructionValue::DeclareLocal { .. }
+                | InstructionValue::DeclareContext { .. }
+                | InstructionValue::BinaryExpression { .. }
+                | InstructionValue::UnaryExpression { .. }
+                | InstructionValue::TypeCastExpression { .. }
+                | InstructionValue::LoadGlobal { .. }
         ),
         _ => false,
     })
