@@ -81,6 +81,36 @@ pub struct CodegenFunctionResult<'a> {
     pub error: Option<CompilerError>,
 }
 
+/// Metadata-only result from codegen_ast (no AST body, no lifetime).
+/// Used by the pipeline to extract codegen metadata without keeping the AST.
+#[derive(Clone)]
+pub struct CodegenMetadata {
+    pub cache_size: u32,
+    pub needs_cache_import: bool,
+    pub param_names: Vec<String>,
+    pub needs_hook_guards: bool,
+    pub needs_function_hook_guard_wrapper: bool,
+    pub needs_structural_check_import: bool,
+    pub cache_prologue: Option<CachePrologue>,
+    pub error: Option<CompilerError>,
+}
+
+impl<'a> CodegenFunctionResult<'a> {
+    /// Extract metadata without the AST body.
+    pub fn metadata(&self) -> CodegenMetadata {
+        CodegenMetadata {
+            cache_size: self.cache_size,
+            needs_cache_import: self.needs_cache_import,
+            param_names: self.param_names.clone(),
+            needs_hook_guards: self.needs_hook_guards,
+            needs_function_hook_guard_wrapper: self.needs_function_hook_guard_wrapper,
+            needs_structural_check_import: self.needs_structural_check_import,
+            cache_prologue: self.cache_prologue.clone(),
+            error: self.error.clone(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------
