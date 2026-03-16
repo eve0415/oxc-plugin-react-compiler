@@ -298,6 +298,7 @@ pub fn codegen_reactive_function<'a>(
         .clone()
         .unwrap_or_else(|| "$".to_string());
     let initial_decl_names = std::mem::take(&mut options.param_name_overrides);
+    let disable_memoization_features = options.disable_memoization_features;
 
     let mut cx = CodegenContext {
         builder,
@@ -324,20 +325,29 @@ pub fn codegen_reactive_function<'a>(
 
     // Collect param names (matching string codegen's identifier_name_with_cx behavior).
     // Unnamed params check preferred_names first, then fall back to "tN".
+    // In bailout mode (disable_memoization_features), temp param names are overridden
+    // to "tN" where N is the param index (matching string codegen's behavior).
     let param_names: Vec<String> = func
         .params
         .iter()
-        .map(|arg| {
+        .enumerate()
+        .map(|(param_index, arg)| {
             let ident = match arg {
                 Argument::Place(place) => &place.identifier,
                 Argument::Spread(place) => &place.identifier,
             };
-            if let Some(name) = ident.name.as_ref() {
+            let raw_name = if let Some(name) = ident.name.as_ref() {
                 name.value().to_string()
             } else if let Some(preferred) = preferred_names.get(&ident.declaration_id) {
                 preferred.clone()
             } else {
                 format!("t{}", ident.id.0)
+            };
+            // In bailout mode, override temp names to sequential "tN".
+            if disable_memoization_features && is_codegen_temp(&raw_name) {
+                format!("t{param_index}")
+            } else {
+                raw_name
             }
         })
         .collect();
@@ -4091,6 +4101,11 @@ fn parse_ts_type<'a>(
         builder.ts_type_name_identifier_reference(SPAN, builder.ident(type_source)),
         NONE,
     )
+}
+
+/// Check if a name is a codegen temp name (`tN` where N is numeric).
+fn is_codegen_temp(name: &str) -> bool {
+    name.starts_with('t') && name.len() >= 2 && name[1..].chars().all(|c| c.is_ascii_digit())
 }
 
 /// Record a named identifier's declaration_id → name mapping.

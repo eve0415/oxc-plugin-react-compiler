@@ -3532,8 +3532,14 @@ fn run_reactive_passes(
             opts,
         )
         .metadata();
-        // AST metadata available for future use.
-        let _ = meta;
+        // Replace metadata fields with AST codegen values.
+        // Cache size/prologue/needs_cache_import NOT overridden — module_emitter
+        // uses AST prologue, and needs_cache_import drives import/gating decisions
+        // that must match the pipeline's cache_prologue.
+        codegen_result.param_names = meta.param_names;
+        codegen_result.needs_hook_guards = meta.needs_hook_guards;
+        codegen_result.needs_function_hook_guard_wrapper = meta.needs_function_hook_guard_wrapper;
+        codegen_result.needs_structural_check_import = meta.needs_structural_check_import;
     }
     if let Some(err) = codegen_result.error.take() {
         return Err(err);
