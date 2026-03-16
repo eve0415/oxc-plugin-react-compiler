@@ -764,7 +764,8 @@ fn get_assumed_invoked_functions_impl(
                         temporaries.insert(lvalue.place.identifier.id, entry);
                     }
                 }
-                InstructionValue::LoadLocal { place, .. } => {
+                InstructionValue::LoadLocal { place, .. }
+                | InstructionValue::LoadContext { place, .. } => {
                     if let Some(entry) = temporaries.get(&place.identifier.id).cloned() {
                         temporaries.insert(instr.lvalue.identifier.id, entry);
                     }
