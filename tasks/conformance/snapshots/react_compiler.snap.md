@@ -1,11 +1,9 @@
-# React Compiler Conformance — 99.9% parity rate
+# React Compiler Conformance — 100.0% parity rate
 
-**1750** parity_success, **2** parity_failure, **0** skipped
+**1752** parity_success, **0** parity_failure, **0** skipped
 
 ## Failed
 
-- `hoist-destruct`: Expected transformed output, but compiler bailed out/skipped
-- `hoisting-setstate-captured-indirectly-jsx`: Expected transformed output, but compiler bailed out/skipped
 
 ## Passed
 
@@ -674,6 +672,7 @@
 - `globals-Number`
 - `globals-String`
 - `globals-dont-resolve-local-useState`
+- `hoist-destruct`
 - `hoisted-context-variable-in-outlined-fn`
 - `hoisted-declaration-with-scope`
 - `hoisted-function-declaration`
@@ -693,6 +692,7 @@
 - `hoisting-recursive-call`
 - `hoisting-recursive-call-within-lambda`
 - `hoisting-repro-variable-used-in-assignment`
+- `hoisting-setstate-captured-indirectly-jsx`
 - `hoisting-simple-const-declaration`
 - `hoisting-simple-function-expression`
 - `hoisting-simple-let-declaration`

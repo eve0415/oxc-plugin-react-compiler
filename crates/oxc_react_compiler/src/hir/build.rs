@@ -1207,7 +1207,7 @@ fn lower_binding_pat<'a>(
                 // Nested patterns must be lowered in a follow-up pass from the
                 // destructured temporary, otherwise inner bindings are dropped.
                 let place = if let js::BindingPattern::BindingIdentifier(ident) = &prop.value {
-                    if binding_identifier_is_context_like(ident, semantic) {
+                    if is_context_for_destructuring(builder, ident, semantic) {
                         let temp = builder.make_temporary_place(span_to_loc(prop.span));
                         nested_followups.push((temp.clone(), &prop.value));
                         temp
@@ -1227,7 +1227,7 @@ fn lower_binding_pat<'a>(
             }
             if let Some(rest) = &obj.rest {
                 let place = if let js::BindingPattern::BindingIdentifier(ident) = &rest.argument {
-                    if binding_identifier_is_context_like(ident, semantic) {
+                    if is_context_for_destructuring(builder, ident, semantic) {
                         let temp = builder.make_temporary_place(span_to_loc(rest.span));
                         nested_followups.push((temp.clone(), &rest.argument));
                         temp
@@ -1296,9 +1296,9 @@ fn lower_binding_pat<'a>(
                             items.push(hir::ArrayElement::Place(temp_place));
                         }
                         js::BindingPattern::BindingIdentifier(ident) => {
-                            // Use semantic-based check since the binding may not
-                            // have been declared/marked yet at this point.
-                            if binding_identifier_is_context_like(ident, semantic) {
+                            // Use semantic-based check plus builder-level context
+                            // marks (hoisted contexts may already be declared).
+                            if is_context_for_destructuring(builder, ident, semantic) {
                                 let temp_place =
                                     builder.make_temporary_place(span_to_loc(elem.span()));
                                 followups.push(ArrayFollowup::Nested {
@@ -1327,7 +1327,7 @@ fn lower_binding_pat<'a>(
             }
             if let Some(rest) = &arr.rest {
                 if let js::BindingPattern::BindingIdentifier(ident) = &rest.argument {
-                    if binding_identifier_is_context_like(ident, semantic) {
+                    if is_context_for_destructuring(builder, ident, semantic) {
                         let temp_place = builder.make_temporary_place(span_to_loc(rest.span));
                         followups.push(ArrayFollowup::Nested {
                             temp: temp_place.clone(),
@@ -1843,6 +1843,27 @@ fn binding_identifier_is_context_like(
         );
     }
     result
+}
+
+/// Returns true when a binding identifier should be treated as a context
+/// variable for the purpose of destructuring lowering.  This checks both
+/// the semantic-level heuristic (`binding_identifier_is_context_like`) and
+/// whether the builder has *already* marked the resolved identifier as
+/// context-bound (e.g. from a hoisted context declaration).
+fn is_context_for_destructuring(
+    builder: &HIRBuilder,
+    ident: &js::BindingIdentifier<'_>,
+    semantic: &Semantic<'_>,
+) -> bool {
+    if binding_identifier_is_context_like(ident, semantic) {
+        return true;
+    }
+    // The hoisted-context lowering may have already declared + marked this
+    // binding as context before the actual variable declaration is processed.
+    if let Some(entry) = builder.bindings.get(ident.name.as_str()) {
+        return builder.is_context_identifier_id(entry.identifier.id);
+    }
+    false
 }
 
 fn lower_func_decl<'a>(
