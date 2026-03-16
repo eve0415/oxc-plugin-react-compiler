@@ -3533,9 +3533,6 @@ fn run_reactive_passes(
         )
         .metadata();
         // Replace metadata fields with AST codegen values.
-        // Cache size/prologue/needs_cache_import NOT overridden — module_emitter
-        // uses AST prologue, and needs_cache_import drives import/gating decisions
-        // that must match the pipeline's cache_prologue.
         codegen_result.param_names = meta.param_names;
         codegen_result.needs_hook_guards = meta.needs_hook_guards;
         codegen_result.needs_function_hook_guard_wrapper = meta.needs_function_hook_guard_wrapper;

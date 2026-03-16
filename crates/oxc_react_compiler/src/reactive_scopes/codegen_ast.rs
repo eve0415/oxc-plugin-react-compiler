@@ -293,10 +293,16 @@ pub fn codegen_reactive_function<'a>(
     func: &ReactiveFunction,
     mut options: CodegenOptions,
 ) -> CodegenFunctionResult<'a> {
-    let cache_binding = options
-        .cache_binding_name
-        .clone()
-        .unwrap_or_else(|| "$".to_string());
+    let cache_binding = options.cache_binding_name.clone().unwrap_or_else(|| {
+        // Synthesize unique cache binding name: "$", "$0", "$1", ...
+        let mut name = "$".to_string();
+        let mut suffix = 0u32;
+        while options.unique_identifiers.contains(&name) {
+            name = format!("${suffix}");
+            suffix += 1;
+        }
+        name
+    });
     let initial_decl_names = std::mem::take(&mut options.param_name_overrides);
     let disable_memoization_features = options.disable_memoization_features;
 
