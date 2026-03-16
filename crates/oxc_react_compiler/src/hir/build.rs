@@ -1394,33 +1394,13 @@ fn lower_binding_pat<'a>(
                         left,
                         default_expr,
                     } => {
-                        // Emit conditional defaults: x = temp === undefined ? default : temp
-                        let default_place =
-                            lower_reorderable_expr_to_temp(builder, default_expr, semantic, source);
-                        let undef_place = lower_value_to_temporary(
+                        let result_place = emit_default_value_branch(
                             builder,
-                            hir::InstructionValue::Primitive {
-                                value: hir::PrimitiveValue::Undefined,
-                                loc: loc.clone(),
-                            },
-                        );
-                        let test_place = lower_value_to_temporary(
-                            builder,
-                            hir::InstructionValue::BinaryExpression {
-                                operator: hir::BinaryOperator::StrictEq,
-                                left: temp.clone(),
-                                right: undef_place,
-                                loc: loc.clone(),
-                            },
-                        );
-                        let result_place = lower_value_to_temporary(
-                            builder,
-                            hir::InstructionValue::Ternary {
-                                test: test_place,
-                                consequent: default_place,
-                                alternate: temp,
-                                loc: loc.clone(),
-                            },
+                            temp,
+                            default_expr,
+                            semantic,
+                            source,
+                            &loc,
                         );
                         lower_binding_pat(
                             builder,
@@ -1436,37 +1416,13 @@ fn lower_binding_pat<'a>(
             }
         }
         js::BindingPattern::AssignmentPattern(assign) => {
-            // Destructuring default at the top level (e.g., function param default).
-            // Lower the default value, then emit conditional: value === undefined ? default : value
-            let default_place =
-                lower_reorderable_expr_to_temp(builder, &assign.right, semantic, source);
-            // Emit: undef = undefined
-            let undef_place = lower_value_to_temporary(
+            let result_place = emit_default_value_branch(
                 builder,
-                hir::InstructionValue::Primitive {
-                    value: hir::PrimitiveValue::Undefined,
-                    loc: hir::SourceLocation::Generated,
-                },
-            );
-            // Emit: test = value === undefined
-            let test_place = lower_value_to_temporary(
-                builder,
-                hir::InstructionValue::BinaryExpression {
-                    operator: hir::BinaryOperator::StrictEq,
-                    left: value.clone(),
-                    right: undef_place,
-                    loc: hir::SourceLocation::Generated,
-                },
-            );
-            // Emit: result = test ? default : value
-            let result_place = lower_value_to_temporary(
-                builder,
-                hir::InstructionValue::Ternary {
-                    test: test_place,
-                    consequent: default_place,
-                    alternate: value,
-                    loc: hir::SourceLocation::Generated,
-                },
+                value,
+                &assign.right,
+                semantic,
+                source,
+                &hir::SourceLocation::Generated,
             );
             lower_binding_pat(
                 builder,
@@ -1494,6 +1450,109 @@ fn lower_reorderable_expr_to_temp<'a>(
         ));
     }
     lower_expr_to_temp(builder, expr, semantic, source)
+}
+
+/// Emit a block-based default value computation for destructuring patterns.
+/// Creates proper CFG structure: test block → branch(value === undefined) →
+/// consequent(store default) / alternate(store value) → continuation.
+/// This matches the upstream BuildHIR.ts pattern for AssignmentPattern.
+fn emit_default_value_branch<'a>(
+    builder: &mut HIRBuilder,
+    value: hir::Place,
+    default_expr: &js::Expression<'a>,
+    semantic: &Semantic<'a>,
+    source: &str,
+    loc: &hir::SourceLocation,
+) -> hir::Place {
+    let continuation = builder.reserve(builder.current_block_kind());
+    let continuation_id = continuation.id;
+    let test_block = builder.reserve(hir::BlockKind::Value);
+    let result_place = builder.make_temporary_place(loc.clone());
+
+    // Consequent: store the default value to result_place
+    let consequent = builder.enter(hir::BlockKind::Value, |builder, _| {
+        let default_place = lower_reorderable_expr_to_temp(builder, default_expr, semantic, source);
+        lower_value_to_temporary(
+            builder,
+            hir::InstructionValue::StoreLocal {
+                lvalue: hir::LValue {
+                    place: result_place.clone(),
+                    kind: hir::InstructionKind::Const,
+                },
+                value: default_place.clone(),
+                loc: loc.clone(),
+            },
+        );
+        hir::Terminal::Goto {
+            block: continuation_id,
+            variant: hir::GotoVariant::Break,
+            id: hir::InstructionId::default(),
+            loc: loc.clone(),
+        }
+    });
+
+    // Alternate: store the original value to result_place
+    let alternate = builder.enter(hir::BlockKind::Value, |builder, _| {
+        lower_value_to_temporary(
+            builder,
+            hir::InstructionValue::StoreLocal {
+                lvalue: hir::LValue {
+                    place: result_place.clone(),
+                    kind: hir::InstructionKind::Const,
+                },
+                value: value.clone(),
+                loc: loc.clone(),
+            },
+        );
+        hir::Terminal::Goto {
+            block: continuation_id,
+            variant: hir::GotoVariant::Break,
+            id: hir::InstructionId::default(),
+            loc: loc.clone(),
+        }
+    });
+
+    // Terminate current block with Ternary terminal → test block
+    builder.terminate_with_continuation(
+        hir::Terminal::Ternary {
+            test: test_block.id,
+            fallthrough: continuation_id,
+            id: hir::InstructionId::default(),
+            loc: loc.clone(),
+        },
+        test_block,
+    );
+
+    // In test block: evaluate `value === undefined`, then branch
+    let undef_place = lower_value_to_temporary(
+        builder,
+        hir::InstructionValue::Primitive {
+            value: hir::PrimitiveValue::Undefined,
+            loc: loc.clone(),
+        },
+    );
+    let test_result = lower_value_to_temporary(
+        builder,
+        hir::InstructionValue::BinaryExpression {
+            operator: hir::BinaryOperator::StrictEq,
+            left: value,
+            right: undef_place,
+            loc: loc.clone(),
+        },
+    );
+    builder.terminate_with_continuation(
+        hir::Terminal::Branch {
+            test: test_result,
+            consequent,
+            alternate,
+            fallthrough: continuation_id,
+            id: hir::InstructionId::default(),
+            loc: loc.clone(),
+        },
+        continuation,
+    );
+
+    result_place
 }
 
 fn is_reorderable_expression<'a>(
