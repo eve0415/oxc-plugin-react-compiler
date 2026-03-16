@@ -1,12 +1,11 @@
-# React Compiler Conformance — 99.1% parity rate
+# React Compiler Conformance — 99.2% parity rate
 
-**1737** parity_success, **15** parity_failure, **0** skipped
+**1738** parity_success, **14** parity_failure, **0** skipped
 
 ## Failed
 
 - `call-args-destructuring-assignment`: Output mismatch
 - `computed-call-evaluation-order`: Output mismatch
-- `fbt/fbtparam-with-jsx-fragment-value`: Output mismatch
 - `hoist-destruct`: Expected transformed output, but compiler bailed out/skipped
 - `hoisting-setstate-captured-indirectly-jsx`: Expected transformed output, but compiler bailed out/skipped
 - `inline-jsx-transform`: Output mismatch
@@ -593,6 +592,7 @@
 - `fbt/fbt-whitespace-within-text`
 - `fbt/fbtparam-text-must-use-expression-container`
 - `fbt/fbtparam-with-jsx-element-content`
+- `fbt/fbtparam-with-jsx-fragment-value`
 - `fbt/lambda-with-fbt`
 - `fbt/repro-macro-property-not-handled`
 - `flag-enable-emit-hook-guards`

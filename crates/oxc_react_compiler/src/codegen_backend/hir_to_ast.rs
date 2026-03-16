@@ -1693,7 +1693,12 @@ where
 
     let opening_name = lower_jsx_element_name(builder, tag, lower_place, visiting)?;
     let attributes = lower_jsx_attributes(builder, props, lower_place, visiting)?;
-    let jsx_children = lower_jsx_children(builder, children.unwrap_or(&[]), lower_place, visiting)?;
+    let is_single_child_fbt_tag = matches!(tag, types::JsxTag::BuiltinTag(name) if name == "fbt:param" || name == "fbs:param");
+    let jsx_children = if is_single_child_fbt_tag {
+        lower_jsx_fbt_children(builder, children.unwrap_or(&[]), lower_place, visiting)?
+    } else {
+        lower_jsx_children(builder, children.unwrap_or(&[]), lower_place, visiting)?
+    };
     let closing_element = if jsx_children.is_empty() {
         None
     } else {
@@ -1936,6 +1941,59 @@ where
         }
         ast::Expression::JSXElement(element) => Some(ast::JSXChild::Element(element)),
         ast::Expression::JSXFragment(fragment) => Some(ast::JSXChild::Fragment(fragment)),
+        expression => {
+            Some(builder.jsx_child_expression_container(SPAN, ast::JSXExpression::from(expression)))
+        }
+    }
+}
+
+/// Lower JSX children for `fbt:param` / `fbs:param` tags.
+///
+/// `babel-plugin-fbt` only accepts JSX elements or expression containers as
+/// children of `<fbt:param>`. A bare `JSXFragment` child is rejected, so we
+/// wrap fragments in a `JSXExpressionContainer` (`{<>...</>}`).
+fn lower_jsx_fbt_children<'a, F>(
+    builder: AstBuilder<'a>,
+    children: &[Place],
+    lower_place: F,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<oxc_allocator::Vec<'a, ast::JSXChild<'a>>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+{
+    let mut lowered = builder.vec();
+    for child in children {
+        lowered.push(lower_jsx_fbt_child(builder, child, lower_place, visiting)?);
+    }
+    Some(lowered)
+}
+
+fn lower_jsx_fbt_child<'a, F>(
+    builder: AstBuilder<'a>,
+    place: &Place,
+    lower_place: F,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<ast::JSXChild<'a>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+{
+    let expression = lower_place(place, visiting)?;
+    match expression {
+        ast::Expression::StringLiteral(literal) => {
+            let value = literal.unbox().value;
+            Some(ast::JSXChild::Text(
+                builder.alloc_jsx_text(SPAN, value, None),
+            ))
+        }
+        // fbt:param only allows JSX element or expression container as children.
+        // JSXElement is passed through directly.
+        ast::Expression::JSXElement(element) => Some(ast::JSXChild::Element(element)),
+        // JSXFragment must be wrapped in an expression container so that
+        // babel-plugin-fbt can process it: {<>...</>} rather than bare <>...</>.
+        ast::Expression::JSXFragment(fragment) => Some(builder.jsx_child_expression_container(
+            SPAN,
+            ast::JSXExpression::from(ast::Expression::JSXFragment(fragment)),
+        )),
         expression => {
             Some(builder.jsx_child_expression_container(SPAN, ast::JSXExpression::from(expression)))
         }
