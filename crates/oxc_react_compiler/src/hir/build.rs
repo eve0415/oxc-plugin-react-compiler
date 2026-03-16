@@ -1207,7 +1207,7 @@ fn lower_binding_pat<'a>(
                 // Nested patterns must be lowered in a follow-up pass from the
                 // destructured temporary, otherwise inner bindings are dropped.
                 let place = if let js::BindingPattern::BindingIdentifier(ident) = &prop.value {
-                    if binding_identifier_is_context(builder, ident) {
+                    if binding_identifier_is_context_like(ident, semantic) {
                         let temp = builder.make_temporary_place(span_to_loc(prop.span));
                         nested_followups.push((temp.clone(), &prop.value));
                         temp
@@ -1227,7 +1227,7 @@ fn lower_binding_pat<'a>(
             }
             if let Some(rest) = &obj.rest {
                 let place = if let js::BindingPattern::BindingIdentifier(ident) = &rest.argument {
-                    if binding_identifier_is_context(builder, ident) {
+                    if binding_identifier_is_context_like(ident, semantic) {
                         let temp = builder.make_temporary_place(span_to_loc(rest.span));
                         nested_followups.push((temp.clone(), &rest.argument));
                         temp
@@ -1296,7 +1296,9 @@ fn lower_binding_pat<'a>(
                             items.push(hir::ArrayElement::Place(temp_place));
                         }
                         js::BindingPattern::BindingIdentifier(ident) => {
-                            if binding_identifier_is_context(builder, ident) {
+                            // Use semantic-based check since the binding may not
+                            // have been declared/marked yet at this point.
+                            if binding_identifier_is_context_like(ident, semantic) {
                                 let temp_place =
                                     builder.make_temporary_place(span_to_loc(elem.span()));
                                 followups.push(ArrayFollowup::Nested {
@@ -1325,7 +1327,7 @@ fn lower_binding_pat<'a>(
             }
             if let Some(rest) = &arr.rest {
                 if let js::BindingPattern::BindingIdentifier(ident) = &rest.argument {
-                    if binding_identifier_is_context(builder, ident) {
+                    if binding_identifier_is_context_like(ident, semantic) {
                         let temp_place = builder.make_temporary_place(span_to_loc(rest.span));
                         followups.push(ArrayFollowup::Nested {
                             temp: temp_place.clone(),
@@ -1774,15 +1776,6 @@ fn build_pattern_place<'a>(
             }
         }
     }
-}
-
-fn binding_identifier_is_context(
-    builder: &mut HIRBuilder,
-    ident: &js::BindingIdentifier<'_>,
-) -> bool {
-    let loc = span_to_loc(ident.span);
-    let identifier = builder.resolve_binding(&ident.name, loc);
-    builder.is_context_identifier_id(identifier.id)
 }
 
 fn binding_identifier_is_context_like(
