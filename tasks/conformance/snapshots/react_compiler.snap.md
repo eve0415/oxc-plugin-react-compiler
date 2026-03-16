@@ -1,6 +1,6 @@
-# React Compiler Conformance — 98.4% parity rate
+# React Compiler Conformance — 98.7% parity rate
 
-**1724** parity_success, **28** parity_failure, **0** skipped
+**1730** parity_success, **22** parity_failure, **0** skipped
 
 ## Failed
 
@@ -20,17 +20,11 @@
 - `propagate-scope-deps-hir-fork/repro-invariant`: Output mismatch
 - `propagate-scope-deps-hir-fork/switch`: Output mismatch
 - `property-call-evaluation-order`: Output mismatch
-- `readonly-object-method-calls-mutable-lambda`: Output mismatch
 - `recursive-function-expression`: Output mismatch
-- `renaming-jsx-tag-lowercase`: Output mismatch
-- `repro-dont-memoize-array-with-capturing-map-after-hook`: Output mismatch
-- `repro-dont-memoize-array-with-mutable-map-after-hook`: Output mismatch
 - `repro-mutate-ref-in-function-passed-to-hook`: Output mismatch
 - `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`: Output mismatch
 - `sequence-expression`: Output mismatch
 - `switch`: Output mismatch
-- `todo-granular-iterator-semantics`: Output mismatch
-- `type-inference-array-from`: Output mismatch
 - `update-expression-in-sequence`: Output mismatch
 
 ## Passed
@@ -1231,6 +1225,7 @@
 - `reactivity-via-aliased-mutation-through-property-load`
 - `reactivity-via-readonly-alias-of-mutable-value`
 - `readonly-object-method-calls`
+- `readonly-object-method-calls-mutable-lambda`
 - `reanimated-no-memo-arg`
 - `reanimated-shared-value-writes`
 - `reassign-global-hook-arg`
@@ -1315,6 +1310,7 @@
 - `rename-source-variables`
 - `rename-source-variables-nested-function`
 - `rename-source-variables-nested-object-method`
+- `renaming-jsx-tag-lowercase`
 - `reordering-across-blocks`
 - `repro`
 - `repro-aliased-capture-aliased-mutate`
@@ -1327,6 +1323,8 @@
 - `repro-dce-circular-reference`
 - `repro-dispatch-spread-event-marks-event-frozen`
 - `repro-dont-add-hook-guards-on-retry`
+- `repro-dont-memoize-array-with-capturing-map-after-hook`
+- `repro-dont-memoize-array-with-mutable-map-after-hook`
 - `repro-duplicate-import-specifier`
 - `repro-duplicate-instruction-from-merge-consecutive-scopes`
 - `repro-duplicate-type-import`
@@ -1572,6 +1570,7 @@
 - `todo-function-expression-captures-value-later-frozen`
 - `todo-global-load-cached`
 - `todo-global-property-load-cached`
+- `todo-granular-iterator-semantics`
 - `todo.error.object-pattern-computed-key`
 - `todo.lower-context-access-array-destructuring`
 - `todo.lower-context-access-destructure-multiple`
@@ -1644,6 +1643,7 @@
 - `type-binary-operator`
 - `type-cast-expression.flow`
 - `type-field-load`
+- `type-inference-array-from`
 - `type-provider-log`
 - `type-provider-log-default-import`
 - `type-provider-store-capture`
