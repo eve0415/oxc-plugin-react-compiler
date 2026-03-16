@@ -90,7 +90,12 @@ fn visit_statement(stmt: &mut ReactiveStatement, scopes: &mut Scopes) {
             visit_block(&mut scope_block.instructions, scopes);
         }
         ReactiveStatement::PrunedScope(scope_block) => {
-            visit_block(&mut scope_block.instructions, scopes);
+            // Upstream RenameVariables.visitPrunedScope calls traverseBlock
+            // directly (without enter/leave) so pruned scope body statements
+            // are visited at the current scope level.
+            for inner_stmt in scope_block.instructions.iter_mut() {
+                visit_statement(inner_stmt, scopes);
+            }
         }
     }
 }
