@@ -158,6 +158,9 @@ struct CodegenContext<'a> {
     /// Prevents cx.temps from being overwritten when the corresponding PropertyLoad
     /// is processed during body codegen.
     extracted_optional_deps: HashSet<DeclarationId>,
+    /// DeclarationIds that should be force-inlined from the temp map even though
+    /// they have named identifiers. Set by the destructure+call fusion pre-scan.
+    force_inline_decls: HashSet<DeclarationId>,
 }
 
 impl<'a> CodegenContext<'a> {
@@ -330,6 +333,7 @@ pub fn codegen_reactive_function<'a>(
         name_scope_stack: Vec::new(),
         fn_name: func.id.clone().unwrap_or_default(),
         extracted_optional_deps: HashSet::new(),
+        force_inline_decls: HashSet::new(),
     };
 
     // Pre-collect preferred names: scan body for named references to
@@ -487,10 +491,39 @@ fn codegen_block_no_reset<'a>(
     }
 
     let mut stmts = Vec::new();
+    let block_vec: Vec<&ReactiveStatement> = block.iter().collect();
 
-    for stmt in block.iter() {
-        match stmt {
+    // Pre-scan: detect Destructure(Reassign) + Call fusion patterns and mark
+    // promoted-temp instructions that should be suppressed (inlined instead).
+    let fuse_suppress = pre_scan_destructure_call_fusion(&block_vec);
+
+    let mut i = 0;
+
+    while i < block_vec.len() {
+        match block_vec[i] {
             ReactiveStatement::Instruction(instr) => {
+                // Skip instructions suppressed by the fusion pre-scan.
+                if fuse_suppress.contains(&i) {
+                    // Force-inline this instruction's value into the temp map
+                    // and mark as force-inlineable so codegen_place uses it.
+                    if let Some(lvalue) = &instr.lvalue {
+                        let decl_id = lvalue.identifier.declaration_id;
+                        if let Some(expr) = codegen_instruction_value(cx, &instr.value) {
+                            cx.temps.insert(decl_id, Some(expr));
+                            cx.force_inline_decls.insert(decl_id);
+                        }
+                    }
+                    i += 1;
+                    continue;
+                }
+                // Fusion: Destructure(Reassign) + MethodCall/CallExpression
+                // Pattern: `[x] = rhs; obj.foo(rhs)` → `obj.foo(([x] = rhs))`
+                if let Some(fused) = try_fuse_destructure_into_call(cx, instr, block_vec.get(i + 1))
+                {
+                    stmts.push(fused);
+                    i += 2;
+                    continue;
+                }
                 if let Some(s) = codegen_instruction(cx, instr) {
                     stmts.push(s);
                 }
@@ -526,9 +559,266 @@ fn codegen_block_no_reset<'a>(
                 stmts.extend(inner);
             }
         }
+        i += 1;
     }
 
     stmts
+}
+
+/// Pre-scan a block to find Destructure(Reassign) + Call fusion patterns and
+/// return the set of instruction indices whose declarations should be suppressed
+/// (force-inlined) so that the fusion emits a single compound expression.
+///
+/// The pattern we detect (working backwards from a Destructure + Call pair):
+///   [i]   Destructure { value: V, kind: Reassign } (no lvalue)
+///   [i+1] MethodCall/CallExpression { args containing V } (no lvalue)
+/// Any promoted-temp instructions preceding [i] whose lvalue is only used
+/// within the Destructure+Call pair are suppressed.
+fn pre_scan_destructure_call_fusion(
+    block: &[&ReactiveStatement],
+) -> std::collections::HashSet<usize> {
+    let mut suppress: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+    for i in 0..block.len().saturating_sub(1) {
+        let ReactiveStatement::Instruction(destr_instr) = block[i] else {
+            continue;
+        };
+        if destr_instr.lvalue.is_some() {
+            continue;
+        }
+        let InstructionValue::Destructure { lvalue, value, .. } = &destr_instr.value else {
+            continue;
+        };
+        if lvalue.kind != InstructionKind::Reassign {
+            continue;
+        }
+        let ReactiveStatement::Instruction(call_instr) = block[i + 1] else {
+            continue;
+        };
+        if call_instr.lvalue.is_some() {
+            continue;
+        }
+        let call_args = match &call_instr.value {
+            InstructionValue::MethodCall { args, .. } => args,
+            InstructionValue::CallExpression { args, .. } => args,
+            _ => continue,
+        };
+        let value_decl_id = value.identifier.declaration_id;
+        let has_matching_arg = call_args.iter().any(
+            |arg| matches!(arg, Argument::Place(p) if p.identifier.declaration_id == value_decl_id),
+        );
+        if !has_matching_arg {
+            continue;
+        }
+
+        // Collect all declaration_ids referenced by the Destructure + Call pair.
+        let mut pair_refs: std::collections::HashSet<DeclarationId> =
+            std::collections::HashSet::new();
+        collect_value_refs(&destr_instr.value, &mut pair_refs);
+        collect_value_refs(&call_instr.value, &mut pair_refs);
+
+        // Walk backwards from i to find promoted-temp instructions to suppress.
+        // Only suppress instructions that:
+        // 1. Have a named lvalue (promoted temp)
+        // 2. The lvalue's decl_id is referenced by the pair
+        // 3. The lvalue's decl_id is NOT referenced by anything outside the pair
+        //    (in the rest of the block)
+        let mut outside_refs: std::collections::HashSet<DeclarationId> =
+            std::collections::HashSet::new();
+        for (j, stmt) in block.iter().enumerate() {
+            if j == i || j == i + 1 {
+                continue;
+            }
+            if let ReactiveStatement::Instruction(other_instr) = stmt {
+                // Skip unnamed temp instructions — they only pass through values
+                // and don't constitute genuine "outside" references.
+                if let Some(lv) = &other_instr.lvalue
+                    && lv.identifier.name.is_none()
+                {
+                    continue;
+                }
+                collect_value_refs(&other_instr.value, &mut outside_refs);
+            }
+        }
+
+        for j in (0..i).rev() {
+            let ReactiveStatement::Instruction(prev_instr) = block[j] else {
+                break;
+            };
+            let Some(prev_lv) = &prev_instr.lvalue else {
+                break;
+            };
+            let prev_decl_id = prev_lv.identifier.declaration_id;
+            // Skip unnamed temps — they'll be naturally inlined by codegen.
+            if prev_lv.identifier.name.is_none() {
+                continue;
+            }
+            if !pair_refs.contains(&prev_decl_id) {
+                break;
+            }
+            if outside_refs.contains(&prev_decl_id) {
+                break;
+            }
+            // This instruction's value should be inlined.
+            suppress.insert(j);
+        }
+    }
+
+    suppress
+}
+
+fn collect_value_refs(
+    value: &InstructionValue,
+    refs: &mut std::collections::HashSet<DeclarationId>,
+) {
+    match value {
+        InstructionValue::LoadLocal { place, .. } | InstructionValue::LoadContext { place, .. } => {
+            refs.insert(place.identifier.declaration_id);
+        }
+        InstructionValue::Destructure { value: v, .. } => {
+            refs.insert(v.identifier.declaration_id);
+        }
+        InstructionValue::MethodCall {
+            receiver,
+            property,
+            args,
+            ..
+        } => {
+            refs.insert(receiver.identifier.declaration_id);
+            refs.insert(property.identifier.declaration_id);
+            for arg in args {
+                match arg {
+                    Argument::Place(p) | Argument::Spread(p) => {
+                        refs.insert(p.identifier.declaration_id);
+                    }
+                }
+            }
+        }
+        InstructionValue::CallExpression { callee, args, .. } => {
+            refs.insert(callee.identifier.declaration_id);
+            for arg in args {
+                match arg {
+                    Argument::Place(p) | Argument::Spread(p) => {
+                        refs.insert(p.identifier.declaration_id);
+                    }
+                }
+            }
+        }
+        InstructionValue::PropertyLoad { object, .. } => {
+            refs.insert(object.identifier.declaration_id);
+        }
+        _ => {}
+    }
+}
+
+/// Fuse a Destructure(Reassign) + MethodCall/CallExpression pair into a single
+/// expression statement where the destructuring assignment becomes an argument.
+///
+/// Pattern detected:
+///   Destructure { pattern: [x], value: rhs_place, kind: Reassign } (no lvalue)
+///   MethodCall { receiver, property, args: [.., rhs_place, ..] }   (no lvalue)
+///
+/// Emitted:  receiver.property(([x] = rhs_expr))
+fn try_fuse_destructure_into_call<'a>(
+    cx: &mut CodegenContext<'a>,
+    destructure_instr: &ReactiveInstruction,
+    next_stmt: Option<&&ReactiveStatement>,
+) -> Option<ast::Statement<'a>> {
+    // 1. Current instruction must be Destructure(Reassign) with no lvalue.
+    if destructure_instr.lvalue.is_some() {
+        return None;
+    }
+    let InstructionValue::Destructure { lvalue, value, .. } = &destructure_instr.value else {
+        return None;
+    };
+    if lvalue.kind != InstructionKind::Reassign {
+        return None;
+    }
+
+    // 2. Next statement must be an instruction with MethodCall or CallExpression, no lvalue.
+    let ReactiveStatement::Instruction(call_instr) = next_stmt? else {
+        return None;
+    };
+    if call_instr.lvalue.is_some() {
+        return None;
+    }
+
+    let value_decl_id = value.identifier.declaration_id;
+
+    // 3. Find which argument of the call uses the destructure's value place.
+    let args = match &call_instr.value {
+        InstructionValue::MethodCall { args, .. } => args,
+        InstructionValue::CallExpression { args, .. } => args,
+        _ => return None,
+    };
+    let assign_arg_index = args.iter().position(
+        |arg| matches!(arg, Argument::Place(p) if p.identifier.declaration_id == value_decl_id),
+    )?;
+
+    // 4. Build the destructuring assignment expression: (pattern = rhs_expr).
+    let rhs_expr = codegen_place(cx, value)?;
+    let target = build_assignment_target_from_pattern(cx, &lvalue.pattern)?;
+    let assign_expr = cx.builder.expression_parenthesized(
+        SPAN,
+        cx.builder
+            .expression_assignment(SPAN, AssignmentOperator::Assign, target, rhs_expr),
+    );
+
+    // Helper: codegen a single argument, substituting at the fused index.
+    let codegen_arg_or_fused = |cx: &mut CodegenContext<'a>,
+                                idx: usize,
+                                arg: &Argument,
+                                assign: &ast::Expression<'a>|
+     -> Option<ast::Argument<'a>> {
+        if idx == assign_arg_index {
+            Some(ast::Argument::from(assign.clone_in(cx.allocator)))
+        } else {
+            match arg {
+                Argument::Place(place) => Some(ast::Argument::from(codegen_place(cx, place)?)),
+                Argument::Spread(place) => Some(
+                    cx.builder
+                        .argument_spread_element(SPAN, codegen_place(cx, place)?),
+                ),
+            }
+        }
+    };
+
+    // 5. Build the call expression, substituting the assignment expression for the argument.
+    let call_expr = match &call_instr.value {
+        InstructionValue::MethodCall {
+            receiver,
+            property,
+            args,
+            receiver_optional,
+            call_optional,
+            ..
+        } => {
+            let callee = codegen_method_call_callee(cx, receiver, property, *receiver_optional)?;
+            let mut arg_exprs = cx.builder.vec();
+            for (idx, arg) in args.iter().enumerate() {
+                arg_exprs.push(codegen_arg_or_fused(cx, idx, arg, &assign_expr)?);
+            }
+            cx.builder
+                .expression_call(SPAN, callee, NONE, arg_exprs, *call_optional)
+        }
+        InstructionValue::CallExpression {
+            callee,
+            args,
+            optional,
+            ..
+        } => {
+            let callee_expr = codegen_place(cx, callee)?;
+            let mut arg_exprs = cx.builder.vec();
+            for (idx, arg) in args.iter().enumerate() {
+                arg_exprs.push(codegen_arg_or_fused(cx, idx, arg, &assign_expr)?);
+            }
+            cx.builder
+                .expression_call(SPAN, callee_expr, NONE, arg_exprs, *optional)
+        }
+        _ => return None,
+    };
+
+    Some(cx.builder.statement_expression(SPAN, call_expr))
 }
 
 // ---------------------------------------------------------------------------
@@ -1767,7 +2057,9 @@ fn codegen_place<'a>(cx: &mut CodegenContext<'a>, place: &Place) -> Option<ast::
     // Only check temp map for unnamed/promoted identifiers (temporaries).
     // Named identifiers always emit as identifier references, even if
     // something was stored in the temp map for their declaration_id.
-    if is_temp_identifier(&place.identifier)
+    // Also check force_inline_decls for named identifiers that were suppressed
+    // by the destructure+call fusion pre-scan.
+    if (is_temp_identifier(&place.identifier) || cx.force_inline_decls.contains(&decl_id))
         && let Some(temp_slot) = cx.temps.get_mut(&decl_id)
         && let Some(expr) = temp_slot.as_ref()
     {
@@ -2160,8 +2452,36 @@ fn codegen_terminal<'a>(
 /// Walks the member expression chain backward and compares each step with the
 /// dep path entries (property name and optional flag).
 fn expr_matches_dep_path(expr: &ast::Expression, dep: &ReactiveScopeDependency) -> bool {
+    expr_matches_dep_path_inner(expr, dep, false).0
+}
+
+/// Like `expr_matches_dep_path` but also allows the expression to have
+/// `optional: true` where the dep path has `optional: false`. This handles
+/// the case where `DeriveMinimalDependenciesHIR` converted an optional access
+/// to unconditional because the hoistable tree said the base was NonNull.
+///
+/// Returns `(matches, has_optional_mismatch)`. When `has_optional_mismatch`
+/// is true, the expression contains optional chains that were stripped from
+/// the dependency path and the temp should be extracted.
+fn expr_matches_dep_path_relaxed(
+    expr: &ast::Expression,
+    dep: &ReactiveScopeDependency,
+) -> (bool, bool) {
+    expr_matches_dep_path_inner(expr, dep, true)
+}
+
+/// Inner matching function.
+/// When `allow_optional_mismatch` is true, an expression member with
+/// `optional: true` is allowed to match a dep entry with `optional: false`.
+/// Returns `(matches, has_optional_mismatch)`.
+fn expr_matches_dep_path_inner(
+    expr: &ast::Expression,
+    dep: &ReactiveScopeDependency,
+    allow_optional_mismatch: bool,
+) -> (bool, bool) {
     let mut current = expr;
     let mut path_idx = dep.path.len();
+    let mut has_optional_mismatch = false;
 
     while path_idx > 0 {
         path_idx -= 1;
@@ -2169,27 +2489,35 @@ fn expr_matches_dep_path(expr: &ast::Expression, dep: &ReactiveScopeDependency) 
         match current {
             ast::Expression::StaticMemberExpression(member) => {
                 if member.property.name.as_str() != entry.property {
-                    return false;
+                    return (false, false);
                 }
                 if member.optional != entry.optional {
-                    return false;
+                    if allow_optional_mismatch && member.optional && !entry.optional {
+                        has_optional_mismatch = true;
+                    } else {
+                        return (false, false);
+                    }
                 }
                 current = &member.object;
             }
             ast::Expression::ComputedMemberExpression(member) => {
                 if let ast::Expression::NumericLiteral(lit) = &member.expression {
                     if lit.value.to_string() != entry.property {
-                        return false;
+                        return (false, false);
                     }
                 } else {
-                    return false;
+                    return (false, false);
                 }
                 if member.optional != entry.optional {
-                    return false;
+                    if allow_optional_mismatch && member.optional && !entry.optional {
+                        has_optional_mismatch = true;
+                    } else {
+                        return (false, false);
+                    }
                 }
                 current = &member.object;
             }
-            _ => return false,
+            _ => return (false, false),
         }
     }
 
@@ -2197,9 +2525,9 @@ fn expr_matches_dep_path(expr: &ast::Expression, dep: &ReactiveScopeDependency) 
     if let ast::Expression::Identifier(ident) = current
         && let Some(name) = dep.identifier.name.as_ref()
     {
-        return ident.name.as_str() == name.value();
+        return (ident.name.as_str() == name.value(), has_optional_mismatch);
     }
-    false
+    (false, false)
 }
 
 /// Search `cx.temps` for a DeclarationId whose stored expression matches
@@ -2213,6 +2541,39 @@ fn find_temp_matching_dep(
             && expr_matches_dep_path(expr, dep)
         {
             return Some(decl_id);
+        }
+    }
+    None
+}
+
+/// Search `cx.temps` for a DeclarationId whose stored expression matches
+/// the dep path but has optional chains that were stripped from the dep path
+/// by the hoistable-tree conversion.
+///
+/// Only returns a result if there is NO exact (unconditional) temp match for
+/// the same dep path. This avoids incorrectly extracting an optional temp
+/// when an unconditional temp already covers the dependency.
+fn find_temp_with_optional_chain_for_dep(
+    cx: &CodegenContext,
+    dep: &ReactiveScopeDependency,
+) -> Option<DeclarationId> {
+    // First check: is there already an exact unconditional match?
+    // If so, no extraction needed -- the dep can be codegen'd directly.
+    for expr_opt in cx.temps.values() {
+        if let Some(expr) = expr_opt
+            && expr_matches_dep_path(expr, dep)
+        {
+            return None;
+        }
+    }
+    // No exact match. Try relaxed matching to find a temp with optional
+    // chains that correspond to this dependency.
+    for (&decl_id, expr_opt) in &cx.temps {
+        if let Some(expr) = expr_opt {
+            let (matches, has_optional) = expr_matches_dep_path_relaxed(expr, dep);
+            if matches && has_optional {
+                return Some(decl_id);
+            }
         }
     }
     None
@@ -2469,12 +2830,23 @@ fn codegen_reactive_scope<'a>(
     // but the scope tracks a path dependency. We fix this by finding the
     // corresponding temp in cx.temps, giving it a name, and emitting a
     // declaration before the scope declarations.
+    //
+    // Note: DeriveMinimalDependenciesHIR may convert optional accesses to
+    // unconditional when the hoistable tree says the base is NonNull, stripping
+    // the `optional` flag from the dep path. In that case we also look for
+    // temps whose source expression has optional chains that the dep path lost.
     let mut optional_chain_temps: HashMap<usize, String> = HashMap::new();
     for (dep_idx, dep) in sorted_deps.iter().enumerate() {
-        if !dep.path.iter().any(|e| e.optional) {
-            continue;
-        }
-        if let Some(final_decl_id) = find_temp_matching_dep(cx, dep)
+        let has_path_optional = dep.path.iter().any(|e| e.optional);
+        let final_decl_id = if has_path_optional {
+            find_temp_matching_dep(cx, dep)
+        } else {
+            // The dep path has no optional entries, but the original source
+            // expression may have had optional chains that were stripped by
+            // the hoistable-tree conversion. Try relaxed matching.
+            find_temp_with_optional_chain_for_dep(cx, dep)
+        };
+        if let Some(final_decl_id) = final_decl_id
             && !body_has_any_property_loads(instructions)
         {
             let temp_name = alloc_fresh_temp_name(cx);

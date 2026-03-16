@@ -276,6 +276,45 @@ export const FIXTURE_ENTRYPOINT = {
         );
     }
 
+    /// Regression: useLayoutEffect callback captures updateStyles from a zero-dep
+    /// sentinel scope. The callback scope should also be zero-dep (sentinel).
+    #[test]
+    fn test_repro_mutate_ref_in_function_passed_to_hook() {
+        let source = r#"// @flow
+component Example() {
+  const fooRef = useRef();
+  function updateStyles() {
+    const foo = fooRef.current;
+    if (barRef.current == null || foo == null) {
+      return;
+    }
+    foo.style.height = '100px';
+  }
+  const barRef = useRef(null);
+  const resizeRef = useResizeObserver(
+    rect => {
+      const {width} = rect;
+      barRef.current = width;
+    }
+  );
+  useLayoutEffect(() => {
+    const observer = new ResizeObserver(_ => {
+      updateStyles();
+    });
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+  return <div ref={resizeRef} />;
+}"#;
+        let result = compile("test.flow.js", source, &options::PluginOptions::default());
+        assert!(result.transformed);
+        assert!(
+            !result.code.contains("!== updateStyles"),
+            "useLayoutEffect callback should NOT depend on updateStyles"
+        );
+    }
+
     #[test]
     fn test_for_of() {
         let source = r#"function Component() {

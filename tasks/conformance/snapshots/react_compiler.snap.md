@@ -1,19 +1,16 @@
-# React Compiler Conformance — 99.2% parity rate
+# React Compiler Conformance — 99.4% parity rate
 
-**1738** parity_success, **14** parity_failure, **0** skipped
+**1741** parity_success, **11** parity_failure, **0** skipped
 
 ## Failed
 
-- `call-args-destructuring-assignment`: Output mismatch
 - `computed-call-evaluation-order`: Output mismatch
 - `hoist-destruct`: Expected transformed output, but compiler bailed out/skipped
 - `hoisting-setstate-captured-indirectly-jsx`: Expected transformed output, but compiler bailed out/skipped
 - `inline-jsx-transform`: Output mismatch
 - `jsx-tag-evaluation-order-non-global`: Output mismatch
-- `propagate-scope-deps-hir-fork/repro-invariant`: Output mismatch
 - `propagate-scope-deps-hir-fork/switch`: Output mismatch
 - `property-call-evaluation-order`: Output mismatch
-- `repro-mutate-ref-in-function-passed-to-hook`: Output mismatch
 - `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`: Output mismatch
 - `sequence-expression`: Output mismatch
 - `switch`: Output mismatch
@@ -146,6 +143,7 @@
 - `builtin-jsx-tag-lowered-between-mutations`
 - `call`
 - `call-args-assignment`
+- `call-args-destructuring-assignment`
 - `call-spread`
 - `call-spread-argument-mutable-iterator`
 - `call-with-independently-memoizable-arg`
@@ -1152,6 +1150,7 @@
 - `propagate-scope-deps-hir-fork/phi-type-inference-array-push-consecutive-phis`
 - `propagate-scope-deps-hir-fork/phi-type-inference-property-store`
 - `propagate-scope-deps-hir-fork/reactive-dependencies-non-optional-properties-inside-optional-chain`
+- `propagate-scope-deps-hir-fork/repro-invariant`
 - `propagate-scope-deps-hir-fork/repro-scope-missing-mutable-range`
 - `propagate-scope-deps-hir-fork/ssa-cascading-eliminated-phis`
 - `propagate-scope-deps-hir-fork/ssa-leave-case`
@@ -1346,6 +1345,7 @@
 - `repro-missing-memoization-lack-of-phi-types-explicit-types`
 - `repro-missing-phi-after-dce-merge-scopes`
 - `repro-mutable-range-extending-into-ternary`
+- `repro-mutate-ref-in-function-passed-to-hook`
 - `repro-mutate-result-of-function-call-with-frozen-argument-in-function-expression`
 - `repro-mutate-result-of-method-call-on-frozen-value-in-function-expression`
 - `repro-mutate-result-of-method-call-on-frozen-value-is-allowed`

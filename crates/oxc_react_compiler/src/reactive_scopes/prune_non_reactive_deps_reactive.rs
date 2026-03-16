@@ -831,8 +831,120 @@ fn visit_and_prune_block(
                     multi_source_decls,
                     reassigned_decls,
                 );
+                // After visiting the body (which prunes inner scope deps and
+                // conditionally marks outputs reactive), un-mark PrunedScope
+                // declarations whose value originates from an inner zero-dep
+                // scope.  Inner zero-dep scopes produce stable (sentinel-memoized)
+                // values that should not be treated as reactive.
+                let zero_dep_decl_ids =
+                    collect_zero_dep_inner_scope_decl_ids(&scope_block.instructions);
+                for decl in scope_block.scope.declarations.values() {
+                    if zero_dep_decl_ids.contains(&decl.identifier.declaration_id) {
+                        reactive_ids.remove(&decl.identifier.id);
+                        reactive_decls.remove(&decl.identifier.declaration_id);
+                    }
+                }
             }
         }
+    }
+}
+
+/// Collect declaration IDs from inner non-pruned scopes that have zero
+/// dependencies (after pruning).  Also follows StoreLocal/StoreContext
+/// chains so named bindings derived from inner scope outputs are included.
+fn collect_zero_dep_inner_scope_decl_ids(block: &ReactiveBlock) -> HashSet<DeclarationId> {
+    let mut ids = HashSet::new();
+    for stmt in block {
+        match stmt {
+            ReactiveStatement::Scope(scope_block) => {
+                if scope_block.scope.dependencies.is_empty() {
+                    for decl in scope_block.scope.declarations.values() {
+                        ids.insert(decl.identifier.declaration_id);
+                    }
+                }
+                ids.extend(collect_zero_dep_inner_scope_decl_ids(
+                    &scope_block.instructions,
+                ));
+            }
+            ReactiveStatement::PrunedScope(scope_block) => {
+                ids.extend(collect_zero_dep_inner_scope_decl_ids(
+                    &scope_block.instructions,
+                ));
+            }
+            ReactiveStatement::Terminal(term_stmt) => {
+                collect_zero_dep_decl_ids_terminal(&term_stmt.terminal, &mut ids);
+            }
+            ReactiveStatement::Instruction(instr) => {
+                if let InstructionValue::StoreLocal { lvalue, value, .. }
+                | InstructionValue::StoreContext { lvalue, value, .. } = &instr.value
+                    && ids.contains(&value.identifier.declaration_id)
+                {
+                    ids.insert(lvalue.place.identifier.declaration_id);
+                }
+            }
+        }
+    }
+    ids
+}
+
+fn collect_zero_dep_decl_ids_terminal(
+    terminal: &ReactiveTerminal,
+    ids: &mut HashSet<DeclarationId>,
+) {
+    match terminal {
+        ReactiveTerminal::If {
+            consequent,
+            alternate,
+            ..
+        } => {
+            ids.extend(collect_zero_dep_inner_scope_decl_ids(consequent));
+            if let Some(alt) = alternate {
+                ids.extend(collect_zero_dep_inner_scope_decl_ids(alt));
+            }
+        }
+        ReactiveTerminal::Switch { cases, .. } => {
+            for case in cases {
+                if let Some(block) = &case.block {
+                    ids.extend(collect_zero_dep_inner_scope_decl_ids(block));
+                }
+            }
+        }
+        ReactiveTerminal::DoWhile { loop_block, .. }
+        | ReactiveTerminal::While { loop_block, .. } => {
+            ids.extend(collect_zero_dep_inner_scope_decl_ids(loop_block));
+        }
+        ReactiveTerminal::For {
+            init,
+            update,
+            loop_block,
+            ..
+        } => {
+            ids.extend(collect_zero_dep_inner_scope_decl_ids(init));
+            if let Some(upd) = update {
+                ids.extend(collect_zero_dep_inner_scope_decl_ids(upd));
+            }
+            ids.extend(collect_zero_dep_inner_scope_decl_ids(loop_block));
+        }
+        ReactiveTerminal::ForOf {
+            init, loop_block, ..
+        }
+        | ReactiveTerminal::ForIn {
+            init, loop_block, ..
+        } => {
+            ids.extend(collect_zero_dep_inner_scope_decl_ids(init));
+            ids.extend(collect_zero_dep_inner_scope_decl_ids(loop_block));
+        }
+        ReactiveTerminal::Label { block, .. } => {
+            ids.extend(collect_zero_dep_inner_scope_decl_ids(block));
+        }
+        ReactiveTerminal::Try { block, handler, .. } => {
+            ids.extend(collect_zero_dep_inner_scope_decl_ids(block));
+            ids.extend(collect_zero_dep_inner_scope_decl_ids(handler));
+        }
+        ReactiveTerminal::Break { .. }
+        | ReactiveTerminal::Continue { .. }
+        | ReactiveTerminal::Return { .. }
+        | ReactiveTerminal::Throw { .. } => {}
     }
 }
 
