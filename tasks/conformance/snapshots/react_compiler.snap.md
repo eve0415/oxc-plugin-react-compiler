@@ -1,6 +1,6 @@
-# React Compiler Conformance — 97.7% parity rate
+# React Compiler Conformance — 98.4% parity rate
 
-**1712** parity_success, **40** parity_failure, **0** skipped
+**1724** parity_success, **28** parity_failure, **0** skipped
 
 ## Failed
 
@@ -8,27 +8,15 @@
 - `assume-invoked/function-with-conditional-callsite-in-another-function`: Output mismatch
 - `call-args-destructuring-assignment`: Output mismatch
 - `computed-call-evaluation-order`: Output mismatch
-- `default-param-array-with-unary`: Output mismatch
-- `default-param-calls-global-function`: Output mismatch
-- `destructure-array-declaration-to-context-var`: Output mismatch
-- `destructure-default-array-with-unary`: Output mismatch
-- `destructure-object-declaration-to-context-var`: Output mismatch
-- `destructuring-array-default`: Output mismatch
-- `destructuring-assignment-array-default`: Output mismatch
-- `destructuring-mixed-scope-and-local-variables-with-default`: Output mismatch
-- `destructuring-object-default`: Output mismatch
-- `destructuring-with-typecast-as-default-value.flow`: Output mismatch
 - `fbt/fbtparam-with-jsx-fragment-value`: Output mismatch
-- `function-param-assignment-pattern`: Output mismatch
+- `hoist-destruct`: Expected transformed output, but compiler bailed out/skipped
 - `hoisting-repro-variable-used-in-assignment`: Output mismatch
-- `hoisting-setstate-captured-indirectly-jsx`: Output mismatch
+- `hoisting-setstate-captured-indirectly-jsx`: Expected transformed output, but compiler bailed out/skipped
 - `infer-effect-dependencies/import-namespace-useEffect`: Output mismatch
+- `infer-types-through-type-cast.flow`: Output mismatch
 - `inline-jsx-transform`: Output mismatch
 - `jsx-tag-evaluation-order-non-global`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
-- `nested-optional-member-expr`: Output mismatch
-- `preserve-memo-validation/useMemo-conditional-access-alloc`: Output mismatch
-- `preserve-memo-validation/useMemo-conditional-access-noAlloc`: Output mismatch
 - `propagate-scope-deps-hir-fork/repro-invariant`: Output mismatch
 - `propagate-scope-deps-hir-fork/switch`: Output mismatch
 - `property-call-evaluation-order`: Output mismatch
@@ -294,6 +282,8 @@
 - `debugger-memoized`
 - `declare-reassign-variable-in-closure`
 - `deeply-nested-function-expressions-with-params`
+- `default-param-array-with-unary`
+- `default-param-calls-global-function`
 - `default-param-with-empty-callback`
 - `default-param-with-reorderable-callback`
 - `delete-computed-property`
@@ -301,28 +291,36 @@
 - `dependencies`
 - `dependencies-outputs`
 - `destructure-array-assignment-to-context-var`
+- `destructure-array-declaration-to-context-var`
 - `destructure-capture-global`
+- `destructure-default-array-with-unary`
 - `destructure-direct-reassignment`
 - `destructure-in-branch-ssa`
 - `destructure-mixed-property-key-types`
 - `destructure-object-assignment-to-context-var`
+- `destructure-object-declaration-to-context-var`
 - `destructure-param-string-literal-key`
 - `destructure-param-string-literal-key-invalid-identifier`
 - `destructure-string-literal-invalid-identifier-property-key`
 - `destructure-string-literal-property-key`
 - `destructuring`
+- `destructuring-array-default`
 - `destructuring-array-param-default`
 - `destructuring-assignment`
+- `destructuring-assignment-array-default`
 - `destructuring-default-at-array-hole`
 - `destructuring-default-at-explicit-null`
 - `destructuring-default-at-explicit-undefined`
 - `destructuring-default-past-end-of-array`
+- `destructuring-mixed-scope-and-local-variables-with-default`
 - `destructuring-mixed-scope-declarations-and-locals`
+- `destructuring-object-default`
 - `destructuring-object-param-default`
 - `destructuring-object-pattern-within-rest`
 - `destructuring-property-inference`
 - `destructuring-same-property-identifier-names`
 - `destructuring-with-conditional-as-default-value`
+- `destructuring-with-typecast-as-default-value.flow`
 - `do-while-break`
 - `do-while-compound-test`
 - `do-while-conditional-break`
@@ -647,6 +645,7 @@
 - `function-expression-prototype-call`
 - `function-expression-prototype-call-mutating`
 - `function-expression-with-store-to-parameter`
+- `function-param-assignment-pattern`
 - `functionexpr-conditional-access-2`
 - `functionexpr–conditional-access`
 - `gating/arrow-function-expr-gating-test`
@@ -696,7 +695,6 @@
 - `globals-Number`
 - `globals-String`
 - `globals-dont-resolve-local-useState`
-- `hoist-destruct`
 - `hoisted-context-variable-in-outlined-fn`
 - `hoisted-declaration-with-scope`
 - `hoisted-function-declaration`
@@ -791,7 +789,6 @@
 - `infer-property-delete`
 - `infer-sequential-optional-chain-nonnull`
 - `infer-skip-components-without-hooks-or-jsx`
-- `infer-types-through-type-cast.flow`
 - `inner-memo-value-not-promoted-to-outer-scope-dynamic`
 - `inner-memo-value-not-promoted-to-outer-scope-static`
 - `interdependent`
@@ -915,6 +912,7 @@
 - `nested-function-shadowed-identifiers`
 - `nested-function-with-param-as-captured-dep`
 - `nested-optional-chains`
+- `nested-optional-member-expr`
 - `nested-scopes-begin-same-instr-valueblock`
 - `nested-scopes-hook-call`
 - `new-does-not-mutate-class`
@@ -1118,6 +1116,8 @@
 - `preserve-memo-validation/useCallback-reordering-depslist-assignment`
 - `preserve-memo-validation/useCallback-with-no-depslist`
 - `preserve-memo-validation/useMemo-alias-property-load-dep`
+- `preserve-memo-validation/useMemo-conditional-access-alloc`
+- `preserve-memo-validation/useMemo-conditional-access-noAlloc`
 - `preserve-memo-validation/useMemo-conditional-access-own-scope`
 - `preserve-memo-validation/useMemo-constant-prop`
 - `preserve-memo-validation/useMemo-dep-array-literal-access`
