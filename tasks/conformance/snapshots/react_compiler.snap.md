@@ -1,20 +1,14 @@
-# React Compiler Conformance — 99.4% parity rate
+# React Compiler Conformance — 99.7% parity rate
 
-**1741** parity_success, **11** parity_failure, **0** skipped
+**1747** parity_success, **5** parity_failure, **0** skipped
 
 ## Failed
 
-- `computed-call-evaluation-order`: Output mismatch
 - `hoist-destruct`: Expected transformed output, but compiler bailed out/skipped
 - `hoisting-setstate-captured-indirectly-jsx`: Expected transformed output, but compiler bailed out/skipped
 - `inline-jsx-transform`: Output mismatch
 - `jsx-tag-evaluation-order-non-global`: Output mismatch
-- `propagate-scope-deps-hir-fork/switch`: Output mismatch
-- `property-call-evaluation-order`: Output mismatch
-- `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`: Output mismatch
 - `sequence-expression`: Output mismatch
-- `switch`: Output mismatch
-- `update-expression-in-sequence`: Output mismatch
 
 ## Passed
 
@@ -218,6 +212,7 @@
 - `component`
 - `component-declaration-basic.flow`
 - `component-inner-function-with-many-args`
+- `computed-call-evaluation-order`
 - `computed-call-spread`
 - `computed-load-primitive-as-dependency`
 - `computed-store-alias`
@@ -1163,6 +1158,7 @@
 - `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-via-destructuring-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-with-mutation`
+- `propagate-scope-deps-hir-fork/switch`
 - `propagate-scope-deps-hir-fork/switch-non-final-default`
 - `propagate-scope-deps-hir-fork/try-catch-maybe-null-dependency`
 - `propagate-scope-deps-hir-fork/try-catch-mutate-outer-value`
@@ -1170,6 +1166,7 @@
 - `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch-escaping`
 - `propagate-scope-deps-hir-fork/useMemo-multiple-if-else`
 - `property-assignment`
+- `property-call-evaluation-order`
 - `property-call-spread`
 - `props-method-dependency`
 - `prune-scopes-whose-deps-invalidate-array`
@@ -1353,6 +1350,7 @@
 - `repro-no-value-for-temporary`
 - `repro-no-value-for-temporary-reactive-scope-with-early-return`
 - `repro-non-identifier-object-keys`
+- `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`
 - `repro-object-fromEntries-entries`
 - `repro-object-pattern`
 - `repro-preds-undefined-try-catch-return-primitive`
@@ -1552,6 +1550,7 @@
 - `static-components/invalid-dynamically-constructed-component-new`
 - `store-via-call`
 - `store-via-new`
+- `switch`
 - `switch-global-propertyload-case-test`
 - `switch-non-final-default`
 - `switch-with-fallthrough`
@@ -1673,6 +1672,7 @@
 - `unused-ternary-assigned-to-variable`
 - `update-expression`
 - `update-expression-constant-propagation`
+- `update-expression-in-sequence`
 - `update-expression-on-function-parameter-1`
 - `update-expression-on-function-parameter-2`
 - `update-expression-on-function-parameter-3`

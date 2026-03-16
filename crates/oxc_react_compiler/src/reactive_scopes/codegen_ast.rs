@@ -1405,6 +1405,8 @@ fn codegen_instruction_value<'a>(
         } => {
             let mut prefix_exprs: Vec<ast::Expression<'a>> = Vec::new();
             for seq_instr in instructions {
+                let is_side_effecting = is_sequence_side_effecting_value(&seq_instr.value);
+
                 let expr = match &seq_instr.value {
                     InstructionValue::StoreLocal {
                         lvalue: store_lv,
@@ -1417,7 +1419,6 @@ fn codegen_instruction_value<'a>(
                         ..
                     } => {
                         let rhs = codegen_place(cx, v);
-                        // Build assignment expression for reassign stores.
                         if matches!(store_lv.kind, InstructionKind::Reassign) {
                             rhs.map(|rhs_expr| {
                                 let name = identifier_name(&store_lv.place.identifier);
@@ -1441,29 +1442,66 @@ fn codegen_instruction_value<'a>(
                     _ => codegen_instruction_value(cx, &seq_instr.value),
                 };
                 if let Some(expr) = expr {
-                    if let Some(lv) = &seq_instr.lvalue {
-                        if is_temp_identifier(&lv.identifier) {
-                            cx.temps.insert(
-                                lv.identifier.declaration_id,
-                                Some(expr.clone_in(cx.allocator)),
-                            );
-                        }
-                        // Always add to prefix for side effects.
-                        prefix_exprs.push(expr);
-                    } else {
+                    if let Some(lv) = &seq_instr.lvalue
+                        && is_temp_identifier(&lv.identifier)
+                    {
+                        cx.temps.insert(
+                            lv.identifier.declaration_id,
+                            Some(expr.clone_in(cx.allocator)),
+                        );
+                    }
+                    if is_side_effecting {
                         prefix_exprs.push(expr);
                     }
                 }
             }
-            let final_expr = codegen_instruction_value(cx, value)?;
-            if prefix_exprs.is_empty() {
-                Some(final_expr)
+            // Check if the value is a LoadLocal that references the same temp
+            // as a side-effecting prefix instruction.  If so, the prefix
+            // expression already IS the value — we should not also inline it
+            // as the final expression (which would duplicate it).
+            let value_already_in_prefix = if let InstructionValue::LoadLocal {
+                place: ref load_place,
+                ..
+            } = **value
+            {
+                let load_decl = load_place.identifier.declaration_id;
+                // Check if any side-effecting prefix instruction's lvalue
+                // matches the value's LoadLocal reference.
+                instructions.iter().any(|instr| {
+                    is_sequence_side_effecting_value(&instr.value)
+                        && instr
+                            .lvalue
+                            .as_ref()
+                            .is_some_and(|lv| lv.identifier.declaration_id == load_decl)
+                })
             } else {
-                prefix_exprs.push(final_expr);
-                Some(
-                    cx.builder
-                        .expression_sequence(SPAN, cx.builder.vec_from_iter(prefix_exprs)),
-                )
+                false
+            };
+
+            if value_already_in_prefix {
+                // The value expression is already present in prefix_exprs
+                // from a side-effecting instruction.
+                if prefix_exprs.len() == 1 {
+                    Some(prefix_exprs.pop().unwrap())
+                } else if prefix_exprs.is_empty() {
+                    codegen_instruction_value(cx, value)
+                } else {
+                    Some(
+                        cx.builder
+                            .expression_sequence(SPAN, cx.builder.vec_from_iter(prefix_exprs)),
+                    )
+                }
+            } else {
+                let final_expr = codegen_instruction_value(cx, value)?;
+                if prefix_exprs.is_empty() {
+                    Some(final_expr)
+                } else {
+                    prefix_exprs.push(final_expr);
+                    Some(
+                        cx.builder
+                            .expression_sequence(SPAN, cx.builder.vec_from_iter(prefix_exprs)),
+                    )
+                }
             }
         }
         InstructionValue::ReactiveOptionalExpression { value, .. } => {
@@ -1932,6 +1970,36 @@ fn build_property_key_for_pattern<'a>(
 /// codegen's `is_temp_like_identifier`).
 fn is_temp_identifier(identifier: &Identifier) -> bool {
     identifier.name.is_none()
+}
+
+/// Check if an instruction value has side effects that must be preserved in a
+/// sequence expression.  Pure intermediate computations (loads, property reads,
+/// primitives) should be inlined via the temp map, while side-effecting
+/// operations (calls, assignments, updates) must appear in the comma-separated
+/// expression list.
+fn is_sequence_side_effecting_value(value: &InstructionValue) -> bool {
+    matches!(
+        value,
+        InstructionValue::CallExpression { .. }
+            | InstructionValue::MethodCall { .. }
+            | InstructionValue::PostfixUpdate { .. }
+            | InstructionValue::PrefixUpdate { .. }
+            | InstructionValue::StoreLocal {
+                lvalue: crate::hir::types::LValue {
+                    kind: InstructionKind::Reassign,
+                    ..
+                },
+                ..
+            }
+            | InstructionValue::StoreContext {
+                lvalue: crate::hir::types::LValue {
+                    kind: InstructionKind::Reassign,
+                    ..
+                },
+                ..
+            }
+            | InstructionValue::ReactiveSequenceExpression { .. }
+    )
 }
 
 fn identifier_name(identifier: &Identifier) -> String {

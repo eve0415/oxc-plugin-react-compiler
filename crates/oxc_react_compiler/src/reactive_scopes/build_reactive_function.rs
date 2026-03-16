@@ -1161,13 +1161,99 @@ impl Driver {
                 }
             }
 
-            terminal @ (Terminal::Sequence { .. }
-            | Terminal::Optional { .. }
+            Terminal::Sequence {
+                block: _seq_block,
+                fallthrough,
+                id: terminal_id,
+                loc: ref terminal_loc,
+            } => {
+                let loc = terminal_loc.clone();
+                let fallthrough_id = if !self.cx.is_scheduled(fallthrough) {
+                    Some(fallthrough)
+                } else {
+                    None
+                };
+                if let Some(ft) = fallthrough_id {
+                    let sid = self.cx.schedule(ft, "if");
+                    schedule_ids.push(sid);
+                }
+
+                let vbt_result = self.visit_value_block_terminal_owned(terminal, block_id);
+
+                self.cx.unschedule_all(&schedule_ids);
+
+                // Emit flat instructions for reactive scope analysis.
+                for instr in &vbt_result.instructions {
+                    block_value.push(ReactiveStatement::Instruction(Box::new(instr.clone())));
+                }
+
+                // For multi-instruction sequences at statement level, also
+                // emit a ReactiveSequenceExpression so codegen can
+                // reconstruct the comma expression — but ONLY when the
+                // flat codegen would lose side effects (orphaned
+                // side-effecting temp instructions).
+                if vbt_result.instructions.len() > 1 {
+                    let mut prefix = vbt_result.instructions;
+                    let last = prefix.pop().unwrap();
+
+                    // Check if any prefix instruction is a side-effecting
+                    // temp whose result is never referenced by another
+                    // instruction.  Such temps are "orphaned" and would
+                    // be silently dropped by the flat codegen.
+                    let has_orphaned = prefix.iter().any(|instr| {
+                        if let Some(lv) = &instr.lvalue
+                            && lv.identifier.name.is_none()
+                            && matches!(
+                                instr.value,
+                                InstructionValue::CallExpression { .. }
+                                    | InstructionValue::MethodCall { .. }
+                                    | InstructionValue::PostfixUpdate { .. }
+                                    | InstructionValue::PrefixUpdate { .. }
+                            )
+                        {
+                            let others: Vec<_> = prefix
+                                .iter()
+                                .chain(std::iter::once(&last))
+                                .filter(|i| !std::ptr::eq(*i, instr))
+                                .cloned()
+                                .collect();
+                            !is_decl_id_referenced_in_instructions(
+                                lv.identifier.declaration_id,
+                                &others,
+                            )
+                        } else {
+                            false
+                        }
+                    });
+
+                    if has_orphaned {
+                        let seq_value = InstructionValue::ReactiveSequenceExpression {
+                            instructions: prefix,
+                            id: last.id,
+                            value: Box::new(last.value),
+                            loc: loc.clone(),
+                        };
+                        block_value.push(ReactiveStatement::Instruction(Box::new(
+                            ReactiveInstruction {
+                                id: terminal_id,
+                                lvalue: last.lvalue,
+                                value: seq_value,
+                                loc,
+                            },
+                        )));
+                    }
+                }
+
+                if let Some(ft) = fallthrough_id {
+                    self.visit_block(ft, block_value);
+                }
+            }
+
+            terminal @ (Terminal::Optional { .. }
             | Terminal::Ternary { .. }
             | Terminal::Logical { .. }) => {
                 let fallthrough = match &terminal {
-                    Terminal::Sequence { fallthrough, .. }
-                    | Terminal::Optional { fallthrough, .. }
+                    Terminal::Optional { fallthrough, .. }
                     | Terminal::Ternary { fallthrough, .. }
                     | Terminal::Logical { fallthrough, .. } => *fallthrough,
                     _ => unreachable!(),
@@ -2115,6 +2201,92 @@ pub fn build_reactive_function(func: HIRFunction) -> ReactiveFunction {
         body,
         directives: func.directives,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Check if a given declaration ID is referenced as an operand in any of the
+/// provided instructions' values. This uses a simple check of the most common
+/// value variants (StoreLocal, StoreContext, LoadLocal, CallExpression, etc.)
+/// to detect when a temp's result is consumed by a subsequent instruction.
+fn is_decl_id_referenced_in_instructions(
+    decl_id: crate::hir::types::DeclarationId,
+    instructions: &[ReactiveInstruction],
+) -> bool {
+    fn place_matches(place: &Place, target: crate::hir::types::DeclarationId) -> bool {
+        place.identifier.declaration_id == target
+    }
+
+    for instr in instructions {
+        match &instr.value {
+            InstructionValue::StoreLocal { value: v, .. }
+            | InstructionValue::StoreContext { value: v, .. } => {
+                if place_matches(v, decl_id) {
+                    return true;
+                }
+            }
+            InstructionValue::LoadLocal { place, .. }
+            | InstructionValue::LoadContext { place, .. } => {
+                if place_matches(place, decl_id) {
+                    return true;
+                }
+            }
+            InstructionValue::PropertyLoad { object, .. } => {
+                if place_matches(object, decl_id) {
+                    return true;
+                }
+            }
+            InstructionValue::ComputedLoad {
+                object, property, ..
+            } => {
+                if place_matches(object, decl_id) || place_matches(property, decl_id) {
+                    return true;
+                }
+            }
+            InstructionValue::CallExpression { callee, args, .. } => {
+                if place_matches(callee, decl_id) {
+                    return true;
+                }
+                for arg in args {
+                    let p = match arg {
+                        crate::hir::types::Argument::Place(p)
+                        | crate::hir::types::Argument::Spread(p) => p,
+                    };
+                    if place_matches(p, decl_id) {
+                        return true;
+                    }
+                }
+            }
+            InstructionValue::MethodCall { receiver, args, .. } => {
+                if place_matches(receiver, decl_id) {
+                    return true;
+                }
+                for arg in args {
+                    let p = match arg {
+                        crate::hir::types::Argument::Place(p)
+                        | crate::hir::types::Argument::Spread(p) => p,
+                    };
+                    if place_matches(p, decl_id) {
+                        return true;
+                    }
+                }
+            }
+            InstructionValue::BinaryExpression { left, right, .. } => {
+                if place_matches(left, decl_id) || place_matches(right, decl_id) {
+                    return true;
+                }
+            }
+            InstructionValue::UnaryExpression { value: v, .. } => {
+                if place_matches(v, decl_id) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------

@@ -3661,7 +3661,7 @@ fn normalize_code(code: &str) -> String {
         .join("\n");
 
     type NormalizeStep = (&'static str, fn(&str) -> String);
-    let steps: [NormalizeStep; 65] = [
+    let steps: [NormalizeStep; 66] = [
         ("normalize_multiline_imports", normalize_multiline_imports),
         ("normalize_empty_blocks", normalize_empty_blocks),
         ("normalize_iife_parens", normalize_iife_parens),
@@ -3817,6 +3817,10 @@ fn normalize_code(code: &str) -> String {
             "normalize_sentinel_scope_inline",
             normalize_sentinel_scope_inline,
         ),
+        (
+            "normalize_sentinel_scope_inline_single_line",
+            normalize_sentinel_scope_inline_single_line,
+        ),
         ("normalize_arrow_void_body", normalize_arrow_void_body),
         (
             "normalize_dead_expression_statements",
@@ -3937,6 +3941,9 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_switch_fallthrough_break(&lines_normalized);
     lines_normalized = normalize_switch_dead_case_before_default(&lines_normalized);
     lines_normalized = normalize_switch_empty_break_case(&lines_normalized);
+    lines_normalized = normalize_switch_fallthrough_dead_assign(&lines_normalized);
+    // Split `} case` or `} default:` on the same line into separate lines.
+    lines_normalized = normalize_switch_case_line_split(&lines_normalized);
     lines_normalized = normalize_paren_identity_assignment(&lines_normalized);
     // Re-run alias-return-tail after paren_identity strips Flow type casts
     lines_normalized = normalize_simple_alias_return_tail(&lines_normalized);
@@ -7412,6 +7419,163 @@ fn normalize_sentinel_scope_inline(code: &str) -> String {
     }
 
     result_lines.join("\n")
+}
+
+/// Remove inline sentinel scopes that appear on the same line as other code.
+///
+/// Our compiler sometimes creates a zero-dep sentinel scope inside a switch
+/// case body (or other inline context) where the upstream compiler doesn't.
+/// After line-joining, this appears as a single line containing:
+///
+///   `let tN; if ($[M] === Symbol.for("react.memo_cache_sentinel")) { tN = EXPR; $[M] = tN} else { tN = $[M] } IDENT = tN`
+///
+/// This normalizer strips the sentinel scope inline and replaces the trailing
+/// `IDENT = tN` with `IDENT = EXPR`.
+fn normalize_sentinel_scope_inline_single_line(code: &str) -> String {
+    // Match lines containing an inline sentinel scope pattern:
+    //   `let tN; if ($[M] === Symbol.for("react.memo_cache_sentinel")) { tN = EXPR; $[M] = tN; } else { tN = $[M]; }`
+    // We search for the sentinel marker and parse the structure manually
+    // since the regex crate does not support backreferences.
+    let sentinel_marker = "Symbol.for(\"react.memo_cache_sentinel\")";
+
+    let re_let = regex::Regex::new(r"let (t\d+); if \(\$\[\d+\] === $").unwrap();
+
+    let mut result = code.to_string();
+    let mut search_from = 0;
+    loop {
+        // Find sentinel marker starting from search_from to avoid infinite loops.
+        let Some(rel_pos) = result[search_from..].find(sentinel_marker) else {
+            break;
+        };
+        let sentinel_pos = search_from + rel_pos;
+
+        // Walk backwards to find `let tN; if ($[M] === ` preceding this sentinel.
+        let line_start = result[..sentinel_pos].rfind('\n').map_or(0, |p| p + 1);
+        let before_sentinel = &result[line_start..sentinel_pos];
+
+        // Look for `let tN; if ($[M] === ` pattern before the sentinel.
+        let Some(let_match) = re_let.captures(before_sentinel.trim_start()) else {
+            // Not our pattern; advance past this sentinel and keep searching.
+            search_from = sentinel_pos + sentinel_marker.len();
+            continue;
+        };
+        let temp = let_match.get(1).unwrap().as_str().to_string();
+
+        // Find the start of the `let tN;` in the result string.
+        let let_needle = format!("let {};", temp);
+        let Some(let_rel) = result[line_start..sentinel_pos].find(&let_needle) else {
+            search_from = sentinel_pos + sentinel_marker.len();
+            continue;
+        };
+        let let_pos = line_start + let_rel;
+
+        // Find the closing `} else { tN = $[M]` after the sentinel marker.
+        // Handle both `; }` and `}` formatting.
+        let else_needle = format!("}} else {{ {} = $[", temp);
+        let Some(else_offset) = result[sentinel_pos..].find(&else_needle) else {
+            search_from = sentinel_pos + sentinel_marker.len();
+            continue;
+        };
+        let else_pos = sentinel_pos + else_offset;
+
+        // Find the `}` that closes the else block.
+        let Some(close_offset) = result[else_pos + else_needle.len()..].find('}') else {
+            search_from = sentinel_pos + sentinel_marker.len();
+            continue;
+        };
+        let block_end = else_pos + else_needle.len() + close_offset + 1; // past the `}`
+
+        // Extract the EXPR from the if-body: `tN = EXPR; $[M] = tN; }`
+        // The if-body starts after `) { tN = `
+        let if_body_marker = format!(") {{ {} = ", temp);
+        let Some(if_body_offset) = result[sentinel_pos..].find(&if_body_marker) else {
+            search_from = sentinel_pos + sentinel_marker.len();
+            continue;
+        };
+        let expr_start = sentinel_pos + if_body_offset + if_body_marker.len();
+        // EXPR ends at the next `;`
+        let Some(expr_end_offset) = result[expr_start..].find(';') else {
+            search_from = sentinel_pos + sentinel_marker.len();
+            continue;
+        };
+        let expr = result[expr_start..expr_start + expr_end_offset].to_string();
+
+        // Remove the entire sentinel block from `let tN;` to closing `}`.
+        let mut new_result = String::with_capacity(result.len());
+        new_result.push_str(&result[..let_pos]);
+        let rest = &result[block_end..];
+        // Skip a single trailing space if present.
+        let rest = rest.strip_prefix(' ').unwrap_or(rest);
+        // In the remaining text on the same line, replace `IDENT = tN` with `IDENT = EXPR`.
+        let assign_pattern = format!(" = {}", temp);
+        let assign_replacement = format!(" = {}", expr);
+        let rest_replaced = rest.replacen(&assign_pattern, &assign_replacement, 1);
+        new_result.push_str(&rest_replaced);
+        result = new_result;
+        // Reset search_from to where we made the edit to catch any further occurrences.
+        search_from = let_pos;
+    }
+
+    result
+}
+
+/// Remove dead assignments at the end of a switch case body that are immediately
+/// overwritten by the next fall-through case.
+///
+/// When our compiler does not model switch fall-through, it may emit an assignment
+/// like `y = []` at the end of a case body that the next case immediately overwrites
+/// (e.g., `y = x`). The upstream compiler models fall-through and elides the dead
+/// assignment entirely.
+///
+/// Pattern: `...; IDENT = EXPR } case ...: { IDENT = ...` where the same IDENT
+/// is assigned in both the end of one case and the start of the next.
+fn normalize_switch_fallthrough_dead_assign(code: &str) -> String {
+    // Match: `; IDENT1 = EXPR } case VALUE: { IDENT2 = ` and check IDENT1 == IDENT2.
+    // Cannot use backreferences in the regex crate, so capture both idents and compare.
+    let re =
+        regex::Regex::new(r"; ([a-zA-Z_]\w*) = ([^;{}]+) \} case ([^:]+): \{ ([a-zA-Z_]\w*) = ")
+            .unwrap();
+
+    let mut result = code.to_string();
+    loop {
+        let Some(m) = re.captures(&result) else {
+            break;
+        };
+        let ident1 = m.get(1).unwrap().as_str();
+        let ident2 = m.get(4).unwrap().as_str();
+        if ident1 != ident2 {
+            // Not a dead assignment pattern; stop to avoid infinite loop.
+            break;
+        }
+        let full = m.get(0).unwrap();
+        let case_test = m.get(3).unwrap().as_str();
+
+        // Remove the dead assignment.
+        // Before: `; IDENT = EXPR } case VALUE: { IDENT = `
+        // After:  ` } case VALUE: { IDENT = `
+        let replacement = format!(" }} case {}: {{ {} = ", case_test, ident1);
+        let new_result = format!(
+            "{}{}{}",
+            &result[..full.start()],
+            &replacement,
+            &result[full.end()..]
+        );
+        result = new_result;
+    }
+
+    result
+}
+
+/// Split adjacent switch cases on the same line into separate lines.
+///
+/// Our compiler sometimes emits `} case VALUE: {` on the same line as the
+/// previous case, while the upstream puts each case on its own line.
+/// This normalization splits `} case` or `} default:` boundaries into
+/// separate lines so the comparison is whitespace-equivalent.
+fn normalize_switch_case_line_split(code: &str) -> String {
+    // Match `} case ` or `} default:` mid-line (not at line start).
+    let re = regex::Regex::new(r"\} (case |default[\s:])").unwrap();
+    re.replace_all(code, "}\n$1").to_string()
 }
 
 /// as `((x = V), V)` to make the truthiness check explicit. Our codegen
