@@ -125,6 +125,14 @@ struct CodegenContext<'a> {
 }
 
 impl<'a> CodegenContext<'a> {
+    /// Resolve an identifier's display name, checking decl_names overrides first.
+    fn resolve_identifier_name(&self, identifier: &Identifier) -> String {
+        if let Some(shifted) = self.decl_names.get(&identifier.declaration_id) {
+            return shifted.clone();
+        }
+        identifier_name(identifier)
+    }
+
     fn alloc_cache_slot(&mut self) -> u32 {
         let slot = self.next_cache_index;
         self.next_cache_index += 1;
@@ -562,7 +570,7 @@ fn codegen_instruction<'a>(
         .name_overrides
         .get(&lvalue.identifier.declaration_id)
         .cloned()
-        .unwrap_or_else(|| identifier_name(&lvalue.identifier));
+        .unwrap_or_else(|| cx.resolve_identifier_name(&lvalue.identifier));
     let id = lvalue.identifier.id;
 
     // Already declared → reassignment.
@@ -1165,7 +1173,7 @@ fn codegen_store<'a>(
         .name_overrides
         .get(&lvalue.place.identifier.declaration_id)
         .cloned()
-        .unwrap_or_else(|| identifier_name(&lvalue.place.identifier));
+        .unwrap_or_else(|| cx.resolve_identifier_name(&lvalue.place.identifier));
 
     match lvalue.kind {
         InstructionKind::Reassign => {
@@ -1686,16 +1694,16 @@ fn codegen_place<'a>(cx: &mut CodegenContext<'a>, place: &Place) -> Option<ast::
         return Some(cx.ident_expr(override_name));
     }
 
+    // Check decl_names for shifted/overridden names (e.g. scope dep/output collision).
+    if let Some(name) = cx.decl_names.get(&decl_id) {
+        return Some(cx.ident_expr(name));
+    }
+
     // Use identifier name.
     if let Some(name) = place.identifier.name.as_ref() {
         let s = name.value().to_string();
-        cx.decl_names.entry(decl_id).or_insert_with(|| s.clone());
+        cx.decl_names.insert(decl_id, s.clone());
         return Some(cx.ident_expr(&s));
-    }
-
-    // Fallback: check if we've seen this DeclarationId before with a name.
-    if let Some(name) = cx.decl_names.get(&decl_id) {
-        return Some(cx.ident_expr(name));
     }
 
     // Last resort: use temp name based on DeclarationId.
@@ -2108,20 +2116,22 @@ fn codegen_reactive_scope<'a>(
         .collect();
     decl_names.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // Collect dependency declaration_ids to detect dep/output name collisions.
-    let dep_decl_ids: HashSet<DeclarationId> = scope
+    // Collect dependency root names to detect dep/output name collisions.
+    let dep_root_names: HashSet<String> = scope
         .dependencies
         .iter()
-        .map(|d| d.identifier.declaration_id)
+        .filter_map(|d| Some(d.identifier.name.as_ref()?.value().to_string()))
         .collect();
 
-    // Pre-compute shifted output names for scope declarations that collide with deps.
+    // Pre-compute shifted output names for scope declarations whose temp name
+    // collides with a dependency name. This avoids circular references like
+    // `if ($[0] !== t0) { t0 = ...; $[1] = t0 }` by shifting the output to t1.
     let mut shifted_names: HashMap<DeclarationId, String> = HashMap::new();
     for (name, _, decl_id) in &decl_names {
         let is_temp = name.starts_with('t')
             && name.len() >= 2
             && name[1..].chars().all(|c| c.is_ascii_digit());
-        if is_temp && dep_decl_ids.contains(decl_id) {
+        if is_temp && dep_root_names.contains(name) {
             let start = name[1..].parse::<u32>().unwrap_or(0) + 1;
             let mut idx = start;
             let fresh = loop {
