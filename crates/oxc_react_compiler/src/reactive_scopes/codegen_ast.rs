@@ -2138,13 +2138,27 @@ fn codegen_reactive_scope<'a>(
     }
 
     // Inline zero-dep scopes whose declarations are all truly unnamed.
-    // This matches string codegen's behavior for trivial scopes.
     if scope.dependencies.is_empty()
         && scope.reassignments.is_empty()
         && scope
             .declarations
             .values()
             .all(|d| d.identifier.name.is_none())
+    {
+        return codegen_block(cx, instructions);
+    }
+
+    // Inline zero-dep scopes whose outputs are all primitive-typed AND whose
+    // body only contains trivial instructions plus calls (calls to pure/global
+    // functions that return primitives).
+    if scope.dependencies.is_empty()
+        && scope.reassignments.is_empty()
+        && !scope.declarations.is_empty()
+        && scope
+            .declarations
+            .values()
+            .all(|d| matches!(d.identifier.type_, Type::Primitive))
+        && scope_body_is_trivial_or_calls(instructions)
     {
         return codegen_block(cx, instructions);
     }
@@ -4090,6 +4104,32 @@ fn wrap_hook_guard_iife<'a>(
 
     cx.builder
         .expression_call(SPAN, function_expr, NONE, cx.builder.vec(), false)
+}
+
+/// Check if a scope body is trivial (no calls, no allocations, no JSX).
+/// Bodies with only loads, stores, declarations, operators, casts, and calls (no JSX/objects/arrays).
+fn scope_body_is_trivial_or_calls(instructions: &ReactiveBlock) -> bool {
+    instructions.iter().all(|s| match s {
+        ReactiveStatement::Instruction(instr) => matches!(
+            &instr.value,
+            InstructionValue::Primitive { .. }
+                | InstructionValue::LoadLocal { .. }
+                | InstructionValue::LoadContext { .. }
+                | InstructionValue::StoreLocal { .. }
+                | InstructionValue::StoreContext { .. }
+                | InstructionValue::DeclareLocal { .. }
+                | InstructionValue::DeclareContext { .. }
+                | InstructionValue::BinaryExpression { .. }
+                | InstructionValue::UnaryExpression { .. }
+                | InstructionValue::TypeCastExpression { .. }
+                | InstructionValue::LoadGlobal { .. }
+                | InstructionValue::CallExpression { .. }
+                | InstructionValue::MethodCall { .. }
+                | InstructionValue::PropertyLoad { .. }
+                | InstructionValue::Destructure { .. }
+        ),
+        _ => false,
+    })
 }
 
 /// Parse a type annotation string (e.g. `"Foo"`, `"Foo<Bar>"`, `"Foo | Bar"`) into an OXC
