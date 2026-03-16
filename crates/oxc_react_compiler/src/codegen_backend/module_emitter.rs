@@ -57,8 +57,10 @@ struct RenderedOutlinedFunction {
     needs_function_hook_guard_wrapper: bool,
     is_async: bool,
     is_generator: bool,
-    #[allow(dead_code)]
     reactive_function: Option<crate::hir::types::ReactiveFunction>,
+    // AST codegen options (forwarded from parent CompiledFunction).
+    enable_change_variable_codegen: bool,
+    unique_identifiers: std::collections::HashSet<String>,
 }
 
 pub(crate) fn emit_module(
@@ -3128,6 +3130,48 @@ fn try_build_compiled_function_body_from_reactive_ast<'a>(
         fbt_operands: cf.fbt_operands.clone(),
         cache_binding_name: cf.cache_prologue.as_ref().map(|p| p.binding_name.clone()),
         unique_identifiers: cf.unique_identifiers.clone(),
+        param_name_overrides: std::collections::HashMap::new(),
+    };
+    let result = crate::reactive_scopes::codegen_ast::codegen_reactive_function(
+        builder,
+        allocator,
+        reactive_fn,
+        options,
+    );
+    Some(builder.function_body(SPAN, builder.vec(), result.body))
+}
+
+fn try_build_outlined_function_body_from_reactive_ast<'a>(
+    builder: AstBuilder<'a>,
+    allocator: &'a Allocator,
+    outlined: &RenderedOutlinedFunction,
+) -> Option<ast::FunctionBody<'a>> {
+    let reactive_fn = outlined.reactive_function.as_ref()?;
+    // Build param name overrides: map each reactive param's declaration_id to
+    // the final name from CompiledParam (handles unnamed params that rename_variables skipped).
+    let mut param_name_overrides = std::collections::HashMap::new();
+    for (rf_param, compiled_param) in reactive_fn.params.iter().zip(outlined.params.iter()) {
+        let decl_id = match rf_param {
+            crate::hir::types::Argument::Place(p) => p.identifier.declaration_id,
+            crate::hir::types::Argument::Spread(p) => p.identifier.declaration_id,
+        };
+        param_name_overrides.insert(decl_id, compiled_param.name.clone());
+    }
+    let options = crate::reactive_scopes::codegen_ast::CodegenOptions {
+        enable_change_variable_codegen: outlined.enable_change_variable_codegen,
+        enable_emit_hook_guards: false,
+        enable_change_detection_for_debugging: false,
+        enable_reset_cache_on_source_file_changes: false,
+        fast_refresh_source_hash: None,
+        disable_memoization_features: false,
+        disable_memoization_for_debugging: false,
+        fbt_operands: Default::default(),
+        cache_binding_name: outlined
+            .cache_prologue
+            .as_ref()
+            .map(|p| p.binding_name.clone()),
+        unique_identifiers: outlined.unique_identifiers.clone(),
+        param_name_overrides,
     };
     let result = crate::reactive_scopes::codegen_ast::codegen_reactive_function(
         builder,
@@ -5746,15 +5790,21 @@ fn build_rendered_outlined_function_statement<'a>(
     outlined: &RenderedOutlinedFunction,
     state: &AstRenderState,
 ) -> Option<ast::Statement<'a>> {
-    // Outlined functions currently use shape-based codegen.
-    // The reactive_function is stored for future AST codegen migration.
-    let mut body = try_build_function_body_from_shape(
-        builder,
-        allocator,
-        source_type,
-        &outlined.body_shape,
-        outlined.cache_prologue.as_ref(),
-    )?;
+    // Primary: AST codegen from ReactiveFunction. Fallback: shape-based codegen.
+    let mut body = if std::env::var("REACT_COMPILER_STRING_CODEGEN").is_err() {
+        try_build_outlined_function_body_from_reactive_ast(builder, allocator, outlined)
+    } else {
+        None
+    }
+    .or_else(|| {
+        try_build_function_body_from_shape(
+            builder,
+            allocator,
+            source_type,
+            &outlined.body_shape,
+            outlined.cache_prologue.as_ref(),
+        )
+    })?;
     apply_preserved_directives(builder, &mut body, &outlined.directives);
     wrap_hook_guard_body(
         builder,
@@ -6905,6 +6955,8 @@ fn collect_rendered_outlined_functions(cf: &CompiledFunction) -> Vec<RenderedOut
             is_async: outlined_function.is_async,
             is_generator: outlined_function.is_generator,
             reactive_function: outlined_function.reactive_function.clone(),
+            enable_change_variable_codegen: cf.enable_change_variable_codegen,
+            unique_identifiers: cf.unique_identifiers.clone(),
         })
         .collect()
 }

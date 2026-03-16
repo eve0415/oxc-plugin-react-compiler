@@ -43,6 +43,9 @@ pub struct CodegenOptions {
     /// Set of all used identifier names (from rename_variables). Used to resolve
     /// temp naming collisions when the same Promoted name appears in different scopes.
     pub unique_identifiers: HashSet<String>,
+    /// DeclarationId → name overrides for outlined function parameters whose
+    /// identifiers are unnamed in the ReactiveFunction IR.
+    pub param_name_overrides: HashMap<DeclarationId, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +98,9 @@ struct CodegenContext<'a> {
     /// Pre-computed DeclarationId → display name from string codegen.
     /// Only used to resolve identifier references — does NOT affect temp inlining.
     name_overrides: HashMap<DeclarationId, String>,
+    /// DeclarationId → resolved name, populated as identifiers are first encountered.
+    /// Used as fallback when a Place reference has no name set.
+    decl_names: HashMap<DeclarationId, String>,
     /// Stack of name scopes for block-scoped declaration tracking.
     /// When entering an If/For/While block, push a new frame.
     /// When leaving, pop and remove those names from declared_names.
@@ -230,12 +236,13 @@ pub fn codegen_reactive_function<'a>(
     builder: AstBuilder<'a>,
     allocator: &'a Allocator,
     func: &ReactiveFunction,
-    options: CodegenOptions,
+    mut options: CodegenOptions,
 ) -> CodegenFunctionResult<'a> {
     let cache_binding = options
         .cache_binding_name
         .clone()
         .unwrap_or_else(|| "$".to_string());
+    let initial_decl_names = std::mem::take(&mut options.param_name_overrides);
 
     let mut cx = CodegenContext {
         builder,
@@ -251,6 +258,7 @@ pub fn codegen_reactive_function<'a>(
         needs_structural_check: false,
         options,
         name_overrides: HashMap::new(),
+        decl_names: initial_decl_names,
         name_scope_stack: Vec::new(),
         fn_name: func.id.clone().unwrap_or_default(),
     };
@@ -273,15 +281,25 @@ pub fn codegen_reactive_function<'a>(
         })
         .collect();
 
-    // Mark params as declared.
+    // Mark params as declared and record their names for DeclarationId lookups.
     for arg in &func.params {
-        let (id, name) = match arg {
-            Argument::Place(place) => (place.identifier.id, &place.identifier.name),
-            Argument::Spread(place) => (place.identifier.id, &place.identifier.name),
+        let (id, decl_id, name) = match arg {
+            Argument::Place(place) => (
+                place.identifier.id,
+                place.identifier.declaration_id,
+                &place.identifier.name,
+            ),
+            Argument::Spread(place) => (
+                place.identifier.id,
+                place.identifier.declaration_id,
+                &place.identifier.name,
+            ),
         };
         cx.declared.insert(id);
         if let Some(n) = name {
-            cx.declared_names.insert(n.value().to_string());
+            let name_str = n.value().to_string();
+            cx.declared_names.insert(name_str.clone());
+            cx.decl_names.insert(decl_id, name_str);
         }
     }
 
@@ -1635,10 +1653,17 @@ fn codegen_place<'a>(cx: &mut CodegenContext<'a>, place: &Place) -> Option<ast::
 
     // Use identifier name.
     if let Some(name) = place.identifier.name.as_ref() {
-        return Some(cx.ident_expr(name.value()));
+        let s = name.value().to_string();
+        cx.decl_names.entry(decl_id).or_insert_with(|| s.clone());
+        return Some(cx.ident_expr(&s));
     }
 
-    // Fallback: use temp name.
+    // Fallback: check if we've seen this DeclarationId before with a name.
+    if let Some(name) = cx.decl_names.get(&decl_id) {
+        return Some(cx.ident_expr(name));
+    }
+
+    // Last resort: use temp name based on DeclarationId.
     Some(cx.ident_expr(&format!("t{}", decl_id.0)))
 }
 
@@ -1883,6 +1908,10 @@ fn codegen_terminal<'a>(
                                 None
                             }
                         }
+                        // Read-only update values (LoadLocal, LoadContext) indicate
+                        // a no-op update — don't emit them as for-loop update expr.
+                        InstructionValue::LoadLocal { .. }
+                        | InstructionValue::LoadContext { .. } => None,
                         _ => codegen_instruction_value(cx, uv),
                     }
                 } else {
@@ -3655,6 +3684,7 @@ fn lower_function_expression_via_reactive<'a>(
         fbt_operands: HashSet::new(),
         cache_binding_name: None,
         unique_identifiers: HashSet::new(),
+        param_name_overrides: HashMap::new(),
     };
 
     let result = codegen_reactive_function(cx.builder, cx.allocator, &reactive_fn, options);
