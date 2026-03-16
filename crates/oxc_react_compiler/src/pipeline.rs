@@ -3533,6 +3533,9 @@ fn run_reactive_passes(
         )
         .metadata();
         // Replace metadata fields with AST codegen values.
+        // String codegen remains authoritative for: body_shape (test fallback),
+        // needs_cache_import (1 Flow fixture mismatch), cache_size, has_fire_rewrite,
+        // needs_freeze_import.
         codegen_result.param_names = meta.param_names;
         codegen_result.needs_hook_guards = meta.needs_hook_guards;
         codegen_result.needs_function_hook_guard_wrapper = meta.needs_function_hook_guard_wrapper;
