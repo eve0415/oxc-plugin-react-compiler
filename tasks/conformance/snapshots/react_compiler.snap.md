@@ -1,18 +1,15 @@
-# React Compiler Conformance — 98.9% parity rate
+# React Compiler Conformance — 99.0% parity rate
 
-**1732** parity_success, **20** parity_failure, **0** skipped
+**1735** parity_success, **17** parity_failure, **0** skipped
 
 ## Failed
 
-- `assume-invoked/conditional-call-chain`: Output mismatch
-- `assume-invoked/function-with-conditional-callsite-in-another-function`: Output mismatch
 - `call-args-destructuring-assignment`: Output mismatch
 - `computed-call-evaluation-order`: Output mismatch
 - `fbt/fbtparam-with-jsx-fragment-value`: Output mismatch
 - `hoist-destruct`: Expected transformed output, but compiler bailed out/skipped
 - `hoisting-setstate-captured-indirectly-jsx`: Expected transformed output, but compiler bailed out/skipped
 - `infer-effect-dependencies/import-namespace-useEffect`: Output mismatch
-- `infer-types-through-type-cast.flow`: Output mismatch
 - `inline-jsx-transform`: Output mismatch
 - `jsx-tag-evaluation-order-non-global`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
@@ -105,8 +102,10 @@
 - `assignment-variations-complex-lvalue`
 - `assignment-variations-complex-lvalue-array`
 - `assume-invoked/conditional-call`
+- `assume-invoked/conditional-call-chain`
 - `assume-invoked/conditionally-return-fn`
 - `assume-invoked/direct-call`
+- `assume-invoked/function-with-conditional-callsite-in-another-function`
 - `assume-invoked/hook-call`
 - `assume-invoked/jsx-and-passed`
 - `assume-invoked/jsx-function`
@@ -782,6 +781,7 @@
 - `infer-property-delete`
 - `infer-sequential-optional-chain-nonnull`
 - `infer-skip-components-without-hooks-or-jsx`
+- `infer-types-through-type-cast.flow`
 - `inner-memo-value-not-promoted-to-outer-scope-dynamic`
 - `inner-memo-value-not-promoted-to-outer-scope-static`
 - `interdependent`
