@@ -4093,6 +4093,127 @@ fn parse_ts_type<'a>(
     )
 }
 
+/// Record a named identifier's declaration_id → name mapping.
+fn remember_ident(names: &mut HashMap<DeclarationId, String>, ident: &Identifier) {
+    if let Some(name) = ident.name.as_ref() {
+        names
+            .entry(ident.declaration_id)
+            .or_insert_with(|| name.value().to_string());
+    }
+}
+
+/// Scan Place identifiers in an instruction value for preferred names.
+fn scan_instruction_value_identifiers(
+    value: &InstructionValue,
+    names: &mut HashMap<DeclarationId, String>,
+) {
+    match value {
+        InstructionValue::LoadLocal { place, .. }
+        | InstructionValue::LoadContext { place, .. }
+        | InstructionValue::GetIterator {
+            collection: place, ..
+        }
+        | InstructionValue::IteratorNext {
+            collection: place, ..
+        }
+        | InstructionValue::NextPropertyOf { value: place, .. }
+        | InstructionValue::Await { value: place, .. }
+        | InstructionValue::TypeCastExpression { value: place, .. } => {
+            remember_ident(names, &place.identifier);
+        }
+        InstructionValue::StoreLocal {
+            lvalue, value: val, ..
+        }
+        | InstructionValue::StoreContext {
+            lvalue, value: val, ..
+        } => {
+            remember_ident(names, &lvalue.place.identifier);
+            remember_ident(names, &val.identifier);
+        }
+        InstructionValue::Destructure {
+            value: val,
+            lvalue: pat,
+            ..
+        } => {
+            remember_ident(names, &val.identifier);
+            scan_pattern_identifiers(pat, names);
+        }
+        InstructionValue::BinaryExpression { left, right, .. }
+        | InstructionValue::LogicalExpression { left, right, .. } => {
+            remember_ident(names, &left.identifier);
+            remember_ident(names, &right.identifier);
+        }
+        InstructionValue::UnaryExpression { value: val, .. }
+        | InstructionValue::PrefixUpdate { value: val, .. }
+        | InstructionValue::PostfixUpdate { value: val, .. } => {
+            remember_ident(names, &val.identifier);
+        }
+        InstructionValue::CallExpression { callee, args, .. }
+        | InstructionValue::NewExpression { callee, args, .. } => {
+            remember_ident(names, &callee.identifier);
+            for arg in args {
+                match arg {
+                    Argument::Place(p) | Argument::Spread(p) => {
+                        remember_ident(names, &p.identifier);
+                    }
+                }
+            }
+        }
+        InstructionValue::MethodCall {
+            receiver,
+            property,
+            args,
+            ..
+        } => {
+            remember_ident(names, &receiver.identifier);
+            remember_ident(names, &property.identifier);
+            for arg in args {
+                match arg {
+                    Argument::Place(p) | Argument::Spread(p) => {
+                        remember_ident(names, &p.identifier);
+                    }
+                }
+            }
+        }
+        InstructionValue::PropertyLoad { object, .. }
+        | InstructionValue::PropertyStore { object, .. }
+        | InstructionValue::PropertyDelete { object, .. }
+        | InstructionValue::ComputedLoad { object, .. }
+        | InstructionValue::ComputedStore { object, .. }
+        | InstructionValue::ComputedDelete { object, .. } => {
+            remember_ident(names, &object.identifier);
+        }
+        _ => {}
+    }
+}
+
+fn scan_pattern_identifiers(pattern: &LValuePattern, names: &mut HashMap<DeclarationId, String>) {
+    match &pattern.pattern {
+        Pattern::Array(array_pat) => {
+            for item in &array_pat.items {
+                match item {
+                    ArrayElement::Place(place) | ArrayElement::Spread(place) => {
+                        remember_ident(names, &place.identifier);
+                    }
+                    ArrayElement::Hole => {}
+                }
+            }
+        }
+        Pattern::Object(obj_pat) => {
+            for prop in &obj_pat.properties {
+                match prop {
+                    ObjectPropertyOrSpread::Property(p) => {
+                        remember_ident(names, &p.place.identifier);
+                    }
+                    ObjectPropertyOrSpread::Spread(place) => {
+                        remember_ident(names, &place.identifier);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Collect preferred declaration names from a reactive block.
 /// Maps DeclarationId → first named reference found in the body.
 /// Used to resolve unnamed param identifiers to their preferred display name.
@@ -4116,11 +4237,43 @@ fn collect_preferred_decl_names_impl(
                         .entry(lvalue.identifier.declaration_id)
                         .or_insert_with(|| name.value().to_string());
                 }
+                // Also scan places in instruction values for named identifiers.
+                scan_instruction_value_identifiers(&instr.value, names);
             }
             ReactiveStatement::Scope(scope) => {
+                // Scan scope declarations for named identifiers.
+                for decl in scope.scope.declarations.values() {
+                    if let Some(name) = decl.identifier.name.as_ref() {
+                        names
+                            .entry(decl.identifier.declaration_id)
+                            .or_insert_with(|| name.value().to_string());
+                    }
+                }
+                // Scan scope reassignments.
+                for reassign in &scope.scope.reassignments {
+                    if let Some(name) = reassign.name.as_ref() {
+                        names
+                            .entry(reassign.declaration_id)
+                            .or_insert_with(|| name.value().to_string());
+                    }
+                }
                 collect_preferred_decl_names_impl(&scope.instructions, names);
             }
             ReactiveStatement::PrunedScope(scope) => {
+                for decl in scope.scope.declarations.values() {
+                    if let Some(name) = decl.identifier.name.as_ref() {
+                        names
+                            .entry(decl.identifier.declaration_id)
+                            .or_insert_with(|| name.value().to_string());
+                    }
+                }
+                for reassign in &scope.scope.reassignments {
+                    if let Some(name) = reassign.name.as_ref() {
+                        names
+                            .entry(reassign.declaration_id)
+                            .or_insert_with(|| name.value().to_string());
+                    }
+                }
                 collect_preferred_decl_names_impl(&scope.instructions, names);
             }
             ReactiveStatement::Terminal(term_stmt) => {
