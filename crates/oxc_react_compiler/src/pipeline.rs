@@ -1972,10 +1972,12 @@ fn outlined_function_needs_backend_render(
     hir_function: &HIRFunction,
 ) -> bool {
     let _ = hir_function;
-    !matches!(
-        outlined_function.body_shape,
-        crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown
-    )
+    // Render if we have a reactive_function (AST codegen) OR a valid body_shape.
+    outlined_function.reactive_function.is_some()
+        || !matches!(
+            outlined_function.body_shape,
+            crate::reactive_scopes::codegen_reactive::GeneratedBodyShape::Unknown
+        )
 }
 
 fn dedupe_outlined_functions(outlined: &mut Vec<CompiledOutlinedFunction>) {
