@@ -1833,7 +1833,7 @@ fn run_hir_pipeline(
                 diagnostics: vec![crate::error::CompilerDiagnostic {
                     severity: crate::error::DiagnosticSeverity::InvalidReact,
                     message: "Modifying a value used previously in an effect function or as an effect dependency is not allowed. Consider moving the modification before calling useEffect()".to_string(),
-                    category: None,
+                    category: Some(crate::error::ErrorCategory::Purity),
                 }],
             }));
         }
@@ -4760,7 +4760,7 @@ fn conflicting_global_bailout(name: &str) -> CompilerError {
         diagnostics: vec![crate::error::CompilerDiagnostic {
             severity: crate::error::DiagnosticSeverity::Todo,
             message: format!("Conflict from local binding {}.", name),
-            category: None,
+            category: Some(crate::error::ErrorCategory::Todo),
         }],
     })
 }
@@ -7332,7 +7332,7 @@ fn validate_no_unsupported_global_calls(func: &HIRFunction) -> Result<(), Compil
                                      It is an anti-pattern in JavaScript, and the code executed \
                                      cannot be analyzed by React Compiler."
                             .to_string(),
-                        category: None,
+                        category: Some(crate::error::ErrorCategory::Purity),
                     }],
                 }));
             }
@@ -7369,7 +7369,7 @@ fn validate_no_dynamic_components_or_hooks(
                  but it's defined inside `{parent_name}`. \
                  Components and Hooks should always be declared at module scope",
             ),
-            category: None,
+            category: Some(crate::error::ErrorCategory::Purity),
         })
     }
 

@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
 use crate::hir::types::*;
 use crate::options::EnvironmentConfig;
 
@@ -99,7 +99,7 @@ pub fn validate_no_capitalized_calls(
                                     "{}. {} may be a component",
                                     CAPITALIZED_CALL_REASON, callee_name
                                 ),
-                                category: None,
+                                category: Some(ErrorCategory::CapitalizedCalls),
                             }],
                         }));
                     }
@@ -132,7 +132,7 @@ pub fn validate_no_capitalized_calls(
                                 "{}. {} may be a component",
                                 CAPITALIZED_CALL_REASON, property_name
                             ),
-                            category: None,
+                            category: Some(ErrorCategory::CapitalizedCalls),
                         });
                     }
                 }

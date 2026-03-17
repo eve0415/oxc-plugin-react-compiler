@@ -12,7 +12,7 @@
 //! created within a try block. JSX is allowed within a catch statement, unless that catch
 //! is itself nested inside an outer try.
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
 use crate::hir::types::*;
 
 /// Validates that no JSX elements (JsxExpression, JsxFragment) appear inside try blocks.
@@ -45,7 +45,7 @@ pub fn validate_no_jsx_in_try_statement(func: &HIRFunction) -> Result<(), Compil
                                  in an error boundary. \
                                  (https://react.dev/reference/react/Component#catching-rendering-errors-with-an-error-boundary)"
                                     .to_string(),
-                            category: None,
+                            category: Some(ErrorCategory::ErrorBoundaries),
                         });
                         break;
                     }

@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
 use crate::hir::types::*;
 use crate::hir::visitors::{for_each_instruction_operand, for_each_terminal_operand};
 
@@ -286,7 +286,7 @@ fn validate_effect(
         diagnostics.push(CompilerDiagnostic {
             severity: DiagnosticSeverity::InvalidReact,
             message: "Values derived from props and state should be calculated during render, not in an effect. (https://react.dev/learn/you-might-not-need-an-effect#updating-state-based-on-props-or-state)".to_string(),
-            category: None,
+            category: Some(ErrorCategory::EffectDerivationsOfState),
         });
     }
 }

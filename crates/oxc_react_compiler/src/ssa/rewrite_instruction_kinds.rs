@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
 use crate::hir::types::*;
 
 /// Rewrite instruction kinds so that variables which are never reassigned
@@ -306,7 +306,7 @@ pub fn rewrite_instruction_kinds(func: &mut HIRFunction) -> Result<(), CompilerE
                                                 "No declaration for destructured identifier {} in value block",
                                                 place.identifier.id
                                             ),
-                                            category: None,
+                                            category: Some(ErrorCategory::Invariant),
                                         }],
                                     }));
                                 }
@@ -350,7 +350,7 @@ pub fn rewrite_instruction_kinds(func: &mut HIRFunction) -> Result<(), CompilerE
                             diagnostics: vec![CompilerDiagnostic {
                                 severity: DiagnosticSeverity::Invariant,
                                 message: description,
-                                category: None,
+                                category: Some(ErrorCategory::Invariant),
                             }],
                         }));
                     }

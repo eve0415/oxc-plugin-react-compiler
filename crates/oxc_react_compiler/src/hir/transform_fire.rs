@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use indexmap::IndexMap;
 
 use crate::environment::Environment;
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
 use crate::hir::prune_maybe_throws::mark_instruction_ids;
 use crate::hir::types::*;
 use crate::hir::visitors::{for_each_instruction_operand, for_each_terminal_operand};
@@ -48,7 +48,7 @@ pub fn transform_fire(func: &mut HIRFunction) -> Result<(), CompilerError> {
             diagnostics: vec![CompilerDiagnostic {
                 severity: DiagnosticSeverity::InvalidReact,
                 message: details,
-                category: None,
+                category: Some(ErrorCategory::Fire),
             }],
         }));
     }

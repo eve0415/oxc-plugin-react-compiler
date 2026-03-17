@@ -23,7 +23,7 @@
 
 use std::collections::HashSet;
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
 use crate::hir::compute_unconditional_blocks::compute_unconditional_blocks;
 use crate::hir::types::*;
 use crate::hir::visitors::for_each_instruction_operand;
@@ -149,7 +149,7 @@ fn validate_no_set_state_in_render_impl(
                                      setting state in useMemo(), prefer deriving the value during render. \
                                      (https://react.dev/reference/react/useState)"
                                         .to_string(),
-                                category: None,
+                                category: Some(ErrorCategory::RenderSetState),
                             });
                         } else if unconditional_blocks.contains(&block.id) {
                             diagnostics.push(CompilerDiagnostic {
@@ -160,7 +160,7 @@ fn validate_no_set_state_in_render_impl(
                                      and can lead to infinite loops. \
                                      (https://react.dev/reference/react/useState)"
                                         .to_string(),
-                                category: None,
+                                category: Some(ErrorCategory::RenderSetState),
                             });
                         }
                     }

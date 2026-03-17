@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::environment::Environment;
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
 use crate::hir::types::*;
 use crate::hir::visitors::{
     for_each_instruction_lvalue, for_each_instruction_operand, for_each_terminal_operand,
@@ -165,7 +165,7 @@ fn record_conditional_hook_error(
                   conditionally. See the Rules of Hooks \
                   (https://react.dev/warnings/invalid-hook-call-warning)"
             .to_string(),
-        category: None,
+        category: Some(ErrorCategory::Hooks),
     });
 }
 
@@ -245,7 +245,7 @@ pub fn validate_hooks_usage(func: &HIRFunction) -> Result<(), CompilerError> {
                 message: "Hooks may not be referenced as normal values, they must be called. \
                           See https://react.dev/reference/rules/react-calls-components-and-hooks#never-pass-around-hooks-as-regular-values"
                     .to_string(),
-                category: None,
+                category: Some(ErrorCategory::Hooks),
             });
         }
     };
@@ -392,7 +392,7 @@ pub fn validate_hooks_usage(func: &HIRFunction) -> Result<(), CompilerError> {
                                       value may change over time to a different function. See \
                                       https://react.dev/reference/rules/react-calls-components-and-hooks#dont-dynamically-use-hooks"
                                 .to_string(),
-                            category: None,
+                            category: Some(ErrorCategory::Hooks),
                         });
                     }
                     // Visit operands except callee
@@ -433,7 +433,7 @@ pub fn validate_hooks_usage(func: &HIRFunction) -> Result<(), CompilerError> {
                                       value may change over time to a different function. See \
                                       https://react.dev/reference/rules/react-calls-components-and-hooks#dont-dynamically-use-hooks"
                                 .to_string(),
-                            category: None,
+                            category: Some(ErrorCategory::Hooks),
                         });
                     }
                     // Visit operands except property
@@ -674,7 +674,7 @@ fn visit_function_expression(diagnostics: &mut Vec<CompilerDiagnostic>, func: &H
                                  Cannot call {} within a function expression.",
                                 hook_desc
                             ),
-                            category: None,
+                            category: Some(ErrorCategory::Hooks),
                         });
                     }
                     let lvalue_kind = get_kind_for_place(&value_kinds, &instr.lvalue);
@@ -694,7 +694,7 @@ fn visit_function_expression(diagnostics: &mut Vec<CompilerDiagnostic>, func: &H
                                  Cannot call {} within a function expression.",
                                 hook_desc
                             ),
-                            category: None,
+                            category: Some(ErrorCategory::Hooks),
                         });
                     }
                     let lvalue_kind = get_kind_for_place(&value_kinds, &instr.lvalue);

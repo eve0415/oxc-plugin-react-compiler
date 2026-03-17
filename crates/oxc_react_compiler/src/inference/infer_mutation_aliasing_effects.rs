@@ -14,7 +14,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::environment::Environment;
-use crate::error::{CompilerDiagnostic, DiagnosticSeverity};
+use crate::error::{CompilerDiagnostic, DiagnosticSeverity, ErrorCategory};
 use crate::hir::builder::terminal_successors;
 use crate::hir::object_shape::{
     FunctionSignature, HookKind, ReturnType, TEST_KNOWN_INCOMPATIBLE_INDIRECT_RESULT_ID,
@@ -2033,7 +2033,7 @@ fn apply_effect(
                         error: CompilerDiagnostic {
                             severity: DiagnosticSeverity::InvalidReact,
                             message: "Cannot mutate a global value".to_string(),
-                            category: None,
+                            category: Some(ErrorCategory::Purity),
                         },
                     });
                 }
@@ -2079,7 +2079,7 @@ fn apply_effect(
                         error: CompilerDiagnostic {
                             severity: DiagnosticSeverity::InvalidReact,
                             message: "Cannot mutate a global value".to_string(),
-                            category: None,
+                            category: Some(ErrorCategory::Purity),
                         },
                     });
                 }
@@ -3000,7 +3000,7 @@ fn compute_signature_for_instruction(
                         message:
                             "[InferMutationAliasingEffects] Expected value kind to be initialized"
                                 .to_string(),
-                        category: None,
+                        category: Some(ErrorCategory::Invariant),
                     },
                 });
                 return effects;
@@ -3638,7 +3638,7 @@ fn compute_effects_for_legacy_signature(
                         .map(|n| format!(" `{}` ", n))
                         .unwrap_or(" ".to_string())
                 ),
-                category: None,
+                category: Some(ErrorCategory::Purity),
             },
         });
     }
@@ -3663,7 +3663,7 @@ fn compute_effects_for_legacy_signature(
             error: CompilerDiagnostic {
                 severity: DiagnosticSeverity::InvalidReact,
                 message: reason.clone(),
-                category: None,
+                category: Some(ErrorCategory::Purity),
             },
         });
     }
@@ -4673,7 +4673,7 @@ fn global_reassignment_diagnostic(variable: &str) -> CompilerDiagnostic {
         message: format!(
             "Cannot reassign variables declared outside of the component/hook ({variable} cannot be reassigned)"
         ),
-        category: None,
+        category: Some(ErrorCategory::Purity),
     }
 }
 
@@ -4684,7 +4684,7 @@ fn uninitialized_value_kind_diagnostic(place: &Place) -> CompilerDiagnostic {
         message: format!(
             "[InferMutationAliasingEffects] Expected value kind to be initialized ({variable} is uninitialized)"
         ),
-        category: None,
+        category: Some(ErrorCategory::Invariant),
     }
 }
 
@@ -4721,7 +4721,7 @@ fn mutate_frozen_diagnostic(
             message: format!(
                 "Cannot access variable before it is declared ({variable} is accessed before declaration)"
             ),
-            category: None,
+            category: Some(ErrorCategory::Purity),
         };
     }
 
@@ -4739,7 +4739,7 @@ fn mutate_frozen_diagnostic(
     CompilerDiagnostic {
         severity: DiagnosticSeverity::InvalidReact,
         message,
-        category: None,
+        category: Some(ErrorCategory::Purity),
     }
 }
 

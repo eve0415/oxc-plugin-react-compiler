@@ -14,7 +14,7 @@
 
 use std::collections::HashSet;
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
 use crate::hir::types::*;
 
 // ---------------------------------------------------------------------------
@@ -141,7 +141,7 @@ fn visit_instruction(instr: &ReactiveInstruction, state: &mut VisitorState) {
             state.diagnostics.push(CompilerDiagnostic {
                         severity: DiagnosticSeverity::InvalidReact,
                         message: "React Compiler has skipped optimizing this component because the effect dependencies could not be memoized. Unmemoized effect dependencies can trigger an infinite loop or other unexpected behavior".to_string(),
-                        category: None,
+                        category: Some(ErrorCategory::EffectDependencies),
                     });
         }
     }

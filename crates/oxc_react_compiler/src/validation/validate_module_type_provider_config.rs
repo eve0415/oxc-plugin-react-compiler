@@ -3,7 +3,7 @@
 //! Upstream validates module type-provider configs when resolving import types.
 //! We mirror the same behavior for the fixture modules used by conformance tests.
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
 use crate::hir::types::{HIRFunction, InstructionValue, NonLocalBinding};
 
 fn is_hook_like_name(name: &str) -> bool {
@@ -68,7 +68,7 @@ fn push_module_property_mismatches(module: &str, diagnostics: &mut Vec<CompilerD
                             "not to be a hook"
                         }
                     ),
-                    category: None,
+                    category: Some(ErrorCategory::Config),
                 });
             }
         }
@@ -104,7 +104,7 @@ pub fn validate_module_type_provider_config(func: &HIRFunction) -> Result<(), Co
                                         "not to be a hook"
                                     }
                                 ),
-                                category: None,
+                                category: Some(ErrorCategory::Config),
                             });
                         }
                     }
@@ -124,7 +124,7 @@ pub fn validate_module_type_provider_config(func: &HIRFunction) -> Result<(), Co
                                         "not to be a hook"
                                     }
                                 ),
-                                category: None,
+                                category: Some(ErrorCategory::Config),
                             });
                         }
                     }
