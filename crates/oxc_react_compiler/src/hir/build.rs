@@ -2650,44 +2650,60 @@ fn lower_switch<'a>(
     let continuation = builder.reserve(hir::BlockKind::Block);
     let cont_id = continuation.id;
 
-    // Lower the discriminant expression
-    let test = lower_expr_to_temp(builder, &switch.discriminant, semantic, source);
+    // The goto target for any cases that fallthrough, which initially starts
+    // as the continuation block and is then updated as we iterate through cases
+    // in reverse order.
+    let mut fallthrough = cont_id;
 
-    // Build case blocks
+    // Iterate through cases in reverse order, so that previous blocks can
+    // fallthrough to successors (matches upstream BuildHIR.ts:792-834).
     let mut cases: Vec<hir::SwitchCase> = Vec::new();
-    for case in &switch.cases {
-        let case_test = case
-            .test
-            .as_ref()
-            .map(|t| lower_expr_to_temp(builder, t, semantic, source));
+    let mut has_default = false;
+    for case in switch.cases.iter().rev() {
+        if case.test.is_none() {
+            has_default = true;
+        }
+        let ft = fallthrough;
         let case_block = builder.enter(hir::BlockKind::Block, |builder, _| {
             builder.push_switch(None, cont_id);
             for s in &case.consequent {
                 lower_statement(builder, s, semantic, source);
             }
             builder.pop_switch();
+            // Always generate a fallthrough to the next block; this may be dead
+            // code if there was an explicit break, but if so it will be pruned later.
             hir::Terminal::Goto {
-                block: cont_id,
+                block: ft,
                 variant: hir::GotoVariant::Break,
                 id: hir::InstructionId::default(),
                 loc: loc.clone(),
             }
         });
+        let case_test = case
+            .test
+            .as_ref()
+            .map(|t| lower_reorderable_expr_to_temp(builder, t, semantic, source));
         cases.push(hir::SwitchCase {
             test: case_test,
             block: case_block,
         });
+        fallthrough = case_block;
     }
+    // Reverse back to original order to match the original code/intent.
+    cases.reverse();
 
-    // Match upstream: if there's no explicit default case, add a synthetic one
-    // pointing to the continuation block.
-    let has_default = cases.iter().any(|c| c.test.is_none());
+    // If there wasn't an explicit default case, generate one to model the fact
+    // that execution could bypass any of the other cases and jump directly to
+    // the continuation.
     if !has_default {
         cases.push(hir::SwitchCase {
             test: None,
             block: cont_id,
         });
     }
+
+    // Lower discriminant after cases (matches upstream order).
+    let test = lower_expr_to_temp(builder, &switch.discriminant, semantic, source);
 
     builder.terminate_with_continuation(
         hir::Terminal::Switch {
