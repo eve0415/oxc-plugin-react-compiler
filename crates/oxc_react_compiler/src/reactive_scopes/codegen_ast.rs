@@ -2102,11 +2102,27 @@ fn variable_declaration_kind(kind: InstructionKind) -> Option<ast::VariableDecla
     }
 }
 
+/// Wrap JSX elements/fragments in parentheses to match Babel's printer behavior.
+fn maybe_parenthesize_jsx<'a>(
+    builder: AstBuilder<'a>,
+    expr: ast::Expression<'a>,
+) -> ast::Expression<'a> {
+    if matches!(
+        &expr,
+        ast::Expression::JSXElement(_) | ast::Expression::JSXFragment(_)
+    ) {
+        builder.expression_parenthesized(SPAN, expr)
+    } else {
+        expr
+    }
+}
+
 fn emit_assignment_stmt<'a>(
     cx: &mut CodegenContext<'a>,
     name: &str,
     expr: ast::Expression<'a>,
 ) -> ast::Statement<'a> {
+    let expr = maybe_parenthesize_jsx(cx.builder, expr);
     cx.builder.statement_expression(
         SPAN,
         cx.builder.expression_assignment(
@@ -2159,6 +2175,7 @@ fn emit_var_decl_stmt_inner<'a>(
     if let Some(did) = decl_id {
         cx.declared_decl_ids.insert(did);
     }
+    let init = init.map(|e| maybe_parenthesize_jsx(cx.builder, e));
     let pattern = cx
         .builder
         .binding_pattern_binding_identifier(SPAN, cx.builder.ident(name));
