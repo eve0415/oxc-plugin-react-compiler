@@ -1521,17 +1521,6 @@ fn run_hir_pipeline(
     analyse_functions::analyse_functions(&mut hir_func);
 
     // Port adaptation: captured context lowering for nested functions happens
-    // during analyse_functions (later than upstream BuildHIR). Re-run constant
-    // propagation here to recover equivalent simplifications on nested closures.
-    trace_pass!("constant_propagation_post_analyse_functions");
-    constant_propagation::constant_propagation(&mut hir_func);
-    if std::env::var("DEBUG_HIR_BLOCKS_EARLY").is_ok() {
-        maybe_dump_hir_blocks(
-            "after constant_propagation_post_analyse_functions",
-            &hir_func,
-        );
-    }
-
     trace_pass!("infer_mutation_aliasing_effects");
     infer_mutation_aliasing_effects::infer_mutation_aliasing_effects(
         &mut hir_func,

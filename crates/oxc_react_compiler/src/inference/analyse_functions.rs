@@ -460,6 +460,12 @@ pub fn analyse_functions(func: &mut HIRFunction) {
             }
         }
     }
+
+    // Context lowering (populate_context_variables) creates new LoadContext/StoreContext
+    // instructions on the outer function that may reference constants. Re-run CP on the
+    // outer function to fold these, matching the upstream where BuildHIR already lowers
+    // context before constant propagation runs.
+    crate::optimization::constant_propagation::constant_propagation(func);
 }
 
 /// Collect all named variable identifiers from a function.
