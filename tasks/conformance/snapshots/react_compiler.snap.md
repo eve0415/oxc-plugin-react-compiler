@@ -1,9 +1,20 @@
-# React Compiler Conformance — 100.0% parity rate
+# React Compiler Conformance — 99.4% parity rate
 
-**1752** parity_success, **0** parity_failure, **0** skipped
+**1741** parity_success, **11** parity_failure, **0** skipped
 
 ## Failed
 
+- `codegen-inline-iife-reassign`: Output mismatch
+- `dominator`: Output mismatch
+- `idx-no-outlining`: Output mismatch
+- `nonoptional-load-from-optional-memberexpr`: Output mismatch
+- `propagate-scope-deps-hir-fork/switch`: Expected transformed output, but compiler bailed out/skipped
+- `propagate-scope-deps-hir-fork/switch-non-final-default`: Output mismatch
+- `reassignment`: Output mismatch
+- `reassignment-conditional`: Output mismatch
+- `repro-no-value-for-temporary-reactive-scope-with-early-return`: Output mismatch
+- `switch`: Expected transformed output, but compiler bailed out/skipped
+- `switch-non-final-default`: Output mismatch
 
 ## Passed
 
@@ -200,7 +211,6 @@
 - `codegen-emit-imports-same-source`
 - `codegen-emit-make-read-only`
 - `codegen-inline-iife`
-- `codegen-inline-iife-reassign`
 - `codegen-inline-iife-storeprop`
 - `codegen-instrument-forget-test`
 - `complex-while`
@@ -303,7 +313,6 @@
 - `do-while-continue`
 - `do-while-early-unconditional-break`
 - `do-while-simple`
-- `dominator`
 - `dont-memoize-primitive-function-call-non-escaping`
 - `dont-memoize-primitive-function-call-non-escaping-useMemo`
 - `dont-merge-if-dep-is-inner-declaration-of-previous-scope`
@@ -714,7 +723,6 @@
 - `hooks-with-prefix`
 - `idx-method-no-outlining`
 - `idx-method-no-outlining-wildcard`
-- `idx-no-outlining`
 - `ignore-inner-interface-types`
 - `ignore-use-no-forget`
 - `iife-inline-ternary`
@@ -971,7 +979,6 @@
 - `noAlias-filter-on-array-prop`
 - `non-null-assertion`
 - `nonmutating-capture-in-unsplittable-memo-block`
-- `nonoptional-load-from-optional-memberexpr`
 - `nonreactive-noescaping-dependency-can-inline-into-consuming-scope`
 - `nullable-objects/array-map-named-callback`
 - `nullable-objects/array-map-named-callback-cross-context`
@@ -1157,8 +1164,6 @@
 - `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-via-destructuring-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-with-mutation`
-- `propagate-scope-deps-hir-fork/switch`
-- `propagate-scope-deps-hir-fork/switch-non-final-default`
 - `propagate-scope-deps-hir-fork/try-catch-maybe-null-dependency`
 - `propagate-scope-deps-hir-fork/try-catch-mutate-outer-value`
 - `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch`
@@ -1228,8 +1233,6 @@
 - `reassign-object-in-context`
 - `reassign-primitive-in-context`
 - `reassigned-phi-in-returned-function-expression`
-- `reassignment`
-- `reassignment-conditional`
 - `reassignment-separate-scopes`
 - `recursive-function`
 - `recursive-function-expression`
@@ -1347,7 +1350,6 @@
 - `repro-mutate-result-of-method-call-on-frozen-value-is-allowed`
 - `repro-no-declarations-in-reactive-scope-with-early-return`
 - `repro-no-value-for-temporary`
-- `repro-no-value-for-temporary-reactive-scope-with-early-return`
 - `repro-non-identifier-object-keys`
 - `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`
 - `repro-object-fromEntries-entries`
@@ -1550,9 +1552,7 @@
 - `static-components/invalid-dynamically-constructed-component-new`
 - `store-via-call`
 - `store-via-new`
-- `switch`
 - `switch-global-propertyload-case-test`
-- `switch-non-final-default`
 - `switch-with-fallthrough`
 - `switch-with-only-default`
 - `tagged-template-in-hook`

@@ -1439,6 +1439,33 @@ fn find_disjoint_mutable_values(func: &HIRFunction) -> DisjointSet {
         }
     }
 
+    // Post-pass: union allocation temps from StoreLocal initialisations into
+    // the scope of the variable they initialise.  When a phi union caused a
+    // variable declaration to be in the disjoint set, the ObjectExpression
+    // temp that was stored into it at declaration time should share the same
+    // scope.  Without this, the temp gets its own sentinel scope which is
+    // redundant because the variable is subsequently mutated through the phi.
+    for (_bid, block) in &func.body.blocks {
+        for instr in &block.instructions {
+            if let InstructionValue::StoreLocal { lvalue, value, .. } = &instr.value
+                && let Some(&decl_ident_id) =
+                    declarations.get(&lvalue.place.identifier.declaration_id)
+                && scope_identifiers.parent.contains_key(&decl_ident_id)
+                && value.identifier.mutable_range.start.0 > 0
+                && value.identifier.mutable_range.end.0
+                    == value.identifier.mutable_range.start.0 + 1
+                && matches!(
+                    &value.identifier.type_,
+                    Type::Object { shape_id: Some(id) }
+                        if id == crate::hir::object_shape::BUILT_IN_OBJECT_ID
+                )
+            {
+                scope_identifiers.make_set(value.identifier.id);
+                scope_identifiers.union(decl_ident_id, value.identifier.id);
+            }
+        }
+    }
+
     scope_identifiers
 }
 
