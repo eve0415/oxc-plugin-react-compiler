@@ -167,13 +167,24 @@ struct CodegenContext<'a> {
     /// DeclarationIds that should be force-inlined from the temp map even though
     /// they have named identifiers. Set by the destructure+call fusion pre-scan.
     force_inline_decls: HashSet<DeclarationId>,
+    /// Error encountered during codegen (e.g., unnamed identifier invariant).
+    codegen_error: Option<CompilerError>,
 }
 
 impl<'a> CodegenContext<'a> {
     /// Resolve an identifier's display name, checking decl_names overrides first.
-    fn resolve_identifier_name(&self, identifier: &Identifier) -> String {
+    /// Records an invariant error if the identifier is unnamed, matching upstream
+    /// `convertIdentifier()` invariant (CompilerError.ts:2922-2939).
+    fn resolve_identifier_name(&mut self, identifier: &Identifier) -> String {
         if let Some(shifted) = self.decl_names.get(&identifier.declaration_id) {
             return shifted.clone();
+        }
+        // Upstream invariant: all identifiers reaching codegen should be named
+        if identifier.name.is_none() && self.codegen_error.is_none() {
+            self.codegen_error = Some(CompilerError::invariant(
+                "Expected temporaries to be promoted to named identifiers in an earlier pass",
+                Some(format!("identifier {} is unnamed", identifier.id.0)),
+            ));
         }
         identifier_name(identifier)
     }
@@ -340,6 +351,7 @@ pub fn codegen_reactive_function<'a>(
         fn_name: func.id.clone().unwrap_or_default(),
         extracted_optional_deps: HashSet::new(),
         force_inline_decls: HashSet::new(),
+        codegen_error: None,
     };
 
     // Pre-collect preferred names: scan body for named references to
@@ -459,7 +471,7 @@ pub fn codegen_reactive_function<'a>(
         needs_function_hook_guard_wrapper: cx.needs_function_hook_guard_wrapper,
         needs_structural_check_import: cx.needs_structural_check,
         cache_prologue,
-        error: None,
+        error: cx.codegen_error,
     }
 }
 

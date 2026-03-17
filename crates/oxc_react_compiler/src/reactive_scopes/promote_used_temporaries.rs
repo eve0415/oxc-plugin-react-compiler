@@ -426,6 +426,17 @@ fn visit_instruction_promote_temporaries(
     instr: &mut ReactiveInstruction,
     state: &mut PromoteState,
 ) {
+    // Promote unnamed Destructure pattern operands. This ensures destructuring
+    // targets are named before the interposed-temporaries analysis, matching the
+    // upstream invariant in PromoteInterposedTemporaries.visitInstruction
+    // (line 289-301 of PromoteUsedTemporaries.ts).
+    if let InstructionValue::Destructure { lvalue, .. } = &mut instr.value {
+        for place in each_pattern_operand_mut(&mut lvalue.pattern) {
+            if place.identifier.name.is_none() {
+                promote_identifier(&mut place.identifier, state);
+            }
+        }
+    }
     // Visit value: for FunctionExpression/ObjectMethod, recurse into nested HIR function.
     visit_value_promote_temporaries(instr, state);
 }
