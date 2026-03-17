@@ -367,12 +367,14 @@ fn visit_argument(arg: &mut Argument, scopes: &mut Scopes) {
 }
 
 fn visit_lvalue_pattern(pat: &mut LValuePattern, scopes: &mut Scopes) {
+    // Match upstream RenameVariables.ts: visitLValue calls visit() only, not promote.
+    // Promotion is handled by PromoteUsedTemporaries.
     match &mut pat.pattern {
         Pattern::Array(arr) => {
             for elem in arr.items.iter_mut() {
                 match elem {
                     ArrayElement::Place(place) | ArrayElement::Spread(place) => {
-                        scopes.visit_and_promote(&mut place.identifier);
+                        scopes.visit(&mut place.identifier);
                     }
                     ArrayElement::Hole => {}
                 }
@@ -382,10 +384,10 @@ fn visit_lvalue_pattern(pat: &mut LValuePattern, scopes: &mut Scopes) {
             for prop in obj.properties.iter_mut() {
                 match prop {
                     ObjectPropertyOrSpread::Property(p) => {
-                        scopes.visit_and_promote(&mut p.place.identifier);
+                        scopes.visit(&mut p.place.identifier);
                     }
                     ObjectPropertyOrSpread::Spread(place) => {
-                        scopes.visit_and_promote(&mut place.identifier);
+                        scopes.visit(&mut place.identifier);
                     }
                 }
             }
@@ -986,18 +988,6 @@ impl Scopes {
             globals,
             names: HashSet::new(),
         }
-    }
-
-    /// Visit an identifier that MUST have a name (e.g., destructuring pattern targets,
-    /// StoreLocal/StoreContext lvalues). If the identifier is unnamed, promote it first.
-    fn visit_and_promote(&mut self, identifier: &mut Identifier) {
-        if identifier.name.is_none() {
-            identifier.name = Some(IdentifierName::Promoted(format!(
-                "#t{}",
-                identifier.declaration_id.0
-            )));
-        }
-        self.visit(identifier);
     }
 
     fn visit(&mut self, identifier: &mut Identifier) {

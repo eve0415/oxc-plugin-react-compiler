@@ -426,14 +426,30 @@ fn visit_instruction_promote_temporaries(
     instr: &mut ReactiveInstruction,
     state: &mut PromoteState,
 ) {
-    // Promote unnamed Destructure pattern operands. This ensures destructuring
-    // targets are named before the interposed-temporaries analysis, matching the
-    // upstream invariant in PromoteInterposedTemporaries.visitInstruction
-    // (line 289-301 of PromoteUsedTemporaries.ts).
+    // Promote unnamed Destructure pattern operands (non-spread elements).
+    // Spread/rest elements may legitimately remain unnamed (matching upstream's
+    // convertIdentifier invariant for the error.bug-invariant-unnamed-temporary case).
     if let InstructionValue::Destructure { lvalue, .. } = &mut instr.value {
-        for place in each_pattern_operand_mut(&mut lvalue.pattern) {
-            if place.identifier.name.is_none() {
-                promote_identifier(&mut place.identifier, state);
+        match &mut lvalue.pattern {
+            Pattern::Array(arr) => {
+                for elem in arr.items.iter_mut() {
+                    // Skip ArrayElement::Spread — may legitimately stay unnamed
+                    if let ArrayElement::Place(place) = elem
+                        && place.identifier.name.is_none()
+                    {
+                        promote_identifier(&mut place.identifier, state);
+                    }
+                }
+            }
+            Pattern::Object(obj) => {
+                for prop in obj.properties.iter_mut() {
+                    // Skip ObjectPropertyOrSpread::Spread — may legitimately stay unnamed
+                    if let ObjectPropertyOrSpread::Property(p) = prop
+                        && p.place.identifier.name.is_none()
+                    {
+                        promote_identifier(&mut p.place.identifier, state);
+                    }
+                }
             }
         }
     }
