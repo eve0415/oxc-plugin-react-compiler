@@ -3034,9 +3034,18 @@ fn normalize_fixture_entrypoint_array_spacing(code: &str) -> String {
                 // We need to be careful not to strip `)` from function calls like
                 // `createHookWrapper(useFoo)`. Only strip `)` that follows `}`
                 // and is followed by `,` or `]` (i.e. inside array context).
-                while s.contains("}),") || s.contains("})]") {
+                while s.contains("}),") || s.contains("})]") || s.contains("}) ") {
                     s = s.replace("}),", "},");
                     s = s.replace("})]", "}]");
+                    s = s.replace("}) ", "} ");
+                }
+                // Remove trailing space before ] (after stripping parens)
+                while let Some(pos) = s.find(" ]") {
+                    if pos > 0 && s.as_bytes()[pos - 1] != b'[' {
+                        s.replace_range(pos..pos + 1, "");
+                    } else {
+                        break;
+                    }
                 }
                 // Ensure trailing semicolon on FIXTURE_ENTRYPOINT export declarations.
                 // AST codegen may omit it: `... }` → `... };`
