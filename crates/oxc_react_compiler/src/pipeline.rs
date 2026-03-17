@@ -40,7 +40,6 @@ use crate::reactive_scopes::align_scopes;
 use crate::reactive_scopes::infer_reactive;
 use crate::reactive_scopes::infer_scope_variables;
 use crate::reactive_scopes::merge_overlapping_scopes;
-use crate::reactive_scopes::prune_non_reactive_deps;
 use crate::ssa::eliminate_redundant_phi;
 use crate::ssa::enter_ssa;
 use crate::ssa::rewrite_instruction_kinds;
@@ -1432,7 +1431,6 @@ fn run_hir_pipeline(
 
     // pruneMaybeThrows (1st pass)
     prune_maybe_throws::prune_maybe_throws(&mut hir_func);
-    optimization::remove_unnecessary_try_catch::cleanup_after_terminal_changes(&mut hir_func);
 
     // Validation — bail on error (return original source)
     run_validation!(
@@ -1565,10 +1563,6 @@ fn run_hir_pipeline(
     }
 
     prune_maybe_throws::prune_maybe_throws(&mut hir_func);
-    optimization::remove_unnecessary_try_catch::cleanup_after_terminal_changes(&mut hir_func);
-    // Number instructions BEFORE aliasing ranges so they have valid IDs
-    infer_scope_variables::number_instructions(&mut hir_func);
-
     if let Err(err) =
         crate::inference::infer_mutation_aliasing_ranges::infer_mutation_aliasing_ranges(
             &mut hir_func,
@@ -1843,18 +1837,6 @@ fn run_hir_pipeline(
         trace_pass!("inline_jsx_transform");
         optimization::inline_jsx_transform::inline_jsx_transform(&mut hir_func, &inline_jsx_config);
         maybe_dump_hir_blocks("after inline_jsx_transform", &hir_func);
-    }
-
-    // Upstream parity: HIR-level non-reactive dep pruning is not part of the
-    // default pipeline. Keep this Rust-only pass behind an opt-in env toggle.
-    if std::env::var("ENABLE_HIR_NON_REACTIVE_DEPS_PRUNE").is_ok() {
-        prune_non_reactive_deps::prune_non_reactive_dependencies(&mut hir_func);
-        maybe_dump_hir_scope_terminals("after prune_non_reactive_deps_hir", &hir_func);
-        maybe_dump_hir_blocks("after prune_non_reactive_deps_hir", &hir_func);
-    } else if std::env::var("DEBUG_PASS").is_ok() {
-        eprintln!(
-            "[PASS] {name}: skip prune_non_reactive_deps_hir (set ENABLE_HIR_NON_REACTIVE_DEPS_PRUNE=1 to enable)"
-        );
     }
 
     // -----------------------------------------------------------------------
@@ -2799,10 +2781,6 @@ fn run_reactive_passes(
     if should_dememoize || reactive_validation_error {
         dememoize_reactive_block(&mut reactive_fn.body);
     }
-
-    // Codegen-shaping parity pass: keep trailing nullish default returns inside
-    // the preceding memoized scope when they are structurally equivalent.
-    crate::reactive_scopes::fuse_trailing_nullish_return_into_scope::fuse_trailing_nullish_return_into_scope(&mut reactive_fn);
 
     // Codegen: pure AST path.
     let unique_identifiers_for_ast = unique_identifiers.clone();
