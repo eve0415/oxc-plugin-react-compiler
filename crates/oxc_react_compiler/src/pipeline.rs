@@ -1175,7 +1175,7 @@ fn codegen_outlined_function(
                 if prune_hoisted_contexts::prune_hoisted_contexts(&mut reactive_fn).is_err() {
                     return None;
                 }
-                promote_used_temporaries::promote_used_temporaries(&mut reactive_fn);
+                promote_used_temporaries::promote_used_temporaries_for_outlined(&mut reactive_fn);
                 let unique_identifiers = rename_variables::rename_variables(
                     &mut reactive_fn,
                     enable_change_variable_codegen,
@@ -1217,7 +1217,7 @@ fn codegen_outlined_function(
         if prune_hoisted_contexts::prune_hoisted_contexts(&mut reactive_fn).is_err() {
             return None;
         }
-        promote_used_temporaries::promote_used_temporaries(&mut reactive_fn);
+        promote_used_temporaries::promote_used_temporaries_for_outlined(&mut reactive_fn);
         let unique_identifiers = rename_variables::rename_variables(
             &mut reactive_fn,
             enable_change_variable_codegen,

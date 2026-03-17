@@ -17,6 +17,13 @@ use oxc_syntax::operator::{AssignmentOperator, BinaryOperator, LogicalOperator};
 use crate::error::CompilerError;
 use crate::hir::types::*;
 
+thread_local! {
+    /// Captures unnamed identifier invariant errors from the free `identifier_name()`
+    /// function which doesn't have access to CodegenContext.
+    static CODEGEN_UNNAMED_ERROR: std::cell::RefCell<Option<CompilerError>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 // ---------------------------------------------------------------------------
 // Cache prologue types (shared between codegen_ast and module_emitter)
 // ---------------------------------------------------------------------------
@@ -332,6 +339,9 @@ pub fn codegen_reactive_function<'a>(
     let initial_decl_names = std::mem::take(&mut options.param_name_overrides);
     let disable_memoization_features = options.disable_memoization_features;
 
+    // Clear thread-local error from previous codegen runs
+    CODEGEN_UNNAMED_ERROR.with(|slot| *slot.borrow_mut() = None);
+
     let mut cx = CodegenContext {
         builder,
         allocator,
@@ -376,6 +386,20 @@ pub fn codegen_reactive_function<'a>(
             } else if let Some(preferred) = preferred_names.get(&ident.declaration_id) {
                 preferred.clone()
             } else {
+                // Unnamed param — record invariant error matching upstream
+                // convertIdentifier(). Skip in bailout mode where unnamed
+                // params are expected.
+                if !disable_memoization_features {
+                    CODEGEN_UNNAMED_ERROR.with(|slot| {
+                        let mut slot = slot.borrow_mut();
+                        if slot.is_none() {
+                            *slot = Some(CompilerError::invariant(
+                                "Expected temporaries to be promoted to named identifiers in an earlier pass",
+                                Some(format!("identifier {} is unnamed", ident.id.0)),
+                            ));
+                        }
+                    });
+                }
                 format!("t{}", ident.id.0)
             };
             // In bailout mode, override temp names to sequential "tN".
@@ -471,7 +495,9 @@ pub fn codegen_reactive_function<'a>(
         needs_function_hook_guard_wrapper: cx.needs_function_hook_guard_wrapper,
         needs_structural_check_import: cx.needs_structural_check,
         cache_prologue,
-        error: cx.codegen_error,
+        error: cx
+            .codegen_error
+            .or_else(|| CODEGEN_UNNAMED_ERROR.with(|slot| slot.borrow_mut().take())),
     }
 }
 
@@ -2025,7 +2051,19 @@ fn identifier_name(identifier: &Identifier) -> String {
         .name
         .as_ref()
         .map(|n| n.value().to_string())
-        .unwrap_or_else(|| format!("t{}", identifier.id.0))
+        .unwrap_or_else(|| {
+            // Record invariant error matching upstream convertIdentifier()
+            CODEGEN_UNNAMED_ERROR.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                if slot.is_none() {
+                    *slot = Some(CompilerError::invariant(
+                        "Expected temporaries to be promoted to named identifiers in an earlier pass",
+                        Some(format!("identifier {} is unnamed", identifier.id.0)),
+                    ));
+                }
+            });
+            format!("t{}", identifier.id.0)
+        })
 }
 
 fn variable_declaration_kind(kind: InstructionKind) -> Option<ast::VariableDeclarationKind> {

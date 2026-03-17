@@ -29,6 +29,19 @@ use crate::hir::types::*;
 /// Promotes temporary identifiers that are used in positions requiring named
 /// variables. Operates on the tree-shaped `ReactiveFunction`.
 pub fn promote_used_temporaries(func: &mut ReactiveFunction) {
+    promote_used_temporaries_impl(func, true);
+}
+
+/// Variant for outlined functions: skip promoting spread/rest params to match
+/// upstream CodegenReactiveFunction.ts:329-349 which doesn't run
+/// promoteUsedTemporaries on outlined functions at all. We still need to
+/// promote non-spread identifiers because our HIR creates unnamed temporaries
+/// for destructuring params that upstream's BuildHIR names directly.
+pub fn promote_used_temporaries_for_outlined(func: &mut ReactiveFunction) {
+    promote_used_temporaries_impl(func, false);
+}
+
+fn promote_used_temporaries_impl(func: &mut ReactiveFunction, promote_spread_params: bool) {
     let mut state = PromoteState {
         tags: HashSet::new(),
         promoted: HashSet::new(),
@@ -45,12 +58,17 @@ pub fn promote_used_temporaries(func: &mut ReactiveFunction) {
 
     // Promote params of the top-level function.
     for param in &mut func.params {
-        let place = match param {
-            Argument::Place(p) => p,
-            Argument::Spread(p) => p,
-        };
-        if place.identifier.name.is_none() {
-            promote_identifier(&mut place.identifier, &mut state);
+        match param {
+            Argument::Place(p) => {
+                if p.identifier.name.is_none() {
+                    promote_identifier(&mut p.identifier, &mut state);
+                }
+            }
+            Argument::Spread(p) => {
+                if promote_spread_params && p.identifier.name.is_none() {
+                    promote_identifier(&mut p.identifier, &mut state);
+                }
+            }
         }
     }
 
