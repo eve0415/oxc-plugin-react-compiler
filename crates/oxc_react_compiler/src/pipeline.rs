@@ -1771,8 +1771,9 @@ fn run_hir_pipeline(
     maybe_dump_hir_scope_terminals("after flatten_scopes_with_hooks", &hir_func);
     maybe_dump_hir_blocks("after flatten_scopes_with_hooks", &hir_func);
 
-    // Outlining can leave dead locals in the parent function (e.g. constants that
-    // were only needed before extraction). Clean them up before dependency propagation.
+    // Post-outline DCE: our outlining passes create dead locals that upstream's
+    // BuildHIR avoids. Run the same DCE function at this pipeline point to clean
+    // them up before dependency propagation.
     trace_pass!("dead_code_elimination_post_outline");
     dead_code_elimination::dead_code_elimination_post_outline(&mut hir_func);
 
