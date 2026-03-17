@@ -565,6 +565,8 @@ fn try_emit_module(
     }
     code = compact_simple_jsx_object_attributes(&code);
     code = fix_oxc_array_trailing_space(&code);
+    code = fix_gating_ternary_line_breaks(&code);
+    code = fix_unoptimized_function_param_wrapping(&code);
     Ok(CompileResult {
         transformed: true,
         code,
@@ -5883,6 +5885,148 @@ fn fix_oxc_array_trailing_space(code: &str) -> String {
             result.push('\n');
         }
         result.push_str(&String::from_utf8_lossy(&line_bytes));
+    }
+    result
+}
+
+/// Fix OXC formatting of gating ternary expressions with function-expression branches.
+///
+/// Babel formats `test() ? function F(...) { ... } : function F(...) { ... }` with
+/// line breaks before `?` and `:`, while OXC puts everything on one line:
+///   `test() ? function F(` → `test()\n? function F(`
+///   `} : function F(`     → `}\n: function F(`
+fn fix_gating_ternary_line_breaks(code: &str) -> String {
+    // Only apply when the code contains a gating ternary with function branches.
+    if !code.contains("() ? function ") {
+        return code.to_string();
+    }
+    let mut result = String::with_capacity(code.len() + 16);
+    for line in code.split('\n') {
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        // Pattern: `... test() ? function Name(` on a single line
+        if let Some(pos) = line.find("() ? function ") {
+            // Insert line break: `test()` then newline then `? function ...`
+            result.push_str(&line[..pos + 2]); // up to and including "()"
+            result.push('\n');
+            result.push_str(&line[pos + 3..]); // skip the space, keep "? function ..."
+        } else if let Some(pos) = line.find("} : function ") {
+            // Pattern: `} : function Name(` → `}\n: function Name(`
+            result.push_str(&line[..pos + 1]); // up to and including "}"
+            result.push('\n');
+            result.push_str(&line[pos + 2..]); // skip the space, keep ": function ..."
+        } else {
+            result.push_str(line);
+        }
+    }
+    result
+}
+
+/// Fix OXC formatting of unoptimized function parameter wrapping.
+///
+/// Babel wraps long parameter lists in `_unoptimized` function declarations (which
+/// retain Flow/TS type annotations) across multiple lines. OXC puts them on one line.
+/// E.g. `function F_unoptimized(p1: T1, p2: T2): R{` becomes:
+///       `function F_unoptimized(p1: T1,\np2: T2): R{`
+fn fix_unoptimized_function_param_wrapping(code: &str) -> String {
+    if !code.contains("_unoptimized(") {
+        return code.to_string();
+    }
+    let mut result = String::with_capacity(code.len() + 16);
+    for line in code.split('\n') {
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        // Only target lines that declare an `_unoptimized` function with typed params
+        if line.contains("_unoptimized(") && line.starts_with("function ") {
+            // Find the opening paren of the params
+            if let Some(paren_start) = line.find('(') {
+                // Extract the params section: from `(` to the matching `)`
+                let after_paren = &line[paren_start + 1..];
+                if let Some(paren_end_rel) = find_matching_close_paren(after_paren) {
+                    let params_str = &after_paren[..paren_end_rel];
+                    // Only wrap if there are typed params (contains `:`) and
+                    // more than one param (contains `, `)
+                    if params_str.contains(':') && params_str.contains(", ") {
+                        // Split at top-level `, ` boundaries (not inside generics)
+                        let wrapped = wrap_params_at_commas(params_str);
+                        result.push_str(&line[..paren_start + 1]);
+                        result.push_str(&wrapped);
+                        result.push_str(&line[paren_start + 1 + paren_end_rel..]);
+                        continue;
+                    }
+                }
+            }
+        }
+        result.push_str(line);
+    }
+    result
+}
+
+/// Find the position of the matching `)` for a string starting after `(`.
+/// Handles nested parens and angle brackets.
+fn find_matching_close_paren(s: &str) -> Option<usize> {
+    let mut depth = 1u32;
+    let mut angle_depth = 0u32;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '<' => angle_depth += 1,
+            '>' if angle_depth > 0 => angle_depth -= 1,
+            '(' if angle_depth == 0 => depth += 1,
+            ')' if angle_depth == 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Wrap parameters at top-level comma boundaries.
+/// Replaces `, ` with `,\n` at the top level (not inside `<>` or `()`).
+fn wrap_params_at_commas(params: &str) -> String {
+    let mut result = String::with_capacity(params.len() + 8);
+    let mut paren_depth = 0u32;
+    let mut angle_depth = 0u32;
+    let bytes = params.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        let ch = bytes[i];
+        match ch {
+            b'<' => {
+                angle_depth += 1;
+                result.push('<');
+            }
+            b'>' if angle_depth > 0 => {
+                angle_depth -= 1;
+                result.push('>');
+            }
+            b'(' => {
+                paren_depth += 1;
+                result.push('(');
+            }
+            b')' if paren_depth > 0 => {
+                paren_depth -= 1;
+                result.push(')');
+            }
+            b',' if paren_depth == 0 && angle_depth == 0 => {
+                // At top-level comma: replace `, ` with `,\n`
+                result.push(',');
+                if i + 1 < len && bytes[i + 1] == b' ' {
+                    result.push('\n');
+                    i += 1; // skip the space
+                }
+            }
+            _ => {
+                result.push(ch as char);
+            }
+        }
+        i += 1;
     }
     result
 }
