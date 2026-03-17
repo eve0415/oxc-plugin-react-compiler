@@ -3399,6 +3399,75 @@ fn extract_error_block(md: &str) -> Option<String> {
     extract_markdown_code_block(md, "## Error")
 }
 
+/// Structured error info parsed from an `.expect.md` error block.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct ParsedExpectedError {
+    /// Error count (from "Found N error(s):" line).
+    error_count: Option<u32>,
+    /// Error heading (e.g., "Error", "Invariant", "Todo", "Compilation Skipped").
+    heading: Option<String>,
+    /// Error reason (text after "{Heading}: ").
+    reason: Option<String>,
+}
+
+/// Parse structured error fields from an error block string.
+///
+/// Expected format:
+/// ```text
+/// Found N error(s):
+///
+/// {Heading}: {Reason}
+///
+/// {Description (optional)}
+///
+/// {filename}:{line}:{column}
+/// {code frame}
+/// ```
+#[allow(dead_code)]
+fn parse_expected_error(error_block: &str) -> ParsedExpectedError {
+    let mut error_count = None;
+    let mut heading = None;
+    let mut reason = None;
+
+    for line in error_block.lines() {
+        let trimmed = line.trim();
+
+        // Parse "Found N error(s):"
+        if error_count.is_none() {
+            if let Some(rest) = trimmed.strip_prefix("Found ")
+                && let Some(num_end) = rest.find(' ')
+                && let Ok(n) = rest[..num_end].parse::<u32>()
+            {
+                error_count = Some(n);
+            }
+            continue;
+        }
+
+        // Parse "{Heading}: {Reason}" — first non-empty line after error count
+        if heading.is_none() && !trimmed.is_empty() {
+            if let Some(colon_pos) = trimmed.find(": ") {
+                let h = trimmed[..colon_pos].to_string();
+                let r = trimmed[colon_pos + 2..].to_string();
+                if matches!(
+                    h.as_str(),
+                    "Error" | "Invariant" | "Todo" | "Compilation Skipped"
+                ) {
+                    heading = Some(h);
+                    reason = Some(r);
+                }
+            }
+            break;
+        }
+    }
+
+    ParsedExpectedError {
+        error_count,
+        heading,
+        reason,
+    }
+}
+
 fn extract_markdown_code_block(md: &str, header: &str) -> Option<String> {
     let header_idx = md.find(header)?;
     let rest = &md[header_idx..];
