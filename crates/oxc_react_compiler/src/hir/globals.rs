@@ -1760,6 +1760,7 @@ impl GlobalRegistry {
         self.register_collection_constructors();
         self.register_constant_globals();
         self.register_untyped_globals();
+        self.register_global_this();
     }
 
     // -- React hooks --------------------------------------------------------
@@ -2491,6 +2492,60 @@ impl GlobalRegistry {
                 self.insert_global(name, GlobalKind::Poly);
             }
         }
+    }
+
+    // -- global / globalThis --------------------------------------------------
+
+    /// Register `global` and `globalThis` as objects whose shape contains all
+    /// the typed globals (console, Math, Object, Array, etc.). This mirrors
+    /// upstream's recursive global types:
+    ///   DEFAULT_GLOBALS.set('global',     addObject(DEFAULT_SHAPES, 'global',     TYPED_GLOBALS));
+    ///   DEFAULT_GLOBALS.set('globalThis', addObject(DEFAULT_SHAPES, 'globalThis', TYPED_GLOBALS));
+    fn register_global_this(&mut self) {
+        // Build properties from all currently-registered typed globals.
+        let mut props = HashMap::new();
+        for (name, global_type) in &self.globals {
+            let prop = match &global_type.kind {
+                GlobalKind::Object { shape_id } => PropertyType::Object { shape_id },
+                GlobalKind::Function(sig) => PropertyType::Function(sig.clone()),
+                GlobalKind::Hook(sig) => PropertyType::Function(sig.clone()),
+                GlobalKind::Primitive => PropertyType::Primitive,
+                GlobalKind::Poly => PropertyType::Poly,
+            };
+            props.insert(name.clone(), prop);
+        }
+
+        // Register the `global` shape and global.
+        let global_shape_id: ShapeId = "global";
+        self.shapes.insert(
+            global_shape_id,
+            ObjectShape {
+                properties: props.clone(),
+                function_type: None,
+            },
+        );
+        self.insert_global(
+            "global",
+            GlobalKind::Object {
+                shape_id: global_shape_id,
+            },
+        );
+
+        // Register the `globalThis` shape and global.
+        let global_this_shape_id: ShapeId = "globalThis";
+        self.shapes.insert(
+            global_this_shape_id,
+            ObjectShape {
+                properties: props,
+                function_type: None,
+            },
+        );
+        self.insert_global(
+            "globalThis",
+            GlobalKind::Object {
+                shape_id: global_this_shape_id,
+            },
+        );
     }
 
     // -- Helper to insert a global ------------------------------------------
