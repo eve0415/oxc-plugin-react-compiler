@@ -1875,6 +1875,24 @@ fn minimize_and_apply(
         }
         let mut minimal = tree.derive_minimal_dependencies();
 
+        // Deduplicate by declaration_id + path (matching upstream
+        // PropagateScopeDependenciesHIR.ts:112-123 which checks
+        // existingDep.identifier.declarationId === candidateDep.identifier.declarationId
+        // && areEqualPaths).
+        {
+            let mut seen: HashSet<(DeclarationId, Vec<(String, bool)>)> = HashSet::new();
+            minimal.retain(|dep| {
+                let key = (
+                    dep.identifier.declaration_id,
+                    dep.path
+                        .iter()
+                        .map(|e| (e.property.clone(), e.optional))
+                        .collect::<Vec<_>>(),
+                );
+                seen.insert(key)
+            });
+        }
+
         // Sort deps deterministically by identifier ID then path.
         // Upstream JS Map preserves insertion order; Rust HashMap does not.
         minimal.sort_by(|a, b| {
