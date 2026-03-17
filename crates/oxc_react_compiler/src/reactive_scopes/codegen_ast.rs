@@ -585,12 +585,29 @@ fn codegen_block_no_reset<'a>(
                     && !label.implicit
                     && !terminal_stmts.is_empty()
                 {
-                    let first = terminal_stmts.remove(0);
+                    let first = &terminal_stmts[0];
+                    // If the first statement is a declaration (const/let/var),
+                    // wrap all statements in a block to avoid invalid labeled
+                    // declarations (e.g., `bb0: const x = ...` is a syntax error).
+                    let needs_block = matches!(
+                        first,
+                        ast::Statement::VariableDeclaration(_)
+                            | ast::Statement::FunctionDeclaration(_)
+                            | ast::Statement::ClassDeclaration(_)
+                    );
+                    let body = if needs_block {
+                        cx.builder.statement_block(
+                            SPAN,
+                            cx.builder.vec_from_iter(terminal_stmts.drain(..)),
+                        )
+                    } else {
+                        terminal_stmts.remove(0)
+                    };
                     let labeled = cx.builder.statement_labeled(
                         SPAN,
                         cx.builder
                             .label_identifier(SPAN, crate_label_name(label.id)),
-                        first,
+                        body,
                     );
                     terminal_stmts.insert(0, labeled);
                 }
