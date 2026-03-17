@@ -564,6 +564,7 @@ fn try_emit_module(
         code = restore_flow_cast_marker_calls(&code);
     }
     code = compact_simple_jsx_object_attributes(&code);
+    code = fix_oxc_array_trailing_space(&code);
     Ok(CompileResult {
         transformed: true,
         code,
@@ -5838,6 +5839,54 @@ fn compact_single_statement(code: &str) -> String {
 /// followed by a line comment and moves it to be trailing on the import line.
 ///
 /// Pattern: `import ...;\nimport ...;\n// comment\n` → `import ...;\nimport ...; // comment\n`
+// Fix OXC's trailing space before `]` in single-line arrays.
+// OXC emits `[0, 1, 2 ]` where Babel emits `[0, 1, 2]`.
+fn fix_oxc_array_trailing_space(code: &str) -> String {
+    if !code.contains(" ]") {
+        return code.to_string();
+    }
+    let mut result = String::with_capacity(code.len());
+    for line in code.split('\n') {
+        let mut line_bytes: Vec<u8> = line.as_bytes().to_vec();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            let len = line_bytes.len();
+            for i in 1..len {
+                if line_bytes[i] == b']' && line_bytes[i - 1] == b' ' {
+                    let mut depth: usize = 1;
+                    let mut j = i.wrapping_sub(2);
+                    let mut found_open = false;
+                    while j < len {
+                        match line_bytes[j] {
+                            b']' => depth += 1,
+                            b'[' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    found_open = true;
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        j = j.wrapping_sub(1);
+                    }
+                    if found_open && j + 1 < len && line_bytes[j + 1] != b' ' {
+                        line_bytes.remove(i - 1);
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str(&String::from_utf8_lossy(&line_bytes));
+    }
+    result
+}
+
 fn move_leading_comment_to_import_trailing(code: &str) -> String {
     if !code.starts_with("import ") {
         return code.to_string();
@@ -6156,7 +6205,10 @@ fn apply_blank_line_markers(
 
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, code, source_type).parse();
-    if parsed.panicked || !parsed.errors.is_empty() {
+    // Only bail on panic; recoverable parse errors (e.g. labeled const
+    // declarations emitted by the compiler) still produce a usable AST with
+    // correct top-level statement spans.
+    if parsed.panicked {
         return code.to_string();
     }
 
