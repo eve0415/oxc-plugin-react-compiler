@@ -312,6 +312,33 @@ pub fn remove_dead_do_while_statements(body: &mut HIR) {
     }
 }
 
+/// Remove Try terminals whose handler block was eliminated during RPO.
+/// Matches upstream removeUnnecessaryTryCatch in HIRBuilder.ts.
+pub fn remove_try_with_dead_handler(body: &mut HIR) {
+    let block_ids: HashSet<BlockId> = body.blocks.iter().map(|(id, _)| *id).collect();
+    for (_, block) in &mut body.blocks {
+        if let Terminal::Try {
+            block: try_block,
+            handler,
+            id,
+            loc,
+            ..
+        } = &block.terminal
+            && !block_ids.contains(handler)
+        {
+            let tb = *try_block;
+            let tid = *id;
+            let tloc = loc.clone();
+            block.terminal = Terminal::Goto {
+                block: tb,
+                variant: GotoVariant::Break,
+                id: tid,
+                loc: tloc,
+            };
+        }
+    }
+}
+
 /// Iterate control-flow successors using upstream `eachTerminalSuccessor` semantics.
 ///
 /// This intentionally excludes pseudo-successors like `fallthrough`.
@@ -827,6 +854,11 @@ impl HIRBuilder {
 
         // Ensure RPO
         reverse_postorder_blocks(&mut hir);
+
+        // Post-RPO cleanup (matches upstream HIRBuilder.build)
+        remove_unreachable_for_updates(&mut hir);
+        remove_dead_do_while_statements(&mut hir);
+        remove_try_with_dead_handler(&mut hir);
 
         // Assign instruction IDs
         let mut instr_id = 0u32;
