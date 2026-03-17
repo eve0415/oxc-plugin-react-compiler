@@ -1377,7 +1377,8 @@ fn run_hir_pipeline(
     env_config: &crate::options::EnvironmentConfig,
 ) -> Result<PipelineOutput, crate::error::CompilerError> {
     let retry_no_memo_mode = RETRY_NO_MEMO_MODE.with(|flag| flag.get());
-    let mut had_validation_error = false;
+    // Note: validation errors in retry mode are logged but don't gate dememoization
+    // (retry always dememoizes).
     let debug_pass = std::env::var("DEBUG_PASS").is_ok();
     macro_rules! trace_pass {
         ($name:expr) => {
@@ -1398,7 +1399,6 @@ fn run_hir_pipeline(
                 if !retry_no_memo_mode {
                     return Err(err);
                 }
-                had_validation_error = true;
                 if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
                     eprintln!("[RETRY_VALIDATION_IGNORED] {}: {:?}", name, err);
                 }
@@ -1557,9 +1557,8 @@ fn run_hir_pipeline(
         if !retry_no_memo_mode {
             return Err(err);
         }
-        // Retry mode: this validation failure should trigger per-function
-        // dememoization, matching upstream bailout-retry behavior.
-        had_validation_error = true;
+        // Retry mode: validation failure logged but not used for dememoization
+        // since retry always dememoizes.
         if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
             eprintln!("[RETRY_VALIDATION_IGNORED] {}: {:?}", name, err);
         }
@@ -1841,8 +1840,9 @@ fn run_hir_pipeline(
 
     // New reactive codegen path: buildReactiveFunction + post-reactive passes + codegen.
     // Old codegen fallback has been removed to keep a single implementation path.
-    // Only dememoize if this specific function had a validation error that was swallowed.
-    let should_dememoize = retry_no_memo_mode && had_validation_error;
+    // In retry-no-memo mode, always dememoize: the entire purpose of the retry is
+    // to compile without memoization (matching upstream's noMemoize codegen path).
+    let should_dememoize = retry_no_memo_mode;
     let (codegen_result, reactive_function, unique_identifiers) = run_reactive_passes(
         hir_func,
         retry_no_memo_mode,
