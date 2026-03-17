@@ -306,6 +306,7 @@ pub fn rewrite_instruction_kinds(func: &mut HIRFunction) -> Result<(), CompilerE
                                                 "No declaration for destructured identifier {} in value block",
                                                 place.identifier.id
                                             ),
+                                            category: None,
                                         }],
                                     }));
                                 }
@@ -349,6 +350,7 @@ pub fn rewrite_instruction_kinds(func: &mut HIRFunction) -> Result<(), CompilerE
                             diagnostics: vec![CompilerDiagnostic {
                                 severity: DiagnosticSeverity::Invariant,
                                 message: description,
+                                category: None,
                             }],
                         }));
                     }

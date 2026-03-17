@@ -48,6 +48,7 @@ pub fn transform_fire(func: &mut HIRFunction) -> Result<(), CompilerError> {
             diagnostics: vec![CompilerDiagnostic {
                 severity: DiagnosticSeverity::InvalidReact,
                 message: details,
+                category: None,
             }],
         }));
     }

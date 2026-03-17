@@ -567,6 +567,7 @@ impl SSAContext {
                     diagnostics: vec![CompilerDiagnostic {
                         severity: DiagnosticSeverity::Todo,
                         message: format!("Identifier {} is undefined.", name),
+                        category: None,
                     }],
                 }));
             }

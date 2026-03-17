@@ -361,6 +361,7 @@ impl HIRBuilder {
         self.errors.push(crate::error::CompilerDiagnostic {
             severity: crate::error::DiagnosticSeverity::Todo,
             message,
+            category: None,
         });
     }
 
@@ -369,6 +370,7 @@ impl HIRBuilder {
         self.errors.push(crate::error::CompilerDiagnostic {
             severity: crate::error::DiagnosticSeverity::Invariant,
             message,
+            category: None,
         });
     }
 

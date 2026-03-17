@@ -286,6 +286,7 @@ fn validate_effect(
         diagnostics.push(CompilerDiagnostic {
             severity: DiagnosticSeverity::InvalidReact,
             message: "Values derived from props and state should be calculated during render, not in an effect. (https://react.dev/learn/you-might-not-need-an-effect#updating-state-based-on-props-or-state)".to_string(),
+            category: None,
         });
     }
 }

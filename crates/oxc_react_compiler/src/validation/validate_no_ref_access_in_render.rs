@@ -446,6 +446,7 @@ fn validate_no_direct_ref_value_access(
             message:
                 "Cannot access ref value during render. (https://react.dev/reference/react/useRef)"
                     .to_string(),
+            category: None,
         });
     }
 }
@@ -461,6 +462,7 @@ fn validate_no_ref_value_access(
             diagnostics.push(CompilerDiagnostic {
                 severity: DiagnosticSeverity::InvalidReact,
                 message: "Cannot access ref value during render. (https://react.dev/reference/react/useRef)".to_string(),
+                category: None,
             });
         }
         Some(RefAccessType::Structure {
@@ -469,6 +471,7 @@ fn validate_no_ref_value_access(
             diagnostics.push(CompilerDiagnostic {
                 severity: DiagnosticSeverity::InvalidReact,
                 message: "Cannot access ref value during render. (https://react.dev/reference/react/useRef)".to_string(),
+                category: None,
             });
         }
         _ => {}
@@ -488,6 +491,7 @@ fn validate_no_ref_passed_to_function(
                 message:
                     "Ref values (the `current` property) may not be accessed during render. (https://react.dev/reference/react/useRef)"
                         .to_string(),
+                category: None,
             });
         }
         Some(RefAccessType::Structure {
@@ -498,6 +502,7 @@ fn validate_no_ref_passed_to_function(
                 message:
                     "Ref values (the `current` property) may not be accessed during render. (https://react.dev/reference/react/useRef)"
                         .to_string(),
+                category: None,
             });
         }
         _ => {}
@@ -515,6 +520,7 @@ fn validate_no_ref_update(
             diagnostics.push(CompilerDiagnostic {
                 severity: DiagnosticSeverity::InvalidReact,
                 message: "Ref values (the `current` property) may not be accessed during render. (https://react.dev/reference/react/useRef)".to_string(),
+                category: None,
             });
         }
         _ => {}
@@ -528,6 +534,7 @@ fn guard_check(diagnostics: &mut Vec<CompilerDiagnostic>, operand: &Place, env: 
             message:
                 "Cannot access ref value during render. (https://react.dev/reference/react/useRef)"
                     .to_string(),
+            category: None,
         });
     }
 }
@@ -806,6 +813,7 @@ fn validate_impl(
                                 diagnostics.push(CompilerDiagnostic {
                                     severity: DiagnosticSeverity::InvalidReact,
                                     message: "This function accesses a ref value. (https://react.dev/reference/react/useRef)".to_string(),
+                                    category: None,
                                 });
                             }
                         }
@@ -864,6 +872,7 @@ fn validate_impl(
                                 diagnostics.push(CompilerDiagnostic {
                                     severity: DiagnosticSeverity::InvalidReact,
                                     message: "This function accesses a ref value. (https://react.dev/reference/react/useRef)".to_string(),
+                                    category: None,
                                 });
                             }
                         }
@@ -1027,6 +1036,7 @@ fn validate_impl(
                             diagnostics.push(CompilerDiagnostic {
                                 severity: DiagnosticSeverity::InvalidReact,
                                 message: "Cannot access ref value during render. (https://react.dev/reference/react/useRef)".to_string(),
+                                category: None,
                             });
                         } else {
                             validate_no_ref_value_access(&mut diagnostics, value, env);

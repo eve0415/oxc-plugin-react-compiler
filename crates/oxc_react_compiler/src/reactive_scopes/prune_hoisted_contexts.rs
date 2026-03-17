@@ -255,6 +255,7 @@ fn transform_instruction_in_place(
                     severity: DiagnosticSeverity::Todo,
                     message: "[PruneHoistedContexts] Rewrite hoisted function references"
                         .to_string(),
+                    category: None,
                 }],
             }));
         }
@@ -277,6 +278,7 @@ fn transform_instruction_in_place(
                                     severity: DiagnosticSeverity::Invariant,
                                     message: "[PruneHoistedContexts] Unexpected hoisted function"
                                         .to_string(),
+                                    category: None,
                                 }],
                             }));
                         }
@@ -296,6 +298,7 @@ fn transform_instruction_in_place(
                                 "[PruneHoistedContexts] Unexpected kind ({:?})",
                                 lvalue.kind
                             ),
+                            category: None,
                         }],
                     }));
                 }
@@ -350,6 +353,7 @@ fn visit_instruction_places(
                             severity: DiagnosticSeverity::Todo,
                             message: "[PruneHoistedContexts] Rewrite hoisted function references"
                                 .to_string(),
+                            category: None,
                         }],
                     }));
                 }

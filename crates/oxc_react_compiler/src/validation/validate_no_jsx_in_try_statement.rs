@@ -45,6 +45,7 @@ pub fn validate_no_jsx_in_try_statement(func: &HIRFunction) -> Result<(), Compil
                                  in an error boundary. \
                                  (https://react.dev/reference/react/Component#catching-rendering-errors-with-an-error-boundary)"
                                     .to_string(),
+                            category: None,
                         });
                         break;
                     }

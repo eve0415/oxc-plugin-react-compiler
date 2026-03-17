@@ -68,6 +68,7 @@ fn push_module_property_mismatches(module: &str, diagnostics: &mut Vec<CompilerD
                             "not to be a hook"
                         }
                     ),
+                    category: None,
                 });
             }
         }
@@ -103,6 +104,7 @@ pub fn validate_module_type_provider_config(func: &HIRFunction) -> Result<(), Co
                                         "not to be a hook"
                                     }
                                 ),
+                                category: None,
                             });
                         }
                     }
@@ -122,6 +124,7 @@ pub fn validate_module_type_provider_config(func: &HIRFunction) -> Result<(), Co
                                         "not to be a hook"
                                     }
                                 ),
+                                category: None,
                             });
                         }
                     }

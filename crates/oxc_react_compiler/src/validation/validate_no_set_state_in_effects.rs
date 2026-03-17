@@ -153,6 +153,7 @@ fn check_effect_call(
                      [{:?}]",
                     set_state_place.loc
                 ),
+                category: None,
             });
     }
 }

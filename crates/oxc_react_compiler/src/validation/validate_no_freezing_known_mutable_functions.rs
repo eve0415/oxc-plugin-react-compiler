@@ -43,6 +43,7 @@ fn push_mutable_function_error(
                  Consider using state instead",
             variable
         ),
+        category: None,
     });
 }
 

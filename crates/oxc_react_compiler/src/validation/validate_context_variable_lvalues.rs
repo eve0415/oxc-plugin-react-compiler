@@ -208,6 +208,7 @@ fn validate_impl(
                             diagnostics: vec![CompilerDiagnostic {
                                 severity: DiagnosticSeverity::Todo,
                                 message: "Handle lvalues for this instruction kind".to_string(),
+                                category: None,
                             }],
                         }));
                     }
@@ -253,6 +254,7 @@ fn visit(
                     diagnostics: vec![CompilerDiagnostic {
                         severity: DiagnosticSeverity::Todo,
                         message: "Support destructuring of context variables".to_string(),
+                        category: None,
                     }],
                 }));
             }
@@ -271,6 +273,7 @@ fn visit(
                 diagnostics: vec![CompilerDiagnostic {
                     severity: DiagnosticSeverity::Invariant,
                     message: format!("this is {:?}", prev_kind),
+                    category: None,
                 }],
             }));
         }

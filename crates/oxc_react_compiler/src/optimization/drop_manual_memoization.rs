@@ -404,6 +404,7 @@ pub fn drop_manual_memoization(func: &mut HIRFunction) -> Result<(), CompilerErr
                         severity: DiagnosticSeverity::InvalidReact,
                         message: "Expected the first argument to be an inline function expression"
                             .to_string(),
+                        category: None,
                     });
                     true
                 } else {
@@ -718,6 +719,7 @@ fn extract_deps_list(
             errors.push(CompilerDiagnostic {
                 severity: DiagnosticSeverity::InvalidReact,
                 message: format!("Unexpected spread argument to {kind_name}"),
+                category: None,
             });
             return None;
         }
@@ -732,6 +734,7 @@ fn extract_deps_list(
                 message: format!(
                     "Expected the dependency list for {kind_name} to be an array literal"
                 ),
+                category: None,
             });
             return None;
         }
@@ -761,6 +764,7 @@ fn extract_deps_list(
             errors.push(CompilerDiagnostic {
                 severity: DiagnosticSeverity::InvalidReact,
                 message: "Expected the dependency list to be an array of simple expressions (e.g. `x`, `x.y.z`, `x?.y?.z`)".to_string(),
+                category: None,
             });
         }
     }

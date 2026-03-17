@@ -2033,6 +2033,7 @@ fn apply_effect(
                         error: CompilerDiagnostic {
                             severity: DiagnosticSeverity::InvalidReact,
                             message: "Cannot mutate a global value".to_string(),
+                            category: None,
                         },
                     });
                 }
@@ -2078,6 +2079,7 @@ fn apply_effect(
                         error: CompilerDiagnostic {
                             severity: DiagnosticSeverity::InvalidReact,
                             message: "Cannot mutate a global value".to_string(),
+                            category: None,
                         },
                     });
                 }
@@ -2998,6 +3000,7 @@ fn compute_signature_for_instruction(
                         message:
                             "[InferMutationAliasingEffects] Expected value kind to be initialized"
                                 .to_string(),
+                        category: None,
                     },
                 });
                 return effects;
@@ -3635,6 +3638,7 @@ fn compute_effects_for_legacy_signature(
                         .map(|n| format!(" `{}` ", n))
                         .unwrap_or(" ".to_string())
                 ),
+                category: None,
             },
         });
     }
@@ -3659,6 +3663,7 @@ fn compute_effects_for_legacy_signature(
             error: CompilerDiagnostic {
                 severity: DiagnosticSeverity::InvalidReact,
                 message: reason.clone(),
+                category: None,
             },
         });
     }
@@ -4668,6 +4673,7 @@ fn global_reassignment_diagnostic(variable: &str) -> CompilerDiagnostic {
         message: format!(
             "Cannot reassign variables declared outside of the component/hook ({variable} cannot be reassigned)"
         ),
+        category: None,
     }
 }
 
@@ -4678,6 +4684,7 @@ fn uninitialized_value_kind_diagnostic(place: &Place) -> CompilerDiagnostic {
         message: format!(
             "[InferMutationAliasingEffects] Expected value kind to be initialized ({variable} is uninitialized)"
         ),
+        category: None,
     }
 }
 
@@ -4714,6 +4721,7 @@ fn mutate_frozen_diagnostic(
             message: format!(
                 "Cannot access variable before it is declared ({variable} is accessed before declaration)"
             ),
+            category: None,
         };
     }
 
@@ -4731,6 +4739,7 @@ fn mutate_frozen_diagnostic(
     CompilerDiagnostic {
         severity: DiagnosticSeverity::InvalidReact,
         message,
+        category: None,
     }
 }
 

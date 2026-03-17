@@ -149,6 +149,7 @@ fn validate_no_set_state_in_render_impl(
                                      setting state in useMemo(), prefer deriving the value during render. \
                                      (https://react.dev/reference/react/useState)"
                                         .to_string(),
+                                category: None,
                             });
                         } else if unconditional_blocks.contains(&block.id) {
                             diagnostics.push(CompilerDiagnostic {
@@ -159,6 +160,7 @@ fn validate_no_set_state_in_render_impl(
                                      and can lead to infinite loops. \
                                      (https://react.dev/reference/react/useState)"
                                         .to_string(),
+                                category: None,
                             });
                         }
                     }

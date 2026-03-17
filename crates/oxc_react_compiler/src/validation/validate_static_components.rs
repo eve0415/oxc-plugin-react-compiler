@@ -55,6 +55,7 @@ pub fn validate_static_components(func: &HIRFunction) -> Result<(), CompilerErro
                         diagnostics.push(CompilerDiagnostic {
                                 severity: DiagnosticSeverity::InvalidReact,
                                 message: "Components created during render will reset their state each time they are created. Declare components outside of render".to_string(),
+                                category: None,
                             });
                     }
                 }

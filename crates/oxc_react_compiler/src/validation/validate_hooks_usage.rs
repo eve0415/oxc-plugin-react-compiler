@@ -165,6 +165,7 @@ fn record_conditional_hook_error(
                   conditionally. See the Rules of Hooks \
                   (https://react.dev/warnings/invalid-hook-call-warning)"
             .to_string(),
+        category: None,
     });
 }
 
@@ -244,6 +245,7 @@ pub fn validate_hooks_usage(func: &HIRFunction) -> Result<(), CompilerError> {
                 message: "Hooks may not be referenced as normal values, they must be called. \
                           See https://react.dev/reference/rules/react-calls-components-and-hooks#never-pass-around-hooks-as-regular-values"
                     .to_string(),
+                category: None,
             });
         }
     };
@@ -390,6 +392,7 @@ pub fn validate_hooks_usage(func: &HIRFunction) -> Result<(), CompilerError> {
                                       value may change over time to a different function. See \
                                       https://react.dev/reference/rules/react-calls-components-and-hooks#dont-dynamically-use-hooks"
                                 .to_string(),
+                            category: None,
                         });
                     }
                     // Visit operands except callee
@@ -430,6 +433,7 @@ pub fn validate_hooks_usage(func: &HIRFunction) -> Result<(), CompilerError> {
                                       value may change over time to a different function. See \
                                       https://react.dev/reference/rules/react-calls-components-and-hooks#dont-dynamically-use-hooks"
                                 .to_string(),
+                            category: None,
                         });
                     }
                     // Visit operands except property
@@ -670,6 +674,7 @@ fn visit_function_expression(diagnostics: &mut Vec<CompilerDiagnostic>, func: &H
                                  Cannot call {} within a function expression.",
                                 hook_desc
                             ),
+                            category: None,
                         });
                     }
                     let lvalue_kind = get_kind_for_place(&value_kinds, &instr.lvalue);
@@ -689,6 +694,7 @@ fn visit_function_expression(diagnostics: &mut Vec<CompilerDiagnostic>, func: &H
                                  Cannot call {} within a function expression.",
                                 hook_desc
                             ),
+                            category: None,
                         });
                     }
                     let lvalue_kind = get_kind_for_place(&value_kinds, &instr.lvalue);

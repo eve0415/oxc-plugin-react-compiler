@@ -99,6 +99,7 @@ pub fn validate_no_capitalized_calls(
                                     "{}. {} may be a component",
                                     CAPITALIZED_CALL_REASON, callee_name
                                 ),
+                                category: None,
                             }],
                         }));
                     }
@@ -131,6 +132,7 @@ pub fn validate_no_capitalized_calls(
                                 "{}. {} may be a component",
                                 CAPITALIZED_CALL_REASON, property_name
                             ),
+                            category: None,
                         });
                     }
                 }

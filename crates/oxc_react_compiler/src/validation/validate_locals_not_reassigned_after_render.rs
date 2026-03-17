@@ -41,6 +41,7 @@ pub fn validate_locals_not_reassigned_after_render(
                     "Reassigning {var_name} after render has completed can cause \
                      inconsistent behavior on subsequent renders. Consider using state instead"
                 ),
+                category: None,
             }],
         }));
     }
@@ -171,6 +172,7 @@ fn get_context_reassignment(
                                              cause inconsistent behavior on subsequent renders. \
                                              Consider using state instead"
                                         .to_string(),
+                                    category: None,
                                 }],
                             }));
                         }

@@ -225,6 +225,7 @@ fn validate_void_use_memo_call(
                  side effects",
                 prefix
             ),
+            category: None,
         });
     }
 }
@@ -255,6 +256,7 @@ fn validate_use_memo_call(
                       They should not take parameters. Instead, directly reference the props, state, \
                       or local variables needed for the computation"
                 .to_string(),
+            category: None,
         });
     }
 
@@ -264,6 +266,7 @@ fn validate_use_memo_call(
             message: "useMemo() callbacks may not be async or generator functions. \
                       useMemo() callbacks are called once and must synchronously return a value"
                 .to_string(),
+            category: None,
         });
     }
 }
