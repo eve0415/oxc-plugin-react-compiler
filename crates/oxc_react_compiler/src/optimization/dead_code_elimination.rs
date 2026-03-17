@@ -649,8 +649,38 @@ fn dead_code_elimination_pass(
             // Process phi nodes
             for phi in &block.phis {
                 if is_id_or_name_used(&phi.place.identifier, &used_ids, &used_names) {
-                    for operand in phi.operands.values() {
-                        reference(&operand.identifier, &mut used_ids, &mut used_names);
+                    // Upstream uses a demand-driven SSA algorithm (Braun) that only
+                    // creates phis when a variable is actually read at a merge point.
+                    // Our SSA pass eagerly places phis at ALL merge points where
+                    // different defs are visible. This creates spurious phis for
+                    // variables that are immediately overwritten before being read
+                    // in the block. Skip propagating liveness through such phis to
+                    // match upstream's DCE behavior.
+                    //
+                    // A phi is considered dead if:
+                    //  1. Its specific SSA ID is not used (only alive by name)
+                    //  2. The declaration is written in this block before being read
+                    //  3. The terminal doesn't read the declaration
+                    let phi_dead = !used_ids.contains(&phi.place.identifier.id) && {
+                        let phi_decl = phi.place.identifier.declaration_id;
+                        // Scan instructions: is the first access a write (not a read)?
+                        let mut written_before_read = false;
+                        for instr in &block.instructions {
+                            if instruction_reads_declaration(instr, phi_decl) {
+                                break;
+                            }
+                            if instruction_writes_declaration(instr, phi_decl) {
+                                written_before_read = true;
+                                break;
+                            }
+                        }
+                        written_before_read
+                            && !terminal_reads_declaration(&block.terminal, phi_decl)
+                    };
+                    if !phi_dead {
+                        for operand in phi.operands.values() {
+                            reference(&operand.identifier, &mut used_ids, &mut used_names);
+                        }
                     }
                 }
             }

@@ -1,20 +1,15 @@
-# React Compiler Conformance — 99.4% parity rate
+# React Compiler Conformance — 99.7% parity rate
 
-**1741** parity_success, **11** parity_failure, **0** skipped
+**1746** parity_success, **6** parity_failure, **0** skipped
 
 ## Failed
 
 - `codegen-inline-iife-reassign`: Output mismatch
-- `dominator`: Output mismatch
 - `idx-no-outlining`: Output mismatch
 - `nonoptional-load-from-optional-memberexpr`: Output mismatch
 - `propagate-scope-deps-hir-fork/switch`: Expected transformed output, but compiler bailed out/skipped
-- `propagate-scope-deps-hir-fork/switch-non-final-default`: Output mismatch
-- `reassignment`: Output mismatch
-- `reassignment-conditional`: Output mismatch
 - `repro-no-value-for-temporary-reactive-scope-with-early-return`: Output mismatch
 - `switch`: Expected transformed output, but compiler bailed out/skipped
-- `switch-non-final-default`: Output mismatch
 
 ## Passed
 
@@ -313,6 +308,7 @@
 - `do-while-continue`
 - `do-while-early-unconditional-break`
 - `do-while-simple`
+- `dominator`
 - `dont-memoize-primitive-function-call-non-escaping`
 - `dont-memoize-primitive-function-call-non-escaping-useMemo`
 - `dont-merge-if-dep-is-inner-declaration-of-previous-scope`
@@ -1164,6 +1160,7 @@
 - `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-via-destructuring-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-with-mutation`
+- `propagate-scope-deps-hir-fork/switch-non-final-default`
 - `propagate-scope-deps-hir-fork/try-catch-maybe-null-dependency`
 - `propagate-scope-deps-hir-fork/try-catch-mutate-outer-value`
 - `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch`
@@ -1233,6 +1230,8 @@
 - `reassign-object-in-context`
 - `reassign-primitive-in-context`
 - `reassigned-phi-in-returned-function-expression`
+- `reassignment`
+- `reassignment-conditional`
 - `reassignment-separate-scopes`
 - `recursive-function`
 - `recursive-function-expression`
@@ -1553,6 +1552,7 @@
 - `store-via-call`
 - `store-via-new`
 - `switch-global-propertyload-case-test`
+- `switch-non-final-default`
 - `switch-with-fallthrough`
 - `switch-with-only-default`
 - `tagged-template-in-hook`
