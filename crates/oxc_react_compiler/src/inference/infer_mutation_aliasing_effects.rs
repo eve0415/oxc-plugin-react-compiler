@@ -4696,7 +4696,7 @@ fn uninitialized_value_kind_diagnostic(place: &Place) -> CompilerDiagnostic {
 
 fn should_allow_maybe_frozen_jsx_mutation(place: &Place, abs_val: &AbstractValue) -> bool {
     place.identifier.name.is_none()
-        && abs_val.kind == ValueKind::MaybeFrozen
+        && matches!(abs_val.kind, ValueKind::MaybeFrozen | ValueKind::Frozen)
         && abs_val.reasons.len() == 2
         && abs_val.reasons.contains(&ValueReason::JsxCaptured)
         && abs_val.reasons.contains(&ValueReason::Other)

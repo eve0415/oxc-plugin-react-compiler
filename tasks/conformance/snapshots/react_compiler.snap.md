@@ -1,15 +1,13 @@
-# React Compiler Conformance — 99.7% parity rate
+# React Compiler Conformance — 99.8% parity rate
 
-**1746** parity_success, **6** parity_failure, **0** skipped
+**1748** parity_success, **4** parity_failure, **0** skipped
 
 ## Failed
 
 - `codegen-inline-iife-reassign`: Output mismatch
 - `idx-no-outlining`: Output mismatch
 - `nonoptional-load-from-optional-memberexpr`: Output mismatch
-- `propagate-scope-deps-hir-fork/switch`: Expected transformed output, but compiler bailed out/skipped
 - `repro-no-value-for-temporary-reactive-scope-with-early-return`: Output mismatch
-- `switch`: Expected transformed output, but compiler bailed out/skipped
 
 ## Passed
 
@@ -1160,6 +1158,7 @@
 - `propagate-scope-deps-hir-fork/ssa-renaming-unconditional-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-via-destructuring-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-with-mutation`
+- `propagate-scope-deps-hir-fork/switch`
 - `propagate-scope-deps-hir-fork/switch-non-final-default`
 - `propagate-scope-deps-hir-fork/try-catch-maybe-null-dependency`
 - `propagate-scope-deps-hir-fork/try-catch-mutate-outer-value`
@@ -1551,6 +1550,7 @@
 - `static-components/invalid-dynamically-constructed-component-new`
 - `store-via-call`
 - `store-via-new`
+- `switch`
 - `switch-global-propertyload-case-test`
 - `switch-non-final-default`
 - `switch-with-fallthrough`
