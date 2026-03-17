@@ -4669,9 +4669,28 @@ fn lower_function_expression_via_reactive<'a>(
         );
     }
 
+    let mut body_stmts = result.body;
+    // When the last body statement is an assignment expression `name = ...;`,
+    // add a trailing expression statement with just the variable name.
+    // This matches upstream Babel codegen which emits the block value expression
+    // after the assignment (e.g., `count = count + x; count`).
+    if let Some(ast::Statement::ExpressionStatement(last_expr)) = body_stmts.last()
+        && let ast::Expression::AssignmentExpression(assign) = &last_expr.expression
+        && assign.operator == oxc_syntax::operator::AssignmentOperator::Assign
+        && let ast::AssignmentTarget::AssignmentTargetIdentifier(ident) = &assign.left
+    {
+        let name = ident.name.as_str();
+        let trailing = cx.builder.statement_expression(
+            SPAN,
+            cx.builder
+                .expression_identifier(SPAN, cx.builder.ident(name)),
+        );
+        body_stmts.push(trailing);
+    }
+
     let body = cx
         .builder
-        .alloc(cx.builder.function_body(SPAN, directives, result.body));
+        .alloc(cx.builder.function_body(SPAN, directives, body_stmts));
 
     // Build params from the reactive function's param list.
     let mut param_items = cx.builder.vec();
