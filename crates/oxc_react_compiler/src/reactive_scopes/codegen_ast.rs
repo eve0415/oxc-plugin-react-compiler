@@ -1188,7 +1188,9 @@ fn codegen_instruction_value<'a>(
         } => {
             // When enableNameAnonymousFunctions is active, skip the hir_to_ast fast path
             // so that nested function expressions also get name wrapping via the reactive path.
-            let result = if cx.options.enable_name_anonymous_functions {
+            let result = if cx.options.enable_name_anonymous_functions
+                || has_destructure_consuming_side_effecting_temp(&lowered_func.func)
+            {
                 None
             } else {
                 super::super::codegen_backend::hir_to_ast::lower_function_expression_ast(
@@ -1447,12 +1449,16 @@ fn codegen_instruction_value<'a>(
         InstructionValue::IteratorNext { collection, .. } => codegen_place(cx, collection),
         InstructionValue::NextPropertyOf { value, .. } => codegen_place(cx, value),
         InstructionValue::ObjectMethod { lowered_func, .. } => {
-            let result = super::super::codegen_backend::hir_to_ast::lower_function_expression_ast(
-                cx.builder,
-                None,
-                lowered_func,
-                FunctionExpressionType::FunctionExpression,
-            );
+            let result = if has_destructure_consuming_side_effecting_temp(&lowered_func.func) {
+                None
+            } else {
+                super::super::codegen_backend::hir_to_ast::lower_function_expression_ast(
+                    cx.builder,
+                    None,
+                    lowered_func,
+                    FunctionExpressionType::FunctionExpression,
+                )
+            };
             if result.is_some() {
                 result
             } else {
@@ -4951,6 +4957,149 @@ fn scope_body_is_strictly_trivial(instructions: &ReactiveBlock) -> bool {
         ),
         _ => false,
     })
+}
+
+/// Check whether a HIR function body has a side-effecting unnamed temp whose
+/// reference is NOT tracked by the `hir_to_ast` fast path's `collect_instruction_uses`.
+/// When detected, callers skip the fast path and use the reactive codegen path which
+/// handles temp inlining correctly.
+///
+/// The `hir_to_ast` fast path decides whether to emit a side-effecting instruction as a
+/// standalone expression statement based on whether its temp lvalue appears in `used_temps`.
+/// However, `collect_instruction_uses` doesn't handle all instruction types (e.g.,
+/// ArrayExpression, ObjectExpression, Destructure, JSX, etc.), so temps consumed only by
+/// those instructions are missing from `used_temps`.  This causes the side-effecting
+/// expression to be emitted BOTH as a standalone statement AND inlined when the temp is
+/// later resolved via `lower_place`.
+fn has_destructure_consuming_side_effecting_temp(hir_func: &HIRFunction) -> bool {
+    // Collect unnamed temp IDs whose instruction is side-effecting.
+    let mut side_effecting_temps: HashSet<IdentifierId> = HashSet::new();
+    for (_, block) in &hir_func.body.blocks {
+        for instr in &block.instructions {
+            if instr.lvalue.identifier.name.is_none()
+                && matches!(
+                    instr.value,
+                    InstructionValue::CallExpression { .. }
+                        | InstructionValue::MethodCall { .. }
+                        | InstructionValue::NewExpression { .. }
+                )
+            {
+                side_effecting_temps.insert(instr.lvalue.identifier.id);
+            }
+        }
+    }
+    if side_effecting_temps.is_empty() {
+        return false;
+    }
+
+    // Collect the temp uses that the hir_to_ast fast path DOES track (mirroring
+    // collect_instruction_uses in hir_to_ast.rs).  Any side-effecting temp NOT
+    // in this set but still referenced would be duplicated by the fast path.
+    let mut tracked_uses: HashSet<IdentifierId> = HashSet::new();
+    for (_, block) in &hir_func.body.blocks {
+        for instr in &block.instructions {
+            collect_tracked_temp_uses(&instr.value, &mut tracked_uses);
+        }
+    }
+
+    // If any side-effecting temp is not in tracked_uses, the fast path would
+    // emit it as a standalone expression statement AND inline it, causing a
+    // duplicate.
+    side_effecting_temps
+        .iter()
+        .any(|id| !tracked_uses.contains(id))
+}
+
+/// Mirrors `collect_instruction_uses` from hir_to_ast.rs, recording unnamed
+/// temp references for the instruction types that the fast path tracks.
+/// Instruction types not listed here fall through to `_ => {}` in the fast
+/// path and would NOT prevent a side-effecting temp from being duplicated.
+fn collect_tracked_temp_uses(value: &InstructionValue, used: &mut HashSet<IdentifierId>) {
+    fn record(place: &Place, used: &mut HashSet<IdentifierId>) {
+        if place.identifier.name.is_none() {
+            used.insert(place.identifier.id);
+        }
+    }
+    fn record_args(args: &[Argument], used: &mut HashSet<IdentifierId>) {
+        for arg in args {
+            match arg {
+                Argument::Place(p) | Argument::Spread(p) => record(p, used),
+            }
+        }
+    }
+    match value {
+        InstructionValue::LoadLocal { place, .. } | InstructionValue::LoadContext { place, .. } => {
+            record(place, used)
+        }
+        InstructionValue::StoreLocal { value: v, .. }
+        | InstructionValue::StoreContext { value: v, .. } => record(v, used),
+        InstructionValue::BinaryExpression { left, right, .. } => {
+            record(left, used);
+            record(right, used);
+        }
+        InstructionValue::UnaryExpression { value: v, .. }
+        | InstructionValue::TypeCastExpression { value: v, .. } => record(v, used),
+        InstructionValue::CallExpression { callee, args, .. }
+        | InstructionValue::NewExpression { callee, args, .. } => {
+            record(callee, used);
+            record_args(args, used);
+        }
+        InstructionValue::MethodCall {
+            receiver,
+            property,
+            args,
+            ..
+        } => {
+            record(receiver, used);
+            record(property, used);
+            record_args(args, used);
+        }
+        InstructionValue::PropertyLoad { object, .. }
+        | InstructionValue::PropertyDelete { object, .. } => record(object, used),
+        InstructionValue::PropertyStore {
+            object, value: v, ..
+        } => {
+            record(object, used);
+            record(v, used);
+        }
+        InstructionValue::ComputedLoad {
+            object, property, ..
+        }
+        | InstructionValue::ComputedDelete {
+            object, property, ..
+        } => {
+            record(object, used);
+            record(property, used);
+        }
+        InstructionValue::ComputedStore {
+            object,
+            property,
+            value: v,
+            ..
+        } => {
+            record(object, used);
+            record(property, used);
+            record(v, used);
+        }
+        InstructionValue::StoreGlobal { value: v, .. } => record(v, used),
+        InstructionValue::LogicalExpression { left, right, .. } => {
+            record(left, used);
+            record(right, used);
+        }
+        InstructionValue::Ternary {
+            test,
+            consequent,
+            alternate,
+            ..
+        } => {
+            record(test, used);
+            record(consequent, used);
+            record(alternate, used);
+        }
+        InstructionValue::PrefixUpdate { lvalue, .. }
+        | InstructionValue::PostfixUpdate { lvalue, .. } => record(lvalue, used),
+        _ => {}
+    }
 }
 
 /// Parse a type annotation string (e.g. `"Foo"`, `"Foo<Bar>"`, `"Foo | Bar"`) into an OXC
