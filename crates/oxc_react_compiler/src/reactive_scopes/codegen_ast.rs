@@ -911,10 +911,11 @@ fn codegen_instruction<'a>(
             return codegen_store(cx, lvalue, value);
         }
         InstructionValue::StoreContext { lvalue, value, .. } => {
-            // Same chained-assignment logic as StoreLocal above.
+            // Upstream: for StoreContext/Reassign with an instruction-level lvalue,
+            // create the assignment expression and either inline it (unnamed temp)
+            // or emit as `const t = w = expr` (promoted/named temp).
             if matches!(lvalue.kind, InstructionKind::Reassign)
                 && let Some(outer_lv) = &instr.lvalue
-                && is_temp_identifier(&outer_lv.identifier)
             {
                 let rhs = codegen_place(cx, value)?;
                 let assign_name = identifier_name(&lvalue.place.identifier);
@@ -930,9 +931,22 @@ fn codegen_instruction<'a>(
                     ),
                     rhs,
                 );
-                cx.temps
-                    .insert(outer_lv.identifier.declaration_id, Some(assign_expr));
-                return None;
+                if is_temp_identifier(&outer_lv.identifier) {
+                    // Unnamed temp: store in temp map for inline substitution.
+                    cx.temps
+                        .insert(outer_lv.identifier.declaration_id, Some(assign_expr));
+                    return None;
+                }
+                // Named/promoted temp: emit `const t = w = expr` declaration.
+                let outer_name = cx.resolve_identifier_name(&outer_lv.identifier);
+                cx.declared.insert(outer_lv.identifier.id);
+                return Some(emit_var_decl_stmt_inner(
+                    cx,
+                    &outer_name,
+                    ast::VariableDeclarationKind::Const,
+                    Some(assign_expr),
+                    Some(outer_lv.identifier.declaration_id),
+                ));
             }
             return codegen_store(cx, lvalue, value);
         }
