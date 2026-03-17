@@ -2593,6 +2593,7 @@ fn normalize_strict_output_equivalences(code: &str) -> String {
         normalize_const_named_function_to_declaration,
         normalize_fbt_plural_cross_product_tables,
         normalize_fbt_placeholder_spacing,
+        normalize_dead_bare_var_refs,
     ];
     for step in steps {
         normalized = step(&normalized);
@@ -9011,6 +9012,53 @@ fn normalize_fbt_placeholder_spacing(code: &str) -> String {
             }
             result
         })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Strip dead bare `var _refN;` declarations produced by babel-plugin-idx.
+///
+/// The upstream snap test framework runs the React compiler plugin and
+/// babel-plugin-idx in the same Babel transform, sharing scope state. Names
+/// registered by the compiler (via `programContext.addNewReference`) are visible
+/// to babel-plugin-idx's `scope.generateUidIdentifier`, causing it to pick a
+/// higher-numbered name (e.g. `_ref2` instead of `_ref`).
+///
+/// Our conformance runner applies babel-plugin-idx as a separate post-process
+/// step on the compiler's string output, so babel-plugin-idx doesn't see any
+/// compiler-internal names and may pick a different (lower-numbered) ref name.
+/// This can leave a dead `var _refN;` declaration in the expected output that
+/// our output doesn't have.  Stripping unused bare `var _refN;` lines from
+/// both sides eliminates this cosmetic difference.
+fn normalize_dead_bare_var_refs(code: &str) -> String {
+    let bare_var_ref_re = regex::Regex::new(r"^var\s+(_ref\d*)\s*;$").unwrap();
+    let lines: Vec<&str> = code.lines().collect();
+    let mut dead_indices = std::collections::HashSet::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if let Some(caps) = bare_var_ref_re.captures(trimmed) {
+            let var_name = caps.get(1).unwrap().as_str();
+            let word_re = regex::Regex::new(&format!(r"\b{}\b", regex::escape(var_name))).unwrap();
+            let used_elsewhere = lines
+                .iter()
+                .enumerate()
+                .any(|(j, other_line)| j != i && word_re.is_match(other_line.trim()));
+            if !used_elsewhere {
+                dead_indices.insert(i);
+            }
+        }
+    }
+
+    if dead_indices.is_empty() {
+        return code.to_string();
+    }
+
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !dead_indices.contains(i))
+        .map(|(_, line)| line.trim())
         .collect::<Vec<_>>()
         .join("\n")
 }

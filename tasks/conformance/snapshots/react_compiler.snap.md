@@ -1,13 +1,11 @@
-# React Compiler Conformance — 99.8% parity rate
+# React Compiler Conformance — 99.9% parity rate
 
-**1748** parity_success, **4** parity_failure, **0** skipped
+**1750** parity_success, **2** parity_failure, **0** skipped
 
 ## Failed
 
-- `codegen-inline-iife-reassign`: Output mismatch
-- `idx-no-outlining`: Output mismatch
-- `nonoptional-load-from-optional-memberexpr`: Output mismatch
-- `repro-no-value-for-temporary-reactive-scope-with-early-return`: Output mismatch
+- `repro-no-declarations-in-reactive-scope-with-early-return`: Output mismatch
+- `repro-renaming-conflicting-decls`: Output mismatch
 
 ## Passed
 
@@ -204,6 +202,7 @@
 - `codegen-emit-imports-same-source`
 - `codegen-emit-make-read-only`
 - `codegen-inline-iife`
+- `codegen-inline-iife-reassign`
 - `codegen-inline-iife-storeprop`
 - `codegen-instrument-forget-test`
 - `complex-while`
@@ -717,6 +716,7 @@
 - `hooks-with-prefix`
 - `idx-method-no-outlining`
 - `idx-method-no-outlining-wildcard`
+- `idx-no-outlining`
 - `ignore-inner-interface-types`
 - `ignore-use-no-forget`
 - `iife-inline-ternary`
@@ -973,6 +973,7 @@
 - `noAlias-filter-on-array-prop`
 - `non-null-assertion`
 - `nonmutating-capture-in-unsplittable-memo-block`
+- `nonoptional-load-from-optional-memberexpr`
 - `nonreactive-noescaping-dependency-can-inline-into-consuming-scope`
 - `nullable-objects/array-map-named-callback`
 - `nullable-objects/array-map-named-callback-cross-context`
@@ -1346,8 +1347,8 @@
 - `repro-mutate-result-of-function-call-with-frozen-argument-in-function-expression`
 - `repro-mutate-result-of-method-call-on-frozen-value-in-function-expression`
 - `repro-mutate-result-of-method-call-on-frozen-value-is-allowed`
-- `repro-no-declarations-in-reactive-scope-with-early-return`
 - `repro-no-value-for-temporary`
+- `repro-no-value-for-temporary-reactive-scope-with-early-return`
 - `repro-non-identifier-object-keys`
 - `repro-object-expression-computed-key-modified-during-after-construction-hoisted-sequence-expr`
 - `repro-object-fromEntries-entries`
@@ -1359,7 +1360,6 @@
 - `repro-reassign-props`
 - `repro-reassign-to-variable-without-mutable-range`
 - `repro-ref-mutable-range`
-- `repro-renaming-conflicting-decls`
 - `repro-retain-source-when-bailout`
 - `repro-returned-inner-fn-mutates-context`
 - `repro-returned-inner-fn-reassigns-context`
