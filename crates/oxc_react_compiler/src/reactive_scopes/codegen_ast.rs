@@ -1692,20 +1692,14 @@ fn codegen_store<'a>(
                 Some(emit_assignment_stmt(cx, &name, expr))
             } else {
                 cx.declared.insert(id);
-                // Upstream always uses 'const' for new instruction-level declarations
-                // (CodegenReactiveFunction.ts:1850). Only use 'let' for DeclareLocal
-                // which goes through codegen_declare, not here.
                 let decl_kind = match kind {
-                    InstructionKind::Let | InstructionKind::HoistedLet => {
-                        ast::VariableDeclarationKind::Const
-                    }
                     InstructionKind::Const | InstructionKind::HoistedConst => {
                         ast::VariableDeclarationKind::Const
                     }
                     InstructionKind::Function | InstructionKind::HoistedFunction => {
                         ast::VariableDeclarationKind::Const
                     }
-                    _ => ast::VariableDeclarationKind::Const,
+                    _ => ast::VariableDeclarationKind::Let,
                 };
                 Some(emit_var_decl_stmt_inner(
                     cx,
