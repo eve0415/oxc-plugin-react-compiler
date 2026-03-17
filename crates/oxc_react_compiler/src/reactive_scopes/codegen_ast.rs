@@ -2332,11 +2332,17 @@ fn codegen_terminal<'a>(
                 cx.pop_name_scope();
                 stmts
             });
-            // Skip empty if/else blocks — emit test as expression statement.
+            // When both branches are empty, emit as empty if-statement (not bare
+            // expression) to match upstream behavior. Upstream keeps `if(a){}`.
             if consequent_stmts.is_empty()
                 && alternate_result.as_ref().is_some_and(|a| a.is_empty())
             {
-                return vec![cx.builder.statement_expression(SPAN, test_expr)];
+                return vec![cx.builder.statement_if(
+                    SPAN,
+                    test_expr,
+                    cx.builder.statement_block(SPAN, cx.builder.vec()),
+                    None,
+                )];
             }
             let consequent_block = cx
                 .builder
@@ -3045,10 +3051,10 @@ fn codegen_reactive_scope<'a>(
                 stmts.push(ast::Statement::VariableDeclaration(
                     cx.builder.alloc_variable_declaration(
                         SPAN,
-                        ast::VariableDeclarationKind::Let,
+                        ast::VariableDeclarationKind::Const,
                         cx.builder.vec1(cx.builder.variable_declarator(
                             SPAN,
-                            ast::VariableDeclarationKind::Let,
+                            ast::VariableDeclarationKind::Const,
                             pattern,
                             NONE,
                             Some(dep_expr),
