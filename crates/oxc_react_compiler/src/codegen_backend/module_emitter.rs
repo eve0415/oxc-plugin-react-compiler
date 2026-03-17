@@ -567,6 +567,7 @@ fn try_emit_module(
     code = fix_oxc_array_trailing_space(&code);
     code = fix_gating_ternary_line_breaks(&code);
     code = fix_unoptimized_function_param_wrapping(&code);
+    code = fix_jsx_assignment_parens(&code);
     Ok(CompileResult {
         transformed: true,
         code,
@@ -5962,6 +5963,194 @@ fn fix_unoptimized_function_param_wrapping(code: &str) -> String {
         result.push_str(line);
     }
     result
+}
+
+/// Wrap JSX in assignment expressions with parentheses to match Babel's printer behavior.
+///
+/// OXC's codegen strips `ParenthesizedExpression` nodes, so our AST-level
+/// `maybe_parenthesize_jsx` has no effect. This post-processing pass re-adds
+/// `( ... )` around JSX in assignments where Babel would output multi-line JSX
+/// (which it wraps in parentheses).
+///
+/// Babel outputs multi-line (parenthesized) JSX when the element is not self-closing
+/// AND has any of:
+///   - Attributes on the opening tag
+///   - Child JSX elements (nested `<` inside)
+///   - Multiple expression children (`{...}{...}`)
+///
+/// Simple cases like `t0 = <div>{bool}</div>` (single expression child, no attrs)
+/// are left unwrapped.
+fn fix_jsx_assignment_parens(code: &str) -> String {
+    // Quick bail: if no JSX assignments exist, return early
+    if !code.contains("= <") {
+        return code.to_string();
+    }
+    let mut result = String::with_capacity(code.len() + 64);
+    for line in code.split('\n') {
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        if let Some(fixed) = try_wrap_jsx_assignment_parens(line) {
+            result.push_str(&fixed);
+        } else {
+            result.push_str(line);
+        }
+    }
+    result
+}
+
+/// Try to wrap JSX in an assignment on a single line with `( ... )`.
+/// Returns `Some(wrapped_line)` if the line matches the pattern and the JSX
+/// is complex enough to need wrapping, `None` otherwise.
+fn try_wrap_jsx_assignment_parens(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+
+    // Match pattern: `IDENT = <...>;`
+    // The identifier can be a temp like `t0`, `t1`, or any identifier.
+    let eq_jsx_pos = trimmed.find("= <")?;
+
+    // Verify the left side is a simple identifier (word chars before `= `)
+    let before_eq = trimmed[..eq_jsx_pos].trim_end();
+    if before_eq.is_empty()
+        || !before_eq
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return None;
+    }
+
+    // The JSX part starts after `= ` and ends before `;`
+    if !trimmed.ends_with(';') {
+        return None;
+    }
+    let jsx_part = &trimmed[eq_jsx_pos + 2..trimmed.len() - 1]; // skip "= " and trailing ";"
+
+    // Must start with `<`
+    if !jsx_part.starts_with('<') {
+        return None;
+    }
+
+    // Don't wrap self-closing elements like `<Component prop={val} />`
+    if jsx_part.ends_with("/>") {
+        return None;
+    }
+
+    // Check if this JSX needs parenthesization (would be multi-line in Babel)
+    if !jsx_needs_parens(jsx_part) {
+        return None;
+    }
+
+    // Build the wrapped line preserving leading whitespace
+    let leading_ws = &line[..line.len() - line.trim_start().len()];
+    Some(format!("{}{} = ( {} );", leading_ws, before_eq, jsx_part))
+}
+
+/// Determine whether JSX content would be multi-line in Babel's output,
+/// thus requiring parenthesization.
+///
+/// Returns true if the JSX has:
+/// 1. Attributes on the opening tag, OR
+/// 2. Child JSX elements (nested `<` after the opening tag's `>`), OR
+/// 3. Multiple expression children (`{...}` appearing 2+ times)
+fn jsx_needs_parens(jsx: &str) -> bool {
+    let bytes = jsx.as_bytes();
+    if bytes.is_empty() || bytes[0] != b'<' {
+        return false;
+    }
+
+    // Find the end of the opening tag (the first `>` that closes it)
+    // We need to handle `<Tag attr={expr}>` where `>` appears inside `{...}`
+    let mut brace_depth = 0u32;
+    let mut opening_tag_end = None;
+    let mut has_attrs = false;
+    let mut past_tag_name = false;
+
+    for (i, &b) in bytes.iter().enumerate().skip(1) {
+        match b {
+            b'{' => brace_depth += 1,
+            b'}' if brace_depth > 0 => brace_depth -= 1,
+            b' ' | b'\t' if brace_depth == 0 && !past_tag_name => {
+                past_tag_name = true;
+            }
+            b'>' if brace_depth == 0 => {
+                // Check if this is `/>` (self-closing)
+                if i > 0 && bytes[i - 1] == b'/' {
+                    return false; // self-closing, no wrapping needed
+                }
+                if past_tag_name {
+                    // There's content between tag name and `>` → may have attributes
+                    let between = &jsx[1..i];
+                    let tag_and_rest = between.trim();
+                    if !tag_and_rest.is_empty() {
+                        let tag_name_end = tag_and_rest
+                            .find(|c: char| c.is_whitespace())
+                            .unwrap_or(tag_and_rest.len());
+                        if tag_name_end < tag_and_rest.len() {
+                            has_attrs = true;
+                        }
+                    }
+                }
+                opening_tag_end = Some(i);
+                break;
+            }
+            _ => {
+                if brace_depth == 0 && past_tag_name && !b.is_ascii_whitespace() {
+                    has_attrs = true;
+                }
+            }
+        }
+    }
+
+    let opening_end = match opening_tag_end {
+        Some(pos) => pos,
+        None => return false, // malformed
+    };
+
+    // Condition 1: has attributes
+    if has_attrs {
+        return true;
+    }
+
+    // Look at the content between opening tag end and closing tag
+    // Find the closing tag: last occurrence of `</`
+    let children_start = opening_end + 1;
+    let closing_tag_start = match jsx.rfind("</") {
+        Some(pos) if pos >= children_start => pos,
+        _ => return false,
+    };
+
+    let children = &jsx[children_start..closing_tag_start];
+    if children.is_empty() {
+        return false;
+    }
+
+    // Condition 2: has child JSX elements (nested `<` that's not inside `{...}`)
+    let mut child_brace_depth = 0u32;
+    let mut expr_child_count = 0u32;
+    let child_bytes = children.as_bytes();
+    for &b in child_bytes {
+        match b {
+            b'{' => {
+                if child_brace_depth == 0 {
+                    expr_child_count += 1;
+                }
+                child_brace_depth += 1;
+            }
+            b'}' if child_brace_depth > 0 => child_brace_depth -= 1,
+            b'<' if child_brace_depth == 0 => {
+                // Found a child JSX element
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    // Condition 3: multiple expression children
+    if expr_child_count >= 2 {
+        return true;
+    }
+
+    false
 }
 
 /// Find the position of the matching `)` for a string starting after `(`.

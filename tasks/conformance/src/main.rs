@@ -2591,6 +2591,8 @@ fn normalize_strict_output_equivalences(code: &str) -> String {
         normalize_dead_expression_statements,
         normalize_logical_and_assignment,
         normalize_const_named_function_to_declaration,
+        normalize_fbt_plural_cross_product_tables,
+        normalize_fbt_placeholder_spacing,
     ];
     for step in steps {
         normalized = step(&normalized);
@@ -6676,7 +6678,10 @@ fn normalize_small_array_bracket_spacing(code: &str) -> String {
     code.lines()
         .map(|line| {
             let trimmed = line.trim();
-            if trimmed.starts_with("return [") || trimmed.contains("= [") {
+            if trimmed.starts_with("return [")
+                || trimmed.contains("= [")
+                || trimmed.contains("fbt._(")
+            {
                 trimmed
                     .replace("[ ", "[")
                     .replace(" ]", "]")
