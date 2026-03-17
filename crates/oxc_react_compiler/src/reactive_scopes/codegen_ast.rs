@@ -1625,11 +1625,39 @@ fn codegen_declare<'a>(cx: &mut CodegenContext<'a>, lvalue: &LValue) -> Option<a
     cx.declared.insert(id);
     cx.declared_decl_ids.insert(decl_id);
     let kind = variable_declaration_kind(lvalue.kind).unwrap_or(ast::VariableDeclarationKind::Let);
+    // Check for preserved initializer from DCE (e.g., `let x = 0` where the
+    // StoreLocal was rewritten to DeclareLocal but the initial value should
+    // be kept because it's not always overwritten before being read).
+    let init =
+        crate::optimization::dead_code_elimination::preserved_top_level_let_initializer_for_decl(
+            decl_id,
+        )
+        .map(|js_value: String| match js_value.as_str() {
+            "null" => cx.builder.expression_null_literal(SPAN),
+            "undefined" => cx
+                .builder
+                .expression_identifier(SPAN, cx.builder.ident("undefined")),
+            "true" => cx.builder.expression_boolean_literal(SPAN, true),
+            "false" => cx.builder.expression_boolean_literal(SPAN, false),
+            s => {
+                if let Ok(n) = s.parse::<f64>() {
+                    cx.builder.expression_numeric_literal(
+                        SPAN,
+                        n,
+                        None,
+                        oxc_syntax::number::NumberBase::Decimal,
+                    )
+                } else {
+                    cx.builder
+                        .expression_string_literal(SPAN, cx.builder.atom(s), None)
+                }
+            }
+        });
     Some(emit_var_decl_stmt_inner(
         cx,
         &name,
         kind,
-        None,
+        init,
         Some(decl_id),
     ))
 }
