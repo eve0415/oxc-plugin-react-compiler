@@ -636,7 +636,11 @@ pub fn infer_mutation_aliasing_effects(
     // Queue the entry block
     queued_states.insert(func.body.entry, state);
 
-    // Fixpoint iteration
+    // Fixpoint iteration — matches upstream's single-map approach where
+    // queuedStates is read and written during the same iteration over blocks.
+    // This ensures that when a predecessor (e.g. switch case true) queues a
+    // state for a successor (e.g. case false), that state is available when
+    // the successor is reached later in the same iteration.
     let mut iteration_count = 0;
     while !queued_states.is_empty() {
         iteration_count += 1;
@@ -645,23 +649,25 @@ pub fn infer_mutation_aliasing_effects(
             break;
         }
 
-        // Take the current queued states so we can iterate blocks
-        let current_queued = std::mem::take(&mut queued_states);
+        for idx in 0..func.body.blocks.len() {
+            let block_id = func.body.blocks[idx].0;
 
-        for (block_id, block) in &mut func.body.blocks {
-            let incoming_state = match current_queued.get(block_id) {
+            // Read and remove the queued state for this block (matches upstream's
+            // queuedStates.get(blockId) + queuedStates.delete(blockId))
+            let incoming_state = match queued_states.remove(&block_id) {
                 Some(s) => s,
                 None => continue,
             };
 
-            states_by_block.insert(*block_id, incoming_state.clone());
-            let mut block_state = incoming_state.clone();
+            states_by_block.insert(block_id, incoming_state.clone());
+            let mut block_state = incoming_state;
 
-            infer_block(&ctx, &mut block_state, *block_id, block);
+            let block = &mut func.body.blocks[idx].1;
+            infer_block(&ctx, &mut block_state, block_id, block);
 
             // Queue successors
-            let mut successors = terminal_successors(&block.terminal);
-            if let Some(handler_succ) = ctx.catch_handler_successor_by_try_block.get(block_id)
+            let mut successors = terminal_successors(&func.body.blocks[idx].1.terminal);
+            if let Some(handler_succ) = ctx.catch_handler_successor_by_try_block.get(&block_id)
                 && !successors.contains(handler_succ)
             {
                 successors.push(*handler_succ);
