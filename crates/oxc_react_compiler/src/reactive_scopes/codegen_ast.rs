@@ -1608,7 +1608,24 @@ fn codegen_instruction_value<'a>(
             }
         }
         InstructionValue::ReactiveOptionalExpression { value, .. } => {
-            codegen_instruction_value(cx, value)
+            let expr = codegen_instruction_value(cx, value)?;
+            // Wrap the optional chain result in a ChainExpression so that
+            // OXC codegen emits parentheses when this expression is used as
+            // the object of a non-optional member access. Without this,
+            // `(props?.a).b` would be printed as `props?.a.b`, which has
+            // different semantics (`.b` becomes part of the optional chain).
+            Some(match expr {
+                ast::Expression::StaticMemberExpression(m) => cx
+                    .builder
+                    .expression_chain(SPAN, ast::ChainElement::StaticMemberExpression(m)),
+                ast::Expression::ComputedMemberExpression(m) => cx
+                    .builder
+                    .expression_chain(SPAN, ast::ChainElement::ComputedMemberExpression(m)),
+                ast::Expression::CallExpression(c) => cx
+                    .builder
+                    .expression_chain(SPAN, ast::ChainElement::CallExpression(c)),
+                other => other,
+            })
         }
         InstructionValue::ReactiveLogicalExpression {
             operator,

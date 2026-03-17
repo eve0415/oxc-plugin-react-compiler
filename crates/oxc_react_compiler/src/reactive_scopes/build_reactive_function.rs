@@ -1907,10 +1907,14 @@ impl Driver {
                                         Box::new(ReactiveInstruction {
                                             id: consequent_result.id,
                                             lvalue: Some(consequent_result.place.clone()),
-                                            value: InstructionValue::PropertyLoad {
-                                                object: object.clone(),
-                                                property: property.clone(),
+                                            value: InstructionValue::ReactiveOptionalExpression {
                                                 optional: true,
+                                                value: Box::new(InstructionValue::PropertyLoad {
+                                                    object: object.clone(),
+                                                    property: property.clone(),
+                                                    optional: true,
+                                                    loc: loc.clone(),
+                                                }),
                                                 loc: loc.clone(),
                                             },
                                             loc: loc.clone(),

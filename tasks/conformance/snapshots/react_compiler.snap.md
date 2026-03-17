@@ -1,11 +1,9 @@
-# React Compiler Conformance — 99.9% parity rate
+# React Compiler Conformance — 100.0% parity rate
 
-**1750** parity_success, **2** parity_failure, **0** skipped
+**1752** parity_success, **0** parity_failure, **0** skipped
 
 ## Failed
 
-- `repro-no-declarations-in-reactive-scope-with-early-return`: Output mismatch
-- `repro-renaming-conflicting-decls`: Output mismatch
 
 ## Passed
 
@@ -1347,6 +1345,7 @@
 - `repro-mutate-result-of-function-call-with-frozen-argument-in-function-expression`
 - `repro-mutate-result-of-method-call-on-frozen-value-in-function-expression`
 - `repro-mutate-result-of-method-call-on-frozen-value-is-allowed`
+- `repro-no-declarations-in-reactive-scope-with-early-return`
 - `repro-no-value-for-temporary`
 - `repro-no-value-for-temporary-reactive-scope-with-early-return`
 - `repro-non-identifier-object-keys`
@@ -1360,6 +1359,7 @@
 - `repro-reassign-props`
 - `repro-reassign-to-variable-without-mutable-range`
 - `repro-ref-mutable-range`
+- `repro-renaming-conflicting-decls`
 - `repro-retain-source-when-bailout`
 - `repro-returned-inner-fn-mutates-context`
 - `repro-returned-inner-fn-reassigns-context`
