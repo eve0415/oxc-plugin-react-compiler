@@ -176,6 +176,9 @@ struct CodegenContext<'a> {
     force_inline_decls: HashSet<DeclarationId>,
     /// Error encountered during codegen (e.g., unnamed identifier invariant).
     codegen_error: Option<CompilerError>,
+    /// DeclarationIds corresponding to JSXText instruction values, used to
+    /// distinguish JSXText from StringLiteral when lowering JSX children.
+    jsx_text_decl_ids: HashSet<DeclarationId>,
 }
 
 impl<'a> CodegenContext<'a> {
@@ -362,6 +365,7 @@ pub fn codegen_reactive_function<'a>(
         extracted_optional_deps: HashSet::new(),
         force_inline_decls: HashSet::new(),
         codegen_error: None,
+        jsx_text_decl_ids: HashSet::new(),
     };
 
     // Pre-collect preferred names: scan body for named references to
@@ -944,6 +948,14 @@ fn codegen_instruction<'a>(
         _ => {}
     }
 
+    // Track JSXText instructions for JSX child lowering distinction.
+    if matches!(instr.value, InstructionValue::JSXText { .. })
+        && let Some(lvalue) = &instr.lvalue
+    {
+        cx.jsx_text_decl_ids
+            .insert(lvalue.identifier.declaration_id);
+    }
+
     // ── Expression-level variants ──
     let expr = codegen_instruction_value(cx, &instr.value)?;
 
@@ -1221,21 +1233,31 @@ fn codegen_instruction_value<'a>(
             // SAFETY: The closure is only used synchronously within lower_jsx_expression,
             // and cx outlives the call. We use a raw pointer to satisfy the Fn + Copy bound.
             let cx_ptr = cx as *mut CodegenContext<'a>;
+            let jsx_text_ids = &cx.jsx_text_decl_ids as *const HashSet<DeclarationId>;
+            let fbt_ops = &cx.options.fbt_operands;
             super::super::codegen_backend::hir_to_ast::lower_jsx_expression(
                 cx.builder,
                 tag,
                 props,
                 children.as_deref(),
                 |place, _visiting| unsafe { codegen_place(&mut *cx_ptr, place) },
+                |place: &Place| unsafe {
+                    (*jsx_text_ids).contains(&place.identifier.declaration_id)
+                },
+                fbt_ops,
                 &mut HashSet::new(),
             )
         }
         InstructionValue::JsxFragment { children, .. } => {
             let cx_ptr = cx as *mut CodegenContext<'a>;
+            let jsx_text_ids = &cx.jsx_text_decl_ids as *const HashSet<DeclarationId>;
             super::super::codegen_backend::hir_to_ast::lower_jsx_fragment_expression(
                 cx.builder,
                 children,
                 |place, _visiting| unsafe { codegen_place(&mut *cx_ptr, place) },
+                |place: &Place| unsafe {
+                    (*jsx_text_ids).contains(&place.identifier.declaration_id)
+                },
                 &mut HashSet::new(),
             )
         }

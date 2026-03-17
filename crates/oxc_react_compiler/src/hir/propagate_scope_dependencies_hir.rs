@@ -1018,11 +1018,21 @@ impl DependencyCollectionContext {
                 let is_active = self.scope_stack.iter().any(|s| s.id == scope.id);
                 if !is_active {
                     let scope_decls = self.scope_decls.entry(scope.id).or_default();
-                    if let indexmap::map::Entry::Vacant(e) = scope_decls.entry(dep.identifier.id) {
-                        e.insert(ScopeDeclaration {
-                            identifier: dep.identifier.clone(),
-                            scope: innermost_scope.clone(),
-                        });
+                    // Match upstream: dedup by declarationId across all values,
+                    // not by IdentifierId key. Upstream checks:
+                    //   !Iterable_some(scope.declarations.values(),
+                    //     decl => decl.identifier.declarationId === dep.identifier.declarationId)
+                    let already_declared = scope_decls
+                        .values()
+                        .any(|d| d.identifier.declaration_id == dep.identifier.declaration_id);
+                    if !already_declared {
+                        scope_decls.insert(
+                            dep.identifier.id,
+                            ScopeDeclaration {
+                                identifier: dep.identifier.clone(),
+                                scope: innermost_scope.clone(),
+                            },
+                        );
                     }
                 }
             }

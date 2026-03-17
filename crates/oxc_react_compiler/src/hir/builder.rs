@@ -272,6 +272,46 @@ pub fn reverse_postorder_blocks(body: &mut HIR) {
     body.blocks = new_blocks;
 }
 
+/// Port of upstream `removeUnreachableForUpdates` (HIRBuilder.ts:725-735).
+/// If a For terminal's update block was removed during dead-block elimination,
+/// null out the update pointer.
+pub fn remove_unreachable_for_updates(body: &mut HIR) {
+    let block_ids: HashSet<BlockId> = body.blocks.iter().map(|(id, _)| *id).collect();
+    for (_, block) in &mut body.blocks {
+        if let Terminal::For { update, .. } = &mut block.terminal
+            && let Some(update_id) = *update
+            && !block_ids.contains(&update_id)
+        {
+            *update = None;
+        }
+    }
+}
+
+/// Port of upstream `removeDeadDoWhileStatements` (HIRBuilder.ts:737-761).
+/// If a DoWhile terminal's test block is unreachable, replace the terminal
+/// with a Goto to the loop body (effectively inlining the loop body once).
+pub fn remove_dead_do_while_statements(body: &mut HIR) {
+    let block_ids: HashSet<BlockId> = body.blocks.iter().map(|(id, _)| *id).collect();
+    for (_, block) in &mut body.blocks {
+        if let Terminal::DoWhile {
+            test,
+            loop_block,
+            id,
+            loc,
+            ..
+        } = &block.terminal
+            && !block_ids.contains(test)
+        {
+            block.terminal = Terminal::Goto {
+                block: *loop_block,
+                variant: GotoVariant::Break,
+                id: *id,
+                loc: loc.clone(),
+            };
+        }
+    }
+}
+
 /// Iterate control-flow successors using upstream `eachTerminalSuccessor` semantics.
 ///
 /// This intentionally excludes pseudo-successors like `fallthrough`.

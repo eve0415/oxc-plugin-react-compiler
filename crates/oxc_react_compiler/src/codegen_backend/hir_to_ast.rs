@@ -162,6 +162,12 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         }
     }
 
+    fn is_jsx_text_place(&self, place: &Place) -> bool {
+        self.instruction_map
+            .get(&place.identifier.id)
+            .is_some_and(|instr| matches!(instr.value, InstructionValue::JSXText { .. }))
+    }
+
     fn lower_terminal(
         &self,
         terminal: &Terminal,
@@ -1089,12 +1095,15 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 props,
                 children.as_deref(),
                 |place, visiting| self.lower_place(place, visiting),
+                |place| self.is_jsx_text_place(place),
+                &HashSet::new(),
                 visiting,
             ),
             InstructionValue::JsxFragment { children, .. } => lower_jsx_fragment_expression(
                 self.builder,
                 children,
                 |place, visiting| self.lower_place(place, visiting),
+                |place| self.is_jsx_text_place(place),
                 visiting,
             ),
             InstructionValue::JSXText { value, .. } => Some(
@@ -1671,33 +1680,50 @@ where
     expression_to_assignment_target(builder, expression)
 }
 
-pub(crate) fn lower_jsx_expression<'a, F>(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lower_jsx_expression<'a, F, G>(
     builder: AstBuilder<'a>,
     tag: &types::JsxTag,
     props: &[types::JsxAttribute],
     children: Option<&[Place]>,
     lower_place: F,
+    is_jsx_text: G,
+    fbt_operands: &HashSet<IdentifierId>,
     visiting: &mut HashSet<IdentifierId>,
 ) -> Option<ast::Expression<'a>>
 where
     F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+    G: Fn(&Place) -> bool + Copy,
 {
     if matches!(tag, types::JsxTag::Fragment) {
         return lower_jsx_fragment_expression(
             builder,
             children.unwrap_or(&[]),
             lower_place,
+            is_jsx_text,
             visiting,
         );
     }
 
     let opening_name = lower_jsx_element_name(builder, tag, lower_place, visiting)?;
-    let attributes = lower_jsx_attributes(builder, props, lower_place, visiting)?;
+    let attributes = lower_jsx_attributes(builder, props, lower_place, fbt_operands, visiting)?;
     let is_single_child_fbt_tag = matches!(tag, types::JsxTag::BuiltinTag(name) if name == "fbt:param" || name == "fbs:param");
     let jsx_children = if is_single_child_fbt_tag {
-        lower_jsx_fbt_children(builder, children.unwrap_or(&[]), lower_place, visiting)?
+        lower_jsx_fbt_children(
+            builder,
+            children.unwrap_or(&[]),
+            lower_place,
+            is_jsx_text,
+            visiting,
+        )?
     } else {
-        lower_jsx_children(builder, children.unwrap_or(&[]), lower_place, visiting)?
+        lower_jsx_children(
+            builder,
+            children.unwrap_or(&[]),
+            lower_place,
+            is_jsx_text,
+            visiting,
+        )?
     };
     let closing_element = if jsx_children.is_empty() {
         None
@@ -1716,19 +1742,21 @@ where
     ))
 }
 
-pub(crate) fn lower_jsx_fragment_expression<'a, F>(
+pub(crate) fn lower_jsx_fragment_expression<'a, F, G>(
     builder: AstBuilder<'a>,
     children: &[Place],
     lower_place: F,
+    is_jsx_text: G,
     visiting: &mut HashSet<IdentifierId>,
 ) -> Option<ast::Expression<'a>>
 where
     F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+    G: Fn(&Place) -> bool + Copy,
 {
     Some(builder.expression_jsx_fragment(
         SPAN,
         builder.jsx_opening_fragment(SPAN),
-        lower_jsx_children(builder, children, lower_place, visiting)?,
+        lower_jsx_children(builder, children, lower_place, is_jsx_text, visiting)?,
         builder.jsx_closing_fragment(SPAN),
     ))
 }
@@ -1813,6 +1841,7 @@ fn lower_jsx_attributes<'a, F>(
     builder: AstBuilder<'a>,
     props: &[types::JsxAttribute],
     lower_place: F,
+    fbt_operands: &HashSet<IdentifierId>,
     visiting: &mut HashSet<IdentifierId>,
 ) -> Option<oxc_allocator::Vec<'a, ast::JSXAttributeItem<'a>>>
 where
@@ -1822,7 +1851,8 @@ where
     for prop in props {
         match prop {
             types::JsxAttribute::Attribute { name, place } => {
-                let value = lower_jsx_attribute_value(builder, place, lower_place, visiting)?;
+                let value =
+                    lower_jsx_attribute_value(builder, place, lower_place, fbt_operands, visiting)?;
                 attributes.push(builder.jsx_attribute_item_attribute(
                     SPAN,
                     builder.jsx_attribute_name_identifier(SPAN, builder.atom(name)),
@@ -1846,6 +1876,7 @@ fn lower_jsx_attribute_value<'a, F>(
     builder: AstBuilder<'a>,
     place: &Place,
     lower_place: F,
+    fbt_operands: &HashSet<IdentifierId>,
     visiting: &mut HashSet<IdentifierId>,
 ) -> Option<Option<ast::JSXAttributeValue<'a>>>
 where
@@ -1861,16 +1892,16 @@ where
             )))
         }
         ast::Expression::StringLiteral(literal) => {
-            // JSX string attributes normalise whitespace (newlines → spaces,
-            // tabs → spaces).  When the string's meaning depends on those
-            // characters — i.e. it consists entirely of whitespace / control
-            // chars, or contains a tab — keep it in an expression container
-            // so the escapes survive: value={"\n"}, value={"\t"}.
-            let needs_expr_container = literal
-                .value
-                .chars()
-                .all(|c| c.is_ascii_whitespace() || c.is_control())
-                || literal.value.contains('\t');
+            // Upstream STRING_REQUIRES_EXPR_CONTAINER_PATTERN:
+            // /[\u{0000}-\u{001F}\u{007F}\u{0080}-\u{FFFF}\u{010000}-\u{10FFFF}]|"|\\/
+            // Wraps in expression container when the value contains control chars,
+            // non-ASCII chars, double quotes, or backslashes — unless it's an fbt operand.
+            let is_fbt_operand = fbt_operands.contains(&place.identifier.id);
+            let needs_expr_container = !is_fbt_operand
+                && literal.value.chars().any(|c| {
+                    matches!(c, '\u{0000}'..='\u{001F}' | '\u{007F}'..='\u{FFFF}'
+                        | '\u{10000}'..='\u{10FFFF}' | '"' | '\\')
+                });
             if needs_expr_container {
                 let expr = ast::Expression::StringLiteral(literal);
                 Some(Some(ast::JSXAttributeValue::ExpressionContainer(
@@ -1906,43 +1937,82 @@ where
     }
 }
 
-fn lower_jsx_children<'a, F>(
+/// Pattern matching upstream's `JSX_TEXT_CHILD_REQUIRES_EXPR_CONTAINER_PATTERN`.
+/// When a JSXText value contains any of these characters, it must be wrapped
+/// in an expression container to preserve the value through JSX parsing.
+fn jsx_text_needs_expr_container(value: &str) -> bool {
+    value
+        .chars()
+        .any(|c| matches!(c, '<' | '>' | '&' | '{' | '}'))
+}
+
+fn lower_jsx_children<'a, F, G>(
     builder: AstBuilder<'a>,
     children: &[Place],
     lower_place: F,
+    is_jsx_text: G,
     visiting: &mut HashSet<IdentifierId>,
 ) -> Option<oxc_allocator::Vec<'a, ast::JSXChild<'a>>>
 where
     F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+    G: Fn(&Place) -> bool + Copy,
 {
     let mut lowered = builder.vec();
     for child in children {
-        lowered.push(lower_jsx_child(builder, child, lower_place, visiting)?);
+        lowered.push(lower_jsx_child(
+            builder,
+            child,
+            lower_place,
+            is_jsx_text,
+            visiting,
+        )?);
     }
     Some(lowered)
 }
 
-fn lower_jsx_child<'a, F>(
+fn lower_jsx_child<'a, F, G>(
     builder: AstBuilder<'a>,
     place: &Place,
     lower_place: F,
+    is_jsx_text: G,
     visiting: &mut HashSet<IdentifierId>,
 ) -> Option<ast::JSXChild<'a>>
 where
     F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+    G: Fn(&Place) -> bool + Copy,
 {
     let expression = lower_place(place, visiting)?;
-    match expression {
-        ast::Expression::StringLiteral(literal) => {
-            let value = literal.unbox().value;
-            Some(ast::JSXChild::Text(
-                builder.alloc_jsx_text(SPAN, value, None),
-            ))
+    // Upstream codegenJsxElement distinguishes JSXText from other expressions:
+    // - JSXText with <>&{} chars → ExpressionContainer(StringLiteral)
+    // - JSXText without those chars → raw JSXText
+    // - JSXElement/JSXFragment → passthrough
+    // - Everything else → ExpressionContainer(expression)
+    if is_jsx_text(place) {
+        match expression {
+            ast::Expression::StringLiteral(literal) => {
+                if jsx_text_needs_expr_container(&literal.value) {
+                    Some(builder.jsx_child_expression_container(
+                        SPAN,
+                        ast::JSXExpression::from(ast::Expression::StringLiteral(literal)),
+                    ))
+                } else {
+                    let value = literal.unbox().value;
+                    Some(ast::JSXChild::Text(
+                        builder.alloc_jsx_text(SPAN, value, None),
+                    ))
+                }
+            }
+            expression => Some(
+                builder.jsx_child_expression_container(SPAN, ast::JSXExpression::from(expression)),
+            ),
         }
-        ast::Expression::JSXElement(element) => Some(ast::JSXChild::Element(element)),
-        ast::Expression::JSXFragment(fragment) => Some(ast::JSXChild::Fragment(fragment)),
-        expression => {
-            Some(builder.jsx_child_expression_container(SPAN, ast::JSXExpression::from(expression)))
+    } else {
+        match expression {
+            ast::Expression::JSXElement(element) => Some(ast::JSXChild::Element(element)),
+            ast::Expression::JSXFragment(fragment) => Some(ast::JSXChild::Fragment(fragment)),
+            expression => Some(
+                builder.jsx_child_expression_container(SPAN, ast::JSXExpression::from(expression)),
+            ),
         }
     }
 }
@@ -1952,50 +2022,71 @@ where
 /// `babel-plugin-fbt` only accepts JSX elements or expression containers as
 /// children of `<fbt:param>`. A bare `JSXFragment` child is rejected, so we
 /// wrap fragments in a `JSXExpressionContainer` (`{<>...</>}`).
-fn lower_jsx_fbt_children<'a, F>(
+///
+/// Upstream `codegenJsxFbtChildElement` keeps JSXText and JSXElement as-is.
+fn lower_jsx_fbt_children<'a, F, G>(
     builder: AstBuilder<'a>,
     children: &[Place],
     lower_place: F,
+    is_jsx_text: G,
     visiting: &mut HashSet<IdentifierId>,
 ) -> Option<oxc_allocator::Vec<'a, ast::JSXChild<'a>>>
 where
     F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+    G: Fn(&Place) -> bool + Copy,
 {
     let mut lowered = builder.vec();
     for child in children {
-        lowered.push(lower_jsx_fbt_child(builder, child, lower_place, visiting)?);
+        lowered.push(lower_jsx_fbt_child(
+            builder,
+            child,
+            lower_place,
+            is_jsx_text,
+            visiting,
+        )?);
     }
     Some(lowered)
 }
 
-fn lower_jsx_fbt_child<'a, F>(
+fn lower_jsx_fbt_child<'a, F, G>(
     builder: AstBuilder<'a>,
     place: &Place,
     lower_place: F,
+    is_jsx_text: G,
     visiting: &mut HashSet<IdentifierId>,
 ) -> Option<ast::JSXChild<'a>>
 where
     F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+    G: Fn(&Place) -> bool + Copy,
 {
     let expression = lower_place(place, visiting)?;
-    match expression {
-        ast::Expression::StringLiteral(literal) => {
-            let value = literal.unbox().value;
-            Some(ast::JSXChild::Text(
-                builder.alloc_jsx_text(SPAN, value, None),
-            ))
+    // Upstream codegenJsxFbtChildElement: JSXText and JSXElement pass through.
+    if is_jsx_text(place) {
+        match expression {
+            ast::Expression::StringLiteral(literal) => {
+                let value = literal.unbox().value;
+                Some(ast::JSXChild::Text(
+                    builder.alloc_jsx_text(SPAN, value, None),
+                ))
+            }
+            expression => Some(
+                builder.jsx_child_expression_container(SPAN, ast::JSXExpression::from(expression)),
+            ),
         }
-        // fbt:param only allows JSX element or expression container as children.
-        // JSXElement is passed through directly.
-        ast::Expression::JSXElement(element) => Some(ast::JSXChild::Element(element)),
-        // JSXFragment must be wrapped in an expression container so that
-        // babel-plugin-fbt can process it: {<>...</>} rather than bare <>...</>.
-        ast::Expression::JSXFragment(fragment) => Some(builder.jsx_child_expression_container(
-            SPAN,
-            ast::JSXExpression::from(ast::Expression::JSXFragment(fragment)),
-        )),
-        expression => {
-            Some(builder.jsx_child_expression_container(SPAN, ast::JSXExpression::from(expression)))
+    } else {
+        match expression {
+            // fbt:param only allows JSX element or expression container as children.
+            // JSXElement is passed through directly.
+            ast::Expression::JSXElement(element) => Some(ast::JSXChild::Element(element)),
+            // JSXFragment must be wrapped in an expression container so that
+            // babel-plugin-fbt can process it: {<>...</>} rather than bare <>...</>.
+            ast::Expression::JSXFragment(fragment) => Some(builder.jsx_child_expression_container(
+                SPAN,
+                ast::JSXExpression::from(ast::Expression::JSXFragment(fragment)),
+            )),
+            expression => Some(
+                builder.jsx_child_expression_container(SPAN, ast::JSXExpression::from(expression)),
+            ),
         }
     }
 }

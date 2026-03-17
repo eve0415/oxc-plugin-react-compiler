@@ -7,7 +7,7 @@
 //! replaces instructions whose operands are known constants with the computed result.
 //! Also prunes unreachable branches when an if-condition is a known constant.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use crate::hir::types::*;
 
@@ -72,105 +72,42 @@ fn collect_reassigned_decl_ids_in_function(func: &HIRFunction, out: &mut HashSet
 }
 
 /// Run constant propagation on the given function (fixpoint iteration).
-/// After branch pruning, unreachable phi operands are removed and the pass
-/// is re-run so that phis with fewer operands can resolve to constants.
+/// After branch pruning, the full upstream cleanup sequence is applied:
+/// reorder blocks, remove unreachable for updates, remove dead do-while,
+/// prune try-catch, renumber instruction ids, recompute predecessors,
+/// prune phi operands, eliminate redundant phis, and merge consecutive blocks.
 pub fn constant_propagation(func: &mut HIRFunction) {
-    // Iterate until no more branches are pruned
+    // Iterate until no more branches are pruned (matches upstream while(true) loop)
     for _ in 0..10 {
         let mut constants: Constants = HashMap::new();
         let pruned = apply_constant_propagation(func, &mut constants);
         if pruned == 0 {
             break;
         }
-        // After pruning, update phi operands and eliminate dead blocks so that
-        // the next iteration's multi_reassign_decl_ids computation only sees
-        // reachable stores (stores in pruned dead branches should not count).
-        update_phi_operands_after_pruning(func);
-        eliminate_dead_blocks(func);
-    }
-}
+        // Full upstream cleanup sequence (ConstantPropagation.ts:73-99)
+        crate::hir::builder::reverse_postorder_blocks(&mut func.body);
+        crate::hir::builder::remove_unreachable_for_updates(&mut func.body);
+        crate::hir::builder::remove_dead_do_while_statements(&mut func.body);
+        crate::hir::prune_maybe_throws::remove_unnecessary_try_catch(&mut func.body);
+        crate::hir::prune_maybe_throws::mark_instruction_ids(&mut func.body);
+        crate::hir::builder::mark_predecessors(&mut func.body);
 
-/// Remove blocks unreachable from the entry block.
-fn eliminate_dead_blocks(func: &mut HIRFunction) {
-    let entry = func.body.entry;
-    let mut reachable: HashSet<BlockId> = HashSet::new();
-    let mut queue: VecDeque<BlockId> = VecDeque::new();
-    queue.push_back(entry);
-    reachable.insert(entry);
-    while let Some(block_id) = queue.pop_front() {
-        let terminal = func
-            .body
-            .blocks
-            .iter()
-            .find(|(id, _)| *id == block_id)
-            .map(|(_, b)| &b.terminal);
-        if let Some(terminal) = terminal {
-            for succ in crate::hir::builder::terminal_successors(terminal) {
-                if reachable.insert(succ) {
-                    queue.push_back(succ);
-                }
+        // Now that predecessors are updated, prune phi operands that can
+        // never be reached (upstream ConstantPropagation.ts:81-89)
+        for (_, block) in &mut func.body.blocks {
+            for phi in &mut block.phis {
+                phi.operands
+                    .retain(|pred_id, _| block.preds.contains(pred_id));
             }
         }
-    }
-    let before = func.body.blocks.len();
-    func.body.blocks.retain(|(id, _)| reachable.contains(id));
-    if func.body.blocks.len() < before {
-        // Update predecessor sets after removing blocks
-        update_phi_operands_after_pruning(func);
-    }
-}
 
-/// Remove phi operands that reference blocks which are no longer predecessors.
-fn update_phi_operands_after_pruning(func: &mut HIRFunction) {
-    use std::collections::HashSet;
+        // By removing some phi operands, there may be phis that were not
+        // previously redundant but now are
+        crate::ssa::eliminate_redundant_phi::eliminate_redundant_phi(func);
 
-    // Compute reachable blocks from entry first — unreachable blocks
-    // (e.g., dead if-branches after pruning) must not count as predecessors.
-    let reachable: HashSet<BlockId> = {
-        let block_id_to_index: HashMap<BlockId, usize> = func
-            .body
-            .blocks
-            .iter()
-            .enumerate()
-            .map(|(i, (id, _))| (*id, i))
-            .collect();
-        let mut visited: HashSet<BlockId> = HashSet::new();
-        let mut queue: VecDeque<BlockId> = VecDeque::new();
-        queue.push_back(func.body.entry);
-        visited.insert(func.body.entry);
-        while let Some(bid) = queue.pop_front() {
-            if let Some(&idx) = block_id_to_index.get(&bid) {
-                let terminal = &func.body.blocks[idx].1.terminal;
-                for succ in crate::hir::builder::terminal_successors(terminal) {
-                    if visited.insert(succ) {
-                        queue.push_back(succ);
-                    }
-                }
-            }
-        }
-        visited
-    };
-
-    // Rebuild predecessor sets from terminals of REACHABLE blocks only
-    let mut actual_preds: HashMap<BlockId, HashSet<BlockId>> = HashMap::new();
-    for (block_id, block) in &func.body.blocks {
-        if !reachable.contains(block_id) {
-            continue;
-        }
-        let succs = crate::hir::builder::terminal_successors(&block.terminal);
-        for succ in succs {
-            actual_preds.entry(succ).or_default().insert(*block_id);
-        }
-    }
-
-    // For each block with phis, remove operands from non-predecessor blocks
-    for (block_id, block) in &mut func.body.blocks {
-        let preds = actual_preds.get(block_id).cloned().unwrap_or_default();
-        for phi in &mut block.phis {
-            phi.operands.retain(|pred_id, _| preds.contains(pred_id));
-        }
-        // Also update block.preds
-        block.preds = preds.into_iter().collect();
+        // Finally, merge together any blocks that are now guaranteed to
+        // execute consecutively
+        crate::hir::merge_consecutive_blocks::merge_consecutive_blocks(func);
     }
 }
 
