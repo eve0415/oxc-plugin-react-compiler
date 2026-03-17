@@ -1669,7 +1669,14 @@ pub(crate) fn lower_property_load<'a, F>(
 where
     F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>>,
 {
-    let object = lower_place(object, visiting)?;
+    let mut object = lower_place(object, visiting)?;
+    // When a non-optional property access follows an optional chain (e.g. `(props?.a).b`),
+    // we must wrap the chain in a SequenceExpression to force parentheses. Without this,
+    // OXC codegen emits `props?.a.b` which has different semantics: `.b` becomes part of
+    // the optional chain instead of an unconditional access.
+    if !optional && matches!(object, ast::Expression::ChainExpression(_)) {
+        object = builder.expression_sequence(SPAN, builder.vec1(object));
+    }
     match property {
         types::PropertyLiteral::String(name) if is_identifier_name(name) => {
             Some(ast::Expression::from(builder.member_expression_static(
