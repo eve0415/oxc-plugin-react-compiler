@@ -8,6 +8,17 @@
 
 use super::types::*;
 
+/// Convert a dependency path property string to the appropriate PropertyLiteral.
+/// Numeric strings like "0" become PropertyLiteral::Number(0.0) so they're
+/// emitted as `arr[0]` instead of `arr["0"]`.
+pub(crate) fn property_literal_for(property: &str) -> PropertyLiteral {
+    if let Ok(n) = property.parse::<f64>() {
+        PropertyLiteral::Number(n)
+    } else {
+        PropertyLiteral::String(property.to_string())
+    }
+}
+
 /// The result of building dependency instructions for a single
 /// `ReactiveScopeDependency`.
 ///
@@ -103,7 +114,7 @@ fn build_non_optional_dependency(
                     reactive: false,
                     loc: loc.clone(),
                 },
-                property: PropertyLiteral::String(entry.property.clone()),
+                property: property_literal_for(&entry.property),
                 optional: false,
                 loc: loc.clone(),
             },
@@ -216,7 +227,7 @@ fn build_optional_dependency(
                     reactive: false,
                     loc: loc.clone(),
                 },
-                property: PropertyLiteral::String(entry.property.clone()),
+                property: property_literal_for(&entry.property),
                 optional: entry.optional,
                 loc: loc.clone(),
             },
