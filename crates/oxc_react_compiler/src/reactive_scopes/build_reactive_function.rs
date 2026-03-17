@@ -1994,6 +1994,59 @@ impl Driver {
                 if let Some((cons_id, alt_id)) = test.branch_targets {
                     let left = self.visit_value_block(cons_id, &loc);
                     let right = self.visit_value_block(alt_id, &loc);
+
+                    // When the TEST block has store instructions (e.g.,
+                    // `(x = 1) && (x = 2)`), use ReactiveLogicalExpression
+                    // to preserve conditional structure. The test block's
+                    // stores must remain in a SequenceExpression so the
+                    // assignment side-effect and logical test are both emitted.
+                    let test_has_stores = test.instructions.iter().any(|i| {
+                        matches!(
+                            &i.value,
+                            InstructionValue::StoreLocal { .. }
+                                | InstructionValue::StoreContext { .. }
+                        )
+                    });
+                    if test_has_stores {
+                        let mut lsi = test.instructions;
+                        lsi.extend(left.instructions);
+                        let lv = if lsi.is_empty() {
+                            left.value.clone()
+                        } else {
+                            InstructionValue::ReactiveSequenceExpression {
+                                instructions: lsi,
+                                id: left.id,
+                                value: Box::new(left.value.clone()),
+                                loc: loc.clone(),
+                            }
+                        };
+                        let rv = if right.instructions.is_empty() {
+                            right.value.clone()
+                        } else {
+                            InstructionValue::ReactiveSequenceExpression {
+                                instructions: right.instructions,
+                                id: right.id,
+                                value: Box::new(right.value.clone()),
+                                loc: loc.clone(),
+                            }
+                        };
+                        return ValueBlockTerminalResult {
+                            instructions: vec![],
+                            final_instruction: Some(ReactiveInstruction {
+                                id,
+                                lvalue: Some(left.place.clone()),
+                                value: InstructionValue::ReactiveLogicalExpression {
+                                    operator,
+                                    left: Box::new(lv),
+                                    right: Box::new(rv),
+                                    loc: loc.clone(),
+                                },
+                                loc: loc.clone(),
+                            }),
+                            fallthrough,
+                        };
+                    }
+
                     let left_place = Self::effective_value_place(&left);
                     let right_place = Self::effective_value_place(&right);
                     let mut all_instrs = test.instructions;
