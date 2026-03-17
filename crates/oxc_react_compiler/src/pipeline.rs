@@ -1418,7 +1418,7 @@ fn run_hir_pipeline(
     // Phase 0.5: Pre-validation checks on the raw HIR
     // -----------------------------------------------------------------------
 
-    // Check for unsupported global function calls (upstream BuildHIR.ts:3681)
+    // Check for unsupported global function calls (matches upstream BuildHIR.ts:3681)
     run_validation!(validate_no_unsupported_global_calls(&hir_func));
 
     // -----------------------------------------------------------------------
@@ -1730,13 +1730,8 @@ fn run_hir_pipeline(
     }
 
     // Scope alignment
-    if std::env::var("DISABLE_ALIGN_METHOD_CALL_SCOPES").is_err() {
-        align_method_call_scopes::align_method_call_scopes(&mut hir_func);
-        if std::env::var("DEBUG_HIR_BLOCKS_TRACE").is_ok() {
-            maybe_dump_hir_blocks("after align_method_call_scopes", &hir_func);
-        }
-        maybe_dump_identifier_scopes("after align_method_call_scopes", &hir_func);
-    }
+    align_method_call_scopes::align_method_call_scopes(&mut hir_func);
+    maybe_dump_identifier_scopes("after align_method_call_scopes", &hir_func);
     align_object_method_scopes::align_object_method_scopes(&mut hir_func);
     if std::env::var("DEBUG_HIR_BLOCKS_TRACE").is_ok() {
         maybe_dump_hir_blocks("after align_object_method_scopes", &hir_func);
@@ -1772,8 +1767,8 @@ fn run_hir_pipeline(
     maybe_dump_hir_blocks("after flatten_scopes_with_hooks", &hir_func);
 
     // Post-outline DCE: our outlining passes create dead locals that upstream's
-    // BuildHIR avoids. Run the same DCE function at this pipeline point to clean
-    // them up before dependency propagation.
+    // BuildHIR avoids. TODO: fix outline_functions to not create dead locals,
+    // then remove this pass.
     trace_pass!("dead_code_elimination_post_outline");
     dead_code_elimination::dead_code_elimination_post_outline(&mut hir_func);
 

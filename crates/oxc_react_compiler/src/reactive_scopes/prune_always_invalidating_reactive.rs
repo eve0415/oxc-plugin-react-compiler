@@ -47,9 +47,6 @@ fn debug_invalidating_mark(
 /// new allocations and which are unmemoized (not within any reactive scope).
 /// Scopes depending on unmemoized always-invalidating values are pruned.
 pub fn prune_always_invalidating_scopes(func: &mut ReactiveFunction) {
-    if std::env::var("DISABLE_PRUNE_ALWAYS_INVALIDATING_SCOPES").is_ok() {
-        return;
-    }
     let mut state = AlwaysInvalidatingState {
         always_invalidating: HashSet::new(),
         unmemoized: HashSet::new(),

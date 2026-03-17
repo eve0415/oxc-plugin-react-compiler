@@ -25,10 +25,6 @@ use crate::hir::visitors;
 ///    top, merge from the outer scope through the top.
 /// 6. Rewrite all scope references to point to the merged group representative.
 pub fn merge_overlapping_reactive_scopes(func: &mut HIRFunction) {
-    if std::env::var("DISABLE_OVERLAP_MERGE").is_ok() {
-        return;
-    }
-
     // Step 1: Collect scope info — all places with scopes and scope ranges.
     // We need to collect scopes eagerly because some scopes begin before
     // the first instruction that references them (due to alignReactiveScopesToBlocks).

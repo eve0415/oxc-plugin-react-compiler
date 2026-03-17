@@ -25,9 +25,6 @@ fn debug_scope_prune(scope_id: ScopeId) {
 /// - It has no reassignments
 /// - It has no declarations, OR all its declarations came from inner scopes
 pub fn prune_unused_scopes(func: &mut ReactiveFunction) {
-    if std::env::var("DISABLE_PRUNE_UNUSED_SCOPES").is_ok() {
-        return;
-    }
     transform_block(&mut func.body);
 }
 
