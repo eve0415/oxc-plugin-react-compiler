@@ -47,6 +47,24 @@ fn capture_may_mutate(effect: Effect) -> bool {
     )
 }
 
+/// Collect declaration IDs referenced by LoadLocal/LoadContext in a function body.
+/// Non-recursive: only inspects the immediate function, not nested ones.
+fn collect_referenced_decl_ids_in_body(func: &HIRFunction) -> HashSet<DeclarationId> {
+    let mut out = HashSet::new();
+    for (_, block) in &func.body.blocks {
+        for instr in &block.instructions {
+            match &instr.value {
+                InstructionValue::LoadLocal { place, .. }
+                | InstructionValue::LoadContext { place, .. } => {
+                    out.insert(place.identifier.declaration_id);
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 fn collect_reassigned_decl_ids_in_function(func: &HIRFunction, out: &mut HashSet<DeclarationId>) {
     for (_, block) in &func.body.blocks {
         for instr in &block.instructions {
@@ -632,9 +650,22 @@ fn apply_constant_propagation(func: &mut HIRFunction, constants: &mut Constants)
                             );
                         }
                     }
+                    // Collect which declarations are referenced before CP.
+                    let pre_cp_refs = collect_referenced_decl_ids_in_body(&lowered_func.func);
+
                     // Upstream recurses CP into nested lowered functions using
                     // the same constants map.
                     apply_constant_propagation(&mut lowered_func.func, constants);
+
+                    // After CP inlines constants into the nested body, remove
+                    // context captures whose references were eliminated by CP
+                    // (present before but absent after). Keep captures that were
+                    // never referenced — they may serve aliasing/other purposes.
+                    let post_cp_refs = collect_referenced_decl_ids_in_body(&lowered_func.func);
+                    lowered_func.func.context.retain(|cap| {
+                        let decl = cap.identifier.declaration_id;
+                        post_cp_refs.contains(&decl) || !pre_cp_refs.contains(&decl)
+                    });
                     continue;
                 }
                 _ => {}
