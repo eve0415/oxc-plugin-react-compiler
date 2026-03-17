@@ -1362,7 +1362,12 @@ fn evaluate_unary_op(op: UnaryOperator, operand: &PrimitiveValue) -> Option<Prim
             Some(PrimitiveValue::Boolean(!is_truthy))
         }
         UnaryOperator::Minus => match operand {
-            PrimitiveValue::Number(n) => Some(PrimitiveValue::Number(-n)),
+            PrimitiveValue::Number(n) => {
+                let result = -n;
+                // Normalize -0.0 to 0.0 to match Babel's printer behavior
+                let result = if result == 0.0 { 0.0 } else { result };
+                Some(PrimitiveValue::Number(result))
+            }
             _ => None,
         },
         // Upstream only folds ! and - for unary operators
