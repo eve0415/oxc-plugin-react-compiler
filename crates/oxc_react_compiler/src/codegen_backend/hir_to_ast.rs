@@ -1500,13 +1500,45 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
     ) -> Option<Option<ast::Expression<'a>>> {
         let statements =
             self.lower_block_sequence(update_block, Some(test_block), &mut HashSet::new(), None)?;
-        if statements.is_empty() {
-            return Some(None);
-        }
-        let expressions = statements
+        let mut expressions: Vec<ast::Expression<'a>> = statements
             .into_iter()
-            .map(|statement| statement_to_expression(statement, self.builder.allocator))
-            .collect::<Option<Vec<_>>>()?;
+            .filter_map(|statement| statement_to_expression(statement, self.builder.allocator))
+            .collect();
+
+        // Upstream includes the block's trailing value expression (e.g., LoadLocal)
+        // in the for-update sequence. Our lower_instruction_to_statement suppresses
+        // unnamed LoadLocal/LoadContext instructions, so we need to recover the
+        // trailing value from the last block before the test block.
+        // Traverse the block chain to find the terminal block of the update sequence.
+        let mut cur = update_block;
+        loop {
+            let Some(block) = self.block_map.get(&cur) else {
+                break;
+            };
+            match &block.terminal {
+                Terminal::Goto { block: next, .. } if *next == test_block => {
+                    // Found the last block before the test. Check for trailing LoadLocal.
+                    if let Some(last_instr) = block.instructions.last()
+                        && matches!(
+                            last_instr.value,
+                            InstructionValue::LoadLocal { .. }
+                                | InstructionValue::LoadContext { .. }
+                        )
+                        && last_instr.lvalue.identifier.name.is_none()
+                        && let Some(expr) =
+                            self.lower_instruction_value(&last_instr.value, &mut HashSet::new())
+                    {
+                        expressions.push(expr);
+                    }
+                    break;
+                }
+                Terminal::Goto { block: next, .. } => {
+                    cur = *next;
+                }
+                _ => break,
+            }
+        }
+
         match expressions.len() {
             0 => Some(None),
             1 => expressions.into_iter().next().map(Some),

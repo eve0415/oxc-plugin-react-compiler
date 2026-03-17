@@ -2254,6 +2254,11 @@ fn codegen_terminal<'a>(
     match terminal {
         ReactiveTerminal::Return { value, .. } => {
             let expr = codegen_place(cx, value);
+            // Use implicit undefined: emit `return;` instead of `return undefined;`
+            // to match upstream CodegenReactiveFunction.ts behavior.
+            let expr = expr.filter(
+                |e| !matches!(e, ast::Expression::Identifier(id) if id.name == "undefined"),
+            );
             vec![cx.builder.statement_return(SPAN, expr)]
         }
         ReactiveTerminal::Throw { value, .. } => {
@@ -2446,8 +2451,27 @@ fn codegen_terminal<'a>(
                     }
                 });
 
-                if assign_expr.is_some() {
-                    assign_expr
+                if let Some(assign) = assign_expr {
+                    // If there's also a trailing value expression (LoadLocal),
+                    // combine them into a sequence: `(assign, value)`
+                    if let Some(uv) = update_value {
+                        if let InstructionValue::LoadLocal { place, .. }
+                        | InstructionValue::LoadContext { place, .. } = uv.as_ref()
+                        {
+                            if let Some(val) = codegen_place(cx, place) {
+                                Some(cx.builder.expression_sequence(
+                                    SPAN,
+                                    cx.builder.vec_from_array([assign, val]),
+                                ))
+                            } else {
+                                Some(assign)
+                            }
+                        } else {
+                            Some(assign)
+                        }
+                    } else {
+                        Some(assign)
+                    }
                 } else if let Some(uv) = update_value {
                     // Fallback to codegen_instruction_value on the
                     // update_value when no assignment was found.
