@@ -2158,11 +2158,6 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> Fix
     };
 
     if matches!(expected_state, Some(ExpectedState::Error)) {
-        // Known upstream bugs where our compiler correctly handles code that the
-        // upstream errors on. Treat successful compilation as a pass.
-        const KNOWN_UPSTREAM_BUGS: &[&str] = &["error.bug-invariant-unnamed-temporary"];
-        let is_known_upstream_bug = KNOWN_UPSTREAM_BUGS.iter().any(|b| fixture.name.contains(b));
-
         if !result.transformed {
             FixtureResult {
                 name: fixture.name.clone(),
@@ -2170,22 +2165,6 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool, strict_output: bool) -> Fix
                 message: None,
                 expected_state,
                 actual_state: ActualState::Error,
-                outcome: FixtureOutcome::ExpectedErrorMatch,
-                parity_success: true,
-                actual_code: None,
-                expected_code: None,
-                is_error_fixture: true,
-            }
-        } else if is_known_upstream_bug {
-            // Our compiler is more correct than the upstream for this case.
-            FixtureResult {
-                name: fixture.name.clone(),
-                status: Status::Pass,
-                message: Some(
-                    "Known upstream bug: our compiler correctly handles this case".to_string(),
-                ),
-                expected_state,
-                actual_state: ActualState::Transformed,
                 outcome: FixtureOutcome::ExpectedErrorMatch,
                 parity_success: true,
                 actual_code: None,
