@@ -54,7 +54,6 @@ use crate::inference::infer_effect_dependencies;
 use crate::validation::validate_context_variable_lvalues;
 use crate::validation::validate_hooks_usage;
 use crate::validation::validate_locals_not_reassigned_after_render;
-use crate::validation::validate_module_type_provider_config;
 use crate::validation::validate_no_capitalized_calls;
 use crate::validation::validate_no_derived_computations_in_effects;
 use crate::validation::validate_no_freezing_known_mutable_functions;
@@ -1421,9 +1420,6 @@ fn run_hir_pipeline(
 
     // Check for unsupported global function calls (upstream BuildHIR.ts:3681)
     run_validation!(validate_no_unsupported_global_calls(&hir_func));
-    run_validation!(
-        validate_module_type_provider_config::validate_module_type_provider_config(&hir_func)
-    );
 
     // -----------------------------------------------------------------------
     // Phase 1: HIR Pre-processing (before SSA)

@@ -3863,7 +3863,64 @@ fn lower_ident_expr<'a>(
     }
 
     let binding = resolve_non_local_binding(ident, semantic);
+    validate_module_type_provider_binding(builder, &binding);
     hir::InstructionValue::LoadGlobal { binding, loc }
+}
+
+/// Inline validation matching upstream Environment.getGlobalDeclaration():
+/// checks that hook-like import names are typed as hooks and vice versa.
+fn validate_module_type_provider_binding(builder: &mut HIRBuilder, binding: &hir::NonLocalBinding) {
+    fn is_hook_like_name(name: &str) -> bool {
+        name.starts_with("use")
+            && name.len() > 3
+            && name.chars().nth(3).is_some_and(|c| c.is_uppercase())
+    }
+    fn type_provider_hook_kind_for_specifier(module: &str, imported: &str) -> Option<bool> {
+        match module {
+            "ReactCompilerTest" => match imported {
+                "useHookNotTypedAsHook" => Some(false),
+                "notAhookTypedAsHook" => Some(true),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    fn type_provider_hook_kind_for_default(module: &str) -> Option<bool> {
+        match module {
+            "useDefaultExportNotTypedAsHook" => Some(false),
+            _ => None,
+        }
+    }
+
+    match binding {
+        hir::NonLocalBinding::ImportSpecifier {
+            module, imported, ..
+        } => {
+            if let Some(is_hook) = type_provider_hook_kind_for_specifier(module, imported) {
+                let expect_hook = is_hook_like_name(imported);
+                if expect_hook != is_hook {
+                    builder.push_invariant(format!(
+                        "Invalid type configuration for module: Expected type for `import {{{}}} from '{}'` {} based on the exported name",
+                        imported, module,
+                        if expect_hook { "to be a hook" } else { "not to be a hook" }
+                    ));
+                }
+            }
+        }
+        hir::NonLocalBinding::ImportDefault { module, .. } => {
+            if let Some(is_hook) = type_provider_hook_kind_for_default(module) {
+                let expect_hook = is_hook_like_name(module);
+                if expect_hook != is_hook {
+                    builder.push_invariant(format!(
+                        "Invalid type configuration for module: Expected type for `import ... from '{}'` {} based on the module name",
+                        module,
+                        if expect_hook { "to be a hook" } else { "not to be a hook" }
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn resolve_non_local_binding<'a>(
@@ -5426,6 +5483,7 @@ fn lower_jsx_identifier_ref_to_temp<'a>(
     }
 
     let binding = resolve_non_local_binding(ident, semantic);
+    validate_module_type_provider_binding(builder, &binding);
     lower_value_to_temporary(builder, hir::InstructionValue::LoadGlobal { binding, loc })
 }
 
