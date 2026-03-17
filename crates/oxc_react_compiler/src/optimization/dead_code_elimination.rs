@@ -732,16 +732,16 @@ fn dead_code_elimination_pass(
             if let InstructionValue::StoreLocal { lvalue, value, .. } = &instr.value
                 && lvalue.kind != InstructionKind::Reassign
             {
-                let is_entry_named_let = block.id == func.body.entry
+                let primitive_literal = (block.id == func.body.entry
                     && lvalue.kind == InstructionKind::Let
                     && lvalue.place.identifier.name.is_some()
-                    && !captured_context_decl_ids.contains(&lvalue.place.identifier.declaration_id);
-                let primitive_literal = is_entry_named_let
-                    .then(|| match value_defs.get(&value.identifier.id) {
-                        Some(InstructionValue::Primitive { value, .. }) => Some(value),
-                        _ => None,
-                    })
-                    .flatten();
+                    && !captured_context_decl_ids
+                        .contains(&lvalue.place.identifier.declaration_id))
+                .then(|| match value_defs.get(&value.identifier.id) {
+                    Some(InstructionValue::Primitive { value, .. }) => Some(value),
+                    _ => None,
+                })
+                .flatten();
                 let precise_literal_let_rewrite = primitive_literal.map(|_| {
                     top_level_literal_initializer_is_elidable(
                         func,
@@ -754,15 +754,6 @@ fn dead_code_elimination_pass(
                     true
                 } else if let Some(is_elidable) = precise_literal_let_rewrite {
                     is_elidable
-                } else if is_entry_named_let {
-                    // For user-named let declarations in the entry block whose
-                    // primitive value lookup failed, use BFS elidable check.
-                    top_level_literal_initializer_is_elidable(
-                        func,
-                        &block_map,
-                        idx,
-                        lvalue.place.identifier.declaration_id,
-                    )
                 } else {
                     !used_ids.contains(&lvalue.place.identifier.id)
                 };
