@@ -4209,7 +4209,10 @@ fn reconstruct_for_init<'a>(
     for stmt in stmts {
         match stmt {
             ast::Statement::VariableDeclaration(mut decl) => {
-                kind = decl.kind;
+                // Use Let if any declarator uses Let (it means the variable is reassigned)
+                if decl.kind == ast::VariableDeclarationKind::Let {
+                    kind = ast::VariableDeclarationKind::Let;
+                }
                 for d in decl.declarations.drain(..) {
                     let name = match &d.id {
                         ast::BindingPattern::BindingIdentifier(id) => id.name.to_string(),
