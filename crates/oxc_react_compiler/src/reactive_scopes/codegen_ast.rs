@@ -578,8 +578,7 @@ fn codegen_block_no_reset<'a>(
             }
             ReactiveStatement::Terminal(term_stmt) => {
                 let label = term_stmt.label.as_ref();
-                let mut terminal_stmts =
-                    codegen_terminal(cx, &term_stmt.terminal, label);
+                let mut terminal_stmts = codegen_terminal(cx, &term_stmt.terminal);
 
                 // Attach label if needed.
                 if let Some(label) = label
@@ -2274,7 +2273,6 @@ fn codegen_simple_assignment_target<'a>(
 fn codegen_terminal<'a>(
     cx: &mut CodegenContext<'a>,
     terminal: &ReactiveTerminal,
-    parent_label: Option<&ReactiveLabel>,
 ) -> Vec<ast::Statement<'a>> {
     match terminal {
         ReactiveTerminal::Return { value, .. } => {
@@ -2374,11 +2372,6 @@ fn codegen_terminal<'a>(
             let Some(discriminant) = codegen_place(cx, test) else {
                 return vec![];
             };
-            // The switch's own label name (when labeled) so we can detect
-            // break statements that target it.
-            let switch_label_name: Option<&str> =
-                parent_label.map(|l| crate_label_name(l.id));
-
             let mut switch_cases = cx.builder.vec();
             for case in cases {
                 let test_expr = case.test.as_ref().and_then(|t| codegen_place(cx, t));
@@ -2387,27 +2380,13 @@ fn codegen_terminal<'a>(
                     .as_ref()
                     .map(|b| codegen_block(cx, b))
                     .unwrap_or_default();
-
-                // Helper: does this statement break to the switch itself?
-                let is_own_switch_break = |s: &ast::Statement<'_>| -> bool {
-                    matches!(s, ast::Statement::BreakStatement(b) if {
-                        b.label.is_none()
-                        || switch_label_name.is_some_and(|name|
-                            b.label.as_ref().is_some_and(|lbl| lbl.name == name))
-                    })
-                };
-
-                // If the case body is only a break targeting this switch,
+                // If the case body is only a `break;` with no other content,
                 // treat it as fallthrough (suppress the break).
-                if consequent.len() == 1 && is_own_switch_break(&consequent[0]) {
-                    consequent.clear();
-                }
-                // Strip a trailing break targeting this switch from a
-                // non-empty case body (the case naturally falls out).
-                if !consequent.is_empty()
-                    && consequent.last().is_some_and(is_own_switch_break)
+                // If the case body is only a bare `break;`, treat as fallthrough.
+                if consequent.len() == 1
+                    && matches!(&consequent[0], ast::Statement::BreakStatement(b) if b.label.is_none())
                 {
-                    consequent.pop();
+                    consequent.clear();
                 }
                 // Wrap case body in a block for Babel-compatible output.
                 let wrapped = if consequent.is_empty() {

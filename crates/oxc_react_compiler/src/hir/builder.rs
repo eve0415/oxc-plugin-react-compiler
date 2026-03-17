@@ -451,45 +451,6 @@ impl HIRBuilder {
         &self.completed
     }
 
-    /// Patch the implicit fallthrough goto at the end of a switch case so it
-    /// targets the next case's block instead of the switch continuation.
-    pub fn patch_case_fallthrough(
-        &mut self,
-        start_id: BlockId,
-        old_target: BlockId,
-        new_target: BlockId,
-    ) {
-        let Some(start) = self
-            .completed
-            .iter()
-            .rposition(|(id, _)| *id == start_id)
-        else {
-            return;
-        };
-        let mut last_match = None;
-        for i in start..self.completed.len() {
-            if let Terminal::Goto {
-                block: target,
-                variant: GotoVariant::Break,
-                ..
-            } = &self.completed[i].1.terminal
-            {
-                if *target == old_target {
-                    last_match = Some(i);
-                }
-            }
-        }
-        if let Some(idx) = last_match {
-            if let Terminal::Goto {
-                block: ref mut target,
-                ..
-            } = self.completed[idx].1.terminal
-            {
-                *target = new_target;
-            }
-        }
-    }
-
     /// Push an instruction onto the current block.
     pub fn push(&mut self, instruction: Instruction) {
         self.current.instructions.push(instruction);

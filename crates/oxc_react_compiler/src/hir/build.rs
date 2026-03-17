@@ -2653,10 +2653,8 @@ fn lower_switch<'a>(
     // Lower the discriminant expression
     let test = lower_expr_to_temp(builder, &switch.discriminant, semantic, source);
 
-    // Build case blocks in forward order, then patch implicit fallthrough
-    // targets so each case falls through to the next (upstream parity).
+    // Build case blocks
     let mut cases: Vec<hir::SwitchCase> = Vec::new();
-    let mut case_block_ids: Vec<hir::BlockId> = Vec::new();
     for case in &switch.cases {
         let case_test = case
             .test
@@ -2668,7 +2666,6 @@ fn lower_switch<'a>(
                 lower_statement(builder, s, semantic, source);
             }
             builder.pop_switch();
-            // Placeholder: targets cont_id; patched below for non-final cases.
             hir::Terminal::Goto {
                 block: cont_id,
                 variant: hir::GotoVariant::Break,
@@ -2676,21 +2673,10 @@ fn lower_switch<'a>(
                 loc: loc.clone(),
             }
         });
-        case_block_ids.push(case_block);
         cases.push(hir::SwitchCase {
             test: case_test,
             block: case_block,
         });
-    }
-
-    // Patch each non-final case's implicit fallthrough goto to target
-    // the next case's block instead of the continuation.  Explicit
-    // break statements target cont_id via an earlier Goto in the
-    // block group and are not affected (only the LAST goto is patched).
-    for i in 0..case_block_ids.len().saturating_sub(1) {
-        let current = case_block_ids[i];
-        let next = case_block_ids[i + 1];
-        builder.patch_case_fallthrough(current, cont_id, next);
     }
 
     // Match upstream: if there's no explicit default case, add a synthetic one
