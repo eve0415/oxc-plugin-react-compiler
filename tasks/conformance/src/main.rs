@@ -3743,7 +3743,7 @@ fn normalize_code(code: &str) -> String {
         .join("\n");
 
     type NormalizeStep = (&'static str, fn(&str) -> String);
-    let steps: [NormalizeStep; 52] = [
+    let steps: [NormalizeStep; 51] = [
         ("normalize_multiline_imports", normalize_multiline_imports),
         ("normalize_empty_blocks", normalize_empty_blocks),
         ("normalize_iife_parens", normalize_iife_parens),
@@ -3787,10 +3787,6 @@ fn normalize_code(code: &str) -> String {
         (
             "normalize_trailing_commas_final",
             normalize_trailing_commas_final,
-        ),
-        (
-            "normalize_const_let_everywhere",
-            normalize_const_let_everywhere,
         ),
         (
             "normalize_scope_guard_decl_order",
@@ -5114,61 +5110,6 @@ fn normalize_ts_annotations(code: &str) -> String {
     let result = return_type.replace_all(&result, ") {");
     let result = as_const.replace_all(&result, "");
     result.to_string()
-}
-
-/// The upstream's `promoteUsedTemporaries` pass converts scope-internal `const` declarations
-/// to `let` for variables that are part of the reactive scope. This normalizer treats them
-/// as equivalent so we don't fail on this stylistic difference.
-/// Only applies inside `if ($[...])` scope bodies, not at module level or function level.
-/// Normalize all `const` to `let` everywhere except cache declarations (`const $ = _c(...)`).
-/// The let/const distinction is cosmetic — semantically equivalent for our purposes.
-fn normalize_const_let_everywhere(code: &str) -> String {
-    fn is_cache_decl(after_const: &str) -> bool {
-        let mut s = after_const.trim_start();
-        if !s.starts_with('$') {
-            return false;
-        }
-        s = &s[1..];
-        while let Some(ch) = s.chars().next() {
-            if ch.is_ascii_digit() {
-                s = &s[ch.len_utf8()..];
-            } else {
-                break;
-            }
-        }
-        s = s.trim_start();
-        if !s.starts_with('=') {
-            return false;
-        }
-        s = &s[1..];
-        s = s.trim_start();
-        s.starts_with("_c")
-    }
-
-    // Replace all `const ` declarations with `let `, including those inside
-    // inline arrow function bodies, except cache declarations (`const $ = _c`).
-    // This handles both standalone lines and occurrences mid-line (e.g.,
-    // inside `fn={() =>{const arr = []; ...}}`).
-    code.lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            // Replace all occurrences of `const ` except cache declarations.
-            // We iterate to handle multiple `const` on one line (e.g., for-of inside inline body).
-            let mut result = trimmed.to_string();
-            while let Some(pos) = result.find("const ") {
-                // Check if this is a cache declaration like `const $ = _c` or `const $=_c`
-                let after = &result[pos + 6..];
-                if is_cache_decl(after) {
-                    // Don't replace this one — but need to skip past it to find others
-                    // Just break; cache decls are typically the only `const` on their line
-                    break;
-                }
-                result = format!("{}let {}", &result[..pos], &result[pos + 6..]);
-            }
-            result
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// Hoist bare `let x;` declarations from the start of `try {` blocks to before them.
