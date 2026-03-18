@@ -803,7 +803,9 @@ fn visit_and_prune_block(
                     keep
                 });
 
-                // If the scope still has reactive deps, mark all outputs as reactive
+                // If the scope still has reactive deps, mark all outputs as reactive.
+                // If the scope has zero deps (sentinel), remove its outputs from the
+                // reactive set so downstream scopes don't treat them as reactive deps.
                 if !scope_block.scope.dependencies.is_empty() {
                     for decl in scope_block.scope.declarations.values() {
                         mark_reactive_identifier(
@@ -820,6 +822,15 @@ fn visit_and_prune_block(
                             reactive_ids,
                             reactive_decls,
                         );
+                    }
+                } else {
+                    for decl in scope_block.scope.declarations.values() {
+                        reactive_ids.remove(&decl.identifier.id);
+                        reactive_decls.remove(&decl.identifier.declaration_id);
+                    }
+                    for reassignment in &scope_block.scope.reassignments {
+                        reactive_ids.remove(&reassignment.id);
+                        reactive_decls.remove(&reassignment.declaration_id);
                     }
                 }
             }
