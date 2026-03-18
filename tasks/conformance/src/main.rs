@@ -2583,7 +2583,6 @@ fn normalize_strict_output_equivalences(code: &str) -> String {
         normalize_memo_cache_decl_arity,
         normalize_jsx_text_expr_container_spacing,
         normalize_jsx_text_expr_spacing_compact,
-        normalize_outlined_function_names,
         normalize_outlined_function_order,
         normalize_anonymous_function_space,
         normalize_arrow_copy_return_body,
@@ -8672,7 +8671,7 @@ fn normalize_outlined_function_order(code: &str) -> String {
     let mut i = 0;
     while i < lines.len() {
         let trimmed = lines[i].trim();
-        if trimmed.starts_with("function _temp") && !trimmed.contains("= function _temp") {
+        if trimmed.starts_with("function _") && !trimmed.contains("= function _") {
             // Collect function block by brace depth (handles nested `if`, etc).
             let mut block = vec![lines[i]];
             let mut depth =
