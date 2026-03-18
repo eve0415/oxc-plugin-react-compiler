@@ -720,11 +720,26 @@ fn visit_and_prune_block(
     reassigned_decls: &HashSet<DeclarationId>,
 ) {
     let debug_flow = std::env::var("DEBUG_PRUNE_NONREACTIVE_FLOW").is_ok();
+    // Track output DeclarationIds of zero-dep scopes. After a zero-dep scope,
+    // any StoreLocal that assigns from a scope output to a named variable
+    // produces a non-reactive value (the scope is sentinel-memoized).
+    let mut zero_dep_scope_output_decl_ids: HashSet<DeclarationId> = HashSet::new();
     for i in 0..block.len() {
         let keep_nonreactive_reassigned_deps =
             should_retain_reassigned_deps_for_scope(&block[..i], reactive_ids, reactive_decls);
         match &mut block[i] {
             ReactiveStatement::Instruction(instr) => {
+                // Check if this instruction assigns a zero-dep scope output
+                // to a named variable (e.g., `content = t30` where t30 is
+                // from a sentinel scope). If so, the target is non-reactive.
+                if let InstructionValue::StoreLocal { lvalue, value, .. }
+                | InstructionValue::StoreContext { lvalue, value, .. } = &instr.value
+                    && lvalue.place.identifier.name.is_some()
+                    && zero_dep_scope_output_decl_ids.contains(&value.identifier.declaration_id)
+                {
+                    reactive_ids.remove(&lvalue.place.identifier.id);
+                    reactive_decls.remove(&lvalue.place.identifier.declaration_id);
+                }
                 propagate_reactivity(instr, reactive_ids, reactive_decls);
             }
             ReactiveStatement::Terminal(term_stmt) => {
@@ -824,14 +839,28 @@ fn visit_and_prune_block(
                         );
                     }
                 } else {
+                    // Scope has zero reactive deps (sentinel). Remove its
+                    // outputs from the reactive set so downstream scopes
+                    // don't treat them as reactive deps.
                     for decl in scope_block.scope.declarations.values() {
                         reactive_ids.remove(&decl.identifier.id);
                         reactive_decls.remove(&decl.identifier.declaration_id);
+                        // Track for subsequent StoreLocal detection
+                        zero_dep_scope_output_decl_ids.insert(decl.identifier.declaration_id);
                     }
                     for reassignment in &scope_block.scope.reassignments {
                         reactive_ids.remove(&reassignment.id);
                         reactive_decls.remove(&reassignment.declaration_id);
                     }
+                    // Also scan body for StoreLocal/StoreContext assignments
+                    // to named variables. These are reassignments of outer
+                    // variables that may not be in scope.reassignments but
+                    // are effectively non-reactive outputs of a sentinel scope.
+                    collect_store_targets_from_block(
+                        &scope_block.instructions,
+                        reactive_ids,
+                        reactive_decls,
+                    );
                 }
             }
             ReactiveStatement::PrunedScope(scope_block) => {
@@ -856,6 +885,61 @@ fn visit_and_prune_block(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Scan a reactive block for StoreLocal/StoreContext instructions that assign
+/// to named variables, and remove those from the reactive set. Used when a
+/// sentinel scope assigns to variables declared outside it — these assignments
+/// produce stable (non-reactive) values.
+fn collect_store_targets_from_block(
+    block: &ReactiveBlock,
+    reactive_ids: &mut HashSet<IdentifierId>,
+    reactive_decls: &mut HashSet<DeclarationId>,
+) {
+    let debug_flow = std::env::var("DEBUG_PRUNE_NONREACTIVE_FLOW").is_ok();
+    for stmt in block {
+        match stmt {
+            ReactiveStatement::Instruction(instr) => match &instr.value {
+                InstructionValue::StoreLocal { lvalue, .. }
+                | InstructionValue::StoreContext { lvalue, .. } => {
+                    if lvalue.place.identifier.name.is_some() {
+                        if debug_flow {
+                            eprintln!(
+                                "[PRUNE_NONREACTIVE] STORE_SCAN removing name={} id={} decl={}",
+                                lvalue
+                                    .place
+                                    .identifier
+                                    .name
+                                    .as_ref()
+                                    .map(|n| n.value().to_string())
+                                    .unwrap_or_default(),
+                                lvalue.place.identifier.id.0,
+                                lvalue.place.identifier.declaration_id.0,
+                            );
+                        }
+                        reactive_ids.remove(&lvalue.place.identifier.id);
+                        reactive_decls.remove(&lvalue.place.identifier.declaration_id);
+                    }
+                }
+                _ => {}
+            },
+            ReactiveStatement::Terminal(term) => {
+                // Recurse into terminal branches
+                if let ReactiveTerminal::If {
+                    consequent,
+                    alternate,
+                    ..
+                } = &term.terminal
+                {
+                    collect_store_targets_from_block(consequent, reactive_ids, reactive_decls);
+                    if let Some(alt) = alternate {
+                        collect_store_targets_from_block(alt, reactive_ids, reactive_decls);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
