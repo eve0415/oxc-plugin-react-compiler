@@ -429,6 +429,9 @@ fn try_emit_module(
     let mut compiled_sorted = compiled.iter().collect::<Vec<_>>();
     compiled_sorted.sort_by_key(|cf| cf.start);
     let mut compiled_idx = 0usize;
+    // Outlined functions are deferred to the end of the module body to match
+    // upstream emission order (outlined functions come after all original statements).
+    let mut deferred_outlined: Vec<ast::Statement<'_>> = Vec::new();
 
     for (orig_idx, stmt) in args.program.body.iter().enumerate() {
         let has_blank = original_has_blank_before[orig_idx];
@@ -500,6 +503,18 @@ fn try_emit_module(
             continue;
         }
 
+        // Collect outlined function names for this statement's compiled functions
+        // so we can defer them to the end of the module body.
+        let outlined_fn_names: HashSet<String> = stmt_compiled
+            .iter()
+            .flat_map(|cf| {
+                cf.outlined_functions
+                    .iter()
+                    .map(|of| of.name.clone())
+                    .chain(cf.hir_outlined_functions.iter().map(|(n, _)| n.clone()))
+            })
+            .collect();
+
         if stmt_compiled.len() == 1
             && stmt_compiled[0].start == span.start
             && stmt_compiled[0].end == span.end
@@ -513,8 +528,17 @@ fn try_emit_module(
         {
             let mut first = true;
             for statement in statements {
-                body.push(statement);
-                blank_line_before.push(if first { has_blank } else { false });
+                // Defer outlined _temp functions to end of module body
+                let is_outlined = !first
+                    && matches!(&statement, ast::Statement::FunctionDeclaration(f) if
+                        f.id.as_ref().is_some_and(|id| outlined_fn_names.contains(id.name.as_str()))
+                    );
+                if is_outlined {
+                    deferred_outlined.push(statement);
+                } else {
+                    body.push(statement);
+                    blank_line_before.push(if first { has_blank } else { false });
+                }
                 first = false;
             }
             continue;
@@ -531,8 +555,16 @@ fn try_emit_module(
         ) {
             let mut first = true;
             for statement in statements {
-                body.push(statement);
-                blank_line_before.push(if first { has_blank } else { false });
+                let is_outlined = !first
+                    && matches!(&statement, ast::Statement::FunctionDeclaration(f) if
+                        f.id.as_ref().is_some_and(|id| outlined_fn_names.contains(id.name.as_str()))
+                    );
+                if is_outlined {
+                    deferred_outlined.push(statement);
+                } else {
+                    body.push(statement);
+                    blank_line_before.push(if first { has_blank } else { false });
+                }
                 first = false;
             }
             continue;
@@ -545,6 +577,12 @@ fn try_emit_module(
     }
 
     canonicalize_initializer_expressions_in_statements(&allocator, &mut body);
+
+    // Append deferred outlined functions at end of module body.
+    for outlined_stmt in deferred_outlined {
+        body.push(outlined_stmt);
+        blank_line_before.push(false);
+    }
 
     let program = builder.program(
         SPAN,
