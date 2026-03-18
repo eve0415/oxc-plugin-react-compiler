@@ -2571,7 +2571,6 @@ fn normalize_strict_output_equivalences(code: &str) -> String {
         normalize_non_temp_ssa_suffixes,
         normalize_temp_alpha_renaming,
         normalize_promote_temps,
-        normalize_sort_simple_let_decl_runs,
         normalize_multiline_arrow_bodies,
         normalize_multiline_call_invocations,
         normalize_multiline_object_literal_access,
@@ -2592,7 +2591,6 @@ fn normalize_strict_output_equivalences(code: &str) -> String {
         normalize_arrow_copy_return_body,
         normalize_generated_memoization_comments,
         normalize_temp_alpha_renaming,
-        normalize_destructuring_decl_kind,
         normalize_dead_expression_statements,
         normalize_logical_and_assignment,
         normalize_const_named_function_to_declaration,
@@ -2971,11 +2969,6 @@ fn normalize_generated_memoization_comments(code: &str) -> String {
 /// Normalize destructuring declaration kind: `const { ... }` and `const [ ... ]`
 /// become `let { ... }` and `let [ ... ]`. Upstream and our codegen may disagree
 /// on const vs let for destructuring patterns when bindings are later mutated.
-fn normalize_destructuring_decl_kind(code: &str) -> String {
-    let re = regex::Regex::new(r"\bconst\s+(\{|\[)").unwrap();
-    re.replace_all(code, "let $1").to_string()
-}
-
 /// Find the position of a trailing `//` or `/*` comment on an import line,
 /// skipping occurrences inside string literals.
 fn find_trailing_comment_on_import(line: &str) -> Option<usize> {
