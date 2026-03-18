@@ -2502,7 +2502,14 @@ fn oxc_reprint(code: &str, source_type: oxc_span::SourceType) -> Option<String> 
     if parsed.panicked || !parsed.errors.is_empty() {
         return None;
     }
-    let reprinted = oxc_codegen::Codegen::new().build(&parsed.program).code;
+    let reprinted = oxc_codegen::Codegen::new()
+        .with_options(oxc_codegen::CodegenOptions {
+            indent_char: oxc_codegen::IndentChar::Space,
+            indent_width: 2,
+            ..oxc_codegen::CodegenOptions::default()
+        })
+        .build(&parsed.program)
+        .code;
     Some(reprinted)
 }
 
@@ -2564,7 +2571,6 @@ fn normalize_strict_output_equivalences(code: &str) -> String {
         normalize_non_temp_ssa_suffixes,
         normalize_temp_alpha_renaming,
         normalize_promote_temps,
-        normalize_two_dep_guard_order,
         normalize_sort_simple_let_decl_runs,
         normalize_multiline_arrow_bodies,
         normalize_multiline_call_invocations,
@@ -3971,10 +3977,6 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_temp_alpha_renaming(&lines_normalized);
     // Cosmetic: inline temp carrier `let t0 = expr; use(t0)` → `use(expr)`
     lines_normalized = normalize_promote_temps(&lines_normalized);
-    // Cosmetic (~1 fixture, non-deterministic): dep guard order differs due to
-    // HashMap iteration order + Rayon parallelism. Semantically identical.
-    // Input: `$[0]!==b||$[1]!==a` → Output: sorted dep order
-    lines_normalized = normalize_two_dep_guard_order(&lines_normalized);
     // Cosmetic: `() =>\nvalue` → `() => value` (arrow body on next line)
     lines_normalized = normalize_multiline_arrow_bodies(&lines_normalized);
     // Cosmetic: multiline `if(\ncond)` → `if (cond)` (OXC line-break)
@@ -8268,76 +8270,6 @@ fn normalize_shadowed_temp_decls(code: &str) -> String {
     lines.join("\n")
 }
 
-fn normalize_two_dep_guard_order(code: &str) -> String {
-    let guard_re =
-        regex::Regex::new(r"^if \(\$\[(\d+)\] !== (.+) \|\| \$\[(\d+)\] !== (.+)\) \{$").unwrap();
-    let store_re = regex::Regex::new(r"^\$\[(\d+)\] = (.+);$").unwrap();
-    let lines: Vec<&str> = code.lines().collect();
-    let mut out = Vec::with_capacity(lines.len());
-    let mut i = 0usize;
-
-    while i < lines.len() {
-        let current = lines[i].trim();
-        let Some(caps) = guard_re.captures(current) else {
-            out.push(current.to_string());
-            i += 1;
-            continue;
-        };
-
-        let slot_a = caps.get(1).unwrap().as_str().to_string();
-        let expr_a = caps.get(2).unwrap().as_str().trim().to_string();
-        let slot_b = caps.get(3).unwrap().as_str().to_string();
-        let expr_b = caps.get(4).unwrap().as_str().trim().to_string();
-        if expr_a <= expr_b {
-            out.push(current.to_string());
-            i += 1;
-            continue;
-        }
-
-        let mut j = i + 1;
-        let mut block_lines: Vec<String> = Vec::new();
-        let mut store_a_idx: Option<usize> = None;
-        let mut store_b_idx: Option<usize> = None;
-        while j < lines.len() {
-            let trimmed = lines[j].trim();
-            if trimmed == "} else {" {
-                break;
-            }
-            if let Some(store_caps) = store_re.captures(trimmed) {
-                let slot = store_caps.get(1).unwrap().as_str();
-                let expr = store_caps.get(2).unwrap().as_str().trim();
-                if slot == slot_a && expr == expr_a {
-                    store_a_idx = Some(block_lines.len());
-                } else if slot == slot_b && expr == expr_b {
-                    store_b_idx = Some(block_lines.len());
-                }
-            }
-            block_lines.push(trimmed.to_string());
-            j += 1;
-        }
-
-        let (Some(store_a_idx), Some(store_b_idx)) = (store_a_idx, store_b_idx) else {
-            out.push(current.to_string());
-            i += 1;
-            continue;
-        };
-
-        block_lines[store_a_idx] = format!("$[{slot_a}] = {expr_b};");
-        block_lines[store_b_idx] = format!("$[{slot_b}] = {expr_a};");
-        out.push(format!(
-            "if ($[{slot_a}] !== {expr_b} || $[{slot_b}] !== {expr_a}) {{"
-        ));
-        out.extend(block_lines);
-        i = j;
-        while i < lines.len() && i <= j {
-            out.push(lines[i].trim().to_string());
-            i += 1;
-        }
-    }
-
-    out.join("\n")
-}
-
 fn normalize_inline_jsx_cached_wrapper_scope(code: &str) -> String {
     let inline_guard_re = regex::Regex::new(
         r"^if \(\$\[(\d+)\] !== ([A-Za-z_$][\w$]*)\) \{ if \(DEV\) \{ ([A-Za-z_$][\w$]*) = <(.*)$",
@@ -9253,8 +9185,7 @@ mod tests {
         normalize_shared_cosmetic_equivalences, normalize_simple_jsx_attr_brace_spacing,
         normalize_small_array_bracket_spacing, normalize_small_multiline_return_arrays,
         normalize_sort_simple_let_decl_runs, normalize_strip_inline_comments,
-        normalize_temp_alpha_renaming, normalize_temp_zero_suffixes, normalize_two_dep_guard_order,
-        prepare_code_for_compare,
+        normalize_temp_alpha_renaming, normalize_temp_zero_suffixes, prepare_code_for_compare,
     };
 
     #[test]
@@ -9310,15 +9241,6 @@ mod tests {
         let input = "function Foo() {\nlet t1;\nlet t2;\nlet t1;\nreturn t1;\n}";
         let expected = "function Foo() {\nlet t1;\nlet t2;\nlet t900000;\nreturn t900000;\n}";
         assert_eq!(normalize_shadowed_temp_decls(input), expected);
-    }
-
-    #[test]
-    fn normalize_two_dep_guard_order_sorts_guard_and_store_pairs() {
-        let input =
-            "if ($[6] !== t4 || $[7] !== t2) {\n$[6] = t4;\n$[7] = t2;\n} else {\nt5 = $[8];\n}";
-        let expected =
-            "if ($[6] !== t2 || $[7] !== t4) {\n$[6] = t2;\n$[7] = t4;\n} else {\nt5 = $[8];\n}";
-        assert_eq!(normalize_two_dep_guard_order(input), expected);
     }
 
     #[test]

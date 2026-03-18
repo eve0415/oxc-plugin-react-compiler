@@ -3202,6 +3202,34 @@ fn codegen_reactive_scope<'a>(
         }
     }
 
+    // Re-sort deps by final output name (after optional chain temp extraction).
+    // Deps that got extracted to temps sort by temp name, not the original path.
+    // This matches upstream's compareScopeDependency which sorts by resolved name.
+    if !optional_chain_temps.is_empty() {
+        let mut indexed: Vec<(usize, &ReactiveScopeDependency)> =
+            sorted_deps.iter().copied().enumerate().collect();
+        indexed.sort_by(|(i_a, dep_a), (i_b, dep_b)| {
+            let key_a = optional_chain_temps
+                .get(i_a)
+                .cloned()
+                .unwrap_or_else(|| dep_sort_key_with_cx(cx, dep_a));
+            let key_b = optional_chain_temps
+                .get(i_b)
+                .cloned()
+                .unwrap_or_else(|| dep_sort_key_with_cx(cx, dep_b));
+            key_a.cmp(&key_b)
+        });
+        let old_temps = std::mem::take(&mut optional_chain_temps);
+        let mut new_sorted = Vec::with_capacity(indexed.len());
+        for (new_idx, (old_idx, dep)) in indexed.iter().enumerate() {
+            new_sorted.push(*dep);
+            if let Some(temp_name) = old_temps.get(old_idx) {
+                optional_chain_temps.insert(new_idx, temp_name.clone());
+            }
+        }
+        sorted_deps = new_sorted;
+    }
+
     // Emit scope declarations (after optional chain extractions).
     let defer_decls = cx.options.enable_change_variable_codegen && !scope.dependencies.is_empty();
     if !defer_decls {
