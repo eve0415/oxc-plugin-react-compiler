@@ -1027,6 +1027,12 @@ fn codegen_instruction<'a>(
         if !cx.extracted_optional_deps.contains(&decl_id) {
             cx.temps.insert(decl_id, Some(expr));
         }
+        // Store the rename-assigned name for later use by optional chain
+        // dep extraction (which may reference this temp by DeclarationId).
+        if let Some(name) = &lvalue.identifier.name {
+            let name_str = name.value().to_string();
+            cx.decl_names.entry(decl_id).or_insert(name_str);
+        }
         return None;
     }
 
@@ -3172,7 +3178,14 @@ fn codegen_reactive_scope<'a>(
         if let Some(final_decl_id) = final_decl_id
             && !body_has_any_property_loads(instructions)
         {
-            let temp_name = alloc_fresh_temp_name(cx);
+            // Use the rename-assigned name for this temp if available,
+            // matching upstream where the temp is already named by
+            // RenameVariables before codegen. Fall back to fresh allocation.
+            let temp_name = cx
+                .decl_names
+                .get(&final_decl_id)
+                .cloned()
+                .unwrap_or_else(|| alloc_fresh_temp_name(cx));
             if let Some(Some(dep_expr_ref)) = cx.temps.get(&final_decl_id) {
                 let dep_expr = dep_expr_ref.clone_in(cx.allocator);
                 let pattern = cx
