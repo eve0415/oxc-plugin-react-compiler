@@ -171,6 +171,10 @@ struct CodegenContext<'a> {
     /// Prevents cx.temps from being overwritten when the corresponding PropertyLoad
     /// is processed during body codegen.
     extracted_optional_deps: HashSet<DeclarationId>,
+    /// Temp names from ALL scope declarations in the current block level.
+    block_scope_decl_temp_names: HashSet<String>,
+    /// Names claimed by dep extraction shifts (for cross-scope collision detection).
+    dep_shift_claimed_names: HashSet<String>,
     /// DeclarationIds that should be force-inlined from the temp map even though
     /// they have named identifiers. Set by the destructure+call fusion pre-scan.
     force_inline_decls: HashSet<DeclarationId>,
@@ -379,6 +383,8 @@ pub fn codegen_reactive_function<'a>(
         name_scope_stack: Vec::new(),
         fn_name: func.id.clone().unwrap_or_default(),
         extracted_optional_deps: HashSet::new(),
+        block_scope_decl_temp_names: HashSet::new(),
+        dep_shift_claimed_names: HashSet::new(),
         force_inline_decls: HashSet::new(),
         codegen_error: None,
         jsx_text_decl_ids: HashSet::new(),
@@ -532,6 +538,55 @@ fn codegen_block<'a>(
     codegen_block_no_reset(cx, block)
 }
 
+fn collect_scope_decl_temps_recursive(block: &ReactiveBlock, temps: &mut HashSet<String>) {
+    for stmt in block.iter() {
+        match stmt {
+            ReactiveStatement::Scope(s) => {
+                for decl in s.scope.declarations.values() {
+                    if let Some(n) = &decl.identifier.name {
+                        let name = n.value().to_string();
+                        if name.starts_with('t')
+                            && name.len() >= 2
+                            && name[1..].chars().all(|c| c.is_ascii_digit())
+                        {
+                            temps.insert(name);
+                        }
+                    }
+                }
+                collect_scope_decl_temps_recursive(&s.instructions, temps);
+            }
+            ReactiveStatement::PrunedScope(s) => {
+                for decl in s.scope.declarations.values() {
+                    if let Some(n) = &decl.identifier.name {
+                        let name = n.value().to_string();
+                        if name.starts_with('t')
+                            && name.len() >= 2
+                            && name[1..].chars().all(|c| c.is_ascii_digit())
+                        {
+                            temps.insert(name);
+                        }
+                    }
+                }
+                collect_scope_decl_temps_recursive(&s.instructions, temps);
+            }
+            ReactiveStatement::Terminal(t) => {
+                if let ReactiveTerminal::If {
+                    consequent,
+                    alternate,
+                    ..
+                } = &t.terminal
+                {
+                    collect_scope_decl_temps_recursive(consequent, temps);
+                    if let Some(alt) = alternate {
+                        collect_scope_decl_temps_recursive(alt, temps);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn codegen_block_no_reset<'a>(
     cx: &mut CodegenContext<'a>,
     block: &ReactiveBlock,
@@ -552,6 +607,19 @@ fn codegen_block_no_reset<'a>(
                 cx.declared_names.insert(n.value().to_string());
             }
         }
+    }
+
+    // Pre-scan: collect ALL scope declaration temp names from this block
+    // (recursively into nested blocks). Save/restore the outer block's set
+    // to handle nested codegen_block calls correctly.
+    let saved_block_scope_decl_temp_names = std::mem::take(&mut cx.block_scope_decl_temp_names);
+    {
+        let mut all_scope_decl_temps: HashSet<String> = HashSet::new();
+        collect_scope_decl_temps_recursive(block, &mut all_scope_decl_temps);
+        // Merge with saved outer block's names so scopes at any nesting
+        // level can see sibling scope names.
+        all_scope_decl_temps.extend(saved_block_scope_decl_temp_names.iter().cloned());
+        cx.block_scope_decl_temp_names = all_scope_decl_temps;
     }
 
     let mut stmts = Vec::new();
@@ -643,6 +711,8 @@ fn codegen_block_no_reset<'a>(
         i += 1;
     }
 
+    // Restore outer block's scope decl temp names
+    cx.block_scope_decl_temp_names = saved_block_scope_decl_temp_names;
     stmts
 }
 
@@ -2943,6 +3013,7 @@ fn value_has_any_property_load(value: &InstructionValue) -> bool {
 }
 
 /// Allocate a fresh `tN` temp name that doesn't conflict with existing declarations.
+#[allow(dead_code)]
 fn alloc_fresh_temp_name(cx: &CodegenContext) -> String {
     let mut idx = 0u32;
     loop {
@@ -3024,13 +3095,91 @@ fn codegen_reactive_scope<'a>(
         })
         .collect();
 
-    // Emit declarations for scope-declared variables (before the memoization guard).
-    // Sort by name for deterministic output matching upstream.
+    // Phase 1: Extract optional chain deps BEFORE collecting scope declarations.
+    // This ensures dep temps get lower numbers, matching upstream where deps
+    // are resolved before scope declarations are renamed.
+    let scope_decl_temp_names: HashSet<String> = scope
+        .declarations
+        .values()
+        .filter_map(|d| {
+            let n = d.identifier.name.as_ref()?.value().to_string();
+            if n.starts_with('t') && n.len() >= 2 && n[1..].chars().all(|c| c.is_ascii_digit()) {
+                Some(n)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let mut sorted_deps: Vec<&ReactiveScopeDependency> = scope.dependencies.iter().collect();
+    sorted_deps.sort_by_key(|a| dep_sort_key_with_cx(cx, a));
+    let mut optional_chain_temps: HashMap<usize, String> = HashMap::new();
+    let mut extracted_dep_names: HashSet<String> = HashSet::new();
+    for (dep_idx, dep) in sorted_deps.iter().enumerate() {
+        let has_path_optional = dep.path.iter().any(|e| e.optional);
+        let final_decl_id = if has_path_optional {
+            find_temp_matching_dep(cx, dep)
+        } else {
+            find_temp_with_optional_chain_for_dep(cx, dep)
+        };
+        if let Some(final_decl_id) = final_decl_id
+            && !body_has_any_property_loads(instructions)
+            && !cx.extracted_optional_deps.contains(&final_decl_id)
+        {
+            // Allocate allowing reuse of this scope's declaration temp names
+            // (which will be shifted in Phase 2 if they collide).
+            let temp_name = cx
+                .decl_names
+                .get(&final_decl_id)
+                .cloned()
+                .unwrap_or_else(|| {
+                    let mut idx = 0u32;
+                    loop {
+                        let candidate = format!("t{idx}");
+                        if !cx.declared_names.contains(&candidate)
+                            && (!cx.options.unique_identifiers.contains(&candidate)
+                                || scope_decl_temp_names.contains(&candidate))
+                        {
+                            break candidate;
+                        }
+                        idx += 1;
+                    }
+                });
+            if let Some(Some(dep_expr_ref)) = cx.temps.get(&final_decl_id) {
+                let dep_expr = dep_expr_ref.clone_in(cx.allocator);
+                let pattern = cx
+                    .builder
+                    .binding_pattern_binding_identifier(SPAN, cx.builder.ident(&temp_name));
+                stmts.push(ast::Statement::VariableDeclaration(
+                    cx.builder.alloc_variable_declaration(
+                        SPAN,
+                        ast::VariableDeclarationKind::Const,
+                        cx.builder.vec1(cx.builder.variable_declarator(
+                            SPAN,
+                            ast::VariableDeclarationKind::Const,
+                            pattern,
+                            NONE,
+                            Some(dep_expr),
+                            false,
+                        )),
+                        false,
+                    ),
+                ));
+                cx.temps
+                    .insert(final_decl_id, Some(cx.ident_expr(&temp_name)));
+                cx.declared_names.insert(temp_name.clone());
+                cx.extracted_optional_deps.insert(final_decl_id);
+                extracted_dep_names.insert(temp_name.clone());
+                optional_chain_temps.insert(dep_idx, temp_name);
+            }
+        }
+    }
+
+    // Phase 2: Collect scope declarations. Shift names that collide with
+    // dep root names or extracted dep temp names.
     let mut decl_names: Vec<(String, IdentifierId, DeclarationId)> = scope
         .declarations
         .iter()
         .filter_map(|(id, decl)| {
-            // Skip catch binding declarations — they're declared by the catch clause.
             if catch_binding_decl_ids.contains(&decl.identifier.declaration_id) {
                 return None;
             }
@@ -3040,34 +3189,35 @@ fn codegen_reactive_scope<'a>(
         .collect();
     decl_names.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // Collect dependency root names to detect dep/output name collisions.
-    let dep_root_names: HashSet<String> = scope
+    let mut dep_root_names: HashSet<String> = scope
         .dependencies
         .iter()
         .filter_map(|d| Some(d.identifier.name.as_ref()?.value().to_string()))
         .collect();
+    dep_root_names.extend(extracted_dep_names);
 
-    // Pre-compute shifted output names for scope declarations whose temp name
-    // collides with a dependency name. This avoids circular references like
-    // `if ($[0] !== t0) { t0 = ...; $[1] = t0 }` by shifting the output to t1.
     let mut shifted_names: HashMap<DeclarationId, String> = HashMap::new();
     for (name, _, decl_id) in &decl_names {
         let is_temp = name.starts_with('t')
             && name.len() >= 2
             && name[1..].chars().all(|c| c.is_ascii_digit());
-        if is_temp && dep_root_names.contains(name) {
+        // Also shift if a sibling scope's dep extraction shift claimed this name.
+        let shift_claimed = cx.dep_shift_claimed_names.contains(name);
+        if is_temp && (dep_root_names.contains(name) || shift_claimed) {
             let start = name[1..].parse::<u32>().unwrap_or(0) + 1;
             let mut idx = start;
             let fresh = loop {
                 let candidate = format!("t{idx}");
                 if !cx.declared_names.contains(&candidate)
-                    && !cx.options.unique_identifiers.contains(&candidate)
+                    && (!cx.options.unique_identifiers.contains(&candidate)
+                        || cx.block_scope_decl_temp_names.contains(&candidate))
                 {
                     break candidate;
                 }
                 idx += 1;
             };
             cx.decl_names.insert(*decl_id, fresh.clone());
+            cx.dep_shift_claimed_names.insert(fresh.clone());
             cx.declared_names.insert(fresh.clone());
             shifted_names.insert(*decl_id, fresh);
         }
@@ -3143,74 +3293,6 @@ fn codegen_reactive_scope<'a>(
             } else {
                 cx.declared.insert(id);
                 cx.declared_decl_ids.insert(r_decl_id);
-            }
-        }
-    }
-
-    // Build dependency comparison: $[slot] !== dep_expr || ...
-    // Sort dependencies by their rendered name (post-rename) to match upstream ordering.
-    let mut sorted_deps: Vec<&ReactiveScopeDependency> = scope.dependencies.iter().collect();
-    sorted_deps.sort_by_key(|a| dep_sort_key_with_cx(cx, a));
-
-    // Extract optional-chain dependencies into temp variables.
-    // The upstream compiler places PropertyLoad chains before the scope and
-    // the scope depends on the resulting temp. Our pipeline places the
-    // PropertyLoads before the scope too (already processed, results in cx.temps),
-    // but the scope tracks a path dependency. We fix this by finding the
-    // corresponding temp in cx.temps, giving it a name, and emitting a
-    // declaration before the scope declarations.
-    //
-    // Note: DeriveMinimalDependenciesHIR may convert optional accesses to
-    // unconditional when the hoistable tree says the base is NonNull, stripping
-    // the `optional` flag from the dep path. In that case we also look for
-    // temps whose source expression has optional chains that the dep path lost.
-    let mut optional_chain_temps: HashMap<usize, String> = HashMap::new();
-    for (dep_idx, dep) in sorted_deps.iter().enumerate() {
-        let has_path_optional = dep.path.iter().any(|e| e.optional);
-        let final_decl_id = if has_path_optional {
-            find_temp_matching_dep(cx, dep)
-        } else {
-            // The dep path has no optional entries, but the original source
-            // expression may have had optional chains that were stripped by
-            // the hoistable-tree conversion. Try relaxed matching.
-            find_temp_with_optional_chain_for_dep(cx, dep)
-        };
-        if let Some(final_decl_id) = final_decl_id
-            && !body_has_any_property_loads(instructions)
-        {
-            // Use the rename-assigned name for this temp if available,
-            // matching upstream where the temp is already named by
-            // RenameVariables before codegen. Fall back to fresh allocation.
-            let temp_name = cx
-                .decl_names
-                .get(&final_decl_id)
-                .cloned()
-                .unwrap_or_else(|| alloc_fresh_temp_name(cx));
-            if let Some(Some(dep_expr_ref)) = cx.temps.get(&final_decl_id) {
-                let dep_expr = dep_expr_ref.clone_in(cx.allocator);
-                let pattern = cx
-                    .builder
-                    .binding_pattern_binding_identifier(SPAN, cx.builder.ident(&temp_name));
-                stmts.push(ast::Statement::VariableDeclaration(
-                    cx.builder.alloc_variable_declaration(
-                        SPAN,
-                        ast::VariableDeclarationKind::Const,
-                        cx.builder.vec1(cx.builder.variable_declarator(
-                            SPAN,
-                            ast::VariableDeclarationKind::Const,
-                            pattern,
-                            NONE,
-                            Some(dep_expr),
-                            false,
-                        )),
-                        false,
-                    ),
-                ));
-                // Replace the temp expression so body codegen uses the name.
-                cx.temps
-                    .insert(final_decl_id, Some(cx.ident_expr(&temp_name)));
-                cx.declared_names.insert(temp_name.clone());
-                optional_chain_temps.insert(dep_idx, temp_name);
             }
         }
     }
@@ -3861,7 +3943,12 @@ fn codegen_dependency_expr<'a>(
     cx: &mut CodegenContext<'a>,
     dep: &ReactiveScopeDependency,
 ) -> Option<ast::Expression<'a>> {
-    let name = dep.identifier.name.as_ref()?.value();
+    // Use cx.decl_names for shifted names from scope declaration shifts
+    let name = cx
+        .decl_names
+        .get(&dep.identifier.declaration_id)
+        .map(|s| s.as_str())
+        .or_else(|| dep.identifier.name.as_ref().map(|n| n.value()))?;
     let mut expr = cx.ident_expr(name);
     for entry in &dep.path {
         // Use computed member access for numeric property names (e.g., x[0][1])
