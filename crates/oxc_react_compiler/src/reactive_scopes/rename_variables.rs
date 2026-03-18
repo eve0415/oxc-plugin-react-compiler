@@ -79,10 +79,21 @@ fn visit_statement(stmt: &mut ReactiveStatement, scopes: &mut Scopes) {
             visit_terminal_stmt(term, scopes);
         }
         ReactiveStatement::Scope(scope_block) => {
+            // Match upstream RenameVariables.ts:96-101: visit ONLY declarations
+            // before the body. Dependencies and reassignments are visited AFTER
+            // the body to match upstream's visit order (where they get renamed
+            // via shared object references during body traversal).
             for decl in scope_block.scope.declarations.values_mut() {
                 scopes.visit(&mut decl.identifier);
             }
 
+            visit_block(&mut scope_block.instructions, scopes);
+
+            // Post-body: update dependency and reassignment identifier copies.
+            // In upstream TypeScript, these share object references with
+            // instruction-level identifiers, so renaming happens automatically.
+            // In Rust, we must explicitly visit them to copy the renamed names
+            // from the seen map.
             for dep in &mut scope_block.scope.dependencies {
                 scopes.visit(&mut dep.identifier);
             }
@@ -91,16 +102,9 @@ fn visit_statement(stmt: &mut ReactiveStatement, scopes: &mut Scopes) {
                 scopes.visit(reassignment);
             }
 
-            // Visit the early return value identifier if present.
-            // In the upstream TS compiler, earlyReturnValue.value and the corresponding
-            // declaration share the same object reference, so renaming the declaration
-            // also renames the early return value. In Rust, these are separate clones,
-            // so we must explicitly visit the early return value identifier.
             if let Some(early_return) = &mut scope_block.scope.early_return_value {
                 scopes.visit(&mut early_return.value);
             }
-
-            visit_block(&mut scope_block.instructions, scopes);
         }
         ReactiveStatement::PrunedScope(scope_block) => {
             // Upstream RenameVariables.visitPrunedScope calls traverseBlock
