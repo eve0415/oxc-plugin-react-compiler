@@ -3929,55 +3929,105 @@ fn normalize_code(code: &str) -> String {
         }
     }
 
-    // Post-array sequential normalizations.
-    // Cosmetic formatting normalizations (handle OXC vs Babel whitespace differences):
+    // ── Post-array sequential normalizations ──
+    // Each normalization below is documented with its category and purpose.
+    // Cosmetic = OXC vs Babel formatting difference, no semantic impact.
+    // Semantic = real codegen divergence requiring compiler fix.
+    //
+    // Cosmetic: `x =\n,` → `x =` (trailing comma after multi-line assignment)
     lines_normalized = normalize_redundant_comma_in_assignment(&lines_normalized);
+    // Cosmetic: `x;\n,` → `x;` (stray trailing comma on own line)
     lines_normalized = normalize_trailing_comma_read_stmt(&lines_normalized);
+    // Cosmetic: `...)\n} />` → `...)} />` (JSX close-brace split to next line)
     lines_normalized = normalize_jsx_expr_newline_before_closing_brace(&lines_normalized);
+    // Cosmetic: `<Comp />\n;` → `<Comp />;` (semicolon on own line after JSX)
     lines_normalized = normalize_jsx_semicolon_on_own_line(&lines_normalized);
+    // Cosmetic: `{expr} </Tag>` → `{expr}</Tag>` (space before closing JSX tag)
     lines_normalized = normalize_jsx_whitespace_before_closing_tag(&lines_normalized);
-    // Naming infrastructure normalizations (Wave 5/6 — need rename_variables.rs audit):
+    // Cosmetic: `x$1` → `x_1` (Babel `$N` suffix → Rust `_N` suffix)
     lines_normalized = normalize_rename_suffixes(&lines_normalized);
+    // Semantic: `t0_0` → `t0` (remove `_0` collision suffix). Active: 0 fixtures.
     lines_normalized = normalize_temp_zero_suffixes(&lines_normalized);
+    // Semantic: `x_1` where x is a user var, not a temp. Active: 10 fixtures.
+    // Root cause: rename_variables.rs SSA suffix convention differs from upstream.
     lines_normalized = normalize_non_temp_ssa_suffixes(&lines_normalized);
+    // Semantic: same temp name `t0` in sibling scopes. Active: 5 fixtures.
+    // Root cause: rename_variables.rs scope tracking divergence.
     lines_normalized = normalize_shadowed_temp_decls(&lines_normalized);
+    // Cosmetic: first assignment to bare temp → `let tN =` declaration
     lines_normalized = normalize_bare_temp_to_let(&lines_normalized);
+    // Semantic: `t3` → `t0` temp renumbering. Active: 9 fixtures.
+    // Root cause: rename_variables.rs sequential naming differs from upstream.
     lines_normalized = normalize_temp_alpha_renaming(&lines_normalized);
+    // Cosmetic: inline temp carrier `let t0 = expr; use(t0)` → `use(expr)`
     lines_normalized = normalize_promote_temps(&lines_normalized);
+    // Semantic: `$[0]!==b||$[1]!==a` → sorted dep order. Active: 1 fixture.
+    // Root cause: HashMap iteration order non-determinism in dep guard emission.
     lines_normalized = normalize_two_dep_guard_order(&lines_normalized);
-    // Cosmetic multiline/formatting normalizations:
+    // Cosmetic: `() =>\nvalue` → `() => value` (arrow body on next line)
     lines_normalized = normalize_multiline_arrow_bodies(&lines_normalized);
+    // Cosmetic: multiline `if(\ncond)` → `if (cond)` (OXC line-break)
     lines_normalized = normalize_multiline_if_conditions(&lines_normalized);
+    // Cosmetic: `if( x)` → `if (x)` (paren spacing)
     lines_normalized = normalize_if_paren_spacing(&lines_normalized);
+    // Cosmetic: `foo(\narg)` → `foo(arg)` (multiline call invocation). Active: 2 fixtures.
     lines_normalized = normalize_multiline_call_invocations(&lines_normalized);
+    // Cosmetic: multiline `<>\n{expr}\n</>` → `<>{expr}</>` (arrow fragment)
     lines_normalized = normalize_multiline_arrow_fragment_expressions(&lines_normalized);
+    // Cosmetic: `a?.b\n.c()` → `a?.b.c()` (optional chain on next line)
     lines_normalized = normalize_multiline_optional_chain_calls(&lines_normalized);
+    // Cosmetic: `{cond ?\n(<Comp />)` → single-line (JSX branch paren spacing)
     lines_normalized = normalize_jsx_branch_paren_spacing(&lines_normalized);
+    // Cosmetic: `(<Comp />\n)` → `(<Comp />)` (JSX ternary wrapper parens)
     lines_normalized = normalize_jsx_nested_ternary_wrapper_parens(&lines_normalized);
+    // Cosmetic: `<Comp x={ val } />` → `<Comp x={val} />` (JSX attr brace spacing)
     lines_normalized = normalize_simple_jsx_attr_brace_spacing(&lines_normalized);
+    // Cosmetic: `< Comp>` → `<Comp>` (space in JSX tag brackets)
     lines_normalized = normalize_jsx_tag_boundary_spaces(&lines_normalized);
+    // Cosmetic: `<div>{ expr }</div>` → `<div>{expr}</div>` (JSX expr container)
     lines_normalized = normalize_jsx_text_expr_container_spacing(&lines_normalized);
+    // Cosmetic: `text {expr} text` → `text{expr}text` (JSX text/expr compact)
     lines_normalized = normalize_jsx_text_expr_spacing_compact(&lines_normalized);
+    // Semantic: dep-based JSX scope → sentinel scope conversion. Active: 1 fixture.
+    // Root cause: scope inference emits dep-guard for single-use JSX instead of sentinel.
     lines_normalized = normalize_inline_jsx_cached_wrapper_scope(&lines_normalized);
+    // Cosmetic: scope sentinel inline after JSX wrapper conversion
     lines_normalized = normalize_sentinel_scope_inline(&lines_normalized);
     lines_normalized = normalize_sentinel_scope_inline_single_line(&lines_normalized);
+    // Cosmetic: `if (cond) {\nstmt` → `if (cond) { stmt` (inline first statement)
     lines_normalized = normalize_inline_if_first_statements(&lines_normalized);
+    // Cosmetic: `React.memo(...)` closing paren position after outlined functions
     lines_normalized = normalize_react_memo_closing_paren(&lines_normalized);
+    // Cosmetic: multiline `{\n"key": fn\n}["key"]` → single-line object literal access
     lines_normalized = normalize_multiline_object_literal_access(&lines_normalized);
-    // Semantic normalizations still needed (active divergences):
+    // Cosmetic (OXC limitation): `{ref: ref}` → `{ref}`. OXC codegen auto-shorthand
+    // ignores the AST shorthand flag, always emitting shorthand when key==value.
     lines_normalized = normalize_object_shorthand_pairs(&lines_normalized);
+    // Semantic: FBT plural cross-product table codegen differences. Active: 2 fixtures.
     lines_normalized = normalize_fbt_plural_cross_product_tables(&lines_normalized);
+    // Cosmetic: FBT `{" "}` vs `{' '}` placeholder spacing
     lines_normalized = normalize_fbt_placeholder_spacing(&lines_normalized);
+    // Cosmetic: inline first statements (re-run after FBT/shorthand changes)
     lines_normalized = normalize_inline_if_first_statements(&lines_normalized);
     lines_normalized = normalize_inline_if_first_statements(&lines_normalized);
+    // Cosmetic: `let x = y;\nreturn x` → `return y` (arrow copy-return pattern)
     lines_normalized = normalize_arrow_copy_return_body(&lines_normalized);
+    // Cosmetic: sort consecutive `let x;` declarations alphabetically
     lines_normalized = normalize_sort_simple_let_decl_runs(&lines_normalized);
+    // Semantic: `_c(3)` → `_c(2)` cache slot count mismatch. Active: 1 fixture.
+    // Root cause: codegen_ast.rs alloc_cache_slot traversal order differs.
     lines_normalized = normalize_memo_cache_decl_arity(&lines_normalized);
+    // Re-run shorthand after arity fix may expose new `{ref: ref}` patterns.
     lines_normalized = normalize_object_shorthand_pairs(&lines_normalized);
+    // Semantic: `{ref}` → `ref={ref}` JSX transitional element ref. Active: 1 fixture.
     lines_normalized = normalize_transitional_element_ref_shorthand(&lines_normalized);
+    // Re-run FBT after other normalizations.
     lines_normalized = normalize_fbt_plural_cross_product_tables(&lines_normalized);
+    // Semantic: outlined function and FIXTURE_ENTRYPOINT ordering. Active: 2 fixtures.
     lines_normalized = normalize_outlined_function_order(&lines_normalized);
+    // Cosmetic: `((x) => {...})` → `(x) => {...}` (parenthesized arrow initializer)
     lines_normalized = normalize_parenthesized_arrow_initializers(&lines_normalized);
+    // Re-run temp alpha renaming after normalizations may shift numbering.
     lines_normalized = normalize_temp_alpha_renaming(&lines_normalized);
 
     if debug_steps {
