@@ -3094,9 +3094,9 @@ fn codegen_reactive_scope<'a>(
     }
 
     // Build dependency comparison: $[slot] !== dep_expr || ...
-    // Sort dependencies by their rendered name to match upstream ordering.
+    // Sort dependencies by their rendered name (post-rename) to match upstream ordering.
     let mut sorted_deps: Vec<&ReactiveScopeDependency> = scope.dependencies.iter().collect();
-    sorted_deps.sort_by_key(|d| dep_sort_key(d));
+    sorted_deps.sort_by_key(|a| dep_sort_key_with_cx(cx, a));
 
     // Extract optional-chain dependencies into temp variables.
     // The upstream compiler places PropertyLoad chains before the scope and
@@ -4007,13 +4007,19 @@ fn all_pattern_vars_declared(cx: &CodegenContext<'_>, pattern: &Pattern) -> bool
 /// expression in the temp map. Returns true if the scope was inlined (should
 /// be skipped in output), false if it should be emitted normally.
 /// Build a sort key for a scope dependency (for deterministic ordering).
-fn dep_sort_key(dep: &ReactiveScopeDependency) -> String {
-    let root = dep
-        .identifier
-        .name
-        .as_ref()
-        .map(|n| n.value().to_string())
-        .unwrap_or_else(|| format!("t{}", dep.identifier.id.0));
+/// Sort key using the codegen context's name resolution (post-rename).
+/// This ensures temp deps sort by their rendered name (t0, t1, ...)
+/// rather than their pre-rename internal ID.
+fn dep_sort_key_with_cx(cx: &CodegenContext, dep: &ReactiveScopeDependency) -> String {
+    let root = if let Some(name) = cx.decl_names.get(&dep.identifier.declaration_id) {
+        name.clone()
+    } else {
+        dep.identifier
+            .name
+            .as_ref()
+            .map(|n| n.value().to_string())
+            .unwrap_or_else(|| format!("t{}", dep.identifier.id.0))
+    };
     if dep.path.is_empty() {
         return root;
     }
