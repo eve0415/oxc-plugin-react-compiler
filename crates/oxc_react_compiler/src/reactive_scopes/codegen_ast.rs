@@ -1007,7 +1007,21 @@ fn codegen_instruction<'a>(
     let expr = codegen_instruction_value(cx, &instr.value)?;
 
     // No lvalue → expression statement.
+    // Skip pure reads (bare identifier/literal) that have no side effects —
+    // upstream's codegen doesn't emit them. Only emit if the expression is
+    // potentially side-effecting (calls, assignments, etc.).
     let Some(lvalue) = &instr.lvalue else {
+        let is_pure_read = matches!(
+            &expr,
+            ast::Expression::Identifier(_)
+                | ast::Expression::NullLiteral(_)
+                | ast::Expression::BooleanLiteral(_)
+                | ast::Expression::NumericLiteral(_)
+                | ast::Expression::StringLiteral(_)
+        );
+        if is_pure_read {
+            return None;
+        }
         return Some(cx.builder.statement_expression(SPAN, expr));
     };
 
