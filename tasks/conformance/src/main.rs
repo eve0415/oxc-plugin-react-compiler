@@ -2588,7 +2588,6 @@ fn normalize_strict_output_equivalences(code: &str) -> String {
         normalize_temp_alpha_renaming,
         normalize_dead_expression_statements,
         normalize_logical_and_assignment,
-        normalize_const_named_function_to_declaration,
         normalize_fbt_plural_cross_product_tables,
         normalize_fbt_placeholder_spacing,
         normalize_dead_bare_var_refs,
@@ -8861,32 +8860,6 @@ fn normalize_dead_expression_statements(code: &str) -> String {
 }
 
 /// Normalize const NAME = function NAME( to function NAME( when both names match.
-fn normalize_const_named_function_to_declaration(code: &str) -> String {
-    let re = regex::Regex::new(
-        r"(?m)^(\s*)const\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(",
-    ).unwrap();
-    if !re.is_match(code) {
-        return code.to_string();
-    }
-    let mut result = code.to_string();
-    let replacements: Vec<_> = re
-        .captures_iter(code)
-        .filter(|caps| caps.get(2).unwrap().as_str() == caps.get(3).unwrap().as_str())
-        .map(|caps| {
-            let full = caps.get(0).unwrap();
-            let indent = caps.get(1).unwrap().as_str().to_string();
-            let name = caps.get(2).unwrap().as_str().to_string();
-            (full.start(), full.end(), indent, name)
-        })
-        .collect();
-    for (start, end, indent, name) in replacements.into_iter().rev() {
-        result.replace_range(start..end, &format!("{}function {}(", indent, name));
-    }
-    let close_re = regex::Regex::new(r"(?m)^(\s*)};$").unwrap();
-    result = close_re.replace_all(&result, "$1}").to_string();
-    result
-}
-
 /// Strip `true && ` or `LITERAL && ` prefix from assignment expressions:
 /// `true && x = [];` → `x = [];`
 /// `{ true && x = [];` → `{ x = [];`

@@ -606,7 +606,19 @@ fn lower_block_statements_with_hoisted_contexts<'a>(
 
     for (stmt_index, stmt) in statements.iter().enumerate() {
         for candidate in &candidates {
-            if candidate.decl_stmt_index <= stmt_index || emitted.contains(&candidate.symbol_id) {
+            if emitted.contains(&candidate.symbol_id) {
+                continue;
+            }
+            // For non-function-declaration candidates, only check statements
+            // before the declaration. For function declarations, also check
+            // the declaration statement itself (self-references in the body
+            // should trigger hoisting, matching upstream's `binding.kind === 'hoisted'`).
+            let skip_threshold = if candidate.kind == hir::InstructionKind::HoistedFunction {
+                candidate.decl_stmt_index + 1
+            } else {
+                candidate.decl_stmt_index
+            };
+            if skip_threshold <= stmt_index {
                 continue;
             }
             if statement_needs_hoisted_context_declare(stmt, candidate, semantic) {
@@ -803,7 +815,13 @@ fn statement_needs_hoisted_context_declare(
         if node_span.start < stmt_span.start || node_span.start >= stmt_span.end {
             return false;
         }
-        if node_span.start >= candidate.decl_start {
+        // For non-function-declaration candidates, skip references after the
+        // declaration start (they don't need hoisting). For function declarations,
+        // allow all references including self-references in the function body,
+        // matching upstream's `binding.kind === 'hoisted'` which always triggers.
+        if candidate.kind != hir::InstructionKind::HoistedFunction
+            && node_span.start >= candidate.decl_start
+        {
             return false;
         }
 
