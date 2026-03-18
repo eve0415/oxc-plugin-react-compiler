@@ -1037,6 +1037,16 @@ impl Scopes {
             id += 1;
         } else {
             name = original_name.value().to_string();
+            // If the HIR builder added a `_N` suffix (from allocate_unique_binding_name)
+            // to avoid scope collisions, try the base name first since the rename pass
+            // has its own collision detection. This matches upstream behavior where user
+            // variables keep their original source names when possible.
+            if let Some(base) = strip_hir_binding_suffix(&name)
+                && self.lookup(&base).is_none()
+                && !self.globals.contains(&base)
+            {
+                name = base;
+            }
         }
 
         while self.lookup(&name).is_some() || self.globals.contains(&name) {
@@ -1088,6 +1098,24 @@ impl Scopes {
 
     fn leave(&mut self) {
         self.stack.pop();
+    }
+}
+
+/// Strip `_N` suffix added by HIR builder's `allocate_unique_binding_name`.
+/// Returns the base name if the name ends with `_` followed by digits.
+/// E.g., `rest_0` → `rest`, `x_1` → `x`, `props` → None.
+fn strip_hir_binding_suffix(name: &str) -> Option<String> {
+    let bytes = name.as_bytes();
+    let mut i = bytes.len();
+    // Find trailing digits
+    while i > 0 && bytes[i - 1].is_ascii_digit() {
+        i -= 1;
+    }
+    // Must have at least one digit and be preceded by `_`
+    if i < bytes.len() && i > 0 && bytes[i - 1] == b'_' && i > 1 {
+        Some(name[..i - 1].to_string())
+    } else {
+        None
     }
 }
 
