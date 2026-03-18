@@ -3882,14 +3882,26 @@ fn normalize_code(code: &str) -> String {
             normalize_sentinel_scope_inline_single_line,
         ),
         ("normalize_arrow_void_body", normalize_arrow_void_body),
+        // Semantic (5 fixtures): Rust emits dead bare expressions (`y;`, `null;`,
+        // bare comparisons) that upstream doesn't. Root: sequence expression codegen
+        // in build_reactive_function.rs doesn't fully preserve structure.
+        // Input: `y;\n$[0] = x` → Output: `$[0] = x` (strips dead reads)
         (
             "normalize_dead_expression_statements",
             normalize_dead_expression_statements,
         ),
+        // Semantic (1 fixture): Rust emits `x = []; true && null;` where upstream
+        // emits `true && x = [];`. Root: LogicalExpression with store operand gets
+        // split into separate instructions during CFG→tree conversion.
+        // Input: `true && null;` → Output: (removed)
+        // Input: `x = []; true && null;` and `true && x = [];` → both normalize to `x = [];`
         (
             "normalize_logical_and_assignment",
             normalize_logical_and_assignment,
         ),
+        // Babel artifact (1 fixture: idx-no-outlining): Babel scope hoisting emits
+        // dead `var _ref2;` declarations that are never used. Not a Rust divergence.
+        // Input: `var _ref2;\nconst $ = _c(4);` → Output: `const $ = _c(4);`
         (
             "normalize_dead_initialized_let",
             normalize_dead_initialized_let,
