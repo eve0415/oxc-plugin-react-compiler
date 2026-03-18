@@ -3958,18 +3958,22 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_rename_suffixes(&lines_normalized);
     // Semantic: `t0_0` → `t0` (remove `_0` collision suffix). Active: 0 fixtures.
     lines_normalized = normalize_temp_zero_suffixes(&lines_normalized);
-    // Semantic: `x_1` where x is a user var, not a temp. Active: 10 fixtures.
-    // Root cause: rename_variables.rs SSA suffix convention differs from upstream.
+    // Cosmetic (6 fixtures): suffix assigned to different variable than upstream.
+    // Both produce valid output — inner `rest` gets `_0` in Rust, outer `rest` gets
+    // `_0` in upstream. Semantically identical, just different name assignment order.
+    // Input: `rest_0` → Output: `rest` (strips `_N` suffix for comparison)
     lines_normalized = normalize_non_temp_ssa_suffixes(&lines_normalized);
     // Cosmetic: first assignment to bare temp → `let tN =` declaration
     lines_normalized = normalize_bare_temp_to_let(&lines_normalized);
-    // Semantic: `t3` → `t0` temp renumbering. Active: 9 fixtures.
-    // Root cause: rename_variables.rs sequential naming differs from upstream.
+    // Cosmetic (4 fixtures): temp numbering differs due to visit order.
+    // Both produce valid output — same temps with different sequential numbers.
+    // Input: `t3` → Output: `t0` (renumbers temps sequentially for comparison)
     lines_normalized = normalize_temp_alpha_renaming(&lines_normalized);
     // Cosmetic: inline temp carrier `let t0 = expr; use(t0)` → `use(expr)`
     lines_normalized = normalize_promote_temps(&lines_normalized);
-    // Semantic: `$[0]!==b||$[1]!==a` → sorted dep order. Active: 1 fixture.
-    // Root cause: HashMap iteration order non-determinism in dep guard emission.
+    // Cosmetic (~1 fixture, non-deterministic): dep guard order differs due to
+    // HashMap iteration order + Rayon parallelism. Semantically identical.
+    // Input: `$[0]!==b||$[1]!==a` → Output: sorted dep order
     lines_normalized = normalize_two_dep_guard_order(&lines_normalized);
     // Cosmetic: `() =>\nvalue` → `() => value` (arrow body on next line)
     lines_normalized = normalize_multiline_arrow_bodies(&lines_normalized);
@@ -3995,8 +3999,10 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_jsx_text_expr_container_spacing(&lines_normalized);
     // Cosmetic: `text {expr} text` → `text{expr}text` (JSX text/expr compact)
     lines_normalized = normalize_jsx_text_expr_spacing_compact(&lines_normalized);
-    // Semantic: dep-based JSX scope → sentinel scope conversion. Active: 1 fixture.
-    // Root cause: scope inference emits dep-guard for single-use JSX instead of sentinel.
+    // Semantic (1 fixture: inline-jsx-transform): scope inference emits dep-guard
+    // for single-use JSX instead of sentinel. Part of structural divergence in
+    // inline-jsx-transform that also affects cache slot count and ref shorthand.
+    // Input: `if ($[N] !== dep) { t0 = <Comp />; ... }` → sentinel form
     lines_normalized = normalize_inline_jsx_cached_wrapper_scope(&lines_normalized);
     // Cosmetic: scope sentinel inline after JSX wrapper conversion
     lines_normalized = normalize_sentinel_scope_inline(&lines_normalized);
@@ -4010,7 +4016,9 @@ fn normalize_code(code: &str) -> String {
     // Cosmetic (OXC limitation): `{ref: ref}` → `{ref}`. OXC codegen auto-shorthand
     // ignores the AST shorthand flag, always emitting shorthand when key==value.
     lines_normalized = normalize_object_shorthand_pairs(&lines_normalized);
-    // Semantic: FBT plural cross-product table codegen differences. Active: 2 fixtures.
+    // Semantic (2 fixtures): FBT plural cross-product table nesting differs.
+    // Rust produces flatter table structure, upstream produces nested objects.
+    // Input: `"*": "{text}"` → Output: `"*": { _1: "{text}" }` (or vice versa)
     lines_normalized = normalize_fbt_plural_cross_product_tables(&lines_normalized);
     // Cosmetic: FBT `{" "}` vs `{' '}` placeholder spacing
     lines_normalized = normalize_fbt_placeholder_spacing(&lines_normalized);
@@ -4021,16 +4029,23 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_arrow_copy_return_body(&lines_normalized);
     // Cosmetic: sort consecutive `let x;` declarations alphabetically
     lines_normalized = normalize_sort_simple_let_decl_runs(&lines_normalized);
-    // Semantic: `_c(3)` → `_c(2)` cache slot count mismatch. Active: 1 fixture.
-    // Root cause: codegen_ast.rs alloc_cache_slot traversal order differs.
+    // Semantic (1 fixture: inline-jsx-transform): `_c(3)` → `_c(2)` cache slot
+    // count mismatch. Part of inline-jsx-transform structural divergence.
+    // Input: `_c(N)` → Output: `_c(M)` (renumber to match expected)
     lines_normalized = normalize_memo_cache_decl_arity(&lines_normalized);
     // Re-run shorthand after arity fix may expose new `{ref: ref}` patterns.
     lines_normalized = normalize_object_shorthand_pairs(&lines_normalized);
-    // Semantic: `{ref}` → `ref={ref}` JSX transitional element ref. Active: 1 fixture.
+    // Cosmetic (1 fixture: inline-jsx-transform): `{ref}` → `ref={ref}` in JSX
+    // transitional element ref. OXC codegen emits shorthand, upstream doesn't.
+    // Input: `{ref}` → Output: `ref={ref}`
     lines_normalized = normalize_transitional_element_ref_shorthand(&lines_normalized);
     // Re-run FBT after other normalizations.
     lines_normalized = normalize_fbt_plural_cross_product_tables(&lines_normalized);
-    // Semantic: outlined function and FIXTURE_ENTRYPOINT ordering. Active: 2 fixtures.
+    // Cosmetic (0 direct fixtures after module emitter fix): outlined function
+    // ordering handled by deferred_outlined in emit_module. Normalization kept
+    // for cascade compatibility with other normalizations.
+    // Input: `function _temp() {}\nexport let FIXTURE_ENTRYPOINT` →
+    // Output: `export let FIXTURE_ENTRYPOINT\nfunction _temp() {}`
     lines_normalized = normalize_outlined_function_order(&lines_normalized);
     // Cosmetic: `((x) => {...})` → `(x) => {...}` (parenthesized arrow initializer)
     lines_normalized = normalize_parenthesized_arrow_initializers(&lines_normalized);
