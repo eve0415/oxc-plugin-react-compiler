@@ -4102,6 +4102,8 @@ fn lower_assign_expr<'a>(
                         loc,
                     };
                     if is_compound_assign {
+                        // Compound assignment: StoreContext + LoadContext
+                        // (upstream BuildHIR.ts:2139-2148)
                         lower_value_to_temporary(builder, store);
                         hir::InstructionValue::LoadContext {
                             place: hir::Place {
@@ -4113,7 +4115,13 @@ fn lower_assign_expr<'a>(
                             loc: span_to_loc(ident.span),
                         }
                     } else {
-                        store
+                        // Regular assignment: StoreContext → LoadLocal(temp)
+                        // (upstream lowerAssignment:3835-3862)
+                        let temp = lower_value_to_temporary(builder, store);
+                        hir::InstructionValue::LoadLocal {
+                            place: temp,
+                            loc: span_to_loc(ident.span),
+                        }
                     }
                 } else {
                     let store = hir::InstructionValue::StoreLocal {
@@ -4125,6 +4133,7 @@ fn lower_assign_expr<'a>(
                         loc,
                     };
                     if is_compound_assign {
+                        // Compound assignment: StoreLocal + LoadLocal(identifier)
                         lower_value_to_temporary(builder, store);
                         hir::InstructionValue::LoadLocal {
                             place: hir::Place {
@@ -4136,7 +4145,13 @@ fn lower_assign_expr<'a>(
                             loc: span_to_loc(ident.span),
                         }
                     } else {
-                        store
+                        // Regular assignment: StoreLocal → LoadLocal(temp)
+                        // (upstream lowerAssignment:3854-3862)
+                        let temp = lower_value_to_temporary(builder, store);
+                        hir::InstructionValue::LoadLocal {
+                            place: temp,
+                            loc: span_to_loc(ident.span),
+                        }
                     }
                 }
             } else {

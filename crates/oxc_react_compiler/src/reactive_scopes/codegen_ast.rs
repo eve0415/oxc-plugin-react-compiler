@@ -1007,10 +1007,10 @@ fn codegen_instruction<'a>(
     let expr = codegen_instruction_value(cx, &instr.value)?;
 
     // No lvalue → expression statement.
-    // Skip pure expressions that have no side effects — upstream's codegen
-    // doesn't emit them. This includes bare reads (identifiers, literals),
-    // logical expressions with only pure operands (e.g., `true && null`),
-    // and comparison expressions with pure operands.
+    // Skip pure expressions that have no side effects — these are dead code
+    // artifacts from our pipeline (pruned temp lvalues). Upstream also prunes
+    // these temps but emits compound assignment LoadContext results as bare
+    // expression statements (`x;`).
     let Some(lvalue) = &instr.lvalue else {
         if is_pure_expression(&expr) {
             return None;
