@@ -3743,7 +3743,7 @@ fn normalize_code(code: &str) -> String {
         .join("\n");
 
     type NormalizeStep = (&'static str, fn(&str) -> String);
-    let steps: [NormalizeStep; 66] = [
+    let steps: [NormalizeStep; 52] = [
         ("normalize_multiline_imports", normalize_multiline_imports),
         ("normalize_empty_blocks", normalize_empty_blocks),
         ("normalize_iife_parens", normalize_iife_parens),
@@ -3784,11 +3784,6 @@ fn normalize_code(code: &str) -> String {
             "normalize_trailing_comma_in_calls",
             normalize_trailing_comma_in_calls,
         ),
-        ("normalize_update_expressions", normalize_update_expressions),
-        (
-            "normalize_compound_assignments",
-            normalize_compound_assignments,
-        ),
         (
             "normalize_trailing_commas_final",
             normalize_trailing_commas_final,
@@ -3801,15 +3796,11 @@ fn normalize_code(code: &str) -> String {
             "normalize_scope_guard_decl_order",
             normalize_scope_guard_decl_order,
         ),
-        ("normalize_trailing_continue", normalize_trailing_continue),
         (
             "normalize_try_block_decl_order",
             normalize_try_block_decl_order,
         ),
         ("normalize_multiline_ternary", normalize_multiline_ternary),
-        ("normalize_empty_if_stmts", normalize_empty_if_stmts),
-        ("normalize_dead_loops", normalize_dead_loops),
-        ("normalize_dead_do_while", normalize_dead_do_while),
         (
             "normalize_multiline_call_args",
             normalize_multiline_call_args,
@@ -3821,10 +3812,6 @@ fn normalize_code(code: &str) -> String {
         (
             "normalize_trailing_sequence_null",
             normalize_trailing_sequence_null,
-        ),
-        (
-            "normalize_redundant_function_names",
-            normalize_redundant_function_names,
         ),
         (
             "normalize_complex_type_annotations",
@@ -3877,12 +3864,7 @@ fn normalize_code(code: &str) -> String {
             "normalize_multiline_function_object_params",
             normalize_multiline_function_object_params,
         ),
-        (
-            "normalize_return_undefined_var",
-            normalize_return_undefined_var,
-        ),
         ("normalize_unicode_escapes", normalize_unicode_escapes),
-        ("normalize_empty_switch_case", normalize_empty_switch_case),
         (
             "normalize_anonymous_function_space",
             normalize_anonymous_function_space,
@@ -3913,26 +3895,9 @@ fn normalize_code(code: &str) -> String {
             normalize_logical_and_assignment,
         ),
         (
-            "normalize_logical_and_split_assignments",
-            normalize_logical_and_split_assignments,
-        ),
-        (
             "normalize_dead_initialized_let",
             normalize_dead_initialized_let,
         ),
-        (
-            "normalize_duplicate_call_before_use",
-            normalize_duplicate_call_before_use,
-        ),
-        (
-            "normalize_scope_guard_side_effects",
-            normalize_scope_guard_side_effects,
-        ),
-        (
-            "normalize_strip_empty_scope_guards",
-            normalize_strip_empty_scope_guards,
-        ),
-        ("normalize_bare_temp_to_let", normalize_bare_temp_to_let),
     ];
     for (name, step) in steps {
         let before = lines_normalized.clone();
@@ -3964,11 +3929,14 @@ fn normalize_code(code: &str) -> String {
         }
     }
 
+    // Post-array sequential normalizations.
+    // Cosmetic formatting normalizations (handle OXC vs Babel whitespace differences):
     lines_normalized = normalize_redundant_comma_in_assignment(&lines_normalized);
     lines_normalized = normalize_trailing_comma_read_stmt(&lines_normalized);
     lines_normalized = normalize_jsx_expr_newline_before_closing_brace(&lines_normalized);
     lines_normalized = normalize_jsx_semicolon_on_own_line(&lines_normalized);
     lines_normalized = normalize_jsx_whitespace_before_closing_tag(&lines_normalized);
+    // Naming infrastructure normalizations (Wave 5/6 — need rename_variables.rs audit):
     lines_normalized = normalize_rename_suffixes(&lines_normalized);
     lines_normalized = normalize_temp_zero_suffixes(&lines_normalized);
     lines_normalized = normalize_non_temp_ssa_suffixes(&lines_normalized);
@@ -3977,6 +3945,7 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_temp_alpha_renaming(&lines_normalized);
     lines_normalized = normalize_promote_temps(&lines_normalized);
     lines_normalized = normalize_two_dep_guard_order(&lines_normalized);
+    // Cosmetic multiline/formatting normalizations:
     lines_normalized = normalize_multiline_arrow_bodies(&lines_normalized);
     lines_normalized = normalize_multiline_if_conditions(&lines_normalized);
     lines_normalized = normalize_if_paren_spacing(&lines_normalized);
@@ -3990,58 +3959,26 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_jsx_text_expr_container_spacing(&lines_normalized);
     lines_normalized = normalize_jsx_text_expr_spacing_compact(&lines_normalized);
     lines_normalized = normalize_inline_jsx_cached_wrapper_scope(&lines_normalized);
-    // Re-run sentinel scope inline after inline_jsx_cached_wrapper_scope may
-    // convert dep-based scopes to sentinel scopes that need inlining.
     lines_normalized = normalize_sentinel_scope_inline(&lines_normalized);
     lines_normalized = normalize_sentinel_scope_inline_single_line(&lines_normalized);
     lines_normalized = normalize_inline_if_first_statements(&lines_normalized);
     lines_normalized = normalize_react_memo_closing_paren(&lines_normalized);
     lines_normalized = normalize_multiline_object_literal_access(&lines_normalized);
+    // Semantic normalizations still needed (active divergences):
     lines_normalized = normalize_object_shorthand_pairs(&lines_normalized);
     lines_normalized = normalize_fbt_plural_cross_product_tables(&lines_normalized);
     lines_normalized = normalize_fbt_placeholder_spacing(&lines_normalized);
     lines_normalized = normalize_inline_if_first_statements(&lines_normalized);
-    lines_normalized = normalize_multiline_object_method_bodies(&lines_normalized);
     lines_normalized = normalize_inline_if_first_statements(&lines_normalized);
-    lines_normalized = normalize_simple_alias_return_tail(&lines_normalized);
     lines_normalized = normalize_arrow_copy_return_body(&lines_normalized);
     lines_normalized = normalize_sort_simple_let_decl_runs(&lines_normalized);
     lines_normalized = normalize_memo_cache_decl_arity(&lines_normalized);
-    // Deduplicate consecutive cache slot saves BEFORE renumbering.
-    lines_normalized = normalize_duplicate_cache_slot_saves(&lines_normalized);
-    lines_normalized = normalize_cache_slot_renumber(&lines_normalized);
-    lines_normalized = normalize_for_loop_temp_update(&lines_normalized);
-    lines_normalized = normalize_jsx_string_attr_expression_container(&lines_normalized);
     lines_normalized = normalize_object_shorthand_pairs(&lines_normalized);
     lines_normalized = normalize_transitional_element_ref_shorthand(&lines_normalized);
     lines_normalized = normalize_fbt_plural_cross_product_tables(&lines_normalized);
-    lines_normalized = normalize_tail_return_from_cache_alias(&lines_normalized);
-    lines_normalized = normalize_nullish_coalescing_ternary_parens(&lines_normalized);
     lines_normalized = normalize_outlined_function_order(&lines_normalized);
-    lines_normalized = normalize_function_decl_trailing_semicolon(&lines_normalized);
-    lines_normalized = normalize_arrow_expr_trailing_semicolon(&lines_normalized);
     lines_normalized = normalize_parenthesized_arrow_initializers(&lines_normalized);
-    lines_normalized = normalize_arrow_return_object_body(&lines_normalized);
-    // Run trailing-break-before-default FIRST, then the broader fallthrough.
-    lines_normalized = normalize_switch_trailing_break_before_default(&lines_normalized);
-    lines_normalized = normalize_switch_fallthrough_break(&lines_normalized);
-    lines_normalized = normalize_switch_dead_case_before_default(&lines_normalized);
-    lines_normalized = normalize_switch_empty_break_case(&lines_normalized);
-    lines_normalized = normalize_switch_fallthrough_dead_assign(&lines_normalized);
-    // Split `} case` or `} default:` on the same line into separate lines.
-    lines_normalized = normalize_switch_case_line_split(&lines_normalized);
-    lines_normalized = normalize_paren_identity_assignment(&lines_normalized);
-    // Re-run alias-return-tail after paren_identity strips Flow type casts
-    lines_normalized = normalize_simple_alias_return_tail(&lines_normalized);
-    lines_normalized = normalize_arr_string_numeric_index(&lines_normalized);
-    lines_normalized = normalize_nomemo_or_true(&lines_normalized);
-    // Deduplicate duplicate deps in scope guard conditions.
-    lines_normalized = normalize_duplicate_guard_deps(&lines_normalized);
-    // Re-run temp alpha renaming after duplicate cache slot dedup, since
-    // the temp numbering may now be different.
     lines_normalized = normalize_temp_alpha_renaming(&lines_normalized);
-    // Re-run cache slot renumber after switch fallthrough / dedup changes.
-    lines_normalized = normalize_cache_slot_renumber(&lines_normalized);
 
     if debug_steps {
         eprintln!(
@@ -4576,33 +4513,6 @@ fn normalize_trailing_commas_final(code: &str) -> String {
     result
 }
 
-/// Remove `continue;` at the end of loop bodies.
-/// A `continue;` as the last statement in `for/while/do-while { ... continue; }`
-/// is a semantic no-op. Upstream eliminates it via pruneUnusedLabels.
-fn normalize_trailing_continue(code: &str) -> String {
-    let lines: Vec<&str> = code.lines().collect();
-    let mut result: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        // Check for pattern: `continue;\n}`
-        if lines[i].trim() == "continue;" {
-            // Look ahead: is the next non-empty line a `}`?
-            let mut j = i + 1;
-            while j < lines.len() && lines[j].trim().is_empty() {
-                j += 1;
-            }
-            if j < lines.len() && lines[j].trim() == "}" {
-                // Skip the `continue;` line
-                i += 1;
-                continue;
-            }
-        }
-        result.push(lines[i].to_string());
-        i += 1;
-    }
-    result.join("\n")
-}
-
 /// Normalize multi-line ternary expressions: join continuation lines that start
 /// with `?` or `:` (ternary operators) back to the previous line.
 /// This handles formatting differences like:
@@ -4635,56 +4545,6 @@ fn normalize_multiline_ternary(code: &str) -> String {
         }
     }
 
-    result.join("\n")
-}
-
-/// Remove empty if-statements: `if (expr) {  }` with no else branch.
-/// These are semantically no-ops when the test has no side effects.
-fn normalize_empty_if_stmts(code: &str) -> String {
-    let lines: Vec<&str> = code.lines().collect();
-    let mut result: Vec<&str> = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        let trimmed = lines[i].trim();
-        // Match single-line `if (expr) {  }`
-        if trimmed.starts_with("if (") && trimmed.ends_with("{  }") && !trimmed.contains("else") {
-            // Skip this line entirely
-            i += 1;
-            continue;
-        }
-        result.push(lines[i]);
-        i += 1;
-    }
-    result.join("\n")
-}
-
-/// Remove dead loops that only contain a break statement.
-/// Pattern: `for (... of ...) { break; }` or `for (... in ...) { break; }`
-fn normalize_dead_loops(code: &str) -> String {
-    let lines: Vec<&str> = code.lines().collect();
-    let mut result: Vec<&str> = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        let trimmed = lines[i].trim();
-        // Match `for (... of/in ...) {` followed by `break;` followed by `}`
-        if (trimmed.contains(" of ") || trimmed.contains(" in "))
-            && trimmed.starts_with("for (")
-            && trimmed.ends_with("{")
-        {
-            // Check if next two lines are `break;` and `}`
-            if i + 2 < lines.len() {
-                let next1 = lines[i + 1].trim();
-                let next2 = lines[i + 2].trim();
-                if next1 == "break;" && next2 == "}" {
-                    // Skip all 3 lines
-                    i += 3;
-                    continue;
-                }
-            }
-        }
-        result.push(lines[i]);
-        i += 1;
-    }
     result.join("\n")
 }
 
@@ -4730,64 +4590,6 @@ fn normalize_multiline_call_args(code: &str) -> String {
             }
         }
         result.push(lines[i].to_string());
-        i += 1;
-    }
-    result.join("\n")
-}
-
-/// Remove dead do-while loops: `do { break; } while (...);`
-/// Normalize dead do-while loops: `do { BODY } while (EXPR);` where the body
-/// does not contain `continue` and the loop only runs once.
-///
-/// Three forms:
-/// 1. `do { break; } while (EXPR);` — completely dead, remove.
-/// 2. `do { STMTS } while (EXPR);` where STMTS doesn't contain `continue` —
-///    the loop runs exactly once, so inline the body.
-fn normalize_dead_do_while(code: &str) -> String {
-    let lines: Vec<&str> = code.lines().collect();
-    let mut result: Vec<&str> = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        let trimmed = lines[i].trim();
-        // Match `do {` followed by body lines followed by `} while (...);`
-        if trimmed == "do {" {
-            // Find the matching `} while (...);`
-            let mut j = i + 1;
-            let mut body_lines: Vec<&str> = Vec::new();
-            let mut found_while = false;
-            let mut has_continue = false;
-            while j < lines.len() {
-                let jt = lines[j].trim();
-                if jt.starts_with("} while (") && jt.ends_with(");") {
-                    found_while = true;
-                    break;
-                }
-                if jt.starts_with("} while (") && jt.ends_with(")") {
-                    found_while = true;
-                    break;
-                }
-                if jt.contains("continue") {
-                    has_continue = true;
-                }
-                body_lines.push(jt);
-                j += 1;
-            }
-            if found_while && !has_continue {
-                // Check if body is just `break;`
-                if body_lines.len() == 1 && body_lines[0] == "break;" {
-                    // Completely dead — skip all lines.
-                    i = j + 1;
-                    continue;
-                }
-                // Inline the body (remove do/while wrapper).
-                for bl in &body_lines {
-                    result.push(bl);
-                }
-                i = j + 1;
-                continue;
-            }
-        }
-        result.push(lines[i]);
         i += 1;
     }
     result.join("\n")
@@ -5262,83 +5064,6 @@ fn normalize_ts_annotations(code: &str) -> String {
     let result = return_type.replace_all(&result, ") {");
     let result = as_const.replace_all(&result, "");
     result.to_string()
-}
-
-/// Remove trailing commas in function call arguments and normalize spacing.
-/// `foo( arg, )` → `foo(arg)`, `foo(a, b, )` → `foo(a, b)`
-/// Normalize `const` → `let` for variable declarations inside reactive scope bodies.
-/// Normalize standalone update expressions to assignment form.
-/// `y++;` → `y = y + 1;`  `++y;` → `y = y + 1;`
-/// `y--;` → `y = y - 1;`  `--y;` → `y = y - 1;`
-/// Only applies to standalone statements (identifiers and member expressions like x.a).
-fn normalize_update_expressions(code: &str) -> String {
-    // Simple identifier: x++ / ++x
-    let postfix = regex::Regex::new(r"^([a-zA-Z_$][a-zA-Z0-9_$]*)(\+\+|--);\s*$").unwrap();
-    let prefix = regex::Regex::new(r"^(\+\+|--)([a-zA-Z_$][a-zA-Z0-9_$]*);\s*$").unwrap();
-    // Member expression: x.a++ / ++x.a (dotted paths only)
-    let postfix_member = regex::Regex::new(
-        r"^([a-zA-Z_$][a-zA-Z0-9_$]*(?:\.[a-zA-Z_$][a-zA-Z0-9_$]*)+)(\+\+|--);\s*$",
-    )
-    .unwrap();
-    let prefix_member = regex::Regex::new(
-        r"^(\+\+|--)([a-zA-Z_$][a-zA-Z0-9_$]*(?:\.[a-zA-Z_$][a-zA-Z0-9_$]*)+);\s*$",
-    )
-    .unwrap();
-    code.lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            // Try member expression patterns first (more specific)
-            if let Some(caps) = postfix_member.captures(trimmed) {
-                let var = &caps[1];
-                let op = if &caps[2] == "++" { "+" } else { "-" };
-                return format!("{} = {} {} 1;", var, var, op);
-            }
-            if let Some(caps) = prefix_member.captures(trimmed) {
-                let op = if &caps[1] == "++" { "+" } else { "-" };
-                let var = &caps[2];
-                return format!("{} = {} {} 1;", var, var, op);
-            }
-            // Simple identifier patterns
-            if let Some(caps) = postfix.captures(trimmed) {
-                let var = &caps[1];
-                let op = if &caps[2] == "++" { "+" } else { "-" };
-                return format!("{} = {} {} 1;", var, var, op);
-            }
-            if let Some(caps) = prefix.captures(trimmed) {
-                let op = if &caps[1] == "++" { "+" } else { "-" };
-                let var = &caps[2];
-                return format!("{} = {} {} 1;", var, var, op);
-            }
-            trimmed.to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Normalize compound assignment operators to their expanded form.
-/// `x += y` → `x = x + y`, `x -= y` → `x = x - y`, etc.
-/// Handles both simple identifiers and member expressions.
-/// Only normalizes STATEMENT-level compound assignments (ending with `;`).
-fn normalize_compound_assignments(code: &str) -> String {
-    // Match: <lvalue> <op>= <rhs>;
-    // where <lvalue> is an identifier or member expression (a.b.c)
-    let compound = regex::Regex::new(
-        r"^([a-zA-Z_$][a-zA-Z0-9_$]*(?:\.[a-zA-Z_$][a-zA-Z0-9_$]*)*)\s*(\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<=|>>=|>>>=)\s*(.+);$"
-    ).unwrap();
-    code.lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            if let Some(caps) = compound.captures(trimmed) {
-                let lvalue = &caps[1];
-                let op = &caps[2];
-                let rhs = caps[3].trim();
-                let bin_op = &op[..op.len() - 1]; // Remove the `=` suffix
-                return format!("{} = {} {} {};", lvalue, lvalue, bin_op, rhs);
-            }
-            trimmed.to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// The upstream's `promoteUsedTemporaries` pass converts scope-internal `const` declarations
@@ -6230,38 +5955,6 @@ fn normalize_numeric_exponent_literals(code: &str) -> String {
     .to_string()
 }
 
-/// Strip redundant function names in function expressions.
-/// When a function expression is passed as an argument and the containing variable
-/// has the same name, Babel strips the function name but OXC preserves it.
-/// E.g., `let X = forwardRef(function X(` → `let X = forwardRef(function (`
-fn normalize_redundant_function_names(code: &str) -> String {
-    // Pattern: `let X = someFunc(function X(` → `let X = someFunc(function (`
-    // We can't use backreferences in Rust regex, so parse manually.
-    let decl_re =
-        regex::Regex::new(r"^((?:let|const|var)\s+)(\w+)(\s*=\s*[\w.]+\(function\s+)(\w+)(\(.*)$")
-            .unwrap();
-    code.lines()
-        .map(|line| {
-            if let Some(caps) = decl_re.captures(line) {
-                let var_name = &caps[2];
-                let func_name = &caps[4];
-                if var_name == func_name {
-                    // Strip the function name: replace `function X(` with `function (`
-                    let prefix = &caps[1]; // "let "
-                    let eq_part = &caps[3]; // " = forwardRef(function "
-                    // Remove the function name from eq_part
-                    let func_keyword_with_name = format!("function {}", func_name);
-                    let new_eq_part = eq_part.replace(&func_keyword_with_name, "function ");
-                    let rest = &caps[5]; // "(props, ref) {"
-                    return format!("{}{}{}{}", prefix, var_name, new_eq_part, rest);
-                }
-            }
-            line.to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// Strip complex type annotations from function parameters.
 /// The existing normalize_ts_annotations handles simple types like `: number`,
 /// but not object types like `: { id: number }`.
@@ -6984,36 +6677,6 @@ fn normalize_multiline_function_object_params(code: &str) -> String {
     result.join("\n")
 }
 
-/// Normalize `let x;\nreturn x;\n}` at the end of a function to just `}`.
-/// This handles the pattern where the compiler emits `let x = undefined; return x;`
-/// while upstream just omits the useMemo return when the value is unused.
-fn normalize_return_undefined_var(code: &str) -> String {
-    let lines: Vec<&str> = code.lines().collect();
-    let n = lines.len();
-    let mut result = Vec::new();
-    let mut i = 0;
-    let bare_decl_re = regex::Regex::new(r"^let (\w+);$").unwrap();
-    while i < n {
-        let trimmed = lines[i].trim();
-        // Look for pattern: `let <var>;` followed by `return <var>;` followed by `}`
-        if i + 2 < n {
-            let next = lines[i + 1].trim();
-            let after = lines[i + 2].trim();
-            if let Some(caps) = bare_decl_re.captures(trimmed) {
-                let var = &caps[1];
-                if next == format!("return {};", var) && after == "}" {
-                    // Skip the `let x;` and `return x;` lines, just emit `}`
-                    i += 2;
-                    continue;
-                }
-            }
-        }
-        result.push(trimmed.to_string());
-        i += 1;
-    }
-    result.join("\n")
-}
-
 /// Normalize Unicode escape sequences: convert literal non-ASCII characters to `\uXXXX`
 /// escape form so that e.g. the literal character `ŧ` (U+0167) and the escape sequence
 /// `\u0167` are treated as equivalent. Also collapses multi-byte UTF-8 escape sequences
@@ -7121,15 +6784,6 @@ fn normalize_compare_unicode_escapes(code: &str) -> String {
             format!("\\u{}", caps[1].to_ascii_lowercase())
         })
         .to_string()
-}
-
-/// Normalize empty switch cases that only contain a break to a label.
-/// Converts `case N: { break labelN; }` to `case N:` when the case body
-/// only has a label break (i.e., empty fallthrough).
-fn normalize_empty_switch_case(code: &str) -> String {
-    // Match patterns like `case 2: { break bb0; }` → `case 2:`
-    let re = regex::Regex::new(r"(case\s+\S+?:)\s*\{\s*break\s+\w+;\s*}").unwrap();
-    re.replace_all(code, "$1").to_string()
 }
 
 /// Normalize anonymous function expressions: `function()` → `function ()`
@@ -7684,65 +7338,6 @@ fn normalize_sentinel_scope_inline_single_line(code: &str) -> String {
     }
 
     result
-}
-
-/// Remove dead assignments at the end of a switch case body that are immediately
-/// overwritten by the next fall-through case.
-///
-/// When our compiler does not model switch fall-through, it may emit an assignment
-/// like `y = []` at the end of a case body that the next case immediately overwrites
-/// (e.g., `y = x`). The upstream compiler models fall-through and elides the dead
-/// assignment entirely.
-///
-/// Pattern: `...; IDENT = EXPR } case ...: { IDENT = ...` where the same IDENT
-/// is assigned in both the end of one case and the start of the next.
-fn normalize_switch_fallthrough_dead_assign(code: &str) -> String {
-    // Match: `; IDENT1 = EXPR } case VALUE: { IDENT2 = ` and check IDENT1 == IDENT2.
-    // Cannot use backreferences in the regex crate, so capture both idents and compare.
-    let re =
-        regex::Regex::new(r"; ([a-zA-Z_]\w*) = ([^;{}]+) \} case ([^:]+): \{ ([a-zA-Z_]\w*) = ")
-            .unwrap();
-
-    let mut result = code.to_string();
-    loop {
-        let Some(m) = re.captures(&result) else {
-            break;
-        };
-        let ident1 = m.get(1).unwrap().as_str();
-        let ident2 = m.get(4).unwrap().as_str();
-        if ident1 != ident2 {
-            // Not a dead assignment pattern; stop to avoid infinite loop.
-            break;
-        }
-        let full = m.get(0).unwrap();
-        let case_test = m.get(3).unwrap().as_str();
-
-        // Remove the dead assignment.
-        // Before: `; IDENT = EXPR } case VALUE: { IDENT = `
-        // After:  ` } case VALUE: { IDENT = `
-        let replacement = format!(" }} case {}: {{ {} = ", case_test, ident1);
-        let new_result = format!(
-            "{}{}{}",
-            &result[..full.start()],
-            &replacement,
-            &result[full.end()..]
-        );
-        result = new_result;
-    }
-
-    result
-}
-
-/// Split adjacent switch cases on the same line into separate lines.
-///
-/// Our compiler sometimes emits `} case VALUE: {` on the same line as the
-/// previous case, while the upstream puts each case on its own line.
-/// This normalization splits `} case` or `} default:` boundaries into
-/// separate lines so the comparison is whitespace-equivalent.
-fn normalize_switch_case_line_split(code: &str) -> String {
-    // Match `} case ` or `} default:` mid-line (not at line start).
-    let re = regex::Regex::new(r"\} (case |default[\s:])").unwrap();
-    re.replace_all(code, "}\n$1").to_string()
 }
 
 /// as `((x = V), V)` to make the truthiness check explicit. Our codegen
@@ -8347,31 +7942,6 @@ fn normalize_react_memo_closing_paren(code: &str) -> String {
     out.join("\n")
 }
 
-/// Collapse a simple multiline object method body to single-line form.
-fn normalize_multiline_object_method_bodies(code: &str) -> String {
-    let lines: Vec<&str> = code.lines().collect();
-    let mut out = Vec::with_capacity(lines.len());
-    let mut i = 0usize;
-
-    while i < lines.len() {
-        let current = lines[i].trim();
-        if i + 2 < lines.len() {
-            let next = lines[i + 1].trim();
-            let next2 = lines[i + 2].trim();
-            if current.ends_with('{') && next.starts_with("return ") && next2.starts_with("} }") {
-                out.push(format!("{current} {next} {next2}"));
-                i += 3;
-                continue;
-            }
-        }
-
-        out.push(current.to_string());
-        i += 1;
-    }
-
-    out.join("\n")
-}
-
 /// Collapse `lhs = {\n"key": value, }["key"];` to one line and drop the
 /// optional trailing comma before the closing brace.
 fn normalize_multiline_object_literal_access(code: &str) -> String {
@@ -8428,39 +7998,6 @@ fn normalize_object_shorthand_pairs(code: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// Collapse `let alias = value; return alias;` to `return value;`.
-fn normalize_simple_alias_return_tail(code: &str) -> String {
-    let decl_re =
-        regex::Regex::new(r"^let\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*;?$").unwrap();
-    let ret_re = regex::Regex::new(r"^return\s+([A-Za-z_$][\w$]*)\s*;?$").unwrap();
-    let lines: Vec<&str> = code.lines().collect();
-    let mut out = Vec::with_capacity(lines.len());
-    let mut i = 0usize;
-
-    while i < lines.len() {
-        let current = lines[i].trim();
-        if i + 1 < lines.len() {
-            let next = lines[i + 1].trim();
-            if let (Some(decl_caps), Some(ret_caps)) =
-                (decl_re.captures(current), ret_re.captures(next))
-            {
-                let alias = decl_caps.get(1).unwrap().as_str();
-                let value = decl_caps.get(2).unwrap().as_str();
-                let returned = ret_caps.get(1).unwrap().as_str();
-                if alias == returned {
-                    out.push(format!("return {value};"));
-                    i += 2;
-                    continue;
-                }
-            }
-        }
-        out.push(current.to_string());
-        i += 1;
-    }
-
-    out.join("\n")
 }
 
 /// Collapse arrow bodies of the form `()=>{let copy = expr; return copy;}` to
@@ -9097,204 +8634,6 @@ fn normalize_fbt_plural_cross_product_tables(code: &str) -> String {
         .join("\n")
 }
 
-/// Renumber cache slot indices to be contiguous starting from 0 within each
-/// function's cache scope. This handles the case where the AST codegen allocates
-/// phantom slots for temp-only scopes, shifting all subsequent indices.
-fn normalize_cache_slot_renumber(code: &str) -> String {
-    let decl_re = regex::Regex::new(r"^const \$ = (_c\d*)\((\d+)\);$").unwrap();
-    let slot_re = regex::Regex::new(r"\$\[(\d+)\]").unwrap();
-    let lines: Vec<&str> = code.lines().collect();
-    let mut out: Vec<String> = lines.iter().map(|line| (*line).to_string()).collect();
-    let mut i = 0usize;
-
-    while i < lines.len() {
-        let current = lines[i].trim();
-        let Some(caps) = decl_re.captures(current) else {
-            i += 1;
-            continue;
-        };
-
-        let callee = caps.get(1).unwrap().as_str();
-
-        // Find the end of this function's scope.
-        let mut j = i + 1;
-        while j < lines.len() {
-            let next = lines[j].trim();
-            let next_is_toplevel = j + 1 == lines.len()
-                || matches!(
-                    lines[j + 1].trim(),
-                    line if line.starts_with("function ")
-                        || line.starts_with("export ")
-                        || line.starts_with("import ")
-                );
-            if next == "}" && next_is_toplevel {
-                break;
-            }
-            j += 1;
-        }
-
-        // Collect all unique slot indices in order of first appearance.
-        let mut seen_slots: Vec<usize> = Vec::new();
-        for line in &lines[i..=j.min(lines.len().saturating_sub(1))] {
-            for caps in slot_re.captures_iter(line) {
-                let slot = caps.get(1).unwrap().as_str().parse::<usize>().unwrap_or(0);
-                if !seen_slots.contains(&slot) {
-                    seen_slots.push(slot);
-                }
-            }
-        }
-
-        // Build renumbering map: old_slot -> new_slot (contiguous from 0).
-        let mut renumber: std::collections::HashMap<usize, usize> =
-            std::collections::HashMap::new();
-        let mut sorted_slots = seen_slots;
-        sorted_slots.sort();
-        for (new_idx, &old_idx) in sorted_slots.iter().enumerate() {
-            renumber.insert(old_idx, new_idx);
-        }
-
-        // Only apply if there's actually a gap.
-        let needs_renumber = renumber.iter().any(|(old, new)| old != new);
-        if needs_renumber {
-            let new_size = renumber.len();
-            out[i] = format!("const $ = {callee}({new_size});");
-            for entry in out
-                .iter_mut()
-                .take(j.min(lines.len().saturating_sub(1)) + 1)
-                .skip(i + 1)
-            {
-                *entry = slot_re
-                    .replace_all(entry, |caps: &regex::Captures<'_>| {
-                        let old = caps.get(1).unwrap().as_str().parse::<usize>().unwrap_or(0);
-                        let new = renumber.get(&old).copied().unwrap_or(old);
-                        format!("$[{new}]")
-                    })
-                    .to_string();
-            }
-        }
-
-        i = j.saturating_add(1);
-    }
-
-    out.join("\n")
-}
-
-/// Normalize JSX string attributes with special characters.
-/// `value="..."` where the string contains escape sequences (\\n, \\t, unicode)
-/// is equivalent to `value={"..."}` — normalize to unwrapped form for comparison.
-fn normalize_jsx_string_attr_expression_container(code: &str) -> String {
-    // Convert `attr={"value"}` to `attr="value"` for JSX string attributes.
-    // When converting from expression container, un-escape JS string escapes:
-    // `\\\\` → `\\`, `\\"` → `"`, etc.
-    let expr_container_re = regex::Regex::new(r#"(\w+)=\{\s*"([^"]*(?:\\.[^"]*)*)"\s*\}"#).unwrap();
-    code.lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            if trimmed.contains("={") && trimmed.contains('"') {
-                expr_container_re
-                    .replace_all(trimmed, |caps: &regex::Captures<'_>| {
-                        let attr = caps.get(1).unwrap().as_str();
-                        let value = caps.get(2).unwrap().as_str();
-                        // Un-escape JS string: `\\` → `\`
-                        let unescaped = value.replace("\\\\", "\\");
-                        format!("{attr}=\"{unescaped}\"")
-                    })
-                    .to_string()
-            } else {
-                trimmed.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Normalize for-loop update expressions:
-/// 1. Replace temp vars with loop var: `for (let i; ...; t0++)` → `for (let i; ...; i++)`
-/// 2. Replace prefix temp: `for (let i; ...; ++t0)` → `for (let i; ...; ++i)`
-/// 3. Replace bare loop var with assignment: `for (let i; ...; i)` → `for (let i; ...; i = i + 1)`
-fn normalize_for_loop_temp_update(code: &str) -> String {
-    let for_temp_re = regex::Regex::new(
-        r"^(for \(let (\w+)(?:\s*=\s*[^;]*)?;\s*[^;]+;\s*)(t\d+)(\+\+|\-\-|(?:\s*=\s*.+?))\) \{$",
-    )
-    .unwrap();
-    // Prefix update: `++tN` or `--tN`
-    let for_prefix_re = regex::Regex::new(
-        r"^(for \(let (\w+)(?:\s*=\s*[^;]*)?;\s*[^;]+;\s*)(\+\+|\-\-)(t\d+)\) \{$",
-    )
-    .unwrap();
-    // Match `for (let VAR; ...; VAR) {` — bare identifier as update (no operator)
-    let for_bare_re =
-        regex::Regex::new(r"^for \(let (\w+)(?:\s*=\s*[^;]*)?(;\s*[^;]+;\s*)(\w+)\) \{$").unwrap();
-    // Match `for (let VAR; ...; VAR = tN) {` — assignment from temp as update
-    // Note: regex crate doesn't support backreferences, so we verify the match manually
-    let for_assign_temp_re = regex::Regex::new(
-        r"^(for \(let (\w+)(?:\s*=\s*[^;]*)?;\s*[^;]+;\s*)(\w+)\s*=\s*(t\d+)\) \{$",
-    )
-    .unwrap();
-    code.lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            // Pattern 0: loop var assigned from temp: `i = t0` → `i = i + 1`
-            if let Some(caps) = for_assign_temp_re.captures(trimmed) {
-                let loop_var = caps.get(2).unwrap().as_str();
-                let update_lhs = caps.get(3).unwrap().as_str();
-                let temp_var = caps.get(4).unwrap().as_str();
-                if loop_var == update_lhs {
-                    return trimmed.replace(
-                        &format!("{loop_var} = {temp_var}"),
-                        &format!("{loop_var} = {loop_var} + 1"),
-                    );
-                }
-            }
-            // Pattern 1: temp in update position
-            if let Some(caps) = for_temp_re.captures(trimmed) {
-                let loop_var = caps.get(2).unwrap().as_str();
-                let temp_var = caps.get(3).unwrap().as_str();
-                if temp_var != loop_var {
-                    return trimmed.replace(
-                        &format!("{}{}", temp_var, caps.get(4).unwrap().as_str()),
-                        &format!("{}{}", loop_var, caps.get(4).unwrap().as_str()),
-                    );
-                }
-            }
-            // Pattern 1b: prefix temp in update position (e.g., `; ++t0)`)
-            if let Some(caps) = for_prefix_re.captures(trimmed) {
-                let loop_var = caps.get(2).unwrap().as_str();
-                let prefix_op = caps.get(3).unwrap().as_str();
-                let temp_var = caps.get(4).unwrap().as_str();
-                if temp_var != loop_var {
-                    return trimmed.replace(
-                        &format!("{prefix_op}{temp_var}"),
-                        &format!("{prefix_op}{loop_var}"),
-                    );
-                }
-            }
-            // Pattern 2: bare identifier as update (e.g., `; i)` or `; t0)`)
-            if let Some(caps) = for_bare_re.captures(trimmed) {
-                let loop_var = caps.get(1).unwrap().as_str();
-                let update_var = caps.get(3).unwrap().as_str();
-                if loop_var == update_var {
-                    // Bare loop var → convert to assignment form
-                    let semi_part = caps.get(2).unwrap().as_str();
-                    return format!(
-                        "for (let {loop_var}{semi_part}{loop_var} = {loop_var} + 1) {{"
-                    );
-                }
-                // Bare temp in update → strip it (empty update)
-                if update_var.starts_with('t')
-                    && update_var.len() > 1
-                    && update_var[1..].chars().all(|c| c.is_ascii_digit())
-                {
-                    let semi_part = caps.get(2).unwrap().as_str();
-                    return format!("for (let {loop_var}{semi_part}) {{");
-                }
-            }
-            trimmed.to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn normalize_memo_cache_decl_arity(code: &str) -> String {
     let decl_re = regex::Regex::new(r"^const \$ = (_c\d*)\((\d+)\);$").unwrap();
     let slot_re = regex::Regex::new(r"\$\[(\d+)\]").unwrap();
@@ -9370,105 +8709,6 @@ fn normalize_transitional_element_ref_shorthand(code: &str) -> String {
         .join("\n")
 }
 
-fn normalize_tail_return_from_cache_alias(code: &str) -> String {
-    let return_re = regex::Regex::new(r"^return (t\d+);$").unwrap();
-    let else_load_re = regex::Regex::new(
-        r"^\} else \{ ((?:t\d+)|(?:[A-Za-z_$][\w$]*)) = \$[A-Za-z0-9_]*\[\d+\];$",
-    )
-    .unwrap();
-    let temp_token_re = regex::Regex::new(r"\bt\d+\b").unwrap();
-    let lines: Vec<&str> = code.lines().collect();
-    let mut out: Vec<String> = lines.iter().map(|line| (*line).to_string()).collect();
-    let counts = temp_token_re.captures_iter(code).fold(
-        std::collections::HashMap::<String, usize>::new(),
-        |mut acc, caps| {
-            *acc.entry(caps.get(0).unwrap().as_str().to_string())
-                .or_default() += 1;
-            acc
-        },
-    );
-
-    for i in 2..lines.len() {
-        let current = lines[i].trim();
-        let Some(return_caps) = return_re.captures(current) else {
-            continue;
-        };
-        let returned = return_caps.get(1).unwrap().as_str();
-        if counts.get(returned).copied().unwrap_or(0) != 1 {
-            continue;
-        }
-        if lines[i - 1].trim() != "}" {
-            continue;
-        }
-        let Some(else_caps) = else_load_re.captures(lines[i - 2].trim()) else {
-            continue;
-        };
-        let loaded = else_caps.get(1).unwrap().as_str();
-        if loaded == returned {
-            continue;
-        }
-        out[i] = format!("return {loaded};");
-    }
-
-    out.join("\n")
-}
-
-/// Normalize redundant parens around nullish coalescing (`??`) in ternary test position.
-///
-/// In JavaScript, `??` (precedence 5) binds tighter than `?:` (precedence 4), so
-/// `(a ?? b) ? c : d` and `a ?? b ? c : d` are semantically identical.
-/// The upstream Babel codegen emits the parens; our codegen omits them.
-/// This normalizer strips the parens so both sides match.
-///
-/// Pattern: `(EXPR ?? EXPR) ? ` → `EXPR ?? EXPR ? `
-fn normalize_nullish_coalescing_ternary_parens(code: &str) -> String {
-    let chars: Vec<char> = code.chars().collect();
-    let len = chars.len();
-    let mut result = String::with_capacity(len);
-    let mut i = 0;
-    while i < len {
-        if chars[i] == '(' {
-            // Try to find matching `)` tracking depth
-            let start = i;
-            let mut depth = 1;
-            let mut j = i + 1;
-            let mut has_nullish = false;
-            while j < len && depth > 0 {
-                match chars[j] {
-                    '(' => depth += 1,
-                    ')' => depth -= 1,
-                    '?' if j + 1 < len && chars[j + 1] == '?' && depth == 1 => {
-                        has_nullish = true;
-                        // Skip the second `?`
-                        j += 1;
-                    }
-                    _ => {}
-                }
-                j += 1;
-            }
-            // j now points past the closing `)`
-            if depth == 0 && has_nullish {
-                // Check if followed by ` ? ` (ternary test position)
-                let mut k = j;
-                // Skip optional whitespace
-                while k < len && chars[k] == ' ' {
-                    k += 1;
-                }
-                if k < len && chars[k] == '?' && (k + 1 >= len || chars[k + 1] != '?') {
-                    // This is `(expr ?? expr) ?` — strip the outer parens
-                    let inner: String = chars[start + 1..j - 1].iter().collect();
-                    result.push_str(&inner);
-                    i = j;
-                    continue;
-                }
-            }
-        }
-        result.push(chars[i]);
-        i += 1;
-    }
-    result
-}
-
 /// Reorder outlined function declarations (`function _temp...`) to appear
 /// after the `FIXTURE_ENTRYPOINT` line.
 ///
@@ -9539,49 +8779,6 @@ fn normalize_outlined_function_order(code: &str) -> String {
         }
     }
     result_lines.join("\n")
-}
-
-/// Strip trailing `;` from standalone function declaration closing lines.
-///
-/// Our codegen may emit `};` to close a function declaration (e.g., for outlined
-/// functions), while the upstream emits `}`. This normalizer strips the semicolon.
-/// Only applies to lines that are exactly `};` (with optional whitespace).
-fn normalize_function_decl_trailing_semicolon(code: &str) -> String {
-    code.lines()
-        .map(|line| if line.trim() == "};" { "}" } else { line })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Normalize trailing `;` after `}` at the end of arrow function expression lines.
-///
-/// Lines like `let X = (...) =>{...};` and `let X = (...) =>{...}` should compare
-/// equal. We normalize by stripping the trailing `;` when the line matches
-/// a `let/const/var ... =>{...}` pattern ending in `};`.
-///
-/// Also handles `React.memo(...)` wrapping.
-fn normalize_arrow_expr_trailing_semicolon(code: &str) -> String {
-    code.lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            // Match lines that are arrow function expression assignments
-            let is_arrow_assignment = (trimmed.starts_with("let ")
-                || trimmed.starts_with("const ")
-                || trimmed.starts_with("var "))
-                && trimmed.contains("=>{")
-                && (trimmed.ends_with("};") || trimmed.ends_with("}"));
-            if is_arrow_assignment && trimmed.ends_with("};") {
-                // Strip the trailing semicolon
-                &trimmed[..trimmed.len() - 1]
-            } else if is_arrow_assignment && trimmed.ends_with("}") {
-                // Already normalized
-                trimmed
-            } else {
-                trimmed
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// OXC may wrap an arrow initializer in one extra pair of parentheses when
@@ -9794,44 +8991,6 @@ fn normalize_logical_and_assignment(code: &str) -> String {
         .join("\n")
 }
 
-/// Split `((ASSIGNMENT), TRUTHY) && ASSIGNMENT;` into separate assignment statements.
-/// `((x = 1), 1) && x = 2;` → `x = 1;\nx = 2;`
-/// Also handles `(x = 1) && x = 2;` → `x = 1;\nx = 2;`
-///
-/// The upstream preserves logical AND expressions containing assignments, while
-/// the Rust codegen splits them into separate statements. Both are semantically
-/// equivalent when the LHS is always truthy.
-fn normalize_logical_and_split_assignments(code: &str) -> String {
-    // Match `((VAR = EXPR), LITERAL) && VAR = EXPR;` (sequence + logical AND)
-    let seq_re = regex::Regex::new(
-        r"^\(\(([a-zA-Z_$][\w$]*\s*=\s*[^)]+)\),\s*\d+\)\s*&&\s*([a-zA-Z_$][\w$]*\s*=\s*[^;]+);?\s*$",
-    )
-    .unwrap();
-    // Match `(VAR = EXPR) && VAR = EXPR;` pattern
-    let simple_re = regex::Regex::new(
-        r"^\(([a-zA-Z_$][\w$]*\s*=\s*[^)]+)\)\s*&&\s*([a-zA-Z_$][\w$]*\s*=\s*[^;]+);?\s*$",
-    )
-    .unwrap();
-    let mut out = Vec::new();
-    for line in code.lines() {
-        let trimmed = line.trim();
-        if let Some(caps) = seq_re.captures(trimmed) {
-            let assign1 = caps.get(1).unwrap().as_str();
-            let assign2 = caps.get(2).unwrap().as_str();
-            out.push(format!("{};", assign1.trim_end_matches(';')));
-            out.push(format!("{};", assign2.trim_end_matches(';')));
-        } else if let Some(caps) = simple_re.captures(trimmed) {
-            let assign1 = caps.get(1).unwrap().as_str();
-            let assign2 = caps.get(2).unwrap().as_str();
-            out.push(format!("{};", assign1.trim_end_matches(';')));
-            out.push(format!("{};", assign2.trim_end_matches(';')));
-        } else {
-            out.push(trimmed.to_string());
-        }
-    }
-    out.join("\n")
-}
-
 /// Strip dead `let` declarations where the variable is never meaningfully
 /// referenced again in the rest of the code.
 ///
@@ -9976,756 +9135,6 @@ fn normalize_dead_initialized_let(code: &str) -> String {
         .join("\n")
 }
 
-/// Strip a duplicate call expression statement that immediately precedes a
-/// declaration or assignment that captures the same call's result.
-///
-/// The AST codegen may emit:
-///   `call(args);`
-///   `let x = call(args);`
-/// or:
-///   `call(args);`
-///   `let x = [...call(args)];`
-///
-/// where the first line is a dead side-effect load that upstream eliminates.
-/// This normalization removes the duplicate call statement.
-fn normalize_duplicate_call_before_use(code: &str) -> String {
-    let call_stmt_re = regex::Regex::new(
-        r"^([a-zA-Z_$][a-zA-Z0-9_$.]*(?:\.[a-zA-Z_$][a-zA-Z0-9_$]*)*)\((.*)\);?$",
-    )
-    .unwrap();
-    let lines: Vec<&str> = code.lines().collect();
-    let mut skip = vec![false; lines.len()];
-
-    for i in 0..lines.len().saturating_sub(1) {
-        let trimmed = lines[i].trim();
-        if let Some(caps) = call_stmt_re.captures(trimmed) {
-            let callee = caps.get(1).unwrap().as_str();
-            let args = caps.get(2).unwrap().as_str();
-            // Build the call expression we expect to find on the next line
-            let call_expr = format!("{}({})", callee, args);
-            let next_trimmed = lines[i + 1].trim();
-            // Check if next line contains this call expression
-            if next_trimmed.contains(&call_expr) && next_trimmed != trimmed {
-                skip[i] = true;
-            }
-        }
-    }
-
-    if skip.iter().all(|&s| !s) {
-        return code.to_string();
-    }
-
-    lines
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !skip[*i])
-        .map(|(_, line)| line.trim())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Deduplicate consecutive cache slot saves of the same variable within scope
-/// guards.  The Rust codegen sometimes emits:
-///
-/// ```text
-/// $[1] = x;
-/// $[2] = x
-/// ```
-///
-/// in the if-branch, and correspondingly:
-///
-/// ```text
-/// x = $[1];
-/// x = $[2]
-/// ```
-///
-/// in the else-branch.  The second save/restore is redundant (saves the same
-/// value to another slot / overwrites the same variable).  We keep only the
-/// *last* slot for each variable.
-///
-/// After deduplication the cache_slot_renumber pass will close any resulting
-/// gaps so slot indices remain contiguous.
-fn normalize_duplicate_cache_slot_saves(code: &str) -> String {
-    let lines: Vec<&str> = code.lines().collect();
-    let mut out: Vec<String> = Vec::with_capacity(lines.len());
-
-    // Regex for `$[N] = VAR` (save) and `VAR = $[N]` (restore).
-    let save_re = regex::Regex::new(r"^\$\[(\d+)\] = ([a-zA-Z_$][a-zA-Z0-9_$]*)$").unwrap();
-    let restore_re = regex::Regex::new(r"^([a-zA-Z_$][a-zA-Z0-9_$]*) = \$\[(\d+)\]$").unwrap();
-    // Inline restore: `} else { VAR = $[N];` at end of line
-    let inline_restore_re =
-        regex::Regex::new(r"^(.*\} else \{)\s*([a-zA-Z_$][a-zA-Z0-9_$]*) = \$\[(\d+)\];?$")
-            .unwrap();
-
-    let mut i = 0usize;
-    while i < lines.len() {
-        let trimmed = lines[i].trim().trim_end_matches(';');
-
-        // Detect a run of consecutive `$[N] = VAR` saves.
-        if let Some(caps) = save_re.captures(trimmed) {
-            let var0 = caps.get(2).unwrap().as_str();
-
-            // Collect the full run of saves of the *same* variable.
-            let mut run_end = i + 1;
-            while run_end < lines.len() {
-                let next = lines[run_end].trim().trim_end_matches(';');
-                if let Some(next_caps) = save_re.captures(next)
-                    && next_caps.get(2).unwrap().as_str() == var0
-                {
-                    run_end += 1;
-                    continue;
-                }
-                break;
-            }
-            let run_len = run_end - i;
-            if run_len > 1 {
-                // Keep only the *first* save in the run (to match the condition
-                // which references the first slot).
-                out.push(lines[i].to_string());
-                i = run_end;
-                continue;
-            }
-        }
-
-        // Same logic for restore side: `VAR = $[N]; VAR = $[M]`.
-        if let Some(caps) = restore_re.captures(trimmed) {
-            let var0 = caps.get(1).unwrap().as_str();
-
-            let mut run_end = i + 1;
-            while run_end < lines.len() {
-                let next = lines[run_end].trim().trim_end_matches(';');
-                if let Some(next_caps) = restore_re.captures(next)
-                    && next_caps.get(1).unwrap().as_str() == var0
-                {
-                    run_end += 1;
-                    continue;
-                }
-                break;
-            }
-            let run_len = run_end - i;
-            if run_len > 1 {
-                // Keep only the *first* restore in the run.
-                out.push(lines[i].to_string());
-                i = run_end;
-                continue;
-            }
-        }
-
-        // Handle inline restore: `} else { VAR = $[N];` followed by `VAR = $[M]`
-        if let Some(caps) = inline_restore_re.captures(lines[i].trim()) {
-            let var0 = caps.get(2).unwrap().as_str();
-
-            // Check if next lines continue with restores of the same var
-            let mut run_end = i + 1;
-            while run_end < lines.len() {
-                let next = lines[run_end].trim().trim_end_matches(';');
-                if let Some(next_caps) = restore_re.captures(next)
-                    && next_caps.get(1).unwrap().as_str() == var0
-                {
-                    run_end += 1;
-                    continue;
-                }
-                break;
-            }
-            if run_end > i + 1 {
-                // Keep only the inline restore (first), skip the rest.
-                out.push(lines[i].to_string());
-                i = run_end;
-                continue;
-            }
-        }
-
-        out.push(lines[i].to_string());
-        i += 1;
-    }
-
-    out.join("\n")
-}
-
-/// Normalize arrow function bodies that contain only `return { ... }` to
-/// the shorter `{ ... }` form.  The Rust codegen emits explicit `return`
-/// while the upstream Babel output uses the concise labeled-expression form.
-///
-/// Pattern: `=>{return { CONTENT } }` → `=> { CONTENT }`
-/// Uses brace-depth matching so nested braces are handled correctly.
-fn normalize_arrow_return_object_body(code: &str) -> String {
-    // Match `=>{return ` or `=> {return ` patterns
-    let trigger = regex::Regex::new(r"=>\s*\{\s*return\s+\{").unwrap();
-    code.lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            if !trigger.is_match(trimmed) {
-                return trimmed.to_string();
-            }
-            let mut result = String::with_capacity(trimmed.len());
-            let chars: Vec<char> = trimmed.chars().collect();
-            let len = chars.len();
-            let mut i = 0;
-            while i < len {
-                // Look for `=> {return {`
-                if i + 3 < len && chars[i] == '=' && chars[i + 1] == '>' {
-                    // Find opening brace of arrow body
-                    let mut j = i + 2;
-                    while j < len && chars[j].is_whitespace() {
-                        j += 1;
-                    }
-                    if j < len && chars[j] == '{' {
-                        // Skip whitespace after {
-                        let mut k = j + 1;
-                        while k < len && chars[k].is_whitespace() {
-                            k += 1;
-                        }
-                        // Check for `return {`
-                        let rest: String = chars[k..].iter().collect();
-                        if rest.starts_with("return ") || rest.starts_with("return{") {
-                            // Skip `return ` or `return`
-                            let mut m = k + 6; // past "return"
-                            while m < len && chars[m].is_whitespace() {
-                                m += 1;
-                            }
-                            if m < len && chars[m] == '{' {
-                                // Find the matching closing brace for the inner object
-                                let mut depth = 1;
-                                let mut n = m + 1;
-                                while n < len && depth > 0 {
-                                    if chars[n] == '{' {
-                                        depth += 1;
-                                    } else if chars[n] == '}' {
-                                        depth -= 1;
-                                    }
-                                    n += 1;
-                                }
-                                // n is now past the inner closing brace
-                                // Skip optional trailing semicolon after the object literal
-                                let mut p = n;
-                                while p < len && chars[p].is_whitespace() {
-                                    p += 1;
-                                }
-                                if p < len && chars[p] == ';' {
-                                    p += 1;
-                                    while p < len && chars[p].is_whitespace() {
-                                        p += 1;
-                                    }
-                                }
-                                // Check that next non-whitespace is `}` (closing the arrow body)
-                                if p < len && chars[p] == '}' {
-                                    // Success: rewrite `=>{return { CONTENT } }` to `=> { CONTENT }`
-                                    let inner: String = chars[m..n].iter().collect();
-                                    result.push_str("=> ");
-                                    result.push_str(inner.trim());
-                                    i = p + 1;
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                }
-                result.push(chars[i]);
-                i += 1;
-            }
-            result
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Normalize switch-case fallthrough: remove trailing `break` from a case
-/// body when it falls through to the next case or `default:`.
-///
-/// The Rust codegen always emits explicit `break` statements, whereas the
-/// upstream Babel output omits `break` for deliberate fallthrough cases.
-///
-/// Pattern: `... break } case ...:` → `... } case ...:` (and similar for `default:`)
-fn normalize_switch_fallthrough_break(code: &str) -> String {
-    // Match `break } case X:` or `break } default:` on the same line,
-    // and remove the `break` keyword.
-    // We match the pattern inline since our normalization collapses switch cases to one line.
-    let re = regex::Regex::new(r"\bbreak;?\s*\}\s*(default[\s:])").unwrap();
-    // Collapse empty case body before default: `case X: { } default:` → `case X:\ndefault:`
-    let empty_before_default_re =
-        regex::Regex::new(r"(case\s+[^:]+:)\s*\{\s*\}\s*(default[\s:])").unwrap();
-    let mut result = code.to_string();
-    // Iterate until stable since removing one break may reveal another.
-    loop {
-        let next = re.replace_all(&result, "} $1").to_string();
-        let next = empty_before_default_re
-            .replace_all(&next, "$1\n$2")
-            .to_string();
-        if next == result {
-            break;
-        }
-        result = next;
-    }
-    result
-}
-
-/// Strip redundant parenthesized identity wrappers in assignments:
-/// `let x = (t0);` → `let x = t0;`
-/// `let y = (x);` → `let y = x;`
-///
-/// These arise from Flow/TypeScript type-cast expressions `(x: Type)` where
-/// the Rust codegen strips the type annotation but keeps the parens, while
-/// the upstream keeps `(x: Type)` as-is.
-fn normalize_paren_identity_assignment(code: &str) -> String {
-    // Pattern: `let VAR = (IDENT);` or `VAR = (IDENT);`
-    let re = regex::Regex::new(
-        r"((?:let\s+)?[a-zA-Z_$][a-zA-Z0-9_$]*\s*=\s*)\(([a-zA-Z_$][a-zA-Z0-9_$]*)\)(;?)$",
-    )
-    .unwrap();
-    // Flow type cast: `let VAR = (IDENT: Type);` → `let VAR = IDENT;`
-    let flow_cast_re = regex::Regex::new(
-        r"((?:let\s+)?[a-zA-Z_$][a-zA-Z0-9_$]*\s*=\s*)\(([a-zA-Z_$][a-zA-Z0-9_$]*):\s*[A-Za-z_$][\w$<>\[\]|&?,\s]*\)(;?)$",
-    )
-    .unwrap();
-    code.lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            if let Some(caps) = re.captures(trimmed) {
-                format!(
-                    "{}{}{}",
-                    caps.get(1).unwrap().as_str(),
-                    caps.get(2).unwrap().as_str(),
-                    caps.get(3).unwrap().as_str()
-                )
-            } else if let Some(caps) = flow_cast_re.captures(trimmed) {
-                format!(
-                    "{}{}{}",
-                    caps.get(1).unwrap().as_str(),
-                    caps.get(2).unwrap().as_str(),
-                    caps.get(3).unwrap().as_str()
-                )
-            } else {
-                trimmed.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Normalize numeric string member access: `arr["0"]` → `arr[0]`.
-///
-/// The Rust codegen sometimes emits string-indexed access for numeric indices
-/// (e.g., in computed property access), while upstream uses numeric indices.
-fn normalize_arr_string_numeric_index(code: &str) -> String {
-    // Match `["0"]`, `["1"]`, etc. and replace with `[0]`, `[1]`, etc.
-    let re = regex::Regex::new(r#"\["(\d+)"\]"#).unwrap();
-    re.replace_all(code, |caps: &regex::Captures<'_>| {
-        format!("[{}]", caps.get(1).unwrap().as_str())
-    })
-    .to_string()
-}
-
-/// Normalize `|| true` in scope guard conditions: `$[0] !== a || true` → `$[0] !== a`.
-///
-/// The `|| true` clause appears in no-memo mode where memoization is
-/// intentionally disabled.  The Rust codegen omits this because it doesn't
-/// support the nomemo pragma yet.  Since `|| true` makes the guard always
-/// re-execute, and the Rust version always re-executes (no special pruning),
-/// the behavior is equivalent.
-fn normalize_nomemo_or_true(code: &str) -> String {
-    // Pattern: `if (COND || true)` → `if (COND)`
-    code.replace(" || true)", ")")
-}
-
-/// Remove the `; break` before a `}` that immediately follows with
-/// `default:` on the same switch case line.  This handles a slightly
-/// different pattern from `normalize_switch_fallthrough_break`: the break
-/// is at the end of the case body as a standalone semicolon-terminated
-/// statement, like: `y = t1; break } default: {`.
-fn normalize_switch_trailing_break_before_default(code: &str) -> String {
-    // Pattern: `; break } default:` → ` } default:`
-    // Also handle `; break } case X:` where the break is redundant fallthrough.
-    let re = regex::Regex::new(r";\s*break;?\s*\}\s*(default\s*:|case\s)").unwrap();
-    re.replace_all(code, " } $1").to_string()
-}
-
-/// Deduplicate consecutive cache slot deps in scope guard conditions.
-///
-/// The Rust codegen sometimes emits duplicate deps in the condition:
-/// `if ($[4] !== x || $[5] !== x)` where the same variable `x` is checked
-/// against two different cache slots.  The expected output only has a single
-/// check: `if ($[4] !== x)`.
-///
-/// This pass removes duplicate `$[N] !== VAR` clauses from `if (...)` conditions
-/// when the same VAR appears in multiple consecutive clauses.
-fn normalize_duplicate_guard_deps(code: &str) -> String {
-    // Match `if (COND)` patterns and look for duplicate `$[N] !== VAR` entries.
-    let guard_re = regex::Regex::new(r"^if \((.+?)\) \{").unwrap();
-    let dep_re = regex::Regex::new(r"\$\[\d+\] !== ([a-zA-Z_$][a-zA-Z0-9_$.]*)").unwrap();
-
-    code.lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            let Some(caps) = guard_re.captures(trimmed) else {
-                return trimmed.to_string();
-            };
-            let cond = caps.get(1).unwrap().as_str();
-            // Split condition by `||`
-            let parts: Vec<&str> = cond.split(" || ").collect();
-            if parts.len() <= 1 {
-                return trimmed.to_string();
-            }
-            // Deduplicate: keep only the first occurrence of each VAR in `$[N] !== VAR`
-            let mut seen_vars: Vec<String> = Vec::new();
-            let mut kept_parts: Vec<&str> = Vec::new();
-            for part in &parts {
-                if let Some(dep_caps) = dep_re.captures(part) {
-                    let var = dep_caps.get(1).unwrap().as_str().to_string();
-                    if seen_vars.contains(&var) {
-                        continue; // Skip duplicate
-                    }
-                    seen_vars.push(var);
-                }
-                kept_parts.push(part);
-            }
-            if kept_parts.len() == parts.len() {
-                return trimmed.to_string(); // No change
-            }
-            let new_cond = kept_parts.join(" || ");
-            let rest = &trimmed[caps.get(0).unwrap().end()..];
-            format!("if ({new_cond}) {{{rest}")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Remove `{ break }` from a switch case body when the very next case is
-/// `default:`.  The break is redundant in this position because execution
-/// would exit the switch identically through the default's end.
-///
-/// Pattern (multi-line):
-/// ```text
-/// case X: { break }
-/// default:
-/// ```
-/// becomes:
-/// ```text
-/// case X:
-/// default:
-/// ```
-/// Normalise a switch case whose body is a single assignment that is immediately
-/// overwritten by the default clause. Example:
-///   `case "c": { x = 5 } default: { x = 6 }` → `case "c": default: { x = 6 }`
-/// The assignment in the case body is dead because the default also assigns the
-/// same variable.
-fn normalize_switch_dead_case_before_default(code: &str) -> String {
-    // Pattern: `case VALUE: { VAR = EXPR } default: { ... VAR = ... }`
-    // We can't use backreferences, so we use a two-step approach.
-    let case_assign_re =
-        regex::Regex::new(r"(case\s+[^:]+:)\s*\{\s*([a-zA-Z_$][\w$]*)\s*=[^}]*\}\s*(default\s*:)")
-            .unwrap();
-    let mut result = code.to_string();
-    // Iterate to handle multiple occurrences.
-    loop {
-        let Some(caps) = case_assign_re.captures(&result) else {
-            break;
-        };
-        let var_name = caps.get(2).unwrap().as_str();
-        let after_default = &result[caps.get(3).unwrap().end()..];
-        let assign_pattern = format!("{var_name} =");
-        if !after_default.contains(&assign_pattern) {
-            break;
-        }
-        let case_part = caps.get(1).unwrap().as_str();
-        let default_part = caps.get(3).unwrap().as_str();
-        let full_match = caps.get(0).unwrap();
-        let replacement = format!("{case_part} {default_part}");
-        let next = format!(
-            "{}{}{}",
-            &result[..full_match.start()],
-            replacement,
-            &result[full_match.end()..]
-        );
-        if next == result {
-            break;
-        }
-        result = next;
-    }
-    result
-}
-
-fn normalize_switch_empty_break_case(code: &str) -> String {
-    let lines: Vec<&str> = code.lines().collect();
-    let mut out: Vec<String> = Vec::with_capacity(lines.len());
-    let case_break_re = regex::Regex::new(r"^(case\s+[^:]+:)\s*\{\s*break;?\s*\}$").unwrap();
-
-    for i in 0..lines.len() {
-        let trimmed = lines[i].trim();
-        // Check if next line is `default:`
-        let next_is_default = i + 1 < lines.len() && lines[i + 1].trim().starts_with("default");
-        if next_is_default && let Some(caps) = case_break_re.captures(trimmed) {
-            out.push(caps.get(1).unwrap().as_str().to_string());
-            continue;
-        }
-        // Consecutive `case X: { break }` lines: only the LAST one in a run
-        // should keep `{ break }`; earlier ones become empty fallthroughs.
-        if let Some(caps) = case_break_re.captures(trimmed) {
-            // Look ahead: if the next line is also `case Y: { break }` (or
-            // `case Y:` empty fallthrough), this one is an earlier member of
-            // the run and should become an empty fallthrough.
-            let next_trimmed = if i + 1 < lines.len() {
-                lines[i + 1].trim()
-            } else {
-                ""
-            };
-            let next_is_case_break = case_break_re.is_match(next_trimmed);
-            let next_is_empty_case = !next_is_case_break
-                && next_trimmed.starts_with("case ")
-                && next_trimmed.ends_with(':')
-                && !next_trimmed.contains('{');
-            if next_is_case_break || next_is_empty_case {
-                out.push(caps.get(1).unwrap().as_str().to_string());
-                continue;
-            }
-        }
-        out.push(trimmed.to_string());
-    }
-
-    out.join("\n")
-}
-
-/// Fix bare temp assignments at function scope when the temp was only declared
-/// inside a nested block.
-///
-/// Pattern:
-/// ```
-/// if (x) { let t0; ... }
-/// t0 = expr;     // bare assignment to block-scoped `let t0`
-/// ```
-/// →
-/// ```
-/// if (x) { let t0; ... }
-/// let t0 = expr;  // proper declaration
-/// ```
-///
-/// This lets the temp alpha-renaming pass give it a distinct name.
-#[allow(clippy::needless_range_loop)]
-/// Strip empty/store-only scope guards.
-///
-/// Scope guards that only contain cache slot stores and no actual computation
-/// are dead code.  These arise in bailout-retry paths where upstream pruning
-/// removes the guard entirely.
-///
-/// Pattern detected:
-/// ```
-/// if ($[N] !== dep) { $[0] = dep0; $[1] = dep1; ... }
-/// ```
-/// (optionally with an else branch that also only does cache loads).
-fn normalize_strip_empty_scope_guards(code: &str) -> String {
-    let lines: Vec<&str> = code.lines().collect();
-    let mut out: Vec<String> = Vec::with_capacity(lines.len());
-    let guard_open_re = regex::Regex::new(r"^if \(\$\[\d+\] [!=]").unwrap();
-    let cache_store_re = regex::Regex::new(r"^\$\[\d+\] = ").unwrap();
-    let else_re = regex::Regex::new(r"^\} else \{").unwrap();
-    let close_re = regex::Regex::new(r"^\}$").unwrap();
-
-    let mut i = 0;
-    while i < lines.len() {
-        let trimmed = lines[i].trim();
-
-        if guard_open_re.is_match(trimmed) {
-            // Find the full if-else block.
-            let block_start = i;
-            let mut depth = 0i32;
-            let mut block_end = i;
-            let mut j = i;
-            while j < lines.len() {
-                let line = lines[j].trim();
-                depth += line.matches('{').count() as i32;
-                depth -= line.matches('}').count() as i32;
-                block_end = j;
-                j += 1;
-                if depth <= 0 {
-                    break;
-                }
-            }
-
-            // Check if the if-body only contains cache stores.
-            let mut body_only_stores = true;
-            let mut in_else = false;
-            for k in block_start..=block_end {
-                let line = lines[k].trim();
-                if k == block_start {
-                    // The first line has the guard condition and possibly
-                    // inline cache stores.
-                    // Extract the part after the first `{`
-                    if let Some(body_start) = line.find('{') {
-                        let body_part = &line[body_start + 1..];
-                        // Check each semicolon-separated statement
-                        for stmt in body_part.split(';') {
-                            let s = stmt.trim();
-                            if s.is_empty() || cache_store_re.is_match(s) {
-                                continue;
-                            }
-                            body_only_stores = false;
-                            break;
-                        }
-                    }
-                    continue;
-                }
-                if else_re.is_match(line) {
-                    in_else = true;
-                    continue;
-                }
-                if close_re.is_match(line) {
-                    continue;
-                }
-                if in_else {
-                    // Else branch: allow cache loads like `x = $[N]`
-                    // but also identifier assignments
-                    continue;
-                }
-                if !cache_store_re.is_match(line) && !line.is_empty() {
-                    body_only_stores = false;
-                    break;
-                }
-            }
-
-            if body_only_stores {
-                // Strip the entire guard block.
-                i = block_end + 1;
-                continue;
-            }
-        }
-
-        out.push(trimmed.to_string());
-        i += 1;
-    }
-
-    out.join("\n")
-}
-
-/// Normalize scope guard side-effect ordering.
-///
-/// The AST codegen sometimes places readonly side-effect expression statements
-/// (e.g. `console.log(x)`, `console.info(x)`, `useEffect(...)`) INSIDE the
-/// reactive scope guard body, while the upstream Babel codegen places them AFTER
-/// the scope guard.  Both forms are semantically equivalent for readonly calls.
-///
-/// This normalization detects such patterns and moves the side-effect
-/// expression statements from inside the guard body to immediately after the
-/// closing `}` of the else branch.
-///
-/// Only moves statements that are known-readonly console/logging calls.
-#[allow(clippy::needless_range_loop)]
-fn normalize_scope_guard_side_effects(code: &str) -> String {
-    let lines: Vec<&str> = code.lines().collect();
-    let mut out: Vec<String> = Vec::with_capacity(lines.len());
-
-    // Regex to detect scope guard opening: `if ($[N] !== ...`
-    let guard_open_re = regex::Regex::new(r"^if \(\$\[\d+\] [!=]").unwrap();
-    // Regex to detect cache slot store: `$[N] = ...`
-    let cache_store_re = regex::Regex::new(r"^\$\[\d+\] = ").unwrap();
-    // Regex to detect else branch: `} else {`
-    let else_re = regex::Regex::new(r"^\} else \{").unwrap();
-    // Only match known-readonly side-effect calls:
-    // console.log, console.info, console.warn, console.error, console.trace,
-    // console.table, global.console.log, etc.
-    let readonly_call_re = regex::Regex::new(
-        r"^(?:(?:global\.)?console\.(?:log|info|warn|error|trace|table|debug|dir|dirxml|group|groupCollapsed|groupEnd|time|timeEnd|timeLog|count|countReset|clear|assert|profile|profileEnd))\("
-    ).unwrap();
-
-    let mut i = 0;
-    while i < lines.len() {
-        let trimmed = lines[i].trim();
-
-        // Look for a scope guard opening on this line.
-        if guard_open_re.is_match(trimmed) {
-            // Track brace depth to find the full if-else block.
-            let block_start = i;
-            let mut depth = 0i32;
-            let mut block_end = i;
-            let mut j = i;
-
-            while j < lines.len() {
-                let line = lines[j].trim();
-                depth += line.matches('{').count() as i32;
-                depth -= line.matches('}').count() as i32;
-                block_end = j;
-                j += 1;
-                if depth <= 0 {
-                    break;
-                }
-            }
-
-            // Find the if-body lines and the else line.
-            let mut if_body_lines: Vec<String> = Vec::new();
-            let mut else_line_idx: Option<usize> = None;
-            let mut body_depth = 0i32;
-
-            for k in block_start..=block_end {
-                let line = lines[k].trim();
-                if k == block_start {
-                    body_depth += line.matches('{').count() as i32;
-                    body_depth -= line.matches('}').count() as i32;
-                    if_body_lines.push(line.to_string());
-                    continue;
-                }
-                body_depth += line.matches('{').count() as i32;
-                body_depth -= line.matches('}').count() as i32;
-                if else_re.is_match(line) && body_depth <= 1 {
-                    else_line_idx = Some(k);
-                    break;
-                }
-                if_body_lines.push(line.to_string());
-            }
-
-            if let Some(else_idx) = else_line_idx {
-                // Find readonly side-effect statements in the if-body
-                // that appear before the cache stores.
-                let mut side_effect_indices: Vec<usize> = Vec::new();
-                let mut found_cache_store = false;
-
-                for (bi, body_line) in if_body_lines.iter().enumerate() {
-                    let bl = body_line.trim();
-                    if cache_store_re.is_match(bl) {
-                        found_cache_store = true;
-                    }
-                    if !found_cache_store && bi > 0 && readonly_call_re.is_match(bl) {
-                        side_effect_indices.push(bi);
-                    }
-                }
-
-                if !side_effect_indices.is_empty() && found_cache_store {
-                    let side_effects: Vec<String> = side_effect_indices
-                        .iter()
-                        .map(|&idx| if_body_lines[idx].clone())
-                        .collect();
-
-                    // Rebuild without the side-effect lines
-                    out.push(if_body_lines[0].clone());
-                    for (bi, body_line) in if_body_lines.iter().enumerate().skip(1) {
-                        if side_effect_indices.contains(&bi) {
-                            continue;
-                        }
-                        out.push(body_line.clone());
-                    }
-                    for k in else_idx..=block_end {
-                        out.push(lines[k].trim().to_string());
-                    }
-                    for se in side_effects {
-                        out.push(se);
-                    }
-                    i = block_end + 1;
-                    continue;
-                }
-            }
-
-            // No transformation: emit as-is
-            for k in block_start..=block_end {
-                out.push(lines[k].trim().to_string());
-            }
-            i = block_end + 1;
-            continue;
-        }
-
-        out.push(trimmed.to_string());
-        i += 1;
-    }
-
-    out.join("\n")
-}
-
 /// Convert bare temp assignments `tN = EXPR;` to `let tN = EXPR;` when
 /// the same temp name was previously declared (with `let`) inside a nested
 /// block. This handles the case where codegen_ast emits a bare assignment
@@ -10807,22 +9216,19 @@ mod tests {
     use super::{
         normalize_arrow_copy_return_body, normalize_code, normalize_dead_expression_statements,
         normalize_dead_initialized_let, normalize_destructuring,
-        normalize_duplicate_call_before_use, normalize_fbt_plural_cross_product_tables,
-        normalize_if_paren_spacing, normalize_inline_if_first_statements,
-        normalize_inline_jsx_cached_wrapper_scope, normalize_jsx_branch_paren_spacing,
-        normalize_jsx_nested_ternary_wrapper_parens, normalize_jsx_semicolon_on_own_line,
-        normalize_jsx_text_expr_container_spacing, normalize_jsx_text_expr_spacing_compact,
-        normalize_jsx_text_line_before_expr, normalize_memo_cache_decl_arity,
-        normalize_multiline_arrow_fragment_expressions, normalize_multiline_call_invocations,
-        normalize_multiline_if_conditions, normalize_multiline_object_literal_access,
-        normalize_multiline_object_method_bodies, normalize_multiline_optional_chain_calls,
+        normalize_fbt_plural_cross_product_tables, normalize_if_paren_spacing,
+        normalize_inline_if_first_statements, normalize_inline_jsx_cached_wrapper_scope,
+        normalize_jsx_branch_paren_spacing, normalize_jsx_nested_ternary_wrapper_parens,
+        normalize_jsx_semicolon_on_own_line, normalize_jsx_text_expr_container_spacing,
+        normalize_jsx_text_expr_spacing_compact, normalize_jsx_text_line_before_expr,
+        normalize_memo_cache_decl_arity, normalize_multiline_arrow_fragment_expressions,
+        normalize_multiline_call_invocations, normalize_multiline_if_conditions,
+        normalize_multiline_object_literal_access, normalize_multiline_optional_chain_calls,
         normalize_object_shorthand_pairs, normalize_promote_temps,
         normalize_react_memo_closing_paren, normalize_shadowed_temp_decls,
-        normalize_shared_cosmetic_equivalences, normalize_simple_alias_return_tail,
-        normalize_simple_jsx_attr_brace_spacing, normalize_small_array_bracket_spacing,
-        normalize_small_multiline_return_arrays, normalize_sort_simple_let_decl_runs,
-        normalize_strip_inline_comments, normalize_switch_fallthrough_break,
-        normalize_switch_trailing_break_before_default, normalize_tail_return_from_cache_alias,
+        normalize_shared_cosmetic_equivalences, normalize_simple_jsx_attr_brace_spacing,
+        normalize_small_array_bracket_spacing, normalize_small_multiline_return_arrays,
+        normalize_sort_simple_let_decl_runs, normalize_strip_inline_comments,
         normalize_temp_alpha_renaming, normalize_temp_zero_suffixes, normalize_two_dep_guard_order,
         prepare_code_for_compare,
     };
@@ -11202,13 +9608,6 @@ mod tests {
     }
 
     #[test]
-    fn normalize_multiline_object_method_bodies_collapses_simple_method() {
-        let input = "t1 = cond ? { getValue() {\nreturn value;\n} } : 42;";
-        let expected = "t1 = cond ? { getValue() { return value; } } : 42;";
-        assert_eq!(normalize_multiline_object_method_bodies(input), expected);
-    }
-
-    #[test]
     fn normalize_multiline_object_literal_access_collapses_single_property_access() {
         let input = "t3 = {\n\"Component[key]\": () => value, }[\"Component[key]\"];";
         let expected = "t3 = { \"Component[key]\": () => value }[\"Component[key]\"];";
@@ -11268,20 +9667,6 @@ mod tests {
     fn normalize_memo_cache_decl_arity_keeps_slots_in_sibling_branch_after_block_local_let() {
         let input = "function foo(a) {\nconst $ = _c(4);\nlet x;\nif ($[0] !== a) { x = { };\nif (a) { let t0;\nif ($[2] === Symbol.for(\"react.memo_cache_sentinel\")) { t0 = { };\n$[2] = t0\n} else { t0 = $[2]\n}\nlet y = t0;\nx.y = y\n} else { let t1;\nif ($[3] === Symbol.for(\"react.memo_cache_sentinel\")) { t1 = { };\n$[3] = t1\n} else { t1 = $[3]\n}\nlet z = t1;\nx.z = z\n}\n$[0] = a;\n$[1] = x\n} else { x = $[1]\n}\nreturn x\n}";
         assert_eq!(normalize_memo_cache_decl_arity(input), input);
-    }
-
-    #[test]
-    fn normalize_tail_return_from_cache_alias_rewrites_missing_temp_return() {
-        let input = "if ($0[0] === Symbol.for(\"react.memo_cache_sentinel\")) { t0 = value;\n$0[0] = t0;\n} else { t0 = $0[0];\n}\nreturn t1;";
-        let expected = "if ($0[0] === Symbol.for(\"react.memo_cache_sentinel\")) { t0 = value;\n$0[0] = t0;\n} else { t0 = $0[0];\n}\nreturn t0;";
-        assert_eq!(normalize_tail_return_from_cache_alias(input), expected);
-    }
-
-    #[test]
-    fn normalize_simple_alias_return_tail_collapses_alias_before_return() {
-        let input = "let t0_0 = t0;\nreturn t0_0;";
-        let expected = "return t0;";
-        assert_eq!(normalize_simple_alias_return_tail(input), expected);
     }
 
     #[test]
@@ -11412,47 +9797,5 @@ y = e
 t0 = foo();
 return t0";
         assert_eq!(normalize_dead_initialized_let(input), input);
-    }
-
-    #[test]
-    fn normalize_duplicate_call_before_use_strips_duplicate() {
-        let input = "bar(props);
-let arr = [...bar(props)];
-return arr.at(x)";
-        let expected = "let arr = [...bar(props)];
-return arr.at(x)";
-        assert_eq!(normalize_duplicate_call_before_use(input), expected);
-    }
-
-    #[test]
-    fn normalize_duplicate_call_before_use_preserves_non_duplicate() {
-        let input = "foo(x);
-let y = bar(x);
-return y";
-        assert_eq!(normalize_duplicate_call_before_use(input), input);
-    }
-
-    #[test]
-    fn normalize_switch_trailing_break_before_default_removes_break() {
-        let input = "y = t0; break } default: { break }";
-        let expected = "y = t0 } default: { break }";
-        assert_eq!(
-            normalize_switch_trailing_break_before_default(input),
-            expected
-        );
-    }
-
-    #[test]
-    fn normalize_switch_fallthrough_break_removes_bare_break() {
-        let input = "case 1: break } case 2:";
-        let expected = "case 1: } case 2:";
-        assert_eq!(normalize_switch_fallthrough_break(input), expected);
-    }
-
-    #[test]
-    fn normalize_code_handles_switch_trailing_break_before_default() {
-        let actual = "case true: { y = t0; break } default: { break }";
-        let expected = "case true: { y = t0 } default: { break }";
-        assert_eq!(normalize_code(actual), normalize_code(expected));
     }
 }
