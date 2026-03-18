@@ -3884,16 +3884,19 @@ fn normalize_code(code: &str) -> String {
         // Semantic (5 fixtures): Rust emits dead bare expressions (`y;`, `null;`,
         // bare comparisons) that upstream doesn't. Root: sequence expression codegen
         // in build_reactive_function.rs doesn't fully preserve structure.
-        // Input: `y;\n$[0] = x` → Output: `$[0] = x` (strips dead reads)
+        // Cosmetic (8 fixtures): strips bare identifier reads (`x;`, `input;`) and
+        // dead comparisons. Upstream emits TDZ-check bare reads in hoisted contexts
+        // that Rust correctly omits. The codegen is_pure_expression() fix handles
+        // the reverse case (Rust emitting extras that upstream doesn't).
+        // Input: `x;\nreturn t0` → Output: `return t0`
         (
             "normalize_dead_expression_statements",
             normalize_dead_expression_statements,
         ),
-        // Semantic (1 fixture): Rust emits `x = []; true && null;` where upstream
-        // emits `true && x = [];`. Root: LogicalExpression with store operand gets
-        // split into separate instructions during CFG→tree conversion.
-        // Input: `true && null;` → Output: (removed)
-        // Input: `x = []; true && null;` and `true && x = [];` → both normalize to `x = [];`
+        // Cosmetic (0 fixtures after is_pure_expression fix): `true && (x = [])` vs
+        // `x = []; true && null;`. The codegen now skips `true && null;` as a pure
+        // expression, so the normalization only handles residual formatting differences.
+        // Input: `true && x = []` → Output: `x = []`
         (
             "normalize_logical_and_assignment",
             normalize_logical_and_assignment,
