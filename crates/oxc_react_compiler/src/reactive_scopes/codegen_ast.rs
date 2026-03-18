@@ -1007,19 +1007,12 @@ fn codegen_instruction<'a>(
     let expr = codegen_instruction_value(cx, &instr.value)?;
 
     // No lvalue → expression statement.
-    // Skip pure reads (bare identifier/literal) that have no side effects —
-    // upstream's codegen doesn't emit them. Only emit if the expression is
-    // potentially side-effecting (calls, assignments, etc.).
+    // Skip pure expressions that have no side effects — upstream's codegen
+    // doesn't emit them. This includes bare reads (identifiers, literals),
+    // logical expressions with only pure operands (e.g., `true && null`),
+    // and comparison expressions with pure operands.
     let Some(lvalue) = &instr.lvalue else {
-        let is_pure_read = matches!(
-            &expr,
-            ast::Expression::Identifier(_)
-                | ast::Expression::NullLiteral(_)
-                | ast::Expression::BooleanLiteral(_)
-                | ast::Expression::NumericLiteral(_)
-                | ast::Expression::StringLiteral(_)
-        );
-        if is_pure_read {
+        if is_pure_expression(&expr) {
             return None;
         }
         return Some(cx.builder.statement_expression(SPAN, expr));
@@ -2153,6 +2146,31 @@ fn is_temp_identifier(identifier: &Identifier) -> bool {
 /// Check if an instruction value has side effects that must be preserved in a
 /// sequence expression.  Pure intermediate computations (loads, property reads,
 /// primitives) should be inlined via the temp map, while side-effecting
+/// Check if an AST expression is pure (no side effects). Pure expressions
+/// include identifiers, literals, and logical/comparison expressions with
+/// only pure operands.
+fn is_pure_expression(expr: &ast::Expression) -> bool {
+    match expr {
+        ast::Expression::Identifier(_)
+        | ast::Expression::NullLiteral(_)
+        | ast::Expression::BooleanLiteral(_)
+        | ast::Expression::NumericLiteral(_)
+        | ast::Expression::StringLiteral(_) => true,
+        ast::Expression::LogicalExpression(logical) => {
+            is_pure_expression(&logical.left) && is_pure_expression(&logical.right)
+        }
+        ast::Expression::BinaryExpression(binary) => {
+            is_pure_expression(&binary.left) && is_pure_expression(&binary.right)
+        }
+        ast::Expression::UnaryExpression(unary) => {
+            // typeof, void, !, ~, +, - are pure; delete is not
+            !matches!(unary.operator, oxc_syntax::operator::UnaryOperator::Delete)
+                && is_pure_expression(&unary.argument)
+        }
+        _ => false,
+    }
+}
+
 /// operations (calls, assignments, updates) must appear in the comma-separated
 /// expression list.
 fn is_sequence_side_effecting_value(value: &InstructionValue) -> bool {
