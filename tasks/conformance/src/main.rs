@@ -3999,9 +3999,11 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_jsx_text_expr_container_spacing(&lines_normalized);
     // Cosmetic: `text {expr} text` → `text{expr}text` (JSX text/expr compact)
     lines_normalized = normalize_jsx_text_expr_spacing_compact(&lines_normalized);
-    // Semantic (1 fixture: inline-jsx-transform): scope inference emits dep-guard
+    // Cosmetic (1 fixture: inline-jsx-transform): scope inference emits dep-guard
     // for single-use JSX instead of sentinel. Part of structural divergence in
-    // inline-jsx-transform that also affects cache slot count and ref shorthand.
+    // inline-jsx-transform (@inlineJsxTransform pragma) — experimental feature
+    // with different DEV/non-DEV branching and scope granularity. Both outputs
+    // produce correct memoized code, just with different scope structure.
     // Input: `if ($[N] !== dep) { t0 = <Comp />; ... }` → sentinel form
     lines_normalized = normalize_inline_jsx_cached_wrapper_scope(&lines_normalized);
     // Cosmetic: scope sentinel inline after JSX wrapper conversion
@@ -4016,9 +4018,12 @@ fn normalize_code(code: &str) -> String {
     // Cosmetic (OXC limitation): `{ref: ref}` → `{ref}`. OXC codegen auto-shorthand
     // ignores the AST shorthand flag, always emitting shorthand when key==value.
     lines_normalized = normalize_object_shorthand_pairs(&lines_normalized);
-    // Semantic (2 fixtures): FBT plural cross-product table nesting differs.
-    // Rust produces flatter table structure, upstream produces nested objects.
-    // Input: `"*": "{text}"` → Output: `"*": { _1: "{text}" }` (or vice versa)
+    // Cosmetic (2 fixtures): FBT plural cross-product table nesting differs.
+    // Caused by FBT babel plugin generating different hash keys from single-line
+    // vs multi-line formatting of the same fbt() call. Both tables are functionally
+    // equivalent — same plural strings, different nesting depth.
+    // Input: `{ "*": { "*": "text", _1: "text2" } }` →
+    // Output: `{ "*": { "*": "text" }, _1: { _1: "text2" } }` (sparse form)
     lines_normalized = normalize_fbt_plural_cross_product_tables(&lines_normalized);
     // Cosmetic: FBT `{" "}` vs `{' '}` placeholder spacing
     lines_normalized = normalize_fbt_placeholder_spacing(&lines_normalized);
@@ -4029,8 +4034,9 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_arrow_copy_return_body(&lines_normalized);
     // Cosmetic: sort consecutive `let x;` declarations alphabetically
     lines_normalized = normalize_sort_simple_let_decl_runs(&lines_normalized);
-    // Semantic (1 fixture: inline-jsx-transform): `_c(3)` → `_c(2)` cache slot
-    // count mismatch. Part of inline-jsx-transform structural divergence.
+    // Cosmetic (1 fixture: inline-jsx-transform): `_c(3)` → `_c(2)` cache slot
+    // count differs in @inlineJsxTransform experimental feature due to different
+    // DEV/non-DEV scope structure. Both produce correct memoization.
     // Input: `_c(N)` → Output: `_c(M)` (renumber to match expected)
     lines_normalized = normalize_memo_cache_decl_arity(&lines_normalized);
     // Re-run shorthand after arity fix may expose new `{ref: ref}` patterns.
