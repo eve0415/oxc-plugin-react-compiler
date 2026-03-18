@@ -68,6 +68,21 @@ fn collect_lvalues_and_refs(
                 collect_refs_from_terminal(&term_stmt.terminal, candidates, to_prune);
             }
             ReactiveStatement::Scope(scope) => {
+                // Visit scope metadata references (matching upstream's visitor
+                // which calls visitPlace for all places including scope
+                // declarations, dependencies, and reassignments).
+                for decl in scope.scope.declarations.values() {
+                    candidates.remove(&decl.identifier.declaration_id);
+                }
+                for dep in &scope.scope.dependencies {
+                    candidates.remove(&dep.identifier.declaration_id);
+                }
+                for reassignment in &scope.scope.reassignments {
+                    candidates.remove(&reassignment.declaration_id);
+                }
+                if let Some(early_return) = &scope.scope.early_return_value {
+                    candidates.remove(&early_return.value.declaration_id);
+                }
                 collect_lvalues_and_refs(&scope.instructions, candidates, to_prune);
             }
             ReactiveStatement::PrunedScope(scope) => {
