@@ -2562,7 +2562,6 @@ fn normalize_strict_output_equivalences(code: &str) -> String {
         normalize_jsx_text_line_before_expr,
         normalize_temp_zero_suffixes,
         normalize_non_temp_ssa_suffixes,
-        normalize_shadowed_temp_decls,
         normalize_temp_alpha_renaming,
         normalize_promote_temps,
         normalize_two_dep_guard_order,
@@ -3959,9 +3958,6 @@ fn normalize_code(code: &str) -> String {
     // Semantic: `x_1` where x is a user var, not a temp. Active: 10 fixtures.
     // Root cause: rename_variables.rs SSA suffix convention differs from upstream.
     lines_normalized = normalize_non_temp_ssa_suffixes(&lines_normalized);
-    // Semantic: same temp name `t0` in sibling scopes. Active: 5 fixtures.
-    // Root cause: rename_variables.rs scope tracking divergence.
-    lines_normalized = normalize_shadowed_temp_decls(&lines_normalized);
     // Cosmetic: first assignment to bare temp → `let tN =` declaration
     lines_normalized = normalize_bare_temp_to_let(&lines_normalized);
     // Semantic: `t3` → `t0` temp renumbering. Active: 9 fixtures.
@@ -8177,6 +8173,7 @@ fn normalize_temp_alpha_renaming(code: &str) -> String {
     result
 }
 
+#[allow(dead_code)]
 fn normalize_shadowed_temp_decls(code: &str) -> String {
     use std::collections::HashMap;
 
