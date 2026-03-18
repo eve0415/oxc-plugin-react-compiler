@@ -429,8 +429,9 @@ fn try_emit_module(
     let mut compiled_sorted = compiled.iter().collect::<Vec<_>>();
     compiled_sorted.sort_by_key(|cf| cf.start);
     let mut compiled_idx = 0usize;
-    // Outlined functions are deferred to the end of the module body to match
-    // upstream emission order (outlined functions come after all original statements).
+    // Outlined functions from expression-based compiled functions (const Component = ...)
+    // are deferred to the end, matching upstream's pushContainer('body') behavior.
+    // FunctionDeclarations get their outlined functions immediately after (insertAfter).
     let mut deferred_outlined: Vec<ast::Statement<'_>> = Vec::new();
 
     for (orig_idx, stmt) in args.program.body.iter().enumerate() {
@@ -503,17 +504,31 @@ fn try_emit_module(
             continue;
         }
 
-        // Collect outlined function names for this statement's compiled functions
-        // so we can defer them to the end of the module body.
-        let outlined_fn_names: HashSet<String> = stmt_compiled
-            .iter()
-            .flat_map(|cf| {
-                cf.outlined_functions
-                    .iter()
-                    .map(|of| of.name.clone())
-                    .chain(cf.hir_outlined_functions.iter().map(|(n, _)| n.clone()))
-            })
-            .collect();
+        // Upstream places outlined functions immediately after the compiled
+        // FunctionDeclaration (insertAfter), but at the end for expression
+        // functions (pushContainer). Match this behavior.
+        let is_func_decl = matches!(stmt, ast::Statement::FunctionDeclaration(_))
+            || matches!(stmt,
+                ast::Statement::ExportDefaultDeclaration(ed)
+                if matches!(&ed.declaration, ast::ExportDefaultDeclarationKind::FunctionDeclaration(_))
+            )
+            || matches!(stmt,
+                ast::Statement::ExportNamedDeclaration(en)
+                if en.declaration.as_ref().is_some_and(|d| matches!(d, ast::Declaration::FunctionDeclaration(_)))
+            );
+        let outlined_fn_names: HashSet<String> = if !is_func_decl {
+            stmt_compiled
+                .iter()
+                .flat_map(|cf| {
+                    cf.outlined_functions
+                        .iter()
+                        .map(|of| of.name.clone())
+                        .chain(cf.hir_outlined_functions.iter().map(|(n, _)| n.clone()))
+                })
+                .collect()
+        } else {
+            HashSet::new()
+        };
 
         if stmt_compiled.len() == 1
             && stmt_compiled[0].start == span.start
@@ -528,8 +543,8 @@ fn try_emit_module(
         {
             let mut first = true;
             for statement in statements {
-                // Defer outlined _temp functions to end of module body
                 let is_outlined = !first
+                    && !is_func_decl
                     && matches!(&statement, ast::Statement::FunctionDeclaration(f) if
                         f.id.as_ref().is_some_and(|id| outlined_fn_names.contains(id.name.as_str()))
                     );
@@ -556,6 +571,7 @@ fn try_emit_module(
             let mut first = true;
             for statement in statements {
                 let is_outlined = !first
+                    && !is_func_decl
                     && matches!(&statement, ast::Statement::FunctionDeclaration(f) if
                         f.id.as_ref().is_some_and(|id| outlined_fn_names.contains(id.name.as_str()))
                     );
@@ -578,7 +594,7 @@ fn try_emit_module(
 
     canonicalize_initializer_expressions_in_statements(&allocator, &mut body);
 
-    // Append deferred outlined functions at end of module body.
+    // Append deferred outlined functions (from expression-based compiled functions)
     for outlined_stmt in deferred_outlined {
         body.push(outlined_stmt);
         blank_line_before.push(false);

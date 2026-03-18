@@ -2581,7 +2581,6 @@ fn normalize_strict_output_equivalences(code: &str) -> String {
         normalize_simple_else_load_blocks,
         normalize_jsx_text_expr_container_spacing,
         normalize_jsx_text_expr_spacing_compact,
-        normalize_outlined_function_order,
         normalize_anonymous_function_space,
         normalize_arrow_copy_return_body,
         normalize_generated_memoization_comments,
