@@ -199,6 +199,22 @@ impl<'a> CodegenContext<'a> {
         identifier_name(identifier)
     }
 
+    /// Generate a unique name that doesn't collide with existing identifiers.
+    /// Mirrors upstream's `Context.synthesizeName()` — checks unique_identifiers
+    /// and appends an incrementing suffix until collision-free.
+    fn synthesize_name(&mut self, base: &str) -> String {
+        let mut name = base.to_string();
+        let mut index = 0u32;
+        while self.options.unique_identifiers.contains(&name) || self.declared_names.contains(&name)
+        {
+            name = format!("{base}{index}");
+            index += 1;
+        }
+        self.options.unique_identifiers.insert(name.clone());
+        self.declared_names.insert(name.clone());
+        name
+    }
+
     fn alloc_cache_slot(&mut self) -> u32 {
         let slot = self.next_cache_index;
         self.next_cache_index += 1;
@@ -3479,7 +3495,7 @@ fn codegen_reactive_scope<'a>(
         // `const c_0 = $[0] !== dep0; const c_1 = $[1] !== dep1; if (c_0 || c_1) { ... }`
         let mut change_var_names: Vec<String> = Vec::new();
         for (i, (slot, dep_expr)) in deps.iter().enumerate() {
-            let var_name = format!("c_{i}");
+            let var_name = cx.synthesize_name(&format!("c_{i}"));
             let comparison = cx.builder.expression_binary(
                 SPAN,
                 cx.cache_access(*slot),
