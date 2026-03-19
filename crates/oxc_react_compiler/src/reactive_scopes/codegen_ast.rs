@@ -2196,11 +2196,17 @@ fn build_property_key_for_pattern<'a>(
                 .property_key_static_identifier(SPAN, cx.builder.ident(name)),
             false,
         )),
-        ObjectPropertyKey::String(name) if is_identifier_name(name) => Some((
-            cx.builder
-                .property_key_static_identifier(SPAN, cx.builder.ident(name)),
-            false,
-        )),
+        ObjectPropertyKey::String(name) if is_identifier_name(name) => {
+            // Use Expression::Identifier to prevent OXC auto-shorthand.
+            // Same approach as codegen_object_property_key.
+            Some((
+                ast::PropertyKey::from(
+                    cx.builder
+                        .expression_identifier(SPAN, cx.builder.ident(name)),
+                ),
+                false,
+            ))
+        }
         ObjectPropertyKey::String(name) => Some((
             ast::PropertyKey::from(cx.builder.expression_string_literal(
                 SPAN,
@@ -4175,12 +4181,24 @@ fn codegen_object_property_key<'a>(
                 false,
             ))
         }
-        ObjectPropertyKey::String(name) if is_identifier_name(name) => Some((
-            cx.builder
-                .property_key_static_identifier(SPAN, cx.builder.ident(name)),
-            false,
-            false,
-        )),
+        ObjectPropertyKey::String(name) if is_identifier_name(name) => {
+            // Use an Expression::Identifier-based PropertyKey instead of
+            // StaticIdentifier.  OXC's ObjectProperty printer auto-infers
+            // shorthand when the key is StaticIdentifier and the value is
+            // an Identifier with the same name.  Upstream Babel uses
+            // t.stringLiteral() for 'string' keys, which prevents shorthand.
+            // Using an expression-based key achieves the same effect: it
+            // prints as `ref` (no quotes) but doesn't trigger auto-shorthand
+            // because the printer only checks StaticIdentifier keys.
+            Some((
+                ast::PropertyKey::from(
+                    cx.builder
+                        .expression_identifier(SPAN, cx.builder.ident(name)),
+                ),
+                false,
+                false,
+            ))
+        }
         ObjectPropertyKey::String(name) => Some((
             ast::PropertyKey::from(cx.builder.expression_string_literal(
                 SPAN,

@@ -2462,8 +2462,10 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_multiline_call_invocations,
         normalize_small_array_bracket_spacing,
         normalize_bracket_string_literal_spacing,
-        normalize_object_shorthand_pairs,
-        normalize_transitional_element_ref_shorthand,
+        // normalize_object_shorthand_pairs — DELETED: fixed in compiler
+        // (codegen_ast.rs: use Expression::Identifier keys for String properties
+        //  to prevent OXC's auto-shorthand inference)
+        // normalize_transitional_element_ref_shorthand — DELETED: same fix
         // normalize_arrow_copy_return_body — DELETED: fixed in compiler
         // (constant_propagation.rs: outer_local_names guard prevents propagating
         //  outer-scope locals through user-named variables in nested functions)
@@ -4407,103 +4409,6 @@ fn normalize_multiline_call_invocations(code: &str) -> String {
     out.join("\n")
 }
 
-/// **OXC PRINTER LIMITATION — cannot be fixed at compiler level.**
-///
-/// Converts longhand `{x: x}` → shorthand `{x}` in both expected and actual
-/// output so that shorthand differences don't count as conformance failures.
-///
-/// ## What upstream (Babel) does
-///
-/// Babel's `@babel/generator` respects the `shorthand` flag on `ObjectProperty`
-/// and `BindingProperty` AST nodes. When the React compiler creates an
-/// `ObjectProperty` via `t.objectProperty(key, value, computed, shorthand)`,
-/// the 4th argument controls whether the printer emits `{x}` (shorthand=true)
-/// or `{x: x}` (shorthand=false). The upstream compiler deliberately sets
-/// `shorthand=false` for properties with `kind: 'string'` keys (e.g. inline
-/// JSX transform props, JSX outlining destructuring patterns) because the
-/// shorthand check `key.type === 'Identifier'` fails for `StringLiteral` keys.
-///
-/// ## What OXC's printer does
-///
-/// OXC's codegen (`oxc_codegen` v0.120.0) **ignores** the `shorthand` flag on
-/// both `ObjectProperty` and `BindingProperty`. Instead, it auto-infers
-/// shorthand by checking if `key` is a `StaticIdentifier` and `value` is an
-/// `Identifier`/`BindingIdentifier` with the same name:
-///
-/// ```text
-/// // ObjectProperty printer (gen.rs ~line 1675-1683):
-/// let mut shorthand = false;
-/// if let PropertyKey::StaticIdentifier(key) = &self.key {
-///     if key.name == "__proto__" {
-///         shorthand = self.shorthand;  // only __proto__ respects the flag
-///     } else if let Expression::Identifier(ident) = self.value.without_parentheses()
-///         && key.name == p.get_identifier_reference_name(ident)
-///     {
-///         shorthand = true;  // forced shorthand regardless of self.shorthand
-///     }
-/// }
-///
-/// // BindingProperty printer (gen.rs ~line 2914-2932):
-/// let mut shorthand = false;
-/// if let PropertyKey::StaticIdentifier(key) = &self.key {
-///     match &self.value {
-///         BindingPattern::BindingIdentifier(ident)
-///             if key.name == p.get_binding_identifier_name(ident) =>
-///         {
-///             shorthand = true;  // forced shorthand
-///         }
-///         ...
-///     }
-/// }
-/// ```
-///
-/// This means **any** `ObjectProperty` or `BindingProperty` where the key is a
-/// `StaticIdentifier` and the value identifier matches will be printed as
-/// shorthand, regardless of what the compiler sets. Using `StringLiteral` for
-/// the key would prevent auto-shorthand but adds quotes (`"ref": ref` instead
-/// of `ref: ref`), which also doesn't match upstream.
-///
-/// ## Affected fixtures (10)
-///
-/// - `inline-jsx-transform` — props objects in transitional elements: `{ref, children}` vs `{ref: ref, children: children}`
-/// - `jsx-outlining-*` (9 fixtures) — destructuring patterns in outlined functions: `{i, x}` vs `{i: i, x: x}`
-///
-/// ## Resolution path
-///
-/// Requires upstream OXC change: the `ObjectProperty` and `BindingProperty`
-/// printers should respect `self.shorthand` instead of auto-inferring it.
-/// Until then, this normalization bridges the gap.
-fn normalize_object_shorthand_pairs(code: &str) -> String {
-    let shorthand_re =
-        regex::Regex::new(r"([,{]\s*)([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)(\s*[,}])")
-            .unwrap();
-    code.lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            let mut current = trimmed.to_string();
-            loop {
-                let next = shorthand_re
-                    .replace_all(&current, |caps: &regex::Captures| {
-                        let key = caps.get(2).unwrap().as_str();
-                        let value = caps.get(3).unwrap().as_str();
-                        let suffix = caps.get(4).unwrap().as_str();
-                        if key == value {
-                            format!("{}{}{}", caps.get(1).unwrap().as_str(), key, suffix)
-                        } else {
-                            caps.get(0).unwrap().as_str().to_string()
-                        }
-                    })
-                    .to_string();
-                if next == current {
-                    break current;
-                }
-                current = next;
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 #[allow(dead_code)]
 fn normalize_shadowed_temp_decls(code: &str) -> String {
     use std::collections::HashMap;
@@ -4681,59 +4586,12 @@ fn normalize_fbt_plural_cross_product_tables(code: &str) -> String {
         .join("\n")
 }
 
-/// **OXC PRINTER LIMITATION — subset of `normalize_object_shorthand_pairs`.**
-///
-/// Converts shorthand `, ref,` → longhand `, ref: ref,` specifically inside
-/// transitional element objects (lines containing `$$typeof: Symbol.for("react.transitional.element")`).
-///
-/// ## What upstream (Babel) does
-///
-/// The inline JSX transform (`InlineJsxTransform.ts`) creates the outer element
-/// object `{ $$typeof, type, ref, key, props }` where the `ref` property uses
-/// `key: {name: 'ref', kind: 'string'}`. Because the key kind is `'string'`,
-/// `codegenObjectPropertyKey` returns `t.stringLiteral('ref')`, and the Babel
-/// shorthand check (`key.type === 'Identifier'`) fails → `shorthand=false` →
-/// Babel prints `ref: ref`.
-///
-/// ## What OXC's printer does
-///
-/// Same issue as `normalize_object_shorthand_pairs`: OXC ignores the
-/// `shorthand` flag and auto-infers shorthand when `StaticIdentifier` key
-/// name matches the value identifier name. Our AST codegen emits
-/// `ObjectPropertyKey::String("ref")` which maps to a `StaticIdentifier`
-/// (since `"ref"` is a valid identifier name), and OXC forces shorthand →
-/// prints `ref` instead of `ref: ref`.
-///
-/// ## Affected fixtures (1)
-///
-/// - `inline-jsx-transform` — outer element object: `ref` vs `ref: ref`
-///
-/// ## Resolution path
-///
-/// Will be automatically resolved when the `normalize_object_shorthand_pairs`
-/// OXC limitation is fixed upstream. This normalization handles a specific
-/// edge case where the `ref` property appears in the element-level object
-/// (not in the `props` sub-object).
-fn normalize_transitional_element_ref_shorthand(code: &str) -> String {
-    let ref_re = regex::Regex::new(r",\s*ref(\s*,\s*key\b)").unwrap();
-    code.lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            if !trimmed.contains("$$typeof: Symbol.for(\"react.transitional.element\")") {
-                return trimmed.to_string();
-            }
-            ref_re.replace_all(trimmed, ", ref: ref$1").to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         normalize_fbt_plural_cross_product_tables, normalize_for_compare,
-        normalize_multiline_call_invocations, normalize_object_shorthand_pairs,
-        normalize_small_array_bracket_spacing, prepare_code_for_compare,
+        normalize_multiline_call_invocations, normalize_small_array_bracket_spacing,
+        prepare_code_for_compare,
     };
 
     #[test]
@@ -4862,13 +4720,6 @@ mod tests {
         let input = "foo(bar,\nbaz,\nqux);";
         let expected = "foo(bar, baz, qux);";
         assert_eq!(normalize_multiline_call_invocations(input), expected);
-    }
-
-    #[test]
-    fn normalize_object_shorthand_pairs_collapses_self_named_entries() {
-        let input = "const obj = { ref: ref, children: children, value: t0 };";
-        let expected = "const obj = { ref, children, value: t0 };";
-        assert_eq!(normalize_object_shorthand_pairs(input), expected);
     }
 
     #[test]
