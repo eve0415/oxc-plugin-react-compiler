@@ -3729,7 +3729,7 @@ fn normalize_code(code: &str) -> String {
         .join("\n");
 
     type NormalizeStep = (&'static str, fn(&str) -> String);
-    let steps: [NormalizeStep; 50] = [
+    let steps: [NormalizeStep; 49] = [
         ("normalize_multiline_imports", normalize_multiline_imports),
         ("normalize_empty_blocks", normalize_empty_blocks),
         ("normalize_iife_parens", normalize_iife_parens),
@@ -3873,13 +3873,6 @@ fn normalize_code(code: &str) -> String {
         // in build_reactive_function.rs doesn't fully preserve structure.
         // Cosmetic (8 fixtures): strips bare identifier reads (`x;`, `input;`) and
         // Cosmetic (0 fixtures after is_pure_expression fix): `true && (x = [])` vs
-        // `x = []; true && null;`. The codegen now skips `true && null;` as a pure
-        // expression, so the normalization only handles residual formatting differences.
-        // Input: `true && x = []` → Output: `x = []`
-        (
-            "normalize_logical_and_assignment",
-            normalize_logical_and_assignment,
-        ),
         // Babel artifact (1 fixture: idx-no-outlining): Babel scope hoisting emits
         // dead `var _ref2;` declarations that are never used. Not a Rust divergence.
         // Input: `var _ref2;\nconst $ = _c(4);` → Output: `const $ = _c(4);`
@@ -8783,47 +8776,6 @@ fn normalize_parenthesized_multiline_arrow_initializers(code: &str) -> String {
 ///
 /// This normalizes the difference between codegen that breaks logical AND
 /// into separate statements versus keeping them as a single expression.
-fn normalize_logical_and_assignment(code: &str) -> String {
-    // Match `true && (EXPR)` or `true && IDENT = EXPR`
-    let re =
-        regex::Regex::new(r"\b(true|false|1|0)\s*&&\s*((?:\(?(?:\[?\w+\]?\s*=|(?:\(\[))\s*).*)")
-            .unwrap();
-    // Match `true && ((ASSIGNMENT), null)` pattern (sequence expression with trailing null)
-    let seq_re = regex::Regex::new(r"\b(true|false|1|0)\s*&&\s*\(\(([^)]+)\),\s*null\);?").unwrap();
-    // Also strip outer parens from `(IDENT = EXPR);` → `IDENT = EXPR;`
-    let paren_assign_re =
-        regex::Regex::new(r"^(.*?)\(([a-zA-Z_$][a-zA-Z0-9_$]*\s*=\s*[^)]+)\);(.*)$").unwrap();
-    code.lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            // First try the sequence expression pattern: `true && ((x = []), null);` → `x = [];`
-            let result = if let Some(caps) = seq_re.captures(trimmed) {
-                let full_match = caps.get(0).unwrap();
-                let before = &trimmed[..full_match.start()];
-                let assign = caps.get(2).unwrap().as_str();
-                format!("{}{};", before, assign)
-            } else if let Some(caps) = re.captures(trimmed) {
-                let full_match = caps.get(0).unwrap();
-                let before = &trimmed[..full_match.start()];
-                let rest = caps.get(2).unwrap().as_str();
-                format!("{}{}", before, rest)
-            } else {
-                trimmed.to_string()
-            };
-            // Strip outer parens from parenthesized assignments: `(x = []);` → `x = [];`
-            if let Some(caps) = paren_assign_re.captures(&result) {
-                let prefix = caps.get(1).unwrap().as_str();
-                let assign = caps.get(2).unwrap().as_str();
-                let suffix = caps.get(3).unwrap().as_str();
-                format!("{}{};{}", prefix, assign, suffix)
-            } else {
-                result
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// Strip dead `let` declarations where the variable is never meaningfully
 /// referenced again in the rest of the code.
 ///
