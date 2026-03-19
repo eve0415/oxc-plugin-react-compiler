@@ -4447,6 +4447,72 @@ fn normalize_multiline_call_invocations(code: &str) -> String {
     out.join("\n")
 }
 
+/// **OXC PRINTER LIMITATION — cannot be fixed at compiler level.**
+///
+/// Converts longhand `{x: x}` → shorthand `{x}` in both expected and actual
+/// output so that shorthand differences don't count as conformance failures.
+///
+/// ## What upstream (Babel) does
+///
+/// Babel's `@babel/generator` respects the `shorthand` flag on `ObjectProperty`
+/// and `BindingProperty` AST nodes. When the React compiler creates an
+/// `ObjectProperty` via `t.objectProperty(key, value, computed, shorthand)`,
+/// the 4th argument controls whether the printer emits `{x}` (shorthand=true)
+/// or `{x: x}` (shorthand=false). The upstream compiler deliberately sets
+/// `shorthand=false` for properties with `kind: 'string'` keys (e.g. inline
+/// JSX transform props, JSX outlining destructuring patterns) because the
+/// shorthand check `key.type === 'Identifier'` fails for `StringLiteral` keys.
+///
+/// ## What OXC's printer does
+///
+/// OXC's codegen (`oxc_codegen` v0.120.0) **ignores** the `shorthand` flag on
+/// both `ObjectProperty` and `BindingProperty`. Instead, it auto-infers
+/// shorthand by checking if `key` is a `StaticIdentifier` and `value` is an
+/// `Identifier`/`BindingIdentifier` with the same name:
+///
+/// ```text
+/// // ObjectProperty printer (gen.rs ~line 1675-1683):
+/// let mut shorthand = false;
+/// if let PropertyKey::StaticIdentifier(key) = &self.key {
+///     if key.name == "__proto__" {
+///         shorthand = self.shorthand;  // only __proto__ respects the flag
+///     } else if let Expression::Identifier(ident) = self.value.without_parentheses()
+///         && key.name == p.get_identifier_reference_name(ident)
+///     {
+///         shorthand = true;  // forced shorthand regardless of self.shorthand
+///     }
+/// }
+///
+/// // BindingProperty printer (gen.rs ~line 2914-2932):
+/// let mut shorthand = false;
+/// if let PropertyKey::StaticIdentifier(key) = &self.key {
+///     match &self.value {
+///         BindingPattern::BindingIdentifier(ident)
+///             if key.name == p.get_binding_identifier_name(ident) =>
+///         {
+///             shorthand = true;  // forced shorthand
+///         }
+///         ...
+///     }
+/// }
+/// ```
+///
+/// This means **any** `ObjectProperty` or `BindingProperty` where the key is a
+/// `StaticIdentifier` and the value identifier matches will be printed as
+/// shorthand, regardless of what the compiler sets. Using `StringLiteral` for
+/// the key would prevent auto-shorthand but adds quotes (`"ref": ref` instead
+/// of `ref: ref`), which also doesn't match upstream.
+///
+/// ## Affected fixtures (10)
+///
+/// - `inline-jsx-transform` — props objects in transitional elements: `{ref, children}` vs `{ref: ref, children: children}`
+/// - `jsx-outlining-*` (9 fixtures) — destructuring patterns in outlined functions: `{i, x}` vs `{i: i, x: x}`
+///
+/// ## Resolution path
+///
+/// Requires upstream OXC change: the `ObjectProperty` and `BindingProperty`
+/// printers should respect `self.shorthand` instead of auto-inferring it.
+/// Until then, this normalization bridges the gap.
 fn normalize_object_shorthand_pairs(code: &str) -> String {
     let shorthand_re =
         regex::Regex::new(r"([,{]\s*)([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)(\s*[,}])")
@@ -4657,6 +4723,39 @@ fn normalize_fbt_plural_cross_product_tables(code: &str) -> String {
         .join("\n")
 }
 
+/// **OXC PRINTER LIMITATION — subset of `normalize_object_shorthand_pairs`.**
+///
+/// Converts shorthand `, ref,` → longhand `, ref: ref,` specifically inside
+/// transitional element objects (lines containing `$$typeof: Symbol.for("react.transitional.element")`).
+///
+/// ## What upstream (Babel) does
+///
+/// The inline JSX transform (`InlineJsxTransform.ts`) creates the outer element
+/// object `{ $$typeof, type, ref, key, props }` where the `ref` property uses
+/// `key: {name: 'ref', kind: 'string'}`. Because the key kind is `'string'`,
+/// `codegenObjectPropertyKey` returns `t.stringLiteral('ref')`, and the Babel
+/// shorthand check (`key.type === 'Identifier'`) fails → `shorthand=false` →
+/// Babel prints `ref: ref`.
+///
+/// ## What OXC's printer does
+///
+/// Same issue as `normalize_object_shorthand_pairs`: OXC ignores the
+/// `shorthand` flag and auto-infers shorthand when `StaticIdentifier` key
+/// name matches the value identifier name. Our AST codegen emits
+/// `ObjectPropertyKey::String("ref")` which maps to a `StaticIdentifier`
+/// (since `"ref"` is a valid identifier name), and OXC forces shorthand →
+/// prints `ref` instead of `ref: ref`.
+///
+/// ## Affected fixtures (1)
+///
+/// - `inline-jsx-transform` — outer element object: `ref` vs `ref: ref`
+///
+/// ## Resolution path
+///
+/// Will be automatically resolved when the `normalize_object_shorthand_pairs`
+/// OXC limitation is fixed upstream. This normalization handles a specific
+/// edge case where the `ref` property appears in the element-level object
+/// (not in the `props` sub-object).
 fn normalize_transitional_element_ref_shorthand(code: &str) -> String {
     let ref_re = regex::Regex::new(r",\s*ref(\s*,\s*key\b)").unwrap();
     code.lines()
