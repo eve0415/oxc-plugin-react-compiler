@@ -1076,11 +1076,9 @@ fn codegen_instruction<'a>(
     // ── Expression-level variants ──
     let expr = codegen_instruction_value(cx, &instr.value)?;
 
-    // No lvalue → expression statement.
-    // Skip pure expressions that have no side effects — these are dead code
-    // artifacts from our pipeline (pruned temp lvalues). Upstream also prunes
-    // these temps but emits compound assignment LoadContext results as bare
-    // expression statements (`x;`).
+    // No lvalue → expression statement (matching upstream CodegenReactiveFunction.ts:1831-1832).
+    // Skip only truly dead literal values. Bare identifier reads are emitted as
+    // TDZ checks for hoisting contexts.
     let Some(lvalue) = &instr.lvalue else {
         if is_pure_expression(&expr) {
             return None;
@@ -2227,8 +2225,9 @@ fn is_temp_identifier(identifier: &Identifier) -> bool {
 /// only pure operands.
 fn is_pure_expression(expr: &ast::Expression) -> bool {
     match expr {
-        ast::Expression::Identifier(_)
-        | ast::Expression::NullLiteral(_)
+        // Identifiers are NOT pure — they serve as TDZ checks in hoisting
+        // contexts and must be emitted as expression statements.
+        ast::Expression::NullLiteral(_)
         | ast::Expression::BooleanLiteral(_)
         | ast::Expression::NumericLiteral(_)
         | ast::Expression::StringLiteral(_) => true,
