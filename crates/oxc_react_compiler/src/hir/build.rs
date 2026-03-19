@@ -1002,13 +1002,9 @@ fn lower_var_decl<'a>(
         "(BuildHIR::lowerStatement) Handle var kinds in VariableDeclaration",
     );
 
-    // Predeclare all bindings before evaluating any initializer. This matches
-    // JS lexical scope behavior (bindings exist during initializer evaluation)
-    // and is required for EnterSSA hoisting/TDZ parity.
-    for declarator in &decl.declarations {
-        predeclare_binding_pat(builder, &declarator.id, kind, allow_lexical_shadowing);
-    }
-
+    // Match upstream BuildHIR.ts:883: lower init (RHS) first, then LHS binding.
+    // No pre-declaration: OXC semantic analysis handles forward reference detection
+    // in lower_ident_expr via is_same_function_scope_reference.
     for declarator in &decl.declarations {
         if let Some(init) = &declarator.init {
             let init_place = lower_expr_to_temp(builder, init, semantic, source);
@@ -3896,6 +3892,27 @@ fn lower_ident_expr<'a>(
         };
     }
 
+    // Without pre-declaration, a forward reference to a local variable in the
+    // same function scope (e.g. `const x = identity(x)`) won't be in
+    // builder.bindings yet. Use OXC semantic analysis to detect this case so
+    // EnterSSA can flag hoisting errors. Captured variables from parent scopes
+    // are intentionally left as LoadGlobal.
+    if is_same_function_scope_reference(ident, semantic) {
+        let identifier = builder.resolve_binding(name, loc.clone());
+        let is_context = builder.is_context_identifier_id(identifier.id);
+        let place = hir::Place {
+            identifier,
+            effect: hir::Effect::Unknown,
+            reactive: false,
+            loc: loc.clone(),
+        };
+        return if is_context {
+            hir::InstructionValue::LoadContext { place, loc }
+        } else {
+            hir::InstructionValue::LoadLocal { place, loc }
+        };
+    }
+
     let binding = resolve_non_local_binding(ident, semantic);
     validate_module_type_provider_binding(builder, &binding);
     hir::InstructionValue::LoadGlobal { binding, loc }
@@ -3954,6 +3971,57 @@ fn validate_module_type_provider_binding(builder: &mut HIRBuilder, binding: &hir
             }
         }
         _ => {}
+    }
+}
+
+/// Returns true if `ident` references a binding declared in the same function
+/// scope as the reference site (a forward reference to a not-yet-lowered local
+/// variable). This replaces pre-declaration: OXC semantic knows about all
+/// bindings in the scope, so we can detect self-references like
+/// `const x = identity(x)` even before the declaration is processed.
+/// Captured variables from parent function scopes return false so they go
+/// through the normal LoadGlobal path.
+fn is_same_function_scope_reference<'a>(
+    ident: &js::IdentifierReference<'a>,
+    semantic: &Semantic<'a>,
+) -> bool {
+    let Some(reference_id) = ident.reference_id.get() else {
+        return false;
+    };
+    let reference = semantic.scoping().get_reference(reference_id);
+    let Some(symbol_id) = reference.symbol_id() else {
+        return false;
+    };
+    let scoping = semantic.scoping();
+    if scoping.symbol_flags(symbol_id).is_import() {
+        return false;
+    }
+    let decl_scope_id = scoping.symbol_scope_id(symbol_id);
+    if scoping.scope_flags(decl_scope_id).is_top() {
+        return false;
+    }
+    // Check that the declaration and reference are within the same function
+    // scope boundary (not separated by a function/arrow boundary).
+    let ref_scope_id = reference.scope_id();
+    let ref_fn = enclosing_function_scope(scoping, ref_scope_id);
+    let decl_fn = enclosing_function_scope(scoping, decl_scope_id);
+    ref_fn == decl_fn
+}
+
+/// Walk up the scope tree to find the nearest function (or top-level) scope.
+fn enclosing_function_scope(
+    scoping: &oxc_semantic::Scoping,
+    mut scope_id: oxc_semantic::ScopeId,
+) -> oxc_semantic::ScopeId {
+    loop {
+        let flags = scoping.scope_flags(scope_id);
+        if flags.is_top() || flags.contains(oxc_semantic::ScopeFlags::Function) {
+            return scope_id;
+        }
+        match scoping.scope_parent_id(scope_id) {
+            Some(parent) => scope_id = parent,
+            None => return scope_id,
+        }
     }
 }
 

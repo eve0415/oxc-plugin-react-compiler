@@ -2567,7 +2567,6 @@ fn normalize_strict_output_equivalences(code: &str) -> String {
         normalize_jsx_space_expressions,
         normalize_jsx_text_before_tag,
         normalize_jsx_text_line_before_expr,
-        normalize_non_temp_ssa_suffixes,
         normalize_multiline_arrow_bodies,
         normalize_multiline_call_invocations,
         normalize_multiline_object_literal_access,
@@ -3948,11 +3947,6 @@ fn normalize_code(code: &str) -> String {
     lines_normalized = normalize_rename_suffixes(&lines_normalized);
     // Semantic: `t0_0` → `t0` (remove `_0` collision suffix). Active: 0 fixtures.
     lines_normalized = normalize_temp_zero_suffixes(&lines_normalized);
-    // Cosmetic (6 fixtures): suffix assigned to different variable than upstream.
-    // Both produce valid output — inner `rest` gets `_0` in Rust, outer `rest` gets
-    // `_0` in upstream. Semantically identical, just different name assignment order.
-    // Input: `rest_0` → Output: `rest` (strips `_N` suffix for comparison)
-    lines_normalized = normalize_non_temp_ssa_suffixes(&lines_normalized);
     // Cosmetic: first assignment to bare temp → `let tN =` declaration
     lines_normalized = normalize_bare_temp_to_let(&lines_normalized);
     // Cosmetic (4 fixtures): temp numbering differs due to visit order.
@@ -8066,21 +8060,6 @@ fn normalize_sort_simple_let_decl_runs(code: &str) -> String {
 }
 
 /// but `t0` stays `t0`.
-fn normalize_non_temp_ssa_suffixes(code: &str) -> String {
-    let re = regex::Regex::new(r"\b([a-zA-Z_]\w*)_(\d+)\b").unwrap();
-    re.replace_all(code, |caps: &regex::Captures| {
-        let base = &caps[1];
-        // Don't strip from temp-like names (e.g., "t0_0" shouldn't become "t0")
-        // or from names that are already temp patterns
-        if base.starts_with("t") && base[1..].chars().all(|c| c.is_ascii_digit()) {
-            caps[0].to_string()
-        } else {
-            base.to_string()
-        }
-    })
-    .to_string()
-}
-
 fn normalize_temp_alpha_renaming(code: &str) -> String {
     use std::collections::HashMap;
 
