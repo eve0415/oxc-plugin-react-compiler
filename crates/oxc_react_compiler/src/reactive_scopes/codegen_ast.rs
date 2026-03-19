@@ -1996,10 +1996,8 @@ fn build_binding_pattern_from_pattern<'a>(
                         let target_name = identifier_name(&property.place.identifier);
                         cx.declared.insert(property.place.identifier.id);
                         let (key, computed) = build_property_key_for_pattern(cx, &property.key)?;
-                        let shorthand = matches!(
-                            &property.key,
-                            ObjectPropertyKey::Identifier(name) if name == &target_name
-                        );
+                        // Never use shorthand — upstream Babel always emits
+                        // explicit `key: value` pairs in destructuring patterns.
                         properties.push(cx.builder.binding_property(
                             SPAN,
                             key,
@@ -2007,7 +2005,7 @@ fn build_binding_pattern_from_pattern<'a>(
                                 SPAN,
                                 cx.builder.ident(&target_name),
                             ),
-                            shorthand,
+                            false,
                             computed,
                         ));
                     }
@@ -4108,18 +4106,16 @@ fn codegen_object_properties<'a>(
 fn codegen_object_property_key<'a>(
     cx: &mut CodegenContext<'a>,
     key: &ObjectPropertyKey,
-    value: &ast::Expression<'a>,
+    _value: &ast::Expression<'a>,
 ) -> Option<(ast::PropertyKey<'a>, bool, bool)> {
     match key {
         ObjectPropertyKey::Identifier(name) => {
-            let shorthand = matches!(
-                value,
-                ast::Expression::Identifier(identifier) if identifier.name == name.as_str()
-            );
+            // Never use shorthand — upstream Babel always emits explicit
+            // `key: value` pairs (e.g., `{ ref: ref }` not `{ ref }`).
             Some((
                 cx.builder
                     .property_key_static_identifier(SPAN, cx.builder.ident(name)),
-                shorthand,
+                false,
                 false,
             ))
         }

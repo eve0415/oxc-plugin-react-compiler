@@ -8811,15 +8811,15 @@ mod tests {
         normalize_inline_jsx_cached_wrapper_scope, normalize_jsx_branch_paren_spacing,
         normalize_jsx_nested_ternary_wrapper_parens, normalize_jsx_semicolon_on_own_line,
         normalize_jsx_text_expr_container_spacing, normalize_jsx_text_expr_spacing_compact,
-        normalize_memo_cache_decl_arity,
-        normalize_multiline_arrow_fragment_expressions, normalize_multiline_call_invocations,
-        normalize_multiline_if_conditions, normalize_multiline_object_literal_access,
-        normalize_multiline_optional_chain_calls, normalize_object_shorthand_pairs,
-        normalize_promote_temps, normalize_react_memo_closing_paren, normalize_shadowed_temp_decls,
+        normalize_memo_cache_decl_arity, normalize_multiline_arrow_fragment_expressions,
+        normalize_multiline_call_invocations, normalize_multiline_if_conditions,
+        normalize_multiline_object_literal_access, normalize_multiline_optional_chain_calls,
+        normalize_object_shorthand_pairs, normalize_promote_temps,
+        normalize_react_memo_closing_paren, normalize_shadowed_temp_decls,
         normalize_shared_cosmetic_equivalences, normalize_simple_jsx_attr_brace_spacing,
-        normalize_small_array_bracket_spacing,
-        normalize_sort_simple_let_decl_runs, normalize_strip_inline_comments,
-        normalize_temp_alpha_renaming, normalize_temp_zero_suffixes, prepare_code_for_compare,
+        normalize_small_array_bracket_spacing, normalize_sort_simple_let_decl_runs,
+        normalize_strip_inline_comments, normalize_temp_alpha_renaming,
+        normalize_temp_zero_suffixes, prepare_code_for_compare,
     };
 
     #[test]
