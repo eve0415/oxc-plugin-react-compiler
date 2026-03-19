@@ -2582,7 +2582,6 @@ fn normalize_strict_output_equivalences(code: &str) -> String {
         normalize_anonymous_function_space,
         normalize_arrow_copy_return_body,
         normalize_generated_memoization_comments,
-        normalize_logical_and_assignment,
         normalize_fbt_plural_cross_product_tables,
         normalize_fbt_placeholder_spacing,
         normalize_dead_bare_var_refs,

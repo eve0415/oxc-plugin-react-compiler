@@ -12,10 +12,10 @@ use std::collections::{HashMap, HashSet};
 
 use crate::hir::types::{
     BasicBlock, BlockId, DeclarationId, Effect, GotoVariant, HIRFunction, Identifier,
-    InstructionId, InstructionValue, Place, PrunedReactiveScopeBlock, ReactiveBlock,
-    ReactiveFunction, ReactiveInstruction, ReactiveLabel, ReactiveScopeBlock, ReactiveStatement,
-    ReactiveSwitchCase, ReactiveTerminal, ReactiveTerminalStatement, ReactiveTerminalTargetKind,
-    SourceLocation, Terminal,
+    InstructionId, InstructionKind, InstructionValue, Place, PrunedReactiveScopeBlock,
+    ReactiveBlock, ReactiveFunction, ReactiveInstruction, ReactiveLabel, ReactiveScopeBlock,
+    ReactiveStatement, ReactiveSwitchCase, ReactiveTerminal, ReactiveTerminalStatement,
+    ReactiveTerminalTargetKind, SourceLocation, Terminal,
 };
 
 // ---------------------------------------------------------------------------
@@ -2039,6 +2039,99 @@ impl Driver {
                             final_instruction: Some(ReactiveInstruction {
                                 id,
                                 lvalue: Some(left.place.clone()),
+                                value: InstructionValue::ReactiveLogicalExpression {
+                                    operator,
+                                    left: Box::new(lv),
+                                    right: Box::new(rv),
+                                    loc: loc.clone(),
+                                },
+                                loc: loc.clone(),
+                            }),
+                            fallthrough,
+                        };
+                    }
+
+                    // When left/right blocks have Reassign store
+                    // instructions (e.g., `true && (x = [])` or
+                    // `true && ((x = []), null)`), use
+                    // ReactiveLogicalExpression to preserve the logical
+                    // structure. The store instructions stay as flat
+                    // prefix instructions (preserving scope escape
+                    // analysis) and the logical expression references
+                    // the store results through temps, producing output
+                    // like `true && (x = [])`.
+                    let branch_has_reassign_stores = [&left.instructions, &right.instructions]
+                        .iter()
+                        .any(|instrs| {
+                            instrs.iter().any(|i| {
+                                matches!(
+                                    &i.value,
+                                    InstructionValue::StoreLocal {
+                                        lvalue: crate::hir::types::LValue {
+                                            kind: InstructionKind::Reassign,
+                                            ..
+                                        },
+                                        ..
+                                    } | InstructionValue::StoreContext {
+                                        lvalue: crate::hir::types::LValue {
+                                            kind: InstructionKind::Reassign,
+                                            ..
+                                        },
+                                        ..
+                                    }
+                                )
+                            })
+                        });
+                    if branch_has_reassign_stores {
+                        // Preserve logical expression structure while
+                        // keeping flat instructions for scope escape
+                        // analysis. The flat instructions provide the
+                        // scope system with reassignment visibility
+                        // (preventing incorrect scope pruning). The
+                        // ReactiveLogicalExpression produces the correct
+                        // `true && (x = [])` or `true && ((x = []), null)`
+                        // output.
+                        //
+                        // Both the flat instructions and the
+                        // ReactiveSequenceExpression process the same
+                        // stores — the flat ones store temps that are
+                        // overwritten (harmlessly) by the sequence
+                        // expression codegen.
+                        let mut prefix_instrs: Vec<ReactiveInstruction> = Vec::new();
+                        prefix_instrs.extend(test.instructions.iter().cloned());
+                        prefix_instrs.extend(left.instructions.iter().cloned());
+                        prefix_instrs.extend(right.instructions.iter().cloned());
+
+                        // Build left SequenceExpression with test
+                        // instructions (matching upstream).
+                        let mut lsi = test.instructions;
+                        lsi.extend(left.instructions);
+                        let lv = if lsi.is_empty() {
+                            left.value.clone()
+                        } else {
+                            InstructionValue::ReactiveSequenceExpression {
+                                instructions: lsi,
+                                id: left.id,
+                                value: Box::new(left.value.clone()),
+                                loc: loc.clone(),
+                            }
+                        };
+                        let rv = if right.instructions.is_empty() {
+                            right.value.clone()
+                        } else {
+                            InstructionValue::ReactiveSequenceExpression {
+                                instructions: right.instructions,
+                                id: right.id,
+                                value: Box::new(right.value.clone()),
+                                loc: loc.clone(),
+                            }
+                        };
+
+                        return ValueBlockTerminalResult {
+                            instructions: prefix_instrs,
+                            final_instruction: Some(ReactiveInstruction {
+                                id,
+                                lvalue: None,
                                 value: InstructionValue::ReactiveLogicalExpression {
                                     operator,
                                     left: Box::new(lv),
