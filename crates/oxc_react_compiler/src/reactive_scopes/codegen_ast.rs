@@ -1659,20 +1659,27 @@ fn codegen_instruction_value<'a>(
             // as a side-effecting prefix instruction.  If so, the prefix
             // expression already IS the value — we should not also inline it
             // as the final expression (which would duplicate it).
+            //
+            // Exception: when the prefix instruction is a Reassign (named
+            // variable assignment like `y = e`), upstream emits the full
+            // sequence `((y = e), y)` — the trailing read is distinct from
+            // the assignment expression.
             let value_already_in_prefix = if let InstructionValue::LoadLocal {
                 place: ref load_place,
                 ..
             } = **value
             {
                 let load_decl = load_place.identifier.declaration_id;
-                // Check if any side-effecting prefix instruction's lvalue
-                // matches the value's LoadLocal reference.
+                // Only collapse when the matching instruction-level lvalue
+                // is a temp.  When it's a named variable (e.g. a Reassign
+                // target), the value is a distinct identifier read and
+                // upstream emits the full sequence (e.g. `((y = e), y)`).
                 instructions.iter().any(|instr| {
                     is_sequence_side_effecting_value(&instr.value)
-                        && instr
-                            .lvalue
-                            .as_ref()
-                            .is_some_and(|lv| lv.identifier.declaration_id == load_decl)
+                        && instr.lvalue.as_ref().is_some_and(|lv| {
+                            lv.identifier.declaration_id == load_decl
+                                && is_temp_identifier(&lv.identifier)
+                        })
                 })
             } else {
                 false
@@ -1680,7 +1687,7 @@ fn codegen_instruction_value<'a>(
 
             if value_already_in_prefix {
                 // The value expression is already present in prefix_exprs
-                // from a side-effecting instruction.
+                // from a side-effecting instruction (temp assignment).
                 if prefix_exprs.len() == 1 {
                     Some(prefix_exprs.pop().unwrap())
                 } else if prefix_exprs.is_empty() {
@@ -1692,6 +1699,8 @@ fn codegen_instruction_value<'a>(
                     )
                 }
             } else {
+                // Upstream always emits the full sequence with the value at
+                // the end for reassignments (e.g. `((y = e), y)`).
                 let final_expr = codegen_instruction_value(cx, value)?;
                 if prefix_exprs.is_empty() {
                     Some(final_expr)
