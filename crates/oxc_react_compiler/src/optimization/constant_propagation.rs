@@ -567,7 +567,9 @@ fn apply_constant_propagation_inner(
         for (_, blk) in &func.body.blocks {
             for inner_instr in &blk.instructions {
                 if let InstructionValue::StoreLocal { lvalue: sl, .. }
-                | InstructionValue::DeclareLocal { lvalue: sl, .. } = &inner_instr.value
+                | InstructionValue::DeclareLocal { lvalue: sl, .. }
+                | InstructionValue::StoreContext { lvalue: sl, .. }
+                | InstructionValue::DeclareContext { lvalue: sl, .. } = &inner_instr.value
                     && let Some(n) = &sl.place.identifier.name
                 {
                     names.insert(n.value().to_string());

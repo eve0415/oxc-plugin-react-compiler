@@ -2464,7 +2464,9 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_bracket_string_literal_spacing,
         normalize_object_shorthand_pairs,
         normalize_transitional_element_ref_shorthand,
-        normalize_arrow_copy_return_body,
+        // normalize_arrow_copy_return_body — DELETED: fixed in compiler
+        // (constant_propagation.rs: outer_local_names guard prevents propagating
+        //  outer-scope locals through user-named variables in nested functions)
         normalize_generated_memoization_comments,
         normalize_fbt_plural_cross_product_tables,
         normalize_dead_bare_var_refs,
@@ -4502,33 +4504,6 @@ fn normalize_object_shorthand_pairs(code: &str) -> String {
         .join("\n")
 }
 
-/// Collapse arrow bodies of the form `()=>{let copy = expr; return copy;}` to
-/// the expression-bodied equivalent `()=> expr`.
-///
-/// This is semantics-preserving for the exact single-binding/single-return
-/// pattern and avoids counting hoisted callback printer differences as failures.
-fn normalize_arrow_copy_return_body(code: &str) -> String {
-    let re = regex::Regex::new(
-        r"=>\s*\{\s*(?:let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;{}]+?)\s*;?\s*return\s+([A-Za-z_$][\w$]*)\s*;?\s*\}",
-    )
-    .unwrap();
-    code.lines()
-        .map(|line| {
-            re.replace_all(line.trim(), |caps: &regex::Captures| {
-                let lhs = caps.get(1).unwrap().as_str();
-                let rhs = caps.get(3).unwrap().as_str();
-                if lhs == rhs {
-                    format!("=> {}", caps.get(2).unwrap().as_str().trim())
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
-            })
-            .to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 #[allow(dead_code)]
 fn normalize_shadowed_temp_decls(code: &str) -> String {
     use std::collections::HashMap;
@@ -4731,10 +4706,9 @@ fn normalize_transitional_element_ref_shorthand(code: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_arrow_copy_return_body, normalize_fbt_plural_cross_product_tables,
-        normalize_for_compare, normalize_multiline_call_invocations,
-        normalize_object_shorthand_pairs, normalize_small_array_bracket_spacing,
-        prepare_code_for_compare,
+        normalize_fbt_plural_cross_product_tables, normalize_for_compare,
+        normalize_multiline_call_invocations, normalize_object_shorthand_pairs,
+        normalize_small_array_bracket_spacing, prepare_code_for_compare,
     };
 
     #[test]
@@ -4858,20 +4832,6 @@ mod tests {
             normalize_for_compare(expected)
         );
     }
-    #[test]
-    fn normalize_arrow_copy_return_body_collapses_simple_copy_arrow() {
-        let input = "let callbk = () =>{let copy = x; return copy; };\nreturn callbk;";
-        let expected = "let callbk = () => x;\nreturn callbk;";
-        assert_eq!(normalize_arrow_copy_return_body(input), expected);
-    }
-
-    #[test]
-    fn normalize_arrow_copy_return_body_collapses_const_copy_arrow() {
-        let input = "let callbk = () =>{const copy = x; return copy; };\nreturn callbk;";
-        let expected = "let callbk = () => x;\nreturn callbk;";
-        assert_eq!(normalize_arrow_copy_return_body(input), expected);
-    }
-
     #[test]
     fn normalize_multiline_call_invocations_collapses_arguments() {
         let input = "foo(bar,\nbaz,\nqux);";
