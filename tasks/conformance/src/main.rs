@@ -2458,8 +2458,8 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_space_before_closing_brace,
         // Strict output normalizations
         normalize_trailing_comma_in_calls,
-        normalize_anonymous_function_space,
-        normalize_multiline_arrow_bodies,
+        // normalize_anonymous_function_space — DELETED: no failing fixtures
+        // normalize_multiline_arrow_bodies — DELETED: no failing fixtures
         normalize_multiline_call_invocations,
         normalize_small_array_bracket_spacing,
         normalize_bracket_string_literal_spacing,
@@ -4251,15 +4251,6 @@ fn normalize_compare_unicode_escapes(code: &str) -> String {
 }
 
 /// Normalize anonymous function expressions: `function()` → `function ()`
-/// OXC codegen omits the space before `(` in anonymous function expressions,
-/// while Babel includes it.
-fn normalize_anonymous_function_space(code: &str) -> String {
-    // Match `function()` but NOT `function name()` — only anonymous functions
-    // Look for `function(` not preceded by a word char (to avoid matching named functions)
-    let re = regex::Regex::new(r"\bfunction\(").unwrap();
-    re.replace_all(code, "function (").to_string()
-}
-
 /// Normalize optional parentheses around expressions in arrow function bodies.
 /// `=> (cond ? a : b)` and `=> cond ? a : b` are equivalent.
 /// `=> (a = b)` and `=> a = b` are equivalent.
@@ -4417,81 +4408,6 @@ fn generate_snapshot(results: &[FixtureResult], pass_rate: f64) -> String {
 /// For example, upstream may produce `pathname_0` while we produce `pathname`, or
 /// `item_0` vs `item`. This normalizer strips `_N` from identifiers whose base name
 /// is at least 2 characters and NOT a temporary (`tN`), so `pathname_0` -> `pathname`
-/// Collapse multiline arrow function bodies into single lines.
-///
-/// Our codegen sometimes produces:
-/// ```
-/// fn={() =>{
-/// if (cond) {
-/// return x;
-/// }
-/// return null;
-/// }}
-/// ```
-/// Upstream Babel produces the equivalent on one line:
-/// ```
-/// fn={() =>{if (cond) { return x; } return null;}}
-/// ```
-/// This normalizer collapses the arrow body when it's short enough.
-fn normalize_multiline_arrow_bodies(code: &str) -> String {
-    let lines: Vec<&str> = code.lines().collect();
-    let mut result = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        let mut trimmed = lines[i].trim().to_string();
-        let mut consumed_next_line = 0usize;
-        // Collapse split higher-order arrows:
-        // `x =>` + next line `() => {...}` -> `x => () => {...}`
-        if trimmed.ends_with("=>") && i + 1 < lines.len() {
-            let next = lines[i + 1].trim();
-            if next.starts_with("() =>") || next.starts_with("() =>{") {
-                trimmed = format!("{} {}", trimmed, next);
-                consumed_next_line = 1;
-            }
-        }
-        // Match lines containing `=> {` or `=>{` where braces don't balance
-        let has_arrow_body = trimmed.contains("=> {") || trimmed.contains("=>{");
-        if has_arrow_body {
-            let open_braces = trimmed.matches('{').count() as i32;
-            let close_braces = trimmed.matches('}').count() as i32;
-            let net = open_braces - close_braces;
-            if net > 0 {
-                // Collect lines until braces balance
-                let mut parts = vec![trimmed.clone()];
-                let mut j = i + 1 + consumed_next_line;
-                let mut depth = net;
-                while j < lines.len() && depth > 0 {
-                    let t = lines[j].trim();
-                    depth += t.matches('{').count() as i32 - t.matches('}').count() as i32;
-                    parts.push(t.to_string());
-                    j += 1;
-                }
-                // Only collapse if total is short enough (avoid very long lines)
-                let total_len: usize = parts.iter().map(|p| p.len()).sum::<usize>() + parts.len();
-                if total_len <= 600 {
-                    let joined = parts.join(" ");
-                    let mut cleaned = joined.replace("  ", " ");
-                    // Normalize spacing around arrow body braces:
-                    // `=> { X` → `=>{X` (remove space after opening brace)
-                    cleaned = cleaned.replace("=> { ", "=>{");
-                    cleaned = cleaned.replace("=>{ ", "=>{");
-                    // Collapse ` }}` → `}}` at end of arrow bodies
-                    // (but only the trailing close-braces of the arrow)
-                    while cleaned.contains(" }}") {
-                        cleaned = cleaned.replace(" }}", "}}");
-                    }
-                    result.push(cleaned);
-                    i = j;
-                    continue;
-                }
-            }
-        }
-        result.push(trimmed);
-        i += 1 + consumed_next_line;
-    }
-    result.join("\n")
-}
-
 /// Collapse multiline function/method invocations into a single line.
 fn normalize_multiline_call_invocations(code: &str) -> String {
     fn paren_delta(line: &str) -> i32 {
