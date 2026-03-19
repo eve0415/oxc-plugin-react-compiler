@@ -1260,11 +1260,40 @@ impl Driver {
                     let mut prefix = vbt_result.instructions;
                     let last = prefix.pop().unwrap();
 
-                    // Check if any prefix instruction is a side-effecting
-                    // temp whose result is never referenced by another
-                    // instruction.  Such temps are "orphaned" and would
-                    // be silently dropped by the flat codegen.
+                    // Check if we need a ReactiveSequenceExpression to
+                    // preserve the comma-expression form at codegen time.
+                    //
+                    // Two cases:
+                    // 1. Orphaned temps: side-effecting unnamed temp whose
+                    //    result is never referenced — flat codegen would
+                    //    silently drop its side effects.
+                    // 2. Named-variable Reassign: the sequence has a
+                    //    reassignment to a named variable (e.g. `y = e`)
+                    //    followed by a read of that variable (e.g. `y`).
+                    //    Upstream preserves this as `((y = e), y)` — a
+                    //    sequence expression where the value is the
+                    //    variable read, not the assignment result.  Flat
+                    //    codegen would emit `y = e;` and drop the read.
                     let has_orphaned = prefix.iter().any(|instr| {
+                        // Case 2: Reassign to a named variable (StoreLocal or
+                        // StoreContext). The sequence must be preserved as
+                        // `((y = e), y)` regardless of whether the instruction
+                        // has an outer lvalue.
+                        if matches!(
+                            &instr.value,
+                            InstructionValue::StoreLocal {
+                                lvalue: store_lv,
+                                ..
+                            }
+                            | InstructionValue::StoreContext {
+                                lvalue: store_lv,
+                                ..
+                            } if matches!(store_lv.kind, InstructionKind::Reassign)
+                        ) {
+                            return true;
+                        }
+
+                        // Case 1: orphaned unnamed temp
                         if let Some(lv) = &instr.lvalue
                             && lv.identifier.name.is_none()
                             && matches!(
@@ -1282,13 +1311,13 @@ impl Driver {
                                 .filter(|i| !std::ptr::eq(*i, instr))
                                 .cloned()
                                 .collect();
-                            !is_decl_id_referenced_in_instructions(
+                            return !is_decl_id_referenced_in_instructions(
                                 lv.identifier.declaration_id,
                                 &others,
-                            )
-                        } else {
-                            false
+                            );
                         }
+
+                        false
                     });
 
                     if has_orphaned {

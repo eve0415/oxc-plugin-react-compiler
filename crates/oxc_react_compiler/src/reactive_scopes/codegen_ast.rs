@@ -1649,8 +1649,21 @@ fn codegen_instruction_value<'a>(
                             lv.identifier.declaration_id,
                             Some(expr.clone_in(cx.allocator)),
                         );
-                    }
-                    if is_side_effecting {
+                        // Check if this temp is consumed by another prefix
+                        // instruction.  If so, this instruction's side
+                        // effect is already preserved through the consumer
+                        // and need not be emitted as a separate prefix expr.
+                        if is_side_effecting {
+                            let decl = lv.identifier.declaration_id;
+                            let consumed_by_other = instructions.iter().any(|other| {
+                                !std::ptr::eq(other, seq_instr)
+                                    && instruction_references_decl(&other.value, decl)
+                            });
+                            if !consumed_by_other {
+                                prefix_exprs.push(expr);
+                            }
+                        }
+                    } else if is_side_effecting {
                         prefix_exprs.push(expr);
                     }
                 }
@@ -2255,6 +2268,40 @@ fn is_pure_expression(expr: &ast::Expression) -> bool {
 
 /// operations (calls, assignments, updates) must appear in the comma-separated
 /// expression list.
+/// Check if an `InstructionValue` reads a given declaration (by ID).
+fn instruction_references_decl(value: &InstructionValue, decl: DeclarationId) -> bool {
+    let check = |p: &Place| p.identifier.declaration_id == decl;
+    match value {
+        InstructionValue::StoreLocal { value: v, .. }
+        | InstructionValue::StoreContext { value: v, .. } => check(v),
+        InstructionValue::LoadLocal { place, .. } | InstructionValue::LoadContext { place, .. } => {
+            check(place)
+        }
+        InstructionValue::PropertyLoad { object, .. } => check(object),
+        InstructionValue::ComputedLoad {
+            object, property, ..
+        } => check(object) || check(property),
+        InstructionValue::CallExpression { callee, args, .. } => {
+            check(callee)
+                || args.iter().any(|a| match a {
+                    Argument::Place(p) | Argument::Spread(p) => check(p),
+                })
+        }
+        InstructionValue::MethodCall {
+            receiver,
+            property: _,
+            args,
+            ..
+        } => {
+            check(receiver)
+                || args.iter().any(|a| match a {
+                    Argument::Place(p) | Argument::Spread(p) => check(p),
+                })
+        }
+        _ => false,
+    }
+}
+
 fn is_sequence_side_effecting_value(value: &InstructionValue) -> bool {
     matches!(
         value,

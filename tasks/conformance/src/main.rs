@@ -2440,7 +2440,9 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_import_region_comments,
         normalize_top_level_comment_trivia,
         normalize_compare_multiline_brace_literals,
-        normalize_compare_trailing_sequence_null,
+        // normalize_compare_trailing_sequence_null — DELETED: fixed in compiler
+        // (codegen_ast.rs: instruction_references_decl check in RSE prefix,
+        //  build_reactive_function.rs: Reassign Case 2 triggers RSE creation)
         normalize_multiline_trailing_commas_before_closers,
         normalize_labeled_switch_breaks,
         normalize_labeled_block_braces,
@@ -3832,50 +3834,6 @@ fn is_comment_only_import_line(trimmed: &str) -> bool {
         || trimmed.starts_with("/*")
         || trimmed.starts_with('*')
         || trimmed.starts_with("*/")
-}
-
-fn normalize_compare_trailing_sequence_null(code: &str) -> String {
-    let mut result = Vec::new();
-    let assign_then_read = regex::Regex::new(
-        r"\(\(([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(.+?)\),\s*([A-Za-z_$][A-Za-z0-9_$]*)\);",
-    )
-    .unwrap();
-    let assign_then_discard =
-        regex::Regex::new(r"\(\(([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(.+?)\),\s*(?:null|undefined)\);")
-            .unwrap();
-    for line in code.lines() {
-        let trimmed = line.trim();
-        let rewritten = assign_then_read
-            .replace_all(trimmed, |caps: &regex::Captures| {
-                if caps.get(1).unwrap().as_str() == caps.get(3).unwrap().as_str() {
-                    format!("{} = {};", &caps[1], &caps[2])
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
-            })
-            .to_string();
-        let rewritten = assign_then_discard
-            .replace_all(&rewritten, |caps: &regex::Captures| {
-                format!("{} = {};", &caps[1], &caps[2])
-            })
-            .to_string();
-        let trimmed = rewritten.trim();
-        if (trimmed.ends_with("), null;") || trimmed.ends_with("), undefined;"))
-            && trimmed.starts_with('(')
-        {
-            let suffix_len = if trimmed.ends_with("), null;") { 8 } else { 13 };
-            let inner = &trimmed[1..trimmed.len() - suffix_len];
-            if !inner.contains(',') {
-                result.push(format!(
-                    "{};",
-                    inner.trim_matches(|ch| ch == '(' || ch == ')')
-                ));
-                continue;
-            }
-        }
-        result.push(trimmed.to_string());
-    }
-    result.join("\n")
 }
 
 fn normalize_labeled_switch_breaks(code: &str) -> String {
