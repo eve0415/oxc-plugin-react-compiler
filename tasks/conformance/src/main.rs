@@ -2436,14 +2436,11 @@ fn format_code_for_compare(input_path: &Path, code: &str) -> String {
 /// strict) in a convergence loop until the output stabilizes.
 fn normalize_for_compare(code: &str) -> String {
     let steps: &[fn(&str) -> String] = &[
-        // Shared cosmetic normalizations
+        // Shared cosmetic normalizations (OXC vs Babel formatting)
         normalize_compare_multiline_imports,
         normalize_import_region_comments,
         normalize_top_level_comment_trivia,
         normalize_compare_multiline_brace_literals,
-        // normalize_compare_trailing_sequence_null — DELETED: fixed in compiler
-        // (codegen_ast.rs: instruction_references_decl check in RSE prefix,
-        //  build_reactive_function.rs: Reassign Case 2 triggers RSE creation)
         normalize_multiline_trailing_commas_before_closers,
         normalize_labeled_switch_breaks,
         normalize_labeled_block_braces,
@@ -2456,23 +2453,12 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_scope_body_blank_lines,
         normalize_top_level_statement_blank_lines,
         normalize_space_before_closing_brace,
-        // Strict output normalizations
+        // Strict output normalizations (cosmetic OXC printer differences)
         normalize_trailing_comma_in_calls,
-        // normalize_anonymous_function_space — DELETED: no failing fixtures
-        // normalize_multiline_arrow_bodies — DELETED: no failing fixtures
         normalize_multiline_call_invocations,
         normalize_small_array_bracket_spacing,
         normalize_bracket_string_literal_spacing,
-        // normalize_object_shorthand_pairs — DELETED: fixed in compiler
-        // (codegen_ast.rs: use Expression::Identifier keys for String properties
-        //  to prevent OXC's auto-shorthand inference)
-        // normalize_transitional_element_ref_shorthand — DELETED: same fix
-        // normalize_arrow_copy_return_body — DELETED: fixed in compiler
-        // (constant_propagation.rs: outer_local_names guard prevents propagating
-        //  outer-scope locals through user-named variables in nested functions)
         normalize_generated_memoization_comments,
-        // normalize_fbt_plural_cross_product_tables — DELETED: fixed by adding
-        // collapseFbtPluralTables Babel plugin to post-processing pipeline
         normalize_dead_bare_var_refs,
     ];
 
@@ -3063,7 +3049,6 @@ fn postprocess_collapse_fbt_tables(code: &str, fixture_source: &str) -> String {
         r#"(?s)\{\s*"\*":\s*\{\s*"\*":\s*"([^"]+)",\s*_1:\s*"([^"]+)"\s*,?\s*\},\s*_1:\s*\{\s*"\*":\s*"([^"]+)",\s*_1:\s*"([^"]+)"\s*,?\s*\}\s*,?\s*\}"#,
     )
     .unwrap();
-    let _hk_re = regex::Regex::new(r#"hk:\s*"[^"]+""#).unwrap();
 
     let mut result = code.to_string();
     let mut changed = false;
@@ -3383,75 +3368,6 @@ fn extract_error_block(md: &str) -> Option<String> {
     extract_markdown_code_block(md, "## Error")
 }
 
-/// Structured error info parsed from an `.expect.md` error block.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct ParsedExpectedError {
-    /// Error count (from "Found N error(s):" line).
-    error_count: Option<u32>,
-    /// Error heading (e.g., "Error", "Invariant", "Todo", "Compilation Skipped").
-    heading: Option<String>,
-    /// Error reason (text after "{Heading}: ").
-    reason: Option<String>,
-}
-
-/// Parse structured error fields from an error block string.
-///
-/// Expected format:
-/// ```text
-/// Found N error(s):
-///
-/// {Heading}: {Reason}
-///
-/// {Description (optional)}
-///
-/// {filename}:{line}:{column}
-/// {code frame}
-/// ```
-#[allow(dead_code)]
-fn parse_expected_error(error_block: &str) -> ParsedExpectedError {
-    let mut error_count = None;
-    let mut heading = None;
-    let mut reason = None;
-
-    for line in error_block.lines() {
-        let trimmed = line.trim();
-
-        // Parse "Found N error(s):"
-        if error_count.is_none() {
-            if let Some(rest) = trimmed.strip_prefix("Found ")
-                && let Some(num_end) = rest.find(' ')
-                && let Ok(n) = rest[..num_end].parse::<u32>()
-            {
-                error_count = Some(n);
-            }
-            continue;
-        }
-
-        // Parse "{Heading}: {Reason}" — first non-empty line after error count
-        if heading.is_none() && !trimmed.is_empty() {
-            if let Some(colon_pos) = trimmed.find(": ") {
-                let h = trimmed[..colon_pos].to_string();
-                let r = trimmed[colon_pos + 2..].to_string();
-                if matches!(
-                    h.as_str(),
-                    "Error" | "Invariant" | "Todo" | "Compilation Skipped"
-                ) {
-                    heading = Some(h);
-                    reason = Some(r);
-                }
-            }
-            break;
-        }
-    }
-
-    ParsedExpectedError {
-        error_count,
-        heading,
-        reason,
-    }
-}
-
 fn extract_markdown_code_block(md: &str, header: &str) -> Option<String> {
     let header_idx = md.find(header)?;
     let rest = &md[header_idx..];
@@ -3713,105 +3629,6 @@ fn is_valid_js_identifier_for_expectation(name: &str) -> bool {
             | "import"
             | "export"
     )
-}
-
-fn replace_identifier_token(code: &str, old: &str, new: &str) -> String {
-    let mut out = String::with_capacity(code.len());
-    let mut remaining = code;
-    while let Some(pos) = remaining.find(old) {
-        let before_ok = if pos == 0 {
-            true
-        } else {
-            let c = remaining.as_bytes()[pos - 1] as char;
-            !c.is_alphanumeric() && c != '_' && c != '$'
-        };
-        let after_pos = pos + old.len();
-        let after_ok = if after_pos >= remaining.len() {
-            true
-        } else {
-            let c = remaining.as_bytes()[after_pos] as char;
-            !c.is_alphanumeric() && c != '_' && c != '$'
-        };
-        if before_ok && after_ok {
-            out.push_str(&remaining[..pos]);
-            out.push_str(new);
-            remaining = &remaining[after_pos..];
-        } else {
-            out.push_str(&remaining[..after_pos]);
-            remaining = &remaining[after_pos..];
-        }
-    }
-    out.push_str(remaining);
-    out
-}
-
-/// Strip spaces around JSX element children within a line (UNUSED — kept for reference).
-/// `<div> <span>x</span> </div>` → `<div><span>x</span></div>`
-/// Only strips spaces between > and < (tag boundary).
-#[allow(dead_code)]
-fn normalize_jsx_element_spacing(s: &mut String) {
-    // Strip "> <" → "><" only when both sides are JSX tags (> followed by space followed by <)
-    // This is safe because in normal JS, "> <" only appears in JSX context
-    while s.contains("> <") {
-        *s = s.replace("> <", "><");
-    }
-    // Also strip trailing space before closing tag: "content </tag>" → "content</tag>"
-    // But only when preceded by > (another tag close)
-    while s.contains("/> ") {
-        let new_s = s.replacen("/> ", "/>", 1);
-        if new_s == *s {
-            break;
-        }
-        *s = new_s;
-    }
-}
-
-#[allow(dead_code)]
-fn normalize_const_let_in_scope(code: &str) -> String {
-    let mut result = Vec::new();
-    let mut in_scope = false;
-    let mut scope_depth = 0;
-
-    for line in code.lines() {
-        let trimmed = line.trim();
-
-        // Detect entry into a reactive scope: `if ($[0] === ... || $[0] !== ...`
-        if trimmed.starts_with("if ($[") || trimmed.starts_with("if (($[") {
-            in_scope = true;
-            scope_depth = 0;
-        }
-
-        // Track brace depth within scope
-        if in_scope {
-            for ch in trimmed.chars() {
-                match ch {
-                    '{' => scope_depth += 1,
-                    '}' => {
-                        scope_depth -= 1;
-                        if scope_depth <= 0 {
-                            in_scope = false;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // Inside a scope body, normalize const → let for variable declarations
-        if in_scope
-            && scope_depth > 0
-            && trimmed.starts_with("const ")
-            && !trimmed.starts_with("const $ = _c")
-        {
-            let normalized = trimmed.replacen("const ", "let ", 1);
-            result.push(normalized);
-            continue;
-        }
-
-        result.push(trimmed.to_string());
-    }
-
-    result.join("\n")
 }
 
 fn normalize_trailing_comma_in_calls(code: &str) -> String {
@@ -4458,91 +4275,6 @@ fn normalize_multiline_call_invocations(code: &str) -> String {
     out.join("\n")
 }
 
-#[allow(dead_code)]
-fn normalize_shadowed_temp_decls(code: &str) -> String {
-    use std::collections::HashMap;
-
-    let decl_re = regex::Regex::new(r"^(?:let|const|var)\s+(t\d+)\b").unwrap();
-    // Also find inline temp declarations (e.g., `if (x) { let t0;`)
-    let inline_decl_re = regex::Regex::new(r"\b(?:let|const|var)\s+(t\d+)\b").unwrap();
-    let mut lines: Vec<String> = code.lines().map(|line| line.trim().to_string()).collect();
-    let mut seen: HashMap<String, u32> = HashMap::new();
-    let mut next_shadow_index: u32 = 900_000;
-
-    let param_temp_re = regex::Regex::new(r"\bfunction\s+\w+\s*\(([^)]*)\)").unwrap();
-    let temp_token_re = regex::Regex::new(r"\bt\d+\b").unwrap();
-    for i in 0..lines.len() {
-        let current = lines[i].clone();
-        let trimmed = current.trim();
-        if trimmed.starts_with("function ") {
-            seen.clear();
-            // Detect function parameter temps: `function Foo(t0)` or `function Foo(t0, ref)`
-            if let Some(caps) = param_temp_re.captures(trimmed) {
-                let params_str = caps.get(1).unwrap().as_str();
-                for m in temp_token_re.find_iter(params_str) {
-                    seen.insert(m.as_str().to_string(), 1);
-                }
-            }
-            continue;
-        }
-
-        // First, register any inline temp declarations (like `if (...) { let t0;`)
-        // that don't start the line with a declaration keyword.
-        if !decl_re.is_match(trimmed) {
-            for caps in inline_decl_re.captures_iter(trimmed) {
-                let temp_name = caps.get(1).unwrap().as_str().to_string();
-                seen.entry(temp_name).or_insert(1);
-            }
-            continue;
-        }
-
-        let Some(caps) = decl_re.captures(trimmed) else {
-            continue;
-        };
-        let temp_name = caps.get(1).unwrap().as_str().to_string();
-        let entry = seen.entry(temp_name.clone()).or_insert(0);
-        if *entry == 0 {
-            *entry = 1;
-            continue;
-        }
-
-        let shadow_name = format!("t{}", next_shadow_index);
-        next_shadow_index += 1;
-        lines[i] = replace_identifier_token(trimmed, &temp_name, &shadow_name);
-
-        for later_line in lines.iter_mut().skip(i + 1) {
-            let later_trimmed = later_line.trim().to_string();
-            if later_trimmed.starts_with("function ") {
-                break;
-            }
-            if let Some(later_caps) = decl_re.captures(&later_trimmed)
-                && later_caps.get(1).unwrap().as_str() == temp_name
-            {
-                break;
-            }
-            *later_line = replace_identifier_token(&later_trimmed, &temp_name, &shadow_name);
-        }
-
-        *entry += 1;
-    }
-
-    lines.join("\n")
-}
-
-/// Strip dead bare `var _refN;` declarations produced by babel-plugin-idx.
-///
-/// The upstream snap test framework runs the React compiler plugin and
-/// babel-plugin-idx in the same Babel transform, sharing scope state. Names
-/// registered by the compiler (via `programContext.addNewReference`) are visible
-/// to babel-plugin-idx's `scope.generateUidIdentifier`, causing it to pick a
-/// higher-numbered name (e.g. `_ref2` instead of `_ref`).
-///
-/// Our conformance runner applies babel-plugin-idx as a separate post-process
-/// step on the compiler's string output, so babel-plugin-idx doesn't see any
-/// compiler-internal names and may pick a different (lower-numbered) ref name.
-/// This can leave a dead `var _refN;` declaration in the expected output that
-/// our output doesn't have.  Stripping unused bare `var _refN;` lines from
-/// both sides eliminates this cosmetic difference.
 fn normalize_dead_bare_var_refs(code: &str) -> String {
     let bare_var_ref_re = regex::Regex::new(r"^var\s+(_ref\d*)\s*;$").unwrap();
     let lines: Vec<&str> = code.lines().collect();

@@ -155,7 +155,6 @@ struct CodegenContext<'a> {
     /// Options controlling codegen behavior.
     options: CodegenOptions,
     /// Function name for structural check diagnostics.
-    #[allow(dead_code)]
     fn_name: String,
     /// Pre-computed DeclarationId → display name from string codegen.
     /// Only used to resolve identifier references — does NOT affect temp inlining.
@@ -2405,16 +2404,6 @@ fn emit_assignment_stmt<'a>(
     )
 }
 
-#[allow(dead_code)]
-fn emit_var_decl_stmt<'a>(
-    cx: &mut CodegenContext<'a>,
-    name: &str,
-    kind: ast::VariableDeclarationKind,
-    init: Option<ast::Expression<'a>>,
-) -> ast::Statement<'a> {
-    emit_var_decl_stmt_inner(cx, name, kind, init, None)
-}
-
 fn emit_var_decl_stmt_inner<'a>(
     cx: &mut CodegenContext<'a>,
     name: &str,
@@ -3068,21 +3057,6 @@ fn value_has_any_property_load(value: &InstructionValue) -> bool {
                 || value_has_any_property_load(value)
         }
         _ => false,
-    }
-}
-
-/// Allocate a fresh `tN` temp name that doesn't conflict with existing declarations.
-#[allow(dead_code)]
-fn alloc_fresh_temp_name(cx: &CodegenContext) -> String {
-    let mut idx = 0u32;
-    loop {
-        let candidate = format!("t{idx}");
-        if !cx.declared_names.contains(&candidate)
-            && !cx.options.unique_identifiers.contains(&candidate)
-        {
-            return candidate;
-        }
-        idx += 1;
     }
 }
 
@@ -4418,52 +4392,6 @@ fn lower_update_operator(
     op: crate::hir::types::UpdateOperator,
 ) -> oxc_syntax::operator::UpdateOperator {
     super::super::codegen_backend::hir_to_ast::lower_update_operator(op)
-}
-
-#[allow(dead_code)]
-fn dump_reactive_block(block: &ReactiveBlock, indent: usize) {
-    let pad = "  ".repeat(indent);
-    for stmt in block.iter() {
-        match stmt {
-            ReactiveStatement::Instruction(instr) => {
-                let lv = instr
-                    .lvalue
-                    .as_ref()
-                    .map(|p| identifier_name(&p.identifier))
-                    .unwrap_or_default();
-                eprintln!(
-                    "{pad}Instr({lv}): {:?}",
-                    std::mem::discriminant(&instr.value)
-                );
-            }
-            ReactiveStatement::Terminal(term) => {
-                eprintln!(
-                    "{pad}Terminal: {:?}",
-                    std::mem::discriminant(&term.terminal)
-                );
-            }
-            ReactiveStatement::Scope(scope) => {
-                let decls: Vec<String> = scope
-                    .scope
-                    .declarations
-                    .values()
-                    .map(|d| {
-                        d.identifier
-                            .name
-                            .as_ref()
-                            .map(|n| n.value().to_string())
-                            .unwrap_or_default()
-                    })
-                    .collect();
-                eprintln!("{pad}Scope(decls={decls:?}):");
-                dump_reactive_block(&scope.instructions, indent + 1);
-            }
-            ReactiveStatement::PrunedScope(pruned) => {
-                eprintln!("{pad}PrunedScope:");
-                dump_reactive_block(&pruned.instructions, indent + 1);
-            }
-        }
-    }
 }
 
 /// Reconstruct a for-loop init from the emitted statements.
