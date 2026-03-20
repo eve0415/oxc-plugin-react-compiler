@@ -93,9 +93,8 @@ Source → oxc_parser → OXC AST
 | `hir/propagate_scope_dependencies_hir.rs`      | Scope dependency computation                                              |
 | `hir/collect_hoistable_property_loads.rs`      | Hoistable property analysis                                               |
 | `pipeline.rs`                                  | Pass orchestration (second largest file)                                  |
-| `flow_syntax.rs`                               | Flow syntax preprocessing (Rust-specific, no upstream equivalent)         |
 | `codegen_backend/codegen_ast.rs`               | OXC AST-based codegen (ReactiveFunction → OXC AST)                       |
-| `codegen_backend/module_emitter/`              | Module-level emission (directory module with 6 submodules)                |
+| `codegen_backend/module_emitter/`              | Module-level emission (directory module with 7 submodules)                |
 | `codegen_backend/hir_to_ast.rs`                | HIR instruction → OXC AST conversion                                     |
 | `reactive_scopes/build_reactive_function.rs`   | HIR CFG → tree-shaped ReactiveFunction                                    |
 | `optimization/constant_propagation.rs`         | SSA constant folding                                                      |
@@ -129,9 +128,9 @@ Each Rust module corresponds to an upstream TypeScript file. When debugging a pa
 
 ## Development Notes
 
-- Rust edition 2024, OXC v0.116.0
+- Rust edition 2024, OXC v0.120.0
 - All internal modules use `pub(crate)` visibility; only `compile()` and `options` are public
-- Flow syntax preprocessing is in `flow_syntax.rs` (Rust-specific; Babel parses Flow natively)
+- Flow syntax preprocessing is an inline function (`preprocess_flow_syntax`) in `pipeline.rs` (Rust-specific; Babel parses Flow natively)
 - Fixture pragmas (first line comments like `// @flow`, `// @compilationMode "all"`) control per-fixture compiler options
 - The conformance runner's normalization layer compensates for cosmetic differences (whitespace, semicolons, trailing commas) between OXC AST codegen and Babel output
 

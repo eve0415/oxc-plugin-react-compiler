@@ -14,7 +14,10 @@ The primary goal is to achieve **exact behavior** alignment with the original Re
 
 ## Current Status
 
-We have achieved a significant milestone in conformance testing: **1752 parity successes, 0 parity failures, 0 skipped**. This was verified by running the `conformance` test suite against the upstream React Compiler fixtures (`cargo run --package conformance --bin conformance -- --update --include-errors --verbose`). While still experimental, this demonstrates near-complete behavioral alignment with the original implementation.
+We have achieved a significant milestone in conformance testing: **1752 parity successes, 0 parity failures, 0 skipped**. This was verified by running the `conformance` test suite against the upstream React Compiler fixtures (`cargo run --release --bin conformance -- --update --include-errors --verbose`). While still experimental, this demonstrates near-complete behavioral alignment with the original implementation.
+
+> [!NOTE]
+> The npm package (`oxc-plugin-react-compiler`) is not yet published. To try it, build from source.
 
 ## Experimental Nature
 
@@ -24,15 +27,14 @@ This project serves as an experiment to explore AI-assisted development in compl
 
 - [x] Primitive implementation proving viability in Rust.
 - [x] Align behavior exactly with the upstream React Compiler (verified via conformance tests).
-- [ ] Provide seamless integration with **Vite v8** (currently in beta).
-- [ ] Offer a Rolldown / Vite plugin.
+- [x] Provide seamless integration with **Vite v8** via the included Vite plugin (`napi/vite.js`).
 - [ ] Future exploration: Add support for SWC alongside OXC.
 
 ## Architecture Overview
 
-- **`crates/oxc_react_compiler/`**: Core compiler implementation (HIR, inference, reactive scopes, optimization, etc.).
+- **`crates/oxc_react_compiler/`**: Core compiler implementation (HIR, inference, reactive scopes, optimization, codegen).
 - **`crates/oxc_react_compiler_napi/`**: N-API bindings to expose the Rust implementation to JavaScript.
-- **`napi/`**: The publishable JavaScript wrapper.
+- **`napi/`**: JavaScript wrapper + Vite v8 plugin (`vite.js`).
 - **`tasks/conformance/`**: Test harness ensuring parity with upstream React Compiler fixtures.
 
 ## Acknowledgements & Credits
@@ -49,4 +51,4 @@ If you find this project interesting or useful, please consider giving it a ⭐ 
 
 ## License
 
-This project is open-source and will be licensed under the MIT License (or similar permissive open-source license, aligning with the ecosystem).
+This project is open-source and licensed under the [MIT License](LICENSE).
