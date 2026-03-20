@@ -664,23 +664,28 @@ fn codegen_block_no_reset<'a>(
                     && !label.implicit
                     && !terminal_stmts.is_empty()
                 {
-                    let first = &terminal_stmts[0];
-                    // If the first statement is a declaration (const/let/var),
-                    // wrap all statements in a block to avoid invalid labeled
-                    // declarations (e.g., `bb0: const x = ...` is a syntax error).
-                    let needs_block = matches!(
-                        first,
-                        ast::Statement::VariableDeclaration(_)
-                            | ast::Statement::FunctionDeclaration(_)
-                            | ast::Statement::ClassDeclaration(_)
-                    );
-                    let body = if needs_block {
+                    // Upstream's codegenBlock always returns a BlockStatement,
+                    // then unwraps single-element blocks for the label body.
+                    // Our codegen_terminal returns Vec<Statement>, so we wrap
+                    // in a block to create proper lexical scope, matching upstream.
+                    let body = if terminal_stmts.len() == 1
+                        && matches!(
+                            &terminal_stmts[0],
+                            ast::Statement::BlockStatement(b) if b.body.len() == 1
+                        )
+                    {
+                        // Unwrap single-element BlockStatement (upstream line 565-568)
+                        match terminal_stmts.remove(0) {
+                            ast::Statement::BlockStatement(block) => {
+                                block.unbox().body.into_iter().next().unwrap()
+                            }
+                            _ => unreachable!(),
+                        }
+                    } else {
                         cx.builder.statement_block(
                             SPAN,
                             cx.builder.vec_from_iter(terminal_stmts.drain(..)),
                         )
-                    } else {
-                        terminal_stmts.remove(0)
                     };
                     let labeled = cx.builder.statement_labeled(
                         SPAN,
