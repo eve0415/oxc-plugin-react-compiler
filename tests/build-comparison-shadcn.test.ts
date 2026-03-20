@@ -1,9 +1,163 @@
-import { describe, it } from 'vitest';
+import { describe, expect, it } from 'vitest'
+import { build } from 'vite'
+import { readFile, readdir, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { compareAST, parseJS } from './utils/ast-compare.js'
 
-// shadcn/ui smoke test — requires a separate fixture with shadcn components installed.
-// Run with: RUN_SHADCN_TESTS=1 pnpm test tests/build-comparison-shadcn.test.ts
-describe.skip('build comparison: shadcn/ui app', () => {
-  it.todo('builds with OXC plugin');
-  it.todo('builds with Babel plugin');
-  it.todo('AST output matches between OXC and Babel');
-});
+const fixtureDir = join(import.meta.dirname, 'fixtures/shadcn-app')
+
+const collectJsFiles = async (dir: string): Promise<string[]> => {
+  const results: string[] = []
+  try {
+    const entries = await readdir(dir, { withFileTypes: true, recursive: true })
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.js')) {
+        results.push(join(entry.parentPath ?? dir, entry.name))
+      }
+    }
+  } catch {
+    // dir may not exist
+  }
+  return results
+}
+
+const buildOnce = async (configFile: string): Promise<number> => {
+  const start = performance.now()
+  await build({ configFile: join(fixtureDir, configFile) })
+  return performance.now() - start
+}
+
+describe('build comparison: shadcn-style app (~25 components)', { timeout: 120_000 }, () => {
+  it('both OXC and Babel produce successful builds', async () => {
+    await rm(join(fixtureDir, 'dist-oxc'), { recursive: true, force: true })
+    await rm(join(fixtureDir, 'dist-babel'), { recursive: true, force: true })
+
+    const [oxcMs, babelMs] = await Promise.all([
+      buildOnce('vite.config.oxc.ts'),
+      buildOnce('vite.config.babel.ts'),
+    ])
+
+    console.log(
+      `\n  shadcn-app build timings (cold):\n` +
+      `    OXC:     ${oxcMs.toFixed(0)}ms\n` +
+      `    Babel:   ${babelMs.toFixed(0)}ms\n` +
+      `    Speedup: ${(babelMs / oxcMs).toFixed(2)}x\n`,
+    )
+
+    const oxcFiles = await collectJsFiles(join(fixtureDir, 'dist-oxc'))
+    const babelFiles = await collectJsFiles(join(fixtureDir, 'dist-babel'))
+    expect(oxcFiles.length).toBeGreaterThan(0)
+    expect(babelFiles.length).toBeGreaterThan(0)
+  })
+
+  it('timing across 5 warm runs', async () => {
+    const oxcTimes: number[] = []
+    const babelTimes: number[] = []
+    const runs = 5
+
+    for (let i = 0; i < runs; i++) {
+      await rm(join(fixtureDir, 'dist-oxc'), { recursive: true, force: true })
+      const t = await buildOnce('vite.config.oxc.ts')
+      oxcTimes.push(t)
+    }
+
+    for (let i = 0; i < runs; i++) {
+      await rm(join(fixtureDir, 'dist-babel'), { recursive: true, force: true })
+      const t = await buildOnce('vite.config.babel.ts')
+      babelTimes.push(t)
+    }
+
+    const median = (arr: number[]) => {
+      const s = [...arr].sort((a, b) => a - b)
+      return s[Math.floor(s.length / 2)]!
+    }
+    const avg = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length
+
+    const oxcMedian = median(oxcTimes)
+    const babelMedian = median(babelTimes)
+    const oxcAvg = avg(oxcTimes)
+    const babelAvg = avg(babelTimes)
+
+    console.log(
+      `\n  shadcn-app build timings (${String(runs)} warm runs):\n` +
+      `    OXC   — median: ${oxcMedian.toFixed(0)}ms, avg: ${oxcAvg.toFixed(0)}ms, all: [${oxcTimes.map((t) => t.toFixed(0)).join(', ')}]\n` +
+      `    Babel — median: ${babelMedian.toFixed(0)}ms, avg: ${babelAvg.toFixed(0)}ms, all: [${babelTimes.map((t) => t.toFixed(0)).join(', ')}]\n` +
+      `    Speedup (median): ${(babelMedian / oxcMedian).toFixed(2)}x\n` +
+      `    Speedup (avg):    ${(babelAvg / oxcAvg).toFixed(2)}x\n`,
+    )
+
+    // Just assert builds completed
+    expect(oxcTimes.length).toBe(runs)
+    expect(babelTimes.length).toBe(runs)
+  })
+
+  it('AST output comparison', async () => {
+    const oxcDir = join(fixtureDir, 'dist-oxc')
+    const babelDir = join(fixtureDir, 'dist-babel')
+
+    const oxcFiles = await collectJsFiles(oxcDir)
+    const babelFiles = await collectJsFiles(babelDir)
+
+    expect(oxcFiles.length).toBeGreaterThan(0)
+    expect(babelFiles.length).toBe(oxcFiles.length)
+
+    let totalDiffs = 0
+
+    for (let i = 0; i < oxcFiles.length; i++) {
+      const oxcPath = oxcFiles[i]
+      const babelPath = babelFiles[i]
+      if (!oxcPath || !babelPath) continue
+
+      const name = `chunk-${String(i)}.js`
+      const [oxcSource, babelSource] = await Promise.all([
+        readFile(oxcPath, 'utf8'),
+        readFile(babelPath, 'utf8'),
+      ])
+
+      const oxcAST = parseJS(oxcSource)
+      const babelAST = parseJS(babelSource)
+      const result = compareAST(oxcAST, babelAST)
+
+      totalDiffs += result.differences.length
+
+      if (result.match) {
+        console.log(`  ${name}: AST structures match`)
+      } else {
+        // Categorize differences
+        const valueMismatches = result.differences.filter((d) => d.kind === 'value_mismatch')
+        const structural = result.differences.filter((d) => d.kind !== 'value_mismatch')
+
+        console.log(`\n  ${name}: ${String(result.differences.length)} differences (${String(valueMismatches.length)} value, ${String(structural.length)} structural)`)
+
+        if (structural.length > 0) {
+          console.log('    Structural differences:')
+          for (const diff of structural.slice(0, 5)) {
+            console.log(`      ${diff.path}: ${diff.kind}`)
+          }
+        }
+
+        if (valueMismatches.length > 0) {
+          console.log(`    Value mismatches (first 5 of ${String(valueMismatches.length)}):`)
+          for (const diff of valueMismatches.slice(0, 5)) {
+            console.log(`      ${diff.path}: ${diff.expected ?? '?'} → ${diff.actual ?? '?'}`)
+          }
+        }
+      }
+    }
+
+    console.log(`\n  Total AST differences: ${String(totalDiffs)}`)
+
+    // Output sizes
+    for (let i = 0; i < oxcFiles.length; i++) {
+      const oxcPath = oxcFiles[i]
+      const babelPath = babelFiles[i]
+      if (!oxcPath || !babelPath) continue
+
+      const [oxcStat, babelStat] = await Promise.all([
+        readFile(oxcPath).then((b) => b.length),
+        readFile(babelPath).then((b) => b.length),
+      ])
+      console.log(`  chunk-${String(i)}.js — OXC: ${String(oxcStat)} bytes, Babel: ${String(babelStat)} bytes`)
+    }
+  })
+})
