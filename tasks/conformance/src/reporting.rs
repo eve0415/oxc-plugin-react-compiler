@@ -67,7 +67,6 @@ pub(crate) struct FailureJsonReport {
     pub(crate) passed: usize,
     pub(crate) failed: usize,
     pub(crate) skipped: usize,
-    pub(crate) include_errors: bool,
     pub(crate) failures: Vec<FailureRecord>,
     #[serde(default)]
     pub(crate) skips_details: Vec<SkipRecord>,
@@ -189,7 +188,6 @@ fn collect_first_diff_lines(
 
 pub(crate) fn build_failure_report(
     results: &[FixtureResult],
-    include_errors: bool,
     parity_success: usize,
     parity_failure: usize,
     skipped: usize,
@@ -238,7 +236,6 @@ pub(crate) fn build_failure_report(
         passed: parity_success,
         failed: parity_failure,
         skipped,
-        include_errors,
         failures,
         skips_details,
     }

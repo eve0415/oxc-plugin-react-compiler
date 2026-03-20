@@ -24,26 +24,25 @@ cargo test --package oxc_react_compiler
 cargo test --package oxc_react_compiler -- test_name
 
 # Run conformance suite (the primary correctness metric)
-cargo run --release --bin conformance -- --update --include-errors --verbose
+cargo run --release --bin conformance -- --update --verbose
 
 # Conformance with filter (run specific fixtures)
-cargo run --release --bin conformance -- --include-errors --filter "fixture-name-pattern"
+cargo run --release --bin conformance -- --filter "fixture-name-pattern"
 
 # Conformance with diff output for failures
-cargo run --release --bin conformance -- --include-errors --diff
+cargo run --release --bin conformance -- --diff
 
 # Near-miss analysis (find almost-passing fixtures)
-cargo run --release --bin conformance -- --include-errors --near-miss
+cargo run --release --bin conformance -- --near-miss
 
 # Show full actual vs expected for failures
-cargo run --release --bin conformance -- --include-errors --show
+cargo run --release --bin conformance -- --show
 ```
 
 ## Conformance Test Details
 
 - Fixtures live in `third_party/react/compiler/packages/babel-plugin-react-compiler/src/__tests__/fixtures/compiler/`
 - Each fixture is a `.js`/`.ts`/`.tsx` file paired with a `.expect.md` containing expected output
-- `--include-errors` includes error-expecting fixtures (otherwise they're skipped)
 - `--update` rewrites the snapshot file at `tasks/conformance/snapshots/react_compiler.snap.md`
 - Results have ±1-2 non-determinism due to Rayon parallel execution and hashmap ordering
 - The conformance runner's normalization layer compensates for cosmetic differences between OXC AST codegen and Babel output

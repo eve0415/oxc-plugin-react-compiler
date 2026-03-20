@@ -50,7 +50,6 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(10);
-    let include_errors = args.iter().any(|a| a == "--include-errors");
     let run_skipped = args.iter().any(|a| a == "--run-skipped");
     let parallel = !args.iter().any(|a| a == "--no-parallel");
     let verbose = args.iter().any(|a| a == "--verbose");
@@ -96,18 +95,7 @@ fn main() {
             verbose,
         },
     );
-    let results: Vec<FixtureResult> = results_raw
-        .into_iter()
-        .map(|mut result| {
-            // If --include-errors is not set, skip error fixtures (backward compatible)
-            if result.is_error_fixture && !include_errors {
-                result.status = Status::Skip;
-                result.message =
-                    Some("Error fixture (use --include-errors to include)".to_string());
-            }
-            result
-        })
-        .collect();
+    let results: Vec<FixtureResult> = results_raw;
 
     for result in &results {
         if diff && matches!(result.status, Status::Fail) {
@@ -496,21 +484,19 @@ fn main() {
         "\nResults: {parity_success} parity_success, {parity_failure} parity_failure, {skipped} skipped ({total} total)"
     );
     println!("Parity rate: {parity_rate:.1}%");
-    if include_errors && error_total > 0 {
-        println!(
-            "Error fixtures: {error_passed} passed, {error_failed} failed ({error_total} total)"
-        );
-    } else if error_total > 0 {
-        println!("Error fixtures: {error_total} skipped (use --include-errors to include)");
+    if error_total > 0 {
+        if error_skipped > 0 {
+            println!(
+                "Error fixtures: {error_passed} passed, {error_failed} failed, {error_skipped} skipped ({error_total} total)"
+            );
+        } else {
+            println!(
+                "Error fixtures: {error_passed} passed, {error_failed} failed ({error_total} total)"
+            );
+        }
     }
 
-    let failure_report = build_failure_report(
-        &results,
-        include_errors,
-        parity_success,
-        parity_failure,
-        skipped,
-    );
+    let failure_report = build_failure_report(&results, parity_success, parity_failure, skipped);
     if let Some(path) = failures_json_path.as_ref() {
         if let Err(err) = write_failure_json_report(path, &failure_report) {
             eprintln!("[ERROR] {err}");

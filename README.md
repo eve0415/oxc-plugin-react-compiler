@@ -14,7 +14,7 @@ The primary goal is to achieve **exact behavior** alignment with the original Re
 
 ## Current Status
 
-We have achieved a significant milestone in conformance testing: **1752 parity successes, 0 parity failures, 0 skipped**. This was verified by running the `conformance` test suite against the upstream React Compiler fixtures (`cargo run --release --bin conformance -- --update --include-errors --verbose`). While still experimental, this demonstrates near-complete behavioral alignment with the original implementation.
+We have achieved a significant milestone in conformance testing: **1752 parity successes, 0 parity failures, 0 skipped**. This was verified by running the `conformance` test suite against the upstream React Compiler fixtures (`cargo run --release --bin conformance -- --update --verbose`). While still experimental, this demonstrates near-complete behavioral alignment with the original implementation.
 
 > [!NOTE]
 > The npm package (`oxc-plugin-react-compiler`) is not yet published. To try it, build from source.
