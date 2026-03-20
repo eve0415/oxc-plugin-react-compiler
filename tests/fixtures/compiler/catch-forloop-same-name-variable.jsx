@@ -1,3 +1,4 @@
+// @compilationMode:"infer"
 // Same-name variable in catch clause and for-loop body: `catch (error)` +
 // `const error = result.errors[fieldName]` in a sibling arrow function.
 // OXC bails: "Expected all references to a variable to be consistently
