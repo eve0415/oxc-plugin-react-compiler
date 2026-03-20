@@ -4058,15 +4058,16 @@ fn codegen_method_call_callee<'a>(
         ));
     }
 
-    // Default: computed member expression.
-    Some(ast::Expression::from(
-        cx.builder.member_expression_computed(
-            SPAN,
-            codegen_place(cx, receiver)?,
-            prop_expr,
-            receiver_optional,
-        ),
-    ))
+    // Upstream invariant: MethodCall::property must resolve to a
+    // MemberExpression. If the property temp was promoted (memoized into a
+    // reactive scope), it can't be inlined as a member expression, and we'd
+    // emit `t0[t1](t2)` which is semantically incorrect. Bail out matching
+    // upstream's CodegenReactiveFunction.ts invariant.
+    cx.codegen_error = Some(crate::error::CompilerError::invariant(
+        "[Codegen] Internal error: MethodCall::property must be an unpromoted + unmemoized MemberExpression",
+        None,
+    ));
+    None
 }
 
 fn codegen_array_elements<'a>(

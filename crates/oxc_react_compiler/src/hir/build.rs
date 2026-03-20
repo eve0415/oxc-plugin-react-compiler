@@ -5648,16 +5648,6 @@ fn lower_call_expr_inner<'a>(
     if call_expr_is_hook_call(call) && call_has_spread_arguments(call) {
         builder.push_todo("Support spread syntax for hook arguments".to_string());
     }
-    // Preserve upstream's current invariant for direct member callees with nested
-    // method-call arguments, but avoid over-bailing for sequence/parenthesized
-    // receiver shapes (e.g. evaluation-order fixtures).
-    if call_expr_needs_nested_method_call_invariant(call, semantic) {
-        builder.push_invariant(
-            "[Codegen] Internal error: MethodCall::property must be an unpromoted + unmemoized MemberExpression"
-                .to_string(),
-        );
-    }
-
     // Method call check: obj.method(...) or obj?.method(...)
     if let js::Expression::StaticMemberExpression(member) = &call.callee {
         let object = lower_expr_to_temp(builder, &member.object, semantic, source);
@@ -6121,92 +6111,6 @@ fn is_hook_like_name(name: &str) -> bool {
     rest.chars()
         .next()
         .is_some_and(|ch| ch == '_' || ch == '$' || ch.is_ascii_uppercase())
-}
-
-fn call_expr_needs_nested_method_call_invariant(
-    call: &js::CallExpression<'_>,
-    semantic: &Semantic<'_>,
-) -> bool {
-    let direct_global_member_callee = match &call.callee {
-        js::Expression::StaticMemberExpression(member) => match &member.object {
-            js::Expression::Identifier(ident) => {
-                ident.name.as_str() == "Math" && identifier_reference_is_unresolved(ident, semantic)
-            }
-            _ => false,
-        },
-        js::Expression::ComputedMemberExpression(member) => match &member.object {
-            js::Expression::Identifier(ident) => {
-                ident.name.as_str() == "Math" && identifier_reference_is_unresolved(ident, semantic)
-            }
-            _ => false,
-        },
-        _ => false,
-    };
-    direct_global_member_callee && call.arguments.iter().any(argument_contains_method_call)
-}
-
-fn identifier_reference_is_unresolved(
-    ident: &js::IdentifierReference<'_>,
-    semantic: &Semantic<'_>,
-) -> bool {
-    let Some(reference_id) = ident.reference_id.get() else {
-        return true;
-    };
-    semantic
-        .scoping()
-        .get_reference(reference_id)
-        .symbol_id()
-        .is_none()
-}
-
-fn argument_contains_method_call(arg: &js::Argument<'_>) -> bool {
-    match arg {
-        js::Argument::SpreadElement(spread) => expr_contains_method_call(&spread.argument),
-        _ => expr_contains_method_call(expr_from_arg(arg)),
-    }
-}
-
-fn expr_contains_method_call(expr: &js::Expression<'_>) -> bool {
-    match expr {
-        js::Expression::CallExpression(call) => {
-            if matches!(
-                &call.callee,
-                js::Expression::StaticMemberExpression(_)
-                    | js::Expression::ComputedMemberExpression(_)
-            ) {
-                return true;
-            }
-            call.arguments.iter().any(argument_contains_method_call)
-        }
-        js::Expression::ChainExpression(chain) => match &chain.expression {
-            js::ChainElement::CallExpression(call) => {
-                if matches!(
-                    &call.callee,
-                    js::Expression::StaticMemberExpression(_)
-                        | js::Expression::ComputedMemberExpression(_)
-                ) {
-                    return true;
-                }
-                call.arguments.iter().any(argument_contains_method_call)
-            }
-            _ => false,
-        },
-        js::Expression::ParenthesizedExpression(paren) => {
-            expr_contains_method_call(&paren.expression)
-        }
-        js::Expression::SequenceExpression(seq) => {
-            seq.expressions.iter().any(expr_contains_method_call)
-        }
-        js::Expression::LogicalExpression(logical) => {
-            expr_contains_method_call(&logical.left) || expr_contains_method_call(&logical.right)
-        }
-        js::Expression::ConditionalExpression(cond) => {
-            expr_contains_method_call(&cond.test)
-                || expr_contains_method_call(&cond.consequent)
-                || expr_contains_method_call(&cond.alternate)
-        }
-        _ => false,
-    }
 }
 
 /// Extract an Expression reference from an Argument (which inherits Expression variants).
