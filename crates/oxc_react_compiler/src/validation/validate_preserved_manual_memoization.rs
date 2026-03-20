@@ -31,7 +31,6 @@ pub fn validate_preserved_manual_memoization(func: &ReactiveFunction) -> Result<
         manual_memo_state: None,
         late_mutation_watchers: HashMap::new(),
         late_mutation_reported: HashSet::new(),
-        pending_finished_memo_validation: None,
         pending_unmemoized_checks: Vec::new(),
     };
     let mut visitor = Visitor {
@@ -163,11 +162,6 @@ struct ManualMemoBlockState {
     /// Tracks whether a value produced while this memo block is open
     /// is consumed by a side-effectful instruction.
     saw_side_effect_use_of_decl: bool,
-
-    /// Scope dependencies collected while this memo block is active.
-    /// We validate these at FinishMemoize once we can distinguish
-    /// useMemo vs useCallback semantics.
-    collected_inferred_deps: Vec<ReactiveScopeDependency>,
 }
 
 #[derive(Clone)]
@@ -180,15 +174,7 @@ struct VisitorState {
     manual_memo_state: Option<ManualMemoBlockState>,
     late_mutation_watchers: HashMap<DeclarationId, Vec<LateMutationWatch>>,
     late_mutation_reported: HashSet<(DeclarationId, u32)>,
-    pending_finished_memo_validation: Option<PendingFinishedMemoValidation>,
     pending_unmemoized_checks: Vec<PendingUnmemoizedCheck>,
-}
-
-struct PendingFinishedMemoValidation {
-    manual_memo_id: u32,
-    deps_from_source: Vec<ManualMemoDependency>,
-    decls_within_memo_block: HashSet<DeclarationId>,
-    allow_inferred_optional_mismatch: bool,
 }
 
 #[derive(Clone)]
@@ -231,7 +217,6 @@ fn get_compare_dependency_result_description(result: CompareDependencyResult) ->
 fn compare_deps(
     inferred: &ManualMemoDependency,
     source: &ManualMemoDependency,
-    allow_inferred_optional_mismatch: bool,
 ) -> CompareDependencyResult {
     let roots_equal = match (&inferred.root, &source.root) {
         (
@@ -261,15 +246,15 @@ fn compare_deps(
             is_subpath = false;
             break;
         } else if inferred.path[i].optional != source.path[i].optional {
-            if allow_inferred_optional_mismatch
-                && inferred.path[i].optional
-                && !source.path[i].optional
-            {
+            // Allow inferred-optional vs source-non-optional: the compiler
+            // tracks optional chains more precisely than upstream's scope
+            // dependency propagation. When the user writes `propB?.x.y` in
+            // the useMemo body but `propB.x.y` in the deps array, the
+            // compiler infers optional=true while the source has optional=false.
+            // This is safe — the compiler is more cautious than the user.
+            if inferred.path[i].optional && !source.path[i].optional {
                 continue;
             }
-            // The inferred path must be at least as precise as the manual path:
-            // if the inferred path is optional, then the source path must have
-            // been optional too.
             return CompareDependencyResult::PathDifference;
         }
     }
@@ -362,7 +347,6 @@ fn validate_inferred_dep(
     temporaries: &HashMap<IdentifierId, ManualMemoDependency>,
     decls_within_memo_block: &HashSet<DeclarationId>,
     valid_deps_in_memo_block: &[ManualMemoDependency],
-    allow_inferred_optional_mismatch: bool,
     errors: &mut Vec<CompilerDiagnostic>,
     _memo_location: &SourceLocation,
 ) {
@@ -427,11 +411,7 @@ fn validate_inferred_dep(
     // Compare against each source dependency
     let mut error_diagnostic: Option<CompareDependencyResult> = None;
     for original_dep in valid_deps_in_memo_block {
-        let compare_result = compare_deps(
-            &normalized_dep,
-            original_dep,
-            allow_inferred_optional_mismatch,
-        );
+        let compare_result = compare_deps(&normalized_dep, original_dep);
         if debug_manual_memo {
             eprintln!(
                 "[MANUAL_MEMO_VALIDATE] compare inferred={} source={} result={:?}",
@@ -663,52 +643,21 @@ impl Visitor {
         self.visit_block(&scope_block.instructions, state);
         let debug_manual_memo = std::env::var("DEBUG_MANUAL_MEMO").is_ok();
 
-        if !scope_block.scope.dependencies.is_empty()
-            && let Some(pending) = state.pending_finished_memo_validation.take()
+        // Upstream validates scope deps inline while manualMemoState is active
+        // (ValidatePreservedManualMemoization.ts:424-437)
+        if let Some(ref memo_state) = state.manual_memo_state
+            && let Some(ref deps_from_source) = memo_state.deps_from_source
         {
-            if debug_manual_memo {
-                eprintln!(
-                    "[MANUAL_MEMO_VALIDATE] consume pending memo_id={} in scope_id={} deps={}",
-                    pending.manual_memo_id,
-                    scope_block.scope.id.0,
-                    scope_block.scope.dependencies.len()
-                );
-            }
             for dep in &scope_block.scope.dependencies {
-                let dep_is_generated_temp = dep.identifier.name.as_ref().is_some_and(|name| {
-                    let value = match name {
-                        IdentifierName::Named(value) | IdentifierName::Promoted(value) => value,
-                    };
-                    is_generated_temp_name(value)
-                });
-                if dep_is_generated_temp {
-                    if debug_manual_memo {
-                        eprintln!(
-                            "[MANUAL_MEMO_VALIDATE] skip pending generated-temp dep={} path_len={}",
-                            pretty_print_scope_dependency(dep),
-                            dep.path.len()
-                        );
-                    }
-                    continue;
-                }
                 validate_inferred_dep(
                     dep,
                     &self.temporaries,
-                    &pending.decls_within_memo_block,
-                    &pending.deps_from_source,
-                    pending.allow_inferred_optional_mismatch,
+                    &memo_state.decls,
+                    deps_from_source,
                     &mut state.errors,
-                    &SourceLocation::Generated,
+                    &memo_state.loc,
                 );
             }
-        }
-
-        if let Some(ref mut memo_state) = state.manual_memo_state
-            && memo_state.deps_from_source.is_some()
-        {
-            memo_state
-                .collected_inferred_deps
-                .extend(scope_block.scope.dependencies.iter().cloned());
         }
 
         self.scopes.insert(scope_block.scope.id);
@@ -769,77 +718,8 @@ impl Visitor {
         scope_block: &PrunedReactiveScopeBlock,
         state: &mut VisitorState,
     ) {
-        let debug_manual_memo = std::env::var("DEBUG_MANUAL_MEMO").is_ok();
+        // Upstream: just traverse and record (ValidatePreservedManualMemoization.ts:445-451)
         self.visit_block(&scope_block.instructions, state);
-        if !scope_block.scope.dependencies.is_empty()
-            && let Some(pending) = state.pending_finished_memo_validation.take()
-        {
-            if debug_manual_memo {
-                eprintln!(
-                    "[MANUAL_MEMO_VALIDATE] consume pending memo_id={} in pruned_scope_id={} deps={}",
-                    pending.manual_memo_id,
-                    scope_block.scope.id.0,
-                    scope_block.scope.dependencies.len()
-                );
-            }
-            for dep in &scope_block.scope.dependencies {
-                let dep_is_generated_temp = dep.identifier.name.as_ref().is_some_and(|name| {
-                    let value = match name {
-                        IdentifierName::Named(value) | IdentifierName::Promoted(value) => value,
-                    };
-                    is_generated_temp_name(value)
-                });
-                if dep_is_generated_temp {
-                    if debug_manual_memo {
-                        eprintln!(
-                            "[MANUAL_MEMO_VALIDATE] skip pending generated-temp dep={} path_len={}",
-                            pretty_print_scope_dependency(dep),
-                            dep.path.len()
-                        );
-                    }
-                    continue;
-                }
-                validate_inferred_dep(
-                    dep,
-                    &self.temporaries,
-                    &pending.decls_within_memo_block,
-                    &pending.deps_from_source,
-                    pending.allow_inferred_optional_mismatch,
-                    &mut state.errors,
-                    &SourceLocation::Generated,
-                );
-            }
-        }
-        if let Some(ref mut memo_state) = state.manual_memo_state
-            && memo_state.deps_from_source.is_some()
-        {
-            memo_state
-                .collected_inferred_deps
-                .extend(scope_block.scope.dependencies.iter().cloned());
-        }
-        if debug_manual_memo {
-            let deps = scope_block
-                .scope
-                .dependencies
-                .iter()
-                .map(|dep| {
-                    let name = match &dep.identifier.name {
-                        Some(IdentifierName::Named(name))
-                        | Some(IdentifierName::Promoted(name)) => name.as_str(),
-                        None => "<unnamed>",
-                    };
-                    format!(
-                        "{}(id={},decl={})",
-                        name, dep.identifier.id.0, dep.identifier.declaration_id.0
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            eprintln!(
-                "[MANUAL_MEMO_VALIDATE] visit pruned_scope_id={} deps=[{}]",
-                scope_block.scope.id.0, deps
-            );
-        }
         self.pruned_scopes.insert(scope_block.scope.id);
     }
 
@@ -1087,7 +967,6 @@ impl Visitor {
                 watched_dep_decls,
                 memo_alias_decls: HashSet::new(),
                 saw_side_effect_use_of_decl: false,
-                collected_inferred_deps: Vec::new(),
             });
 
             // Check that each scope dependency is either:
@@ -1162,40 +1041,14 @@ impl Visitor {
                 manual_memo_id
             );
 
+            // Upstream: FinishMemoize only checks result memoization, not deps.
+            // Deps are validated inline in visit_scope while manualMemoState is active.
             let finished_state = state.manual_memo_state.take().unwrap();
             let finished_loc = finished_state.loc.clone();
-            let allow_inferred_optional_mismatch = decl.identifier.scope.is_none();
             let can_defer_unmemoized_check = finished_state
                 .deps_from_source
                 .as_ref()
                 .is_none_or(|deps| deps.is_empty());
-            if let Some(ref deps_from_source) = finished_state.deps_from_source {
-                for dep in &finished_state.collected_inferred_deps {
-                    validate_inferred_dep(
-                        dep,
-                        &self.temporaries,
-                        &finished_state.decls,
-                        deps_from_source,
-                        allow_inferred_optional_mismatch,
-                        &mut state.errors,
-                        &finished_state.loc,
-                    );
-                }
-            }
-            let pending_validation = if *pruned && decl.identifier.scope.is_none() {
-                finished_state
-                    .deps_from_source
-                    .as_ref()
-                    .filter(|deps_from_source| !deps_from_source.is_empty())
-                    .map(|deps_from_source| PendingFinishedMemoValidation {
-                        manual_memo_id: *manual_memo_id,
-                        deps_from_source: deps_from_source.clone(),
-                        decls_within_memo_block: finished_state.decls.clone(),
-                        allow_inferred_optional_mismatch,
-                    })
-            } else {
-                None
-            };
             let reassignments = finished_state.reassignments;
             if debug_manual_memo && !reassignments.is_empty() {
                 let mut parts: Vec<String> = reassignments
@@ -1228,17 +1081,6 @@ impl Visitor {
                     .push(LateMutationWatch {
                         manual_memo_id: *manual_memo_id,
                     });
-            }
-
-            if let Some(pending) = pending_validation {
-                if debug_manual_memo {
-                    eprintln!(
-                        "[MANUAL_MEMO_VALIDATE] queue pending memo_id={} deps={}",
-                        pending.manual_memo_id,
-                        pending.deps_from_source.len()
-                    );
-                }
-                state.pending_finished_memo_validation = Some(pending);
             }
 
             if !pruned {

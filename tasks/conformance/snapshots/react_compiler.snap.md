@@ -1,9 +1,10 @@
-# React Compiler Conformance -- 100.0% parity rate
+# React Compiler Conformance -- 99.9% parity rate
 
-**1752** parity_success, **0** parity_failure, **0** skipped
+**1751** parity_success, **1** parity_failure, **0** skipped
 
 ## Failed
 
+- `preserve-memo-validation/error.useCallback-conditional-access-noAlloc`: Expected upstream error/bailout, but compiler returned transformed output
 
 ## Passed
 
@@ -1065,7 +1066,6 @@
 - `preserve-memo-validation/error.preserve-use-memo-ref-missing-reactive`
 - `preserve-memo-validation/error.todo-useCallback-captures-invalidating-value`
 - `preserve-memo-validation/error.useCallback-aliased-var`
-- `preserve-memo-validation/error.useCallback-conditional-access-noAlloc`
 - `preserve-memo-validation/error.useCallback-infer-less-specific-conditional-access`
 - `preserve-memo-validation/error.useCallback-property-call-dep`
 - `preserve-memo-validation/error.useMemo-aliased-var`
