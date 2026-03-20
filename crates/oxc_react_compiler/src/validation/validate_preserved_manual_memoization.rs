@@ -38,6 +38,7 @@ pub fn validate_preserved_manual_memoization(func: &ReactiveFunction) -> Result<
         pruned_scopes: HashSet::new(),
         scopes_with_non_temp_decl: HashSet::new(),
         temporaries: HashMap::new(),
+        id_to_actual_scope: HashMap::new(),
     };
     visitor.visit_block(&func.body, &mut state);
     for pending in state.pending_unmemoized_checks.drain(..) {
@@ -563,6 +564,11 @@ struct Visitor {
     pruned_scopes: HashSet<ScopeId>,
     scopes_with_non_temp_decl: HashSet<ScopeId>,
     temporaries: HashMap<IdentifierId, ManualMemoDependency>,
+    /// Maps identifier ids to their actual scope id in the reactive function.
+    /// Identifier scope annotations can go stale after scope merging (Rust clones
+    /// identifiers, unlike upstream's reference-type identifiers that get mutated
+    /// in-place). This map records the ground truth from scope declarations.
+    id_to_actual_scope: HashMap<IdentifierId, ScopeId>,
 }
 
 impl Visitor {
@@ -671,6 +677,10 @@ impl Visitor {
         }
 
         self.scopes.insert(scope_block.scope.id);
+        for decl in scope_block.scope.declarations.values() {
+            self.id_to_actual_scope
+                .insert(decl.identifier.id, scope_block.scope.id);
+        }
         let has_non_temp_decl = scope_block.scope.declarations.values().any(|decl| {
             decl.identifier.name.as_ref().is_some_and(|name| {
                 let name = match name {
@@ -1165,7 +1175,19 @@ impl Visitor {
     /// but we need the full Identifier (including scope info) to check if it's memoized.
     fn find_identifier_by_id(&self, id: IdentifierId) -> Option<Identifier> {
         self.temporaries.get(&id).and_then(|dep| match &dep.root {
-            ManualMemoRoot::NamedLocal(place) => Some(place.identifier.clone()),
+            ManualMemoRoot::NamedLocal(place) => {
+                let mut ident = place.identifier.clone();
+                // Fix stale scope annotations: in Rust, identifiers are cloned
+                // (not reference types like upstream TS), so scope fields can go
+                // stale after scope merging/alignment. Use the actual scope from
+                // the reactive function's scope declarations.
+                if let Some(&actual_scope_id) = self.id_to_actual_scope.get(&id)
+                    && let Some(ref mut scope) = ident.scope
+                {
+                    scope.id = actual_scope_id;
+                }
+                Some(ident)
+            }
             _ => None,
         })
     }
