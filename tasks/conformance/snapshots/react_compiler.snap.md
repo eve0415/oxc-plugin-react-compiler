@@ -1,11 +1,9 @@
-# React Compiler Conformance -- 99.9% parity rate
+# React Compiler Conformance -- 100.0% parity rate
 
-**1752** parity_success, **2** parity_failure, **0** skipped
+**1754** parity_success, **0** parity_failure, **0** skipped
 
 ## Failed
 
-- `preserve-memo-validation/useMemo-conditional-access-alloc`: Expected transformed output, but compiler bailed out/skipped
-- `preserve-memo-validation/useMemo-conditional-access-noAlloc`: Expected transformed output, but compiler bailed out/skipped
 
 ## Passed
 
@@ -1105,6 +1103,8 @@
 - `preserve-memo-validation/useCallback-reordering-depslist-assignment`
 - `preserve-memo-validation/useCallback-with-no-depslist`
 - `preserve-memo-validation/useMemo-alias-property-load-dep`
+- `preserve-memo-validation/useMemo-conditional-access-alloc`
+- `preserve-memo-validation/useMemo-conditional-access-noAlloc`
 - `preserve-memo-validation/useMemo-conditional-access-own-scope`
 - `preserve-memo-validation/useMemo-constant-prop`
 - `preserve-memo-validation/useMemo-dep-array-literal-access`

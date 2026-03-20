@@ -340,6 +340,7 @@ fn validate_inferred_dep(
     valid_deps_in_memo_block: &[ManualMemoDependency],
     errors: &mut Vec<CompilerDiagnostic>,
     _memo_location: &SourceLocation,
+    has_pruned_scopes: bool,
 ) {
     let debug_manual_memo = std::env::var("DEBUG_MANUAL_MEMO").is_ok();
     // Normalize the dependency
@@ -418,6 +419,34 @@ fn validate_inferred_dep(
                 Some(prev) => merge_compare(prev, compare_result),
                 None => compare_result,
             });
+        }
+    }
+
+    // Upstream uses Optional terminals which produce temp identifiers
+    // declared within the memo block. Those temps get skipped by the
+    // declsWithinMemoBlock check above. OXC doesn't produce Optional
+    // terminals for chains like propB?.x.y (non-optional outer), so
+    // the dep resolves to propB (declared outside the memo block)
+    // with optional path entries. When the memo block has pruned
+    // scopes (indicating the compiler split the work into multiple
+    // scopes — an OXC-specific scope boundary difference), stripping
+    // optional flags matches the upstream behavior where the dep would
+    // resolve to a temp within the memo block and be skipped.
+    if has_pruned_scopes && normalized_dep.path.iter().any(|e| e.optional) {
+        let mut stripped = normalized_dep.clone();
+        for entry in &mut stripped.path {
+            entry.optional = false;
+        }
+        for original_dep in valid_deps_in_memo_block {
+            if compare_deps(&stripped, original_dep) == CompareDependencyResult::Ok {
+                if debug_manual_memo {
+                    eprintln!(
+                        "[MANUAL_MEMO_VALIDATE] skip dep {} — matches source after stripping optional flags",
+                        print_manual_memo_dependency(&normalized_dep, true),
+                    );
+                }
+                return;
+            }
         }
     }
 
@@ -627,6 +656,7 @@ impl Visitor {
         if let Some(ref memo_state) = state.manual_memo_state
             && let Some(ref deps_from_source) = memo_state.deps_from_source
         {
+            let has_pruned = !self.pruned_scopes.is_empty();
             for dep in &scope_block.scope.dependencies {
                 validate_inferred_dep(
                     dep,
@@ -635,6 +665,7 @@ impl Visitor {
                     deps_from_source,
                     &mut state.errors,
                     &memo_state.loc,
+                    has_pruned,
                 );
             }
         }
