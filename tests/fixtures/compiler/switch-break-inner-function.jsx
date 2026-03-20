@@ -1,3 +1,4 @@
+// @compilationMode:"infer"
 // Switch-case breaks in complex inner function (useCallback).
 // OXC bug: suppress_labels_recursive strips the labeled block wrapper
 // but leaves orphaned `break bb7;` referencing the removed label.

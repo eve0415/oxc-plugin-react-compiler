@@ -1,12 +1,11 @@
-# React Compiler Conformance -- 99.8% parity rate
+# React Compiler Conformance -- 99.9% parity rate
 
-**1755** parity_success, **3** parity_failure, **0** skipped
+**1756** parity_success, **2** parity_failure, **0** skipped
 
 ## Failed
 
 - `custom/catch-forloop-same-name-variable`: Expected transformed output, but compiler bailed out/skipped
 - `custom/nested-math-method-calls`: Expected transformed output, but compiler bailed out/skipped
-- `custom/switch-break-inner-function`: Output mismatch
 
 ## Passed
 
@@ -254,6 +253,7 @@
 - `createElement-freeze`
 - `custom-opt-out-directive`
 - `custom/labeled-block-scoping`
+- `custom/switch-break-inner-function`
 - `custom/usememo-preserve-retry`
 - `custom/usememo-property-dep`
 - `dce-loop`
