@@ -177,7 +177,7 @@ impl TempPlaceAllocator {
     }
 
     fn create_temporary_place(&mut self) -> Place {
-        let identifier_id = IdentifierId::new(self.next_identifier_id);
+        let identifier_id = IdentifierId(self.next_identifier_id);
         self.next_identifier_id = self.next_identifier_id.saturating_add(1);
         Place {
             identifier: make_temporary_identifier(identifier_id, SourceLocation::Generated),
@@ -378,7 +378,6 @@ fn emit_selector_fn(
 
     let mut selector_fn = HIRFunction {
         env: env.clone(),
-        loc: SourceLocation::Generated,
         id: None,
         fn_type: ReactFunctionType::Other,
         params: vec![Argument::Place(obj)],

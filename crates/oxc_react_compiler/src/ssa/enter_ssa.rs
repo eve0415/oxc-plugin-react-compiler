@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
 use crate::hir::builder::each_terminal_successor;
 use crate::hir::types::*;
 use crate::hir::visitors;
@@ -510,7 +510,7 @@ impl SSAContext {
     }
 
     fn make_ssa_id(&mut self, old_id: &Identifier) -> Identifier {
-        let id = IdentifierId::new(self.next_id);
+        let id = IdentifierId(self.next_id);
         self.next_id += 1;
         Identifier {
             id,
@@ -575,7 +575,6 @@ impl SSAContext {
                     diagnostics: vec![CompilerDiagnostic {
                         severity: DiagnosticSeverity::Todo,
                         message: format!("Identifier {} is undefined.", name),
-                        category: Some(ErrorCategory::Todo),
                     }],
                 }));
             }

@@ -258,12 +258,9 @@ mod tests {
     fn test_prune_unused_label_flattens() {
         // A label terminal with no break targeting it should be flattened
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Terminal(ReactiveTerminalStatement {
                 terminal: ReactiveTerminal::Label {
                     block: vec![ReactiveStatement::Instruction(Box::new(
@@ -278,14 +275,12 @@ mod tests {
                         },
                     ))],
                     id: InstructionId(0),
-                    loc: SourceLocation::Generated,
                 },
                 label: Some(ReactiveLabel {
                     id: BlockId(99),
                     implicit: false,
                 }),
             })],
-            directives: vec![],
         };
 
         prune_unused_labels(&mut func);
@@ -299,12 +294,9 @@ mod tests {
     fn test_keep_label_when_targeted() {
         // A label terminal with a break targeting it should be kept
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Terminal(ReactiveTerminalStatement {
                 terminal: ReactiveTerminal::Label {
                     block: vec![ReactiveStatement::Terminal(ReactiveTerminalStatement {
@@ -312,19 +304,16 @@ mod tests {
                             target: BlockId(10),
                             target_kind: ReactiveTerminalTargetKind::Labeled,
                             id: InstructionId(2),
-                            loc: SourceLocation::Generated,
                         },
                         label: None,
                     })],
                     id: InstructionId(0),
-                    loc: SourceLocation::Generated,
                 },
                 label: Some(ReactiveLabel {
                     id: BlockId(10),
                     implicit: false,
                 }),
             })],
-            directives: vec![],
         };
 
         prune_unused_labels(&mut func);

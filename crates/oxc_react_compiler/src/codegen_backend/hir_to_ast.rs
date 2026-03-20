@@ -1227,14 +1227,6 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 false,
                 self.lower_simple_assignment_target(lvalue, visiting)?,
             )),
-            InstructionValue::MetaProperty { meta, property, .. } => Some(
-                self.builder.expression_meta_property(
-                    SPAN,
-                    self.builder.identifier_name(SPAN, self.builder.ident(meta)),
-                    self.builder
-                        .identifier_name(SPAN, self.builder.ident(property)),
-                ),
-            ),
             _ => None,
         }
     }
@@ -1727,16 +1719,6 @@ where
     F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
     G: Fn(&Place) -> bool + Copy,
 {
-    if matches!(tag, types::JsxTag::Fragment) {
-        return lower_jsx_fragment_expression(
-            builder,
-            children.unwrap_or(&[]),
-            lower_place,
-            is_jsx_text,
-            visiting,
-        );
-    }
-
     let opening_name = lower_jsx_element_name(builder, tag, lower_place, visiting)?;
     let attributes = lower_jsx_attributes(builder, props, lower_place, fbt_operands, visiting)?;
     let is_single_child_fbt_tag = matches!(tag, types::JsxTag::BuiltinTag(name) if name == "fbt:param" || name == "fbs:param");
@@ -1817,7 +1799,6 @@ where
         types::JsxTag::Component(place) => {
             expression_to_jsx_element_name(builder, lower_place(place, visiting)?)
         }
-        types::JsxTag::Fragment => None,
     }
 }
 
@@ -2736,8 +2717,8 @@ mod tests {
             Terminal::Return {
                 value: temp_sum.clone(),
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(3),
                 loc: SourceLocation::Generated,
+                id: InstructionId(3),
             },
             temp_sum,
         );
@@ -2764,8 +2745,8 @@ mod tests {
             Terminal::Return {
                 value: temp_undefined.clone(),
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(5),
                 loc: SourceLocation::Generated,
+                id: InstructionId(5),
             },
             temp_undefined,
         );
@@ -2803,8 +2784,8 @@ mod tests {
             Terminal::Return {
                 value: temp_call.clone(),
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(13),
                 loc: SourceLocation::Generated,
+                id: InstructionId(13),
             },
             temp_call,
         );
@@ -2830,8 +2811,8 @@ mod tests {
             Terminal::Return {
                 value: named.clone(),
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(21),
                 loc: SourceLocation::Generated,
+                id: InstructionId(21),
             },
             named,
         );
@@ -2870,8 +2851,8 @@ mod tests {
             Terminal::Return {
                 value: named,
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(33),
                 loc: SourceLocation::Generated,
+                id: InstructionId(33),
             },
             temporary_place(34),
         );
@@ -2930,8 +2911,8 @@ mod tests {
             Terminal::Return {
                 value: object,
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(44),
                 loc: SourceLocation::Generated,
+                id: InstructionId(44),
             },
             temporary_place(45),
         );
@@ -2951,20 +2932,19 @@ mod tests {
 
         let hir = HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns: value_place.clone(),
             context: vec![],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![
                     (
-                        BlockId::new(0),
+                        BlockId(0),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(0),
+                            id: BlockId(0),
                             instructions: vec![instruction(
                                 61,
                                 temporary_place(62),
@@ -2978,21 +2958,21 @@ mod tests {
                             )],
                             terminal: Terminal::If {
                                 test,
-                                consequent: BlockId::new(1),
-                                alternate: BlockId::new(2),
-                                fallthrough: BlockId::new(3),
-                                id: InstructionId::new(50),
                                 loc: SourceLocation::Generated,
+                                consequent: BlockId(1),
+                                alternate: BlockId(2),
+                                fallthrough: BlockId(3),
+                                id: InstructionId(50),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(1),
+                        BlockId(1),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(1),
+                            id: BlockId(1),
                             instructions: vec![
                                 instruction(
                                     51,
@@ -3016,20 +2996,20 @@ mod tests {
                                 ),
                             ],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(3),
-                                variant: types::GotoVariant::Try,
-                                id: InstructionId::new(57),
                                 loc: SourceLocation::Generated,
+                                block: BlockId(3),
+                                variant: types::GotoVariant::Break,
+                                id: InstructionId(57),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(2),
+                        BlockId(2),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(2),
+                            id: BlockId(2),
                             instructions: vec![
                                 instruction(
                                     52,
@@ -3053,26 +3033,26 @@ mod tests {
                                 ),
                             ],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(3),
-                                variant: types::GotoVariant::Try,
-                                id: InstructionId::new(59),
                                 loc: SourceLocation::Generated,
+                                block: BlockId(3),
+                                variant: types::GotoVariant::Break,
+                                id: InstructionId(59),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(3),
+                        BlockId(3),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(3),
+                            id: BlockId(3),
                             instructions: vec![],
                             terminal: Terminal::Return {
                                 value: value_place,
                                 return_variant: types::ReturnVariant::Explicit,
-                                id: InstructionId::new(60),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(60),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
@@ -3103,20 +3083,19 @@ mod tests {
 
         let hir = HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns: value_place.clone(),
             context: vec![],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![
                     (
-                        BlockId::new(0),
+                        BlockId(0),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(0),
+                            id: BlockId(0),
                             instructions: vec![instruction(
                                 74,
                                 temporary_place(75),
@@ -3129,21 +3108,21 @@ mod tests {
                                 },
                             )],
                             terminal: Terminal::While {
-                                test: BlockId::new(1),
-                                loop_block: BlockId::new(2),
-                                fallthrough: BlockId::new(3),
-                                id: InstructionId::new(76),
                                 loc: SourceLocation::Generated,
+                                test: BlockId(1),
+                                loop_block: BlockId(2),
+                                fallthrough: BlockId(3),
+                                id: InstructionId(76),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(1),
+                        BlockId(1),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(1),
+                            id: BlockId(1),
                             instructions: vec![instruction(
                                 77,
                                 test_temp.clone(),
@@ -3153,20 +3132,20 @@ mod tests {
                                 },
                             )],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(2),
+                                block: BlockId(2),
                                 variant: types::GotoVariant::Continue,
-                                id: InstructionId::new(78),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(78),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(2),
+                        BlockId(2),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(2),
+                            id: BlockId(2),
                             instructions: vec![
                                 instruction(
                                     79,
@@ -3190,26 +3169,26 @@ mod tests {
                                 ),
                             ],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(1),
+                                block: BlockId(1),
                                 variant: types::GotoVariant::Continue,
-                                id: InstructionId::new(82),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(82),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(3),
+                        BlockId(3),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(3),
+                            id: BlockId(3),
                             instructions: vec![],
                             terminal: Terminal::Return {
                                 value: value_place,
                                 return_variant: types::ReturnVariant::Explicit,
-                                id: InstructionId::new(83),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(83),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
@@ -3242,20 +3221,19 @@ mod tests {
 
         let hir = HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns: sum_place.clone(),
             context: vec![],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![
                     (
-                        BlockId::new(0),
+                        BlockId(0),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(0),
+                            id: BlockId(0),
                             instructions: vec![instruction(
                                 98,
                                 temporary_place(99),
@@ -3268,23 +3246,23 @@ mod tests {
                                 },
                             )],
                             terminal: Terminal::For {
-                                init: BlockId::new(1),
-                                test: BlockId::new(2),
-                                update: Some(BlockId::new(3)),
-                                loop_block: BlockId::new(4),
-                                fallthrough: BlockId::new(5),
-                                id: InstructionId::new(100),
                                 loc: SourceLocation::Generated,
+                                init: BlockId(1),
+                                test: BlockId(2),
+                                update: Some(BlockId(3)),
+                                loop_block: BlockId(4),
+                                fallthrough: BlockId(5),
+                                id: InstructionId(100),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(1),
+                        BlockId(1),
                         BasicBlock {
                             kind: types::BlockKind::Loop,
-                            id: BlockId::new(1),
+                            id: BlockId(1),
                             instructions: vec![
                                 instruction(
                                     101,
@@ -3308,20 +3286,20 @@ mod tests {
                                 ),
                             ],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(2),
+                                block: BlockId(2),
                                 variant: types::GotoVariant::Break,
-                                id: InstructionId::new(104),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(104),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(2),
+                        BlockId(2),
                         BasicBlock {
                             kind: types::BlockKind::Value,
-                            id: BlockId::new(2),
+                            id: BlockId(2),
                             instructions: vec![
                                 instruction(
                                     105,
@@ -3344,21 +3322,21 @@ mod tests {
                             ],
                             terminal: Terminal::Branch {
                                 test: test_expr,
-                                consequent: BlockId::new(4),
-                                alternate: BlockId::new(5),
-                                fallthrough: BlockId::new(5),
-                                id: InstructionId::new(107),
                                 loc: SourceLocation::Generated,
+                                consequent: BlockId(4),
+                                alternate: BlockId(5),
+                                fallthrough: BlockId(5),
+                                id: InstructionId(107),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(3),
+                        BlockId(3),
                         BasicBlock {
                             kind: types::BlockKind::Loop,
-                            id: BlockId::new(3),
+                            id: BlockId(3),
                             instructions: vec![
                                 instruction(
                                     108,
@@ -3392,20 +3370,20 @@ mod tests {
                                 ),
                             ],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(2),
+                                block: BlockId(2),
                                 variant: types::GotoVariant::Break,
-                                id: InstructionId::new(112),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(112),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(4),
+                        BlockId(4),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(4),
+                            id: BlockId(4),
                             instructions: vec![
                                 instruction(
                                     113,
@@ -3431,26 +3409,26 @@ mod tests {
                                 ),
                             ],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(3),
+                                block: BlockId(3),
                                 variant: types::GotoVariant::Continue,
-                                id: InstructionId::new(116),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(116),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(5),
+                        BlockId(5),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(5),
+                            id: BlockId(5),
                             instructions: vec![],
                             terminal: Terminal::Return {
                                 value: sum_place,
                                 return_variant: types::ReturnVariant::Explicit,
-                                id: InstructionId::new(117),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(117),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
@@ -3481,20 +3459,19 @@ mod tests {
 
         let hir = HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns: value_place.clone(),
             context: vec![],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![
                     (
-                        BlockId::new(0),
+                        BlockId(0),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(0),
+                            id: BlockId(0),
                             instructions: vec![instruction(
                                 124,
                                 temporary_place(125),
@@ -3507,22 +3484,22 @@ mod tests {
                                 },
                             )],
                             terminal: Terminal::Try {
-                                block: BlockId::new(1),
+                                block: BlockId(1),
                                 handler_binding: Some(catch_place),
-                                handler: BlockId::new(2),
-                                fallthrough: BlockId::new(3),
-                                id: InstructionId::new(126),
                                 loc: SourceLocation::Generated,
+                                handler: BlockId(2),
+                                fallthrough: BlockId(3),
+                                id: InstructionId(126),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(1),
+                        BlockId(1),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(1),
+                            id: BlockId(1),
                             instructions: vec![instruction(
                                 127,
                                 one.clone(),
@@ -3533,18 +3510,18 @@ mod tests {
                             )],
                             terminal: Terminal::Throw {
                                 value: one,
-                                id: InstructionId::new(128),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(128),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(2),
+                        BlockId(2),
                         BasicBlock {
                             kind: types::BlockKind::Catch,
-                            id: BlockId::new(2),
+                            id: BlockId(2),
                             instructions: vec![
                                 instruction(
                                     129,
@@ -3568,26 +3545,26 @@ mod tests {
                                 ),
                             ],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(3),
-                                variant: types::GotoVariant::Try,
-                                id: InstructionId::new(132),
                                 loc: SourceLocation::Generated,
+                                block: BlockId(3),
+                                variant: types::GotoVariant::Break,
+                                id: InstructionId(132),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(3),
+                        BlockId(3),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(3),
+                            id: BlockId(3),
                             instructions: vec![],
                             terminal: Terminal::Return {
                                 value: value_place,
                                 return_variant: types::ReturnVariant::Explicit,
-                                id: InstructionId::new(133),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(133),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
@@ -3619,20 +3596,19 @@ mod tests {
 
         let hir = HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns: value_place.clone(),
             context: vec![],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![
                     (
-                        BlockId::new(0),
+                        BlockId(0),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(0),
+                            id: BlockId(0),
                             instructions: vec![
                                 instruction(
                                     145,
@@ -3659,26 +3635,26 @@ mod tests {
                                 cases: vec![
                                     types::SwitchCase {
                                         test: Some(one),
-                                        block: BlockId::new(1),
+                                        block: BlockId(1),
                                     },
                                     types::SwitchCase {
                                         test: None,
-                                        block: BlockId::new(2),
+                                        block: BlockId(2),
                                     },
                                 ],
-                                fallthrough: BlockId::new(3),
-                                id: InstructionId::new(148),
                                 loc: SourceLocation::Generated,
+                                fallthrough: BlockId(3),
+                                id: InstructionId(148),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(1),
+                        BlockId(1),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(1),
+                            id: BlockId(1),
                             instructions: vec![
                                 instruction(
                                     149,
@@ -3702,20 +3678,20 @@ mod tests {
                                 ),
                             ],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(3),
+                                block: BlockId(3),
                                 variant: types::GotoVariant::Break,
-                                id: InstructionId::new(152),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(152),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(2),
+                        BlockId(2),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(2),
+                            id: BlockId(2),
                             instructions: vec![
                                 instruction(
                                     153,
@@ -3739,26 +3715,26 @@ mod tests {
                                 ),
                             ],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(3),
+                                block: BlockId(3),
                                 variant: types::GotoVariant::Break,
-                                id: InstructionId::new(156),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(156),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(3),
+                        BlockId(3),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(3),
+                            id: BlockId(3),
                             instructions: vec![],
                             terminal: Terminal::Return {
                                 value: value_place,
                                 return_variant: types::ReturnVariant::Explicit,
-                                id: InstructionId::new(157),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(157),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
@@ -3826,8 +3802,8 @@ mod tests {
             Terminal::Return {
                 value: ternary,
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(170),
                 loc: SourceLocation::Generated,
+                id: InstructionId(170),
             },
             temporary_place(171),
         );
@@ -3886,8 +3862,8 @@ mod tests {
             Terminal::Return {
                 value: index_place,
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(191),
                 loc: SourceLocation::Generated,
+                id: InstructionId(191),
             },
             temporary_place(192),
         );
@@ -3909,20 +3885,19 @@ mod tests {
 
         let hir = HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns: value_place.clone(),
             context: vec![],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![
                     (
-                        BlockId::new(0),
+                        BlockId(0),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(0),
+                            id: BlockId(0),
                             instructions: vec![instruction(
                                 206,
                                 temporary_place(207),
@@ -3935,22 +3910,22 @@ mod tests {
                                 },
                             )],
                             terminal: Terminal::ForOf {
-                                init: BlockId::new(1),
-                                test: BlockId::new(2),
-                                loop_block: BlockId::new(3),
-                                fallthrough: BlockId::new(4),
-                                id: InstructionId::new(208),
                                 loc: SourceLocation::Generated,
+                                init: BlockId(1),
+                                test: BlockId(2),
+                                loop_block: BlockId(3),
+                                fallthrough: BlockId(4),
+                                id: InstructionId(208),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(1),
+                        BlockId(1),
                         BasicBlock {
                             kind: types::BlockKind::Loop,
-                            id: BlockId::new(1),
+                            id: BlockId(1),
                             instructions: vec![instruction(
                                 209,
                                 iterator_place.clone(),
@@ -3960,20 +3935,20 @@ mod tests {
                                 },
                             )],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(2),
+                                block: BlockId(2),
                                 variant: types::GotoVariant::Break,
-                                id: InstructionId::new(210),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(210),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(2),
+                        BlockId(2),
                         BasicBlock {
                             kind: types::BlockKind::Loop,
-                            id: BlockId::new(2),
+                            id: BlockId(2),
                             instructions: vec![
                                 instruction(
                                     211,
@@ -4007,21 +3982,21 @@ mod tests {
                             ],
                             terminal: Terminal::Branch {
                                 test: test_place,
-                                consequent: BlockId::new(3),
-                                alternate: BlockId::new(4),
-                                fallthrough: BlockId::new(4),
-                                id: InstructionId::new(215),
                                 loc: SourceLocation::Generated,
+                                consequent: BlockId(3),
+                                alternate: BlockId(4),
+                                fallthrough: BlockId(4),
+                                id: InstructionId(215),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(3),
+                        BlockId(3),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(3),
+                            id: BlockId(3),
                             instructions: vec![instruction(
                                 216,
                                 temporary_place(217),
@@ -4035,26 +4010,26 @@ mod tests {
                                 },
                             )],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(1),
+                                block: BlockId(1),
                                 variant: types::GotoVariant::Continue,
-                                id: InstructionId::new(218),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(218),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(4),
+                        BlockId(4),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(4),
+                            id: BlockId(4),
                             instructions: vec![],
                             terminal: Terminal::Return {
                                 value: value_place,
                                 return_variant: types::ReturnVariant::Explicit,
-                                id: InstructionId::new(219),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(219),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
@@ -4084,20 +4059,19 @@ mod tests {
 
         let hir = HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns: value_place.clone(),
             context: vec![],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![
                     (
-                        BlockId::new(0),
+                        BlockId(0),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(0),
+                            id: BlockId(0),
                             instructions: vec![instruction(
                                 225,
                                 temporary_place(226),
@@ -4110,21 +4084,21 @@ mod tests {
                                 },
                             )],
                             terminal: Terminal::ForIn {
-                                init: BlockId::new(1),
-                                loop_block: BlockId::new(2),
-                                fallthrough: BlockId::new(3),
-                                id: InstructionId::new(227),
                                 loc: SourceLocation::Generated,
+                                init: BlockId(1),
+                                loop_block: BlockId(2),
+                                fallthrough: BlockId(3),
+                                id: InstructionId(227),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(1),
+                        BlockId(1),
                         BasicBlock {
                             kind: types::BlockKind::Loop,
-                            id: BlockId::new(1),
+                            id: BlockId(1),
                             instructions: vec![
                                 instruction(
                                     228,
@@ -4157,21 +4131,21 @@ mod tests {
                             ],
                             terminal: Terminal::Branch {
                                 test: test_place,
-                                consequent: BlockId::new(2),
-                                alternate: BlockId::new(3),
-                                fallthrough: BlockId::new(3),
-                                id: InstructionId::new(232),
                                 loc: SourceLocation::Generated,
+                                consequent: BlockId(2),
+                                alternate: BlockId(3),
+                                fallthrough: BlockId(3),
+                                id: InstructionId(232),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(2),
+                        BlockId(2),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(2),
+                            id: BlockId(2),
                             instructions: vec![instruction(
                                 233,
                                 temporary_place(234),
@@ -4185,26 +4159,26 @@ mod tests {
                                 },
                             )],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(1),
+                                block: BlockId(1),
                                 variant: types::GotoVariant::Continue,
-                                id: InstructionId::new(235),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(235),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(3),
+                        BlockId(3),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(3),
+                            id: BlockId(3),
                             instructions: vec![],
                             terminal: Terminal::Return {
                                 value: value_place,
                                 return_variant: types::ReturnVariant::Explicit,
-                                id: InstructionId::new(236),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(236),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
@@ -4234,8 +4208,8 @@ mod tests {
             Terminal::Return {
                 value: arg.clone(),
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(232),
                 loc: SourceLocation::Generated,
+                id: InstructionId(232),
             },
             arg,
         );
@@ -4280,8 +4254,8 @@ mod tests {
             Terminal::Return {
                 value: value.clone(),
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(235),
                 loc: SourceLocation::Generated,
+                id: InstructionId(235),
             },
             value,
         );
@@ -4326,8 +4300,8 @@ mod tests {
             Terminal::Return {
                 value: temp.clone(),
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(241),
                 loc: SourceLocation::Generated,
+                id: InstructionId(241),
             },
             temp.clone(),
         );
@@ -4380,15 +4354,13 @@ mod tests {
                     }],
                     children: None,
                     loc: SourceLocation::Generated,
-                    opening_loc: SourceLocation::Generated,
-                    closing_loc: SourceLocation::Generated,
                 },
             )],
             Terminal::Return {
                 value: jsx.clone(),
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(253),
                 loc: SourceLocation::Generated,
+                id: InstructionId(253),
             },
             jsx,
         );
@@ -4429,25 +4401,24 @@ mod tests {
         let inner_value = temporary_place(261);
         let inner_hir = HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns: captured.clone(),
             context: vec![captured.clone()],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![(
-                    BlockId::new(0),
+                    BlockId(0),
                     BasicBlock {
                         kind: types::BlockKind::Block,
-                        id: BlockId::new(0),
+                        id: BlockId(0),
                         instructions: vec![],
                         terminal: Terminal::Return {
                             value: captured.clone(),
                             return_variant: types::ReturnVariant::Explicit,
-                            id: InstructionId::new(262),
                             loc: SourceLocation::Generated,
+                            id: InstructionId(262),
                         },
                         preds: HashSet::new(),
                         phis: vec![],
@@ -4473,8 +4444,8 @@ mod tests {
             Terminal::Return {
                 value: inner_value.clone(),
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(263),
                 loc: SourceLocation::Generated,
+                id: InstructionId(263),
             },
             inner_value,
         );
@@ -4511,8 +4482,8 @@ mod tests {
             Terminal::Return {
                 value: template.clone(),
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(288),
                 loc: SourceLocation::Generated,
+                id: InstructionId(288),
             },
             template,
         );
@@ -4531,8 +4502,8 @@ mod tests {
         let undefined_value = temporary_place(291);
         let catch_binding = Place {
             identifier: Identifier {
-                id: IdentifierId::new(292),
-                declaration_id: DeclarationId::new(292),
+                id: IdentifierId(292),
+                declaration_id: DeclarationId(292),
                 name: Some(IdentifierName::Promoted("#t3".to_string())),
                 mutable_range: MutableRange::default(),
                 scope: None,
@@ -4545,38 +4516,37 @@ mod tests {
         };
         let hir = HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns: undefined_value.clone(),
             context: vec![],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![
                     (
-                        BlockId::new(0),
+                        BlockId(0),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(0),
+                            id: BlockId(0),
                             instructions: vec![],
                             terminal: Terminal::Try {
-                                block: BlockId::new(1),
+                                block: BlockId(1),
                                 handler_binding: Some(catch_binding),
-                                handler: BlockId::new(2),
-                                fallthrough: BlockId::new(3),
-                                id: InstructionId::new(293),
                                 loc: SourceLocation::Generated,
+                                handler: BlockId(2),
+                                fallthrough: BlockId(3),
+                                id: InstructionId(293),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(1),
+                        BlockId(1),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(1),
+                            id: BlockId(1),
                             instructions: vec![instruction(
                                 294,
                                 array_value.clone(),
@@ -4588,18 +4558,18 @@ mod tests {
                             terminal: Terminal::Return {
                                 value: array_value,
                                 return_variant: types::ReturnVariant::Explicit,
-                                id: InstructionId::new(295),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(295),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(2),
+                        BlockId(2),
                         BasicBlock {
                             kind: types::BlockKind::Catch,
-                            id: BlockId::new(2),
+                            id: BlockId(2),
                             instructions: vec![instruction(
                                 296,
                                 undefined_value.clone(),
@@ -4611,22 +4581,22 @@ mod tests {
                             terminal: Terminal::Return {
                                 value: undefined_value.clone(),
                                 return_variant: types::ReturnVariant::Explicit,
-                                id: InstructionId::new(297),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(297),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(3),
+                        BlockId(3),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(3),
+                            id: BlockId(3),
                             instructions: vec![],
                             terminal: Terminal::Unreachable {
-                                id: InstructionId::new(299),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(299),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
@@ -4655,25 +4625,24 @@ mod tests {
         let call_value = temporary_place(274);
         let inner_hir = HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns: x.clone(),
             context: vec![x.clone()],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![(
-                    BlockId::new(0),
+                    BlockId(0),
                     BasicBlock {
                         kind: types::BlockKind::Block,
-                        id: BlockId::new(0),
+                        id: BlockId(0),
                         instructions: vec![],
                         terminal: Terminal::Return {
                             value: x.clone(),
                             return_variant: types::ReturnVariant::Explicit,
-                            id: InstructionId::new(275),
                             loc: SourceLocation::Generated,
+                            id: InstructionId(275),
                         },
                         preds: HashSet::new(),
                         phis: vec![],
@@ -4754,8 +4723,8 @@ mod tests {
             Terminal::Return {
                 value: call_value.clone(),
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(282),
                 loc: SourceLocation::Generated,
+                id: InstructionId(282),
             },
             call_value,
         );
@@ -4806,8 +4775,8 @@ mod tests {
             Terminal::Return {
                 value: undefined_value.clone(),
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(325),
                 loc: SourceLocation::Generated,
+                id: InstructionId(325),
             },
             undefined_value,
         );
@@ -4825,19 +4794,18 @@ mod tests {
     ) -> HIRFunction {
         HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns,
             context: vec![],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![(
-                    BlockId::new(0),
+                    BlockId(0),
                     BasicBlock {
                         kind: types::BlockKind::Block,
-                        id: BlockId::new(0),
+                        id: BlockId(0),
                         instructions,
                         terminal,
                         preds: HashSet::new(),
@@ -4854,7 +4822,7 @@ mod tests {
 
     fn instruction(id: u32, lvalue: Place, value: types::InstructionValue) -> Instruction {
         Instruction {
-            id: InstructionId::new(id),
+            id: InstructionId(id),
             lvalue,
             value,
             loc: SourceLocation::Generated,
@@ -4864,7 +4832,7 @@ mod tests {
 
     fn temporary_place(id: u32) -> Place {
         Place {
-            identifier: make_temporary_identifier(IdentifierId::new(id), SourceLocation::Generated),
+            identifier: make_temporary_identifier(IdentifierId(id), SourceLocation::Generated),
             effect: Effect::Read,
             reactive: false,
             loc: SourceLocation::Generated,
@@ -4874,8 +4842,8 @@ mod tests {
     fn named_place(id: u32, declaration_id: u32, name: &str) -> Place {
         Place {
             identifier: Identifier {
-                id: IdentifierId::new(id),
-                declaration_id: DeclarationId::new(declaration_id),
+                id: IdentifierId(id),
+                declaration_id: DeclarationId(declaration_id),
                 name: Some(IdentifierName::Named(name.to_string())),
                 mutable_range: MutableRange::default(),
                 scope: None,

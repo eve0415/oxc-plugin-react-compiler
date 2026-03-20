@@ -4,6 +4,7 @@ use oxc_span::SourceType;
 use crate::CompileResult;
 use crate::options::PluginOptions;
 
+pub(crate) mod codegen_ast;
 pub(crate) mod hir_to_ast;
 pub(crate) mod module_emitter;
 pub(crate) mod shared;
@@ -73,11 +74,10 @@ pub(crate) struct CompiledOutlinedFunction {
     pub(crate) name: String,
     pub(crate) params: Vec<CompiledParam>,
     pub(crate) directives: Vec<String>,
-    pub(crate) cache_prologue: Option<crate::reactive_scopes::codegen_ast::CachePrologue>,
+    pub(crate) cache_prologue: Option<crate::codegen_backend::codegen_ast::CachePrologue>,
     pub(crate) needs_function_hook_guard_wrapper: bool,
     pub(crate) is_async: bool,
     pub(crate) is_generator: bool,
-    #[allow(dead_code)]
     pub(crate) reactive_function: Option<crate::hir::types::ReactiveFunction>,
     /// The outlined function's own unique identifiers from its rename_variables pass.
     /// Used instead of the parent function's unique_identifiers to ensure independent naming.
@@ -104,7 +104,7 @@ pub(crate) struct CompiledFunction {
     pub(crate) is_function_declaration: bool,
     pub(crate) directives: Vec<String>,
     pub(crate) hir_function: Option<crate::hir::types::HIRFunction>,
-    pub(crate) cache_prologue: Option<crate::reactive_scopes::codegen_ast::CachePrologue>,
+    pub(crate) cache_prologue: Option<crate::codegen_backend::codegen_ast::CachePrologue>,
     pub(crate) needs_function_hook_guard_wrapper: bool,
     pub(crate) normalize_use_fire_binding_temps: bool,
     pub(crate) needs_instrument_forget: bool,

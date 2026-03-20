@@ -15,7 +15,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
 use crate::hir::prune_maybe_throws::mark_instruction_ids;
 use crate::hir::types::*;
 
@@ -404,7 +404,6 @@ pub fn drop_manual_memoization(func: &mut HIRFunction) -> Result<(), CompilerErr
                         severity: DiagnosticSeverity::InvalidReact,
                         message: "Expected the first argument to be an inline function expression"
                             .to_string(),
-                        category: Some(ErrorCategory::Purity),
                     });
                     true
                 } else {
@@ -719,7 +718,6 @@ fn extract_deps_list(
             errors.push(CompilerDiagnostic {
                 severity: DiagnosticSeverity::InvalidReact,
                 message: format!("Unexpected spread argument to {kind_name}"),
-                category: Some(ErrorCategory::Purity),
             });
             return None;
         }
@@ -734,7 +732,6 @@ fn extract_deps_list(
                 message: format!(
                     "Expected the dependency list for {kind_name} to be an array literal"
                 ),
-                category: Some(ErrorCategory::Purity),
             });
             return None;
         }
@@ -764,7 +761,6 @@ fn extract_deps_list(
             errors.push(CompilerDiagnostic {
                 severity: DiagnosticSeverity::InvalidReact,
                 message: "Expected the dependency list to be an array of simple expressions (e.g. `x`, `x.y.z`, `x?.y?.z`)".to_string(),
-                category: Some(ErrorCategory::Purity),
             });
         }
     }

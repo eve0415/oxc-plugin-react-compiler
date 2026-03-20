@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
 use crate::hir::types::*;
 
 /// Validates that useMemo callbacks:
@@ -100,10 +100,7 @@ pub fn validate_use_memo(func: &HIRFunction) -> Result<(), CompilerError> {
 fn has_non_void_return(func: &HIRFunction) -> bool {
     for (_bid, block) in &func.body.blocks {
         if let Terminal::Return { return_variant, .. } = &block.terminal
-            && matches!(
-                return_variant,
-                ReturnVariant::Explicit | ReturnVariant::Implicit
-            )
+            && matches!(return_variant, ReturnVariant::Explicit)
         {
             return true;
         }
@@ -225,7 +222,6 @@ fn validate_void_use_memo_call(
                  side effects",
                 prefix
             ),
-            category: Some(ErrorCategory::UseMemo),
         });
     }
 }
@@ -256,7 +252,6 @@ fn validate_use_memo_call(
                       They should not take parameters. Instead, directly reference the props, state, \
                       or local variables needed for the computation"
                 .to_string(),
-            category: Some(ErrorCategory::UseMemo),
         });
     }
 
@@ -266,7 +261,6 @@ fn validate_use_memo_call(
             message: "useMemo() callbacks may not be async or generator functions. \
                       useMemo() callbacks are called once and must synchronously return a value"
                 .to_string(),
-            category: Some(ErrorCategory::UseMemo),
         });
     }
 }
@@ -315,7 +309,6 @@ mod tests {
     fn make_hir_function(blocks: Vec<(BlockId, BasicBlock)>) -> HIRFunction {
         HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Component,
             params: vec![],
@@ -355,7 +348,6 @@ mod tests {
         //         CallExpression(callee=1, args=[2])
         let inner_func = HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![Argument::Place(make_test_place(50, Some("arg")))],

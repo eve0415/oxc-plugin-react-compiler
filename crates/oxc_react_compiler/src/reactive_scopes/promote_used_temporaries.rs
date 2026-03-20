@@ -1277,16 +1277,6 @@ fn each_instruction_value_operands(value: &InstructionValue) -> Vec<&Place> {
             places.extend(each_instruction_value_operands(left));
             places.extend(each_instruction_value_operands(right));
         }
-        InstructionValue::ReactiveConditionalExpression {
-            test,
-            consequent,
-            alternate,
-            ..
-        } => {
-            places.extend(each_instruction_value_operands(test));
-            places.extend(each_instruction_value_operands(consequent));
-            places.extend(each_instruction_value_operands(alternate));
-        }
         InstructionValue::TaggedTemplateExpression { tag, .. } => {
             places.push(tag);
         }
@@ -1335,7 +1325,6 @@ fn each_instruction_value_operands(value: &InstructionValue) -> Vec<&Place> {
         | InstructionValue::Primitive { .. }
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::StartMemoize { .. }
         | InstructionValue::Debugger { .. } => {}
@@ -1534,16 +1523,6 @@ fn visit_instruction_value_places_mut(value: &mut InstructionValue, state: &Prom
             visit_instruction_value_places_mut(left, state);
             visit_instruction_value_places_mut(right, state);
         }
-        InstructionValue::ReactiveConditionalExpression {
-            test,
-            consequent,
-            alternate,
-            ..
-        } => {
-            visit_instruction_value_places_mut(test, state);
-            visit_instruction_value_places_mut(consequent, state);
-            visit_instruction_value_places_mut(alternate, state);
-        }
         InstructionValue::TaggedTemplateExpression { tag, .. } => {
             maybe_promote_place(&mut tag.identifier, state);
         }
@@ -1584,7 +1563,6 @@ fn visit_instruction_value_places_mut(value: &mut InstructionValue, state: &Prom
         | InstructionValue::Primitive { .. }
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::StartMemoize { .. }
         | InstructionValue::Debugger { .. } => {}
@@ -1685,12 +1663,9 @@ mod tests {
     fn test_promote_scope_dependencies() {
         // A scope with an unnamed dependency should get promoted.
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Scope(ReactiveScopeBlock {
                 scope: ReactiveScope {
                     id: ScopeId(0),
@@ -1709,7 +1684,6 @@ mod tests {
                 },
                 instructions: vec![],
             })],
-            directives: vec![],
         };
 
         promote_used_temporaries(&mut func);
@@ -1744,12 +1718,9 @@ mod tests {
         );
 
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Scope(ReactiveScopeBlock {
                 scope: ReactiveScope {
                     id: ScopeId(0),
@@ -1765,7 +1736,6 @@ mod tests {
                 },
                 instructions: vec![],
             })],
-            directives: vec![],
         };
 
         promote_used_temporaries(&mut func);
@@ -1795,14 +1765,10 @@ mod tests {
     fn test_promote_params() {
         // A param with no name should get promoted.
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![Argument::Place(make_test_place(1, None))],
-            generator: false,
-            async_: false,
             body: vec![],
-            directives: vec![],
         };
 
         promote_used_temporaries(&mut func);
@@ -1824,12 +1790,9 @@ mod tests {
     fn test_jsx_tag_promotion() {
         // An identifier used as a JSX tag should get #T prefix.
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 // Instruction with JSX expression using a component tag.
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
@@ -1840,8 +1803,6 @@ mod tests {
                         props: vec![],
                         children: None,
                         loc: SourceLocation::Generated,
-                        opening_loc: SourceLocation::Generated,
-                        closing_loc: SourceLocation::Generated,
                     },
                     loc: SourceLocation::Generated,
                 })),
@@ -1865,7 +1826,6 @@ mod tests {
                     instructions: vec![],
                 }),
             ],
-            directives: vec![],
         };
 
         promote_used_temporaries(&mut func);
@@ -1891,15 +1851,12 @@ mod tests {
     fn test_named_identifiers_not_promoted() {
         // An identifier that already has a name should not be promoted.
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![Argument::Place(make_test_place(
                 1,
                 Some(IdentifierName::Named("x".to_string())),
             ))],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Scope(ReactiveScopeBlock {
                 scope: ReactiveScope {
                     id: ScopeId(0),
@@ -1921,7 +1878,6 @@ mod tests {
                 },
                 instructions: vec![],
             })],
-            directives: vec![],
         };
 
         promote_used_temporaries(&mut func);
@@ -1941,12 +1897,9 @@ mod tests {
         // If a declaration is promoted, all instances with the same DeclarationId
         // should also be promoted.
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 // Scope that depends on identifier 1 (will promote it).
                 ReactiveStatement::Scope(ReactiveScopeBlock {
@@ -1978,7 +1931,6 @@ mod tests {
                     loc: SourceLocation::Generated,
                 })),
             ],
-            directives: vec![],
         };
 
         promote_used_temporaries(&mut func);
@@ -2015,12 +1967,9 @@ mod tests {
         );
 
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 // Scope 99 containing the pruned scope with declaration id=1.
                 ReactiveStatement::Scope(ReactiveScopeBlock {
@@ -2079,7 +2028,6 @@ mod tests {
                     ))],
                 }),
             ],
-            directives: vec![],
         };
 
         promote_used_temporaries(&mut func);

@@ -135,7 +135,6 @@ fn name_anonymous_functions_impl(func: &mut HIRFunction) -> Vec<Node> {
                         let element_name = match tag {
                             JsxTag::BuiltinTag(name) => Some(name.clone()),
                             JsxTag::Component(place) => names.get(&place.identifier.id).cloned(),
-                            JsxTag::Fragment => None,
                         };
                         let prop_name = match element_name {
                             Some(element_name) => format!("<{element_name}>.{name}"),

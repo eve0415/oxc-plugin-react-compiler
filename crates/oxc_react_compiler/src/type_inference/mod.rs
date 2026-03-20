@@ -910,9 +910,6 @@ fn infer_instruction_type(
         // JSXText produces a string (primitive)
         InstructionValue::JSXText { .. } => Type::Primitive,
 
-        // MetaProperty (import.meta, new.target) — conservatively Poly
-        InstructionValue::MetaProperty { .. } => Type::Poly,
-
         // LoadLocal: propagate from source
         InstructionValue::LoadLocal { place, .. } => {
             if context_declaration_ids.contains(&place.identifier.declaration_id) {
@@ -1387,8 +1384,7 @@ fn infer_instruction_type(
         }
         InstructionValue::ReactiveSequenceExpression { .. }
         | InstructionValue::ReactiveOptionalExpression { .. }
-        | InstructionValue::ReactiveLogicalExpression { .. }
-        | InstructionValue::ReactiveConditionalExpression { .. } => Type::Poly,
+        | InstructionValue::ReactiveLogicalExpression { .. } => Type::Poly,
     }
 }
 
@@ -1673,7 +1669,6 @@ fn instruction_value_kind(value: &InstructionValue) -> &'static str {
         InstructionValue::PrefixUpdate { .. } => "PrefixUpdate",
         InstructionValue::PostfixUpdate { .. } => "PostfixUpdate",
         InstructionValue::JSXText { .. } => "JSXText",
-        InstructionValue::MetaProperty { .. } => "MetaProperty",
         InstructionValue::LoadLocal { .. } => "LoadLocal",
         InstructionValue::LoadContext { .. } => "LoadContext",
         InstructionValue::StoreLocal { .. } => "StoreLocal",
@@ -1713,7 +1708,6 @@ fn instruction_value_kind(value: &InstructionValue) -> &'static str {
         InstructionValue::ReactiveSequenceExpression { .. } => "ReactiveSequenceExpression",
         InstructionValue::ReactiveOptionalExpression { .. } => "ReactiveOptionalExpression",
         InstructionValue::ReactiveLogicalExpression { .. } => "ReactiveLogicalExpression",
-        InstructionValue::ReactiveConditionalExpression { .. } => "ReactiveConditionalExpression",
     }
 }
 

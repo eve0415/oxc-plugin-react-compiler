@@ -50,7 +50,6 @@ pub fn dead_code_elimination_post_outline(func: &mut HIRFunction) {
     );
 }
 
-#[allow(dead_code)]
 pub(crate) fn preserved_top_level_let_initializer_for_decl(
     decl_id: DeclarationId,
 ) -> Option<String> {
@@ -147,7 +146,6 @@ fn is_pruneable(
         }
         // Read-only operations: safe to prune
         InstructionValue::RegExpLiteral { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::ArrayExpression { .. }
         | InstructionValue::BinaryExpression { .. }
@@ -203,7 +201,6 @@ fn is_pruneable(
         | InstructionValue::ReactiveSequenceExpression { .. }
         | InstructionValue::ReactiveOptionalExpression { .. }
         | InstructionValue::ReactiveLogicalExpression { .. }
-        | InstructionValue::ReactiveConditionalExpression { .. }
         | InstructionValue::FinishMemoize { .. } => false,
     }
 }

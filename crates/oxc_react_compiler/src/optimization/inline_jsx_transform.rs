@@ -490,9 +490,6 @@ fn create_tag_property(
                 place: captured,
             }
         }
-        JsxTag::Fragment => {
-            create_symbol_property(func, instr, next_instructions, "type", "react.fragment")
-        }
     }
 }
 
@@ -736,7 +733,7 @@ fn fork_temporary_identifier(
     source: &Identifier,
 ) -> Identifier {
     let mut cloned = source.clone();
-    cloned.id = IdentifierId::new(env.next_identifier_id());
+    cloned.id = IdentifierId(env.next_identifier_id());
     cloned.mutable_range = MutableRange::default();
     cloned
 }

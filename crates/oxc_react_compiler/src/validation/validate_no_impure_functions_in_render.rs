@@ -65,7 +65,6 @@ mod tests {
     fn make_hir_function(blocks: Vec<(BlockId, BasicBlock)>) -> HIRFunction {
         HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Component,
             params: vec![],

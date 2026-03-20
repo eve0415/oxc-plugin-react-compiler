@@ -513,7 +513,7 @@ impl Driver {
         Place {
             identifier: Identifier {
                 id: crate::hir::types::make_identifier_id(0),
-                declaration_id: DeclarationId::new(0),
+                declaration_id: DeclarationId(0),
                 name: None,
                 mutable_range: crate::hir::types::MutableRange::default(),
                 scope: None,
@@ -597,16 +597,16 @@ impl Driver {
         let mut schedule_ids: Vec<usize> = Vec::new();
 
         match terminal {
-            Terminal::Return { value, id, loc, .. } => {
+            Terminal::Return { value, id, .. } => {
                 block_value.push(ReactiveStatement::Terminal(ReactiveTerminalStatement {
-                    terminal: ReactiveTerminal::Return { value, id, loc },
+                    terminal: ReactiveTerminal::Return { value, id },
                     label: None,
                 }));
             }
 
-            Terminal::Throw { value, id, loc } => {
+            Terminal::Throw { value, id, .. } => {
                 block_value.push(ReactiveStatement::Terminal(ReactiveTerminalStatement {
-                    terminal: ReactiveTerminal::Throw { value, id, loc },
+                    terminal: ReactiveTerminal::Throw { value, id },
                     label: None,
                 }));
             }
@@ -617,7 +617,7 @@ impl Driver {
                 alternate,
                 fallthrough,
                 id,
-                loc,
+                ..
             } => {
                 let fallthrough_id =
                     if self.cx.reachable(fallthrough) && !self.cx.is_scheduled(fallthrough) {
@@ -659,7 +659,6 @@ impl Driver {
                         consequent: consequent_block,
                         alternate: alternate_block,
                         id,
-                        loc,
                     },
                     label: fallthrough_id.map(|ft| ReactiveLabel {
                         id: ft,
@@ -676,7 +675,7 @@ impl Driver {
                 cases,
                 fallthrough,
                 id,
-                loc,
+                ..
             } => {
                 let fallthrough_id =
                     if self.cx.reachable(fallthrough) && !self.cx.is_scheduled(fallthrough) {
@@ -720,7 +719,6 @@ impl Driver {
                         test,
                         cases: reactive_cases,
                         id,
-                        loc: loc.clone(),
                     },
                     label: fallthrough_id.map(|ft| ReactiveLabel {
                         id: ft,
@@ -735,7 +733,6 @@ impl Driver {
                         terminal: ReactiveTerminal::Label {
                             block: vec![inner_switch_stmt],
                             id,
-                            loc,
                         },
                         label: Some(ReactiveLabel {
                             id: outer_label,
@@ -793,7 +790,6 @@ impl Driver {
                         loop_block: loop_body,
                         test: test_place,
                         id,
-                        loc,
                     },
                     label: fallthrough_id.map(|ft| ReactiveLabel {
                         id: ft,
@@ -883,7 +879,6 @@ impl Driver {
                         let prefix: Vec<_> = prefix_slice.to_vec();
                         let seq_value = InstructionValue::ReactiveSequenceExpression {
                             instructions: prefix,
-                            id: last.id,
                             value: Box::new(last.value.clone()),
                             loc: loc.clone(),
                         };
@@ -914,7 +909,6 @@ impl Driver {
                         test: test_place,
                         loop_block: loop_body,
                         id,
-                        loc,
                     },
                     label: fallthrough_id.map(|ft| ReactiveLabel {
                         id: ft,
@@ -1025,7 +1019,6 @@ impl Driver {
                         update_value,
                         loop_block: loop_body,
                         id,
-                        loc,
                     },
                     label: fallthrough_id.map(|ft| ReactiveLabel {
                         id: ft,
@@ -1088,7 +1081,6 @@ impl Driver {
                         test: test_place,
                         loop_block: loop_body,
                         id,
-                        loc,
                     },
                     label: fallthrough_id.map(|ft| ReactiveLabel {
                         id: ft,
@@ -1141,7 +1133,6 @@ impl Driver {
                         init: init_block,
                         loop_block: loop_body,
                         id,
-                        loc,
                     },
                     label: fallthrough_id.map(|ft| ReactiveLabel {
                         id: ft,
@@ -1158,11 +1149,10 @@ impl Driver {
                 consequent,
                 alternate,
                 id,
-                loc,
                 ..
             } => {
                 let consequent_block = if self.cx.is_scheduled(consequent) {
-                    let break_ = self.visit_break(consequent, id, &loc);
+                    let break_ = self.visit_break(consequent, id);
                     break_.map(|b| vec![b])
                 } else {
                     Some(self.traverse_block(consequent))
@@ -1179,7 +1169,6 @@ impl Driver {
                         consequent: consequent_block.unwrap_or_default(),
                         alternate: Some(alternate_block),
                         id,
-                        loc,
                     },
                     label: None,
                 }));
@@ -1189,7 +1178,7 @@ impl Driver {
                 block: label_block,
                 fallthrough,
                 id,
-                loc,
+                ..
             } => {
                 let fallthrough_id =
                     if self.cx.reachable(fallthrough) && !self.cx.is_scheduled(fallthrough) {
@@ -1213,7 +1202,6 @@ impl Driver {
                     terminal: ReactiveTerminal::Label {
                         block: label_body,
                         id,
-                        loc,
                     },
                     label: fallthrough_id.map(|ft| ReactiveLabel {
                         id: ft,
@@ -1323,7 +1311,6 @@ impl Driver {
                     if has_orphaned {
                         let seq_value = InstructionValue::ReactiveSequenceExpression {
                             instructions: prefix,
-                            id: last.id,
                             value: Box::new(last.value),
                             loc: loc.clone(),
                         };
@@ -1383,11 +1370,11 @@ impl Driver {
                 block: goto_block,
                 variant,
                 id,
-                loc,
+                ..
             } => {
                 match variant {
                     GotoVariant::Break => {
-                        if let Some(break_stmt) = self.visit_break(goto_block, id, &loc) {
+                        if let Some(break_stmt) = self.visit_break(goto_block, id) {
                             block_value.push(break_stmt);
                         } else if !self.cx.is_scheduled(goto_block)
                             && !self.cx.emitted.contains(&goto_block)
@@ -1398,21 +1385,10 @@ impl Driver {
                         }
                     }
                     GotoVariant::Continue => {
-                        if let Some(continue_stmt) = self.visit_continue(goto_block, id, &loc) {
+                        if let Some(continue_stmt) = self.visit_continue(goto_block, id) {
                             block_value.push(continue_stmt);
                         }
                     }
-                    GotoVariant::Try => {
-                        // noop
-                    }
-                }
-            }
-
-            Terminal::MaybeThrow { continuation, .. } => {
-                // ReactiveFunction does not explicitly model maybe-throw semantics,
-                // so these terminals flatten away.
-                if !self.cx.is_scheduled(continuation) {
-                    self.visit_block(continuation, block_value);
                 }
             }
 
@@ -1422,7 +1398,7 @@ impl Driver {
                 handler,
                 fallthrough,
                 id,
-                loc,
+                ..
             } => {
                 let fallthrough_id =
                     if self.cx.reachable(fallthrough) && !self.cx.is_scheduled(fallthrough) {
@@ -1446,7 +1422,6 @@ impl Driver {
                         handler_binding,
                         handler: handler_body,
                         id,
-                        loc,
                     },
                     label: fallthrough_id.map(|ft| ReactiveLabel {
                         id: ft,
@@ -1548,7 +1523,7 @@ impl Driver {
             let place = Place {
                 identifier: Identifier {
                     id: crate::hir::types::make_identifier_id(0),
-                    declaration_id: DeclarationId::new(0),
+                    declaration_id: DeclarationId(0),
                     name: None,
                     mutable_range: crate::hir::types::MutableRange::default(),
                     scope: None,
@@ -1567,7 +1542,7 @@ impl Driver {
                     loc: place.loc.clone(),
                 },
                 place,
-                id: InstructionId::new(0),
+                id: InstructionId(0),
                 branch_targets: None,
             };
         };
@@ -1646,7 +1621,7 @@ impl Driver {
                     let place = Place {
                         identifier: Identifier {
                             id: crate::hir::types::make_identifier_id(0),
-                            declaration_id: DeclarationId::new(0),
+                            declaration_id: DeclarationId(0),
                             name: None,
                             mutable_range: crate::hir::types::MutableRange::default(),
                             scope: None,
@@ -1665,7 +1640,7 @@ impl Driver {
                             loc: place.loc.clone(),
                         },
                         place,
-                        id: InstructionId::new(0),
+                        id: InstructionId(0),
                         branch_targets: None,
                     };
                 }
@@ -1784,7 +1759,7 @@ impl Driver {
                 let place = Place {
                     identifier: Identifier {
                         id: crate::hir::types::make_identifier_id(0),
-                        declaration_id: DeclarationId::new(0),
+                        declaration_id: DeclarationId(0),
                         name: None,
                         mutable_range: crate::hir::types::MutableRange::default(),
                         scope: None,
@@ -1937,7 +1912,6 @@ impl Driver {
                                             id: consequent_result.id,
                                             lvalue: Some(consequent_result.place.clone()),
                                             value: InstructionValue::ReactiveOptionalExpression {
-                                                optional: true,
                                                 value: Box::new(InstructionValue::PropertyLoad {
                                                     object: object.clone(),
                                                     property: property.clone(),
@@ -2048,7 +2022,6 @@ impl Driver {
                         } else {
                             InstructionValue::ReactiveSequenceExpression {
                                 instructions: lsi,
-                                id: left.id,
                                 value: Box::new(left.value.clone()),
                                 loc: loc.clone(),
                             }
@@ -2058,7 +2031,6 @@ impl Driver {
                         } else {
                             InstructionValue::ReactiveSequenceExpression {
                                 instructions: right.instructions,
-                                id: right.id,
                                 value: Box::new(right.value.clone()),
                                 loc: loc.clone(),
                             }
@@ -2140,7 +2112,6 @@ impl Driver {
                         } else {
                             InstructionValue::ReactiveSequenceExpression {
                                 instructions: lsi,
-                                id: left.id,
                                 value: Box::new(left.value.clone()),
                                 loc: loc.clone(),
                             }
@@ -2150,7 +2121,6 @@ impl Driver {
                         } else {
                             InstructionValue::ReactiveSequenceExpression {
                                 instructions: right.instructions,
-                                id: right.id,
                                 value: Box::new(right.value.clone()),
                                 loc: loc.clone(),
                             }
@@ -2238,13 +2208,6 @@ impl Driver {
                     final_instruction: None,
                     fallthrough,
                 }
-            }
-            Terminal::MaybeThrow { .. } => {
-                // Upstream throws a TODO: "Support value blocks (conditional, logical,
-                // optional chaining, etc) within a try/catch statement"
-                panic!(
-                    "Value blocks within try/catch (MaybeThrow in value block) not yet supported"
-                );
             }
             Terminal::Scope {
                 block: scope_block,
@@ -2338,12 +2301,7 @@ impl Driver {
     }
 
     /// Emit a break statement for a goto that targets a scheduled block.
-    fn visit_break(
-        &self,
-        block: BlockId,
-        id: InstructionId,
-        loc: &SourceLocation,
-    ) -> Option<ReactiveStatement> {
+    fn visit_break(&self, block: BlockId, id: InstructionId) -> Option<ReactiveStatement> {
         if std::env::var("DEBUG_BREAK_TARGET").is_ok() {
             eprintln!(
                 "[VISIT_BREAK] goto-break target=bb{} id={} stack={}",
@@ -2387,19 +2345,13 @@ impl Driver {
                 target: target_block,
                 target_kind,
                 id,
-                loc: loc.clone(),
             },
             label: None,
         }))
     }
 
     /// Emit a continue statement for a goto that targets a scheduled continue block.
-    fn visit_continue(
-        &self,
-        block: BlockId,
-        id: InstructionId,
-        loc: &SourceLocation,
-    ) -> Option<ReactiveStatement> {
+    fn visit_continue(&self, block: BlockId, id: InstructionId) -> Option<ReactiveStatement> {
         let Some((target_block, target_kind)) = self.cx.get_continue_target(block) else {
             // Continue target not found — skip
             return None;
@@ -2410,7 +2362,6 @@ impl Driver {
                 target: target_block,
                 target_kind,
                 id,
-                loc: loc.clone(),
             },
             label: None,
         }))
@@ -2436,14 +2387,10 @@ pub fn build_reactive_function(func: HIRFunction) -> ReactiveFunction {
     let body = driver.traverse_block(entry);
 
     ReactiveFunction {
-        loc: func.loc,
         id: func.id,
         name_hint: None,
         params: func.params,
-        generator: func.generator,
-        async_: func.async_,
         body,
-        directives: func.directives,
     }
 }
 
@@ -2580,7 +2527,6 @@ mod tests {
         //   bb0: instructions=[LoadLocal], terminal=Return
         let func = HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: Some("test".to_string()),
             fn_type: ReactFunctionType::Component,
             params: vec![],
@@ -2643,7 +2589,6 @@ mod tests {
 
         let func = HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: Some("test_if".to_string()),
             fn_type: ReactFunctionType::Component,
             params: vec![],
@@ -2781,7 +2726,6 @@ mod tests {
 
         let func = HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: Some("test_scope".to_string()),
             fn_type: ReactFunctionType::Component,
             params: vec![],
@@ -2892,7 +2836,6 @@ mod tests {
 
         let func = HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: Some("test_while".to_string()),
             fn_type: ReactFunctionType::Component,
             params: vec![],
@@ -3021,7 +2964,6 @@ mod tests {
         // bb0: terminal=Throw(value)
         let func = HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: Some("test_throw".to_string()),
             fn_type: ReactFunctionType::Component,
             params: vec![],

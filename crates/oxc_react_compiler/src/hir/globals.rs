@@ -20,7 +20,6 @@ use super::object_shape::*;
 /// Describes the type of a global binding.
 #[derive(Debug, Clone)]
 pub struct GlobalType {
-    pub name: String,
     pub kind: GlobalKind,
 }
 
@@ -86,7 +85,6 @@ fn make_hook_sig(
     return_type: ReturnType,
     return_kind: ValueKind,
     return_reason: Option<ValueReason>,
-    hook_kind: HookKind,
 ) -> FunctionSignature {
     FunctionSignature {
         positional_params,
@@ -95,7 +93,6 @@ fn make_hook_sig(
         return_value_kind: return_kind,
         return_value_reason: return_reason,
         callee_effect: Effect::Read,
-        hook_kind: Some(hook_kind),
         ..Default::default()
     }
 }
@@ -1253,7 +1250,6 @@ impl GlobalRegistry {
             return_type: ReturnType::Poly,
             return_value_kind: ValueKind::Frozen,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::Custom),
             no_alias: true,
             ..Default::default()
         };
@@ -1273,7 +1269,6 @@ impl GlobalRegistry {
             },
             return_value_kind: ValueKind::Mutable,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::Custom),
             no_alias: true,
             ..Default::default()
         };
@@ -1355,7 +1350,6 @@ impl GlobalRegistry {
             return_type: ReturnType::Poly,
             return_value_kind: ValueKind::Frozen,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::Custom),
             known_incompatible: Some(known_incompatible_message.to_string()),
             ..Default::default()
         };
@@ -1405,7 +1399,6 @@ impl GlobalRegistry {
             },
             return_value_kind: ValueKind::Frozen,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::Custom),
             ..Default::default()
         };
         self.shapes.insert(
@@ -1460,7 +1453,6 @@ impl GlobalRegistry {
             return_type: ReturnType::Poly,
             return_value_kind: ValueKind::Frozen,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::Custom),
             ..Default::default()
         };
         self.shapes.insert(
@@ -1631,7 +1623,6 @@ impl GlobalRegistry {
             return_type: ReturnType::Poly,
             return_value_kind: ValueKind::Frozen,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::Custom),
             ..Default::default()
         };
         self.shapes.insert(
@@ -1650,7 +1641,6 @@ impl GlobalRegistry {
             },
             return_value_kind: ValueKind::Frozen,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::Custom),
             no_alias: true,
             ..Default::default()
         };
@@ -1668,7 +1658,6 @@ impl GlobalRegistry {
             return_type: ReturnType::Poly,
             return_value_kind: ValueKind::Mutable,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::Custom),
             no_alias: true,
             ..Default::default()
         };
@@ -1775,7 +1764,6 @@ impl GlobalRegistry {
                 ReturnType::Poly,
                 ValueKind::Frozen,
                 Some(ValueReason::Context),
-                HookKind::UseContext,
             )),
         );
 
@@ -1790,7 +1778,6 @@ impl GlobalRegistry {
                 },
                 ValueKind::Frozen,
                 Some(ValueReason::State),
-                HookKind::UseState,
             )),
         );
 
@@ -1805,7 +1792,6 @@ impl GlobalRegistry {
                 },
                 ValueKind::Frozen,
                 Some(ValueReason::State),
-                HookKind::UseActionState,
             )),
         );
 
@@ -1820,7 +1806,6 @@ impl GlobalRegistry {
                 },
                 ValueKind::Frozen,
                 Some(ValueReason::ReducerState),
-                HookKind::UseReducer,
             )),
         );
 
@@ -1835,7 +1820,6 @@ impl GlobalRegistry {
                 },
                 ValueKind::Mutable,
                 None,
-                HookKind::UseRef,
             )),
         );
 
@@ -1848,7 +1832,6 @@ impl GlobalRegistry {
                 ReturnType::Primitive,
                 ValueKind::Frozen,
                 None,
-                HookKind::UseImperativeHandle,
             )),
         );
 
@@ -1861,7 +1844,6 @@ impl GlobalRegistry {
                 ReturnType::Poly,
                 ValueKind::Frozen,
                 None,
-                HookKind::UseMemo,
             )),
         );
 
@@ -1874,7 +1856,6 @@ impl GlobalRegistry {
                 ReturnType::Poly,
                 ValueKind::Frozen,
                 None,
-                HookKind::UseCallback,
             )),
         );
 
@@ -1887,7 +1868,6 @@ impl GlobalRegistry {
                 ReturnType::Primitive,
                 ValueKind::Frozen,
                 None,
-                HookKind::UseEffect,
             )),
         );
 
@@ -1900,7 +1880,6 @@ impl GlobalRegistry {
                 ReturnType::Poly,
                 ValueKind::Frozen,
                 None,
-                HookKind::UseLayoutEffect,
             )),
         );
 
@@ -1913,7 +1892,6 @@ impl GlobalRegistry {
                 ReturnType::Poly,
                 ValueKind::Frozen,
                 None,
-                HookKind::UseInsertionEffect,
             )),
         );
 
@@ -1928,7 +1906,6 @@ impl GlobalRegistry {
                 },
                 ValueKind::Frozen,
                 None,
-                HookKind::UseTransition,
             )),
         );
 
@@ -1945,7 +1922,6 @@ impl GlobalRegistry {
                 },
                 ValueKind::Frozen,
                 None,
-                HookKind::UseEffectEvent,
             )),
         );
 
@@ -2551,13 +2527,7 @@ impl GlobalRegistry {
     // -- Helper to insert a global ------------------------------------------
 
     fn insert_global(&mut self, name: &str, kind: GlobalKind) {
-        self.globals.insert(
-            name.to_string(),
-            GlobalType {
-                name: name.to_string(),
-                kind,
-            },
-        );
+        self.globals.insert(name.to_string(), GlobalType { kind });
     }
 }
 

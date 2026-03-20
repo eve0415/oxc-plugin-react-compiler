@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
 use crate::hir::types::*;
 use crate::options::EnvironmentConfig;
 
@@ -99,7 +99,6 @@ pub fn validate_no_capitalized_calls(
                                     "{}. {} may be a component",
                                     CAPITALIZED_CALL_REASON, callee_name
                                 ),
-                                category: Some(ErrorCategory::CapitalizedCalls),
                             }],
                         }));
                     }
@@ -132,7 +131,6 @@ pub fn validate_no_capitalized_calls(
                                 "{}. {} may be a component",
                                 CAPITALIZED_CALL_REASON, property_name
                             ),
-                            category: Some(ErrorCategory::CapitalizedCalls),
                         });
                     }
                 }
@@ -266,7 +264,6 @@ mod tests {
     fn make_hir_function(blocks: Vec<(BlockId, BasicBlock)>) -> HIRFunction {
         HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Component,
             params: vec![],

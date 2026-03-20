@@ -433,7 +433,6 @@ fn visit_scope(
                 terminal: ReactiveTerminal::Label {
                     block: original_instructions,
                     id: InstructionId(0),
-                    loc: SourceLocation::Generated,
                 },
             });
 
@@ -513,7 +512,6 @@ fn transform_terminal(
                 target: early_return_value.label,
                 target_kind: ReactiveTerminalTargetKind::Labeled,
                 id: InstructionId(0),
-                loc: loc.clone(),
             },
         });
 
@@ -627,14 +625,10 @@ mod tests {
 
     fn make_reactive_func(body: ReactiveBlock) -> ReactiveFunction {
         ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body,
-            directives: vec![],
         }
     }
 
@@ -660,7 +654,6 @@ mod tests {
                 terminal: ReactiveTerminal::Return {
                     value: make_place(1),
                     id: InstructionId(2),
-                    loc: SourceLocation::Generated,
                 },
                 label: None,
             }),
@@ -704,7 +697,6 @@ mod tests {
                     terminal: ReactiveTerminal::Return {
                         value: make_place(1),
                         id: InstructionId(2),
-                        loc: SourceLocation::Generated,
                     },
                     label: None,
                 }),
@@ -773,13 +765,11 @@ mod tests {
                         terminal: ReactiveTerminal::Return {
                             value: make_place(1),
                             id: InstructionId(3),
-                            loc: SourceLocation::Generated,
                         },
                         label: None,
                     })],
                     alternate: None,
                     id: InstructionId(2),
-                    loc: SourceLocation::Generated,
                 },
                 label: None,
             })],
@@ -812,7 +802,6 @@ mod tests {
                 terminal: ReactiveTerminal::Return {
                     value: make_place(1),
                     id: InstructionId(2),
-                    loc: SourceLocation::Generated,
                 },
                 label: None,
             })],
@@ -844,7 +833,6 @@ mod tests {
                 terminal: ReactiveTerminal::Return {
                     value: make_place(1),
                     id: InstructionId(3),
-                    loc: SourceLocation::Generated,
                 },
                 label: None,
             })],
@@ -888,7 +876,6 @@ mod tests {
                         terminal: ReactiveTerminal::Return {
                             value: make_place(1),
                             id: InstructionId(3),
-                            loc: SourceLocation::Generated,
                         },
                         label: None,
                     })],
@@ -897,13 +884,11 @@ mod tests {
                             terminal: ReactiveTerminal::Return {
                                 value: make_place(2),
                                 id: InstructionId(4),
-                                loc: SourceLocation::Generated,
                             },
                             label: None,
                         },
                     )]),
                     id: InstructionId(2),
-                    loc: SourceLocation::Generated,
                 },
                 label: None,
             })],
@@ -951,7 +936,6 @@ mod tests {
                 terminal: ReactiveTerminal::Return {
                     value: make_place(1),
                     id: InstructionId(1),
-                    loc: SourceLocation::Generated,
                 },
                 label: None,
             },

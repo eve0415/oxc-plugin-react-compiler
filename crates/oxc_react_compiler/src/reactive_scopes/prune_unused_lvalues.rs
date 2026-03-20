@@ -290,16 +290,6 @@ fn collect_refs_from_value(
             collect_refs_from_value(left, candidates);
             collect_refs_from_value(right, candidates);
         }
-        InstructionValue::ReactiveConditionalExpression {
-            test,
-            consequent,
-            alternate,
-            ..
-        } => {
-            collect_refs_from_value(test, candidates);
-            collect_refs_from_value(consequent, candidates);
-            collect_refs_from_value(alternate, candidates);
-        }
         InstructionValue::TaggedTemplateExpression { tag, .. } => {
             collect_refs_from_place(tag, candidates);
         }
@@ -352,7 +342,6 @@ fn collect_refs_from_value(
         InstructionValue::Primitive { .. }
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::StartMemoize { .. }
         | InstructionValue::Debugger { .. } => {}
@@ -1105,12 +1094,9 @@ mod tests {
     fn test_prune_unreferenced_temporary_lvalue() {
         // Instruction with unnamed lvalue that is never read => should be pruned
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Instruction(Box::new(
                 ReactiveInstruction {
                     id: InstructionId(0),
@@ -1122,7 +1108,6 @@ mod tests {
                     loc: SourceLocation::Generated,
                 },
             ))],
-            directives: vec![],
         };
 
         prune_unused_lvalues(&mut func);
@@ -1139,12 +1124,9 @@ mod tests {
     fn test_keep_referenced_temporary_lvalue() {
         // Instruction with unnamed lvalue that IS read later => should be kept
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
                     id: InstructionId(0),
@@ -1165,7 +1147,6 @@ mod tests {
                     loc: SourceLocation::Generated,
                 })),
             ],
-            directives: vec![],
         };
 
         prune_unused_lvalues(&mut func);
@@ -1182,12 +1163,9 @@ mod tests {
     fn test_keep_named_lvalue() {
         // Instruction with a named lvalue should never be pruned regardless
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Instruction(Box::new(
                 ReactiveInstruction {
                     id: InstructionId(0),
@@ -1199,7 +1177,6 @@ mod tests {
                     loc: SourceLocation::Generated,
                 },
             ))],
-            directives: vec![],
         };
 
         prune_unused_lvalues(&mut func);
@@ -1218,12 +1195,9 @@ mod tests {
         let alias = make_place(2, None);
 
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
                     id: InstructionId(0),
@@ -1247,12 +1221,10 @@ mod tests {
                     terminal: ReactiveTerminal::Return {
                         value: source,
                         id: InstructionId(2),
-                        loc: SourceLocation::Generated,
                     },
                     label: None,
                 }),
             ],
-            directives: vec![],
         };
 
         prune_unused_lvalues(&mut func);
@@ -1286,12 +1258,9 @@ mod tests {
         let alias2 = make_place(3, None);
 
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
                     id: InstructionId(0),
@@ -1312,7 +1281,6 @@ mod tests {
                     loc: SourceLocation::Generated,
                 })),
             ],
-            directives: vec![],
         };
 
         prune_unused_lvalues(&mut func);
@@ -1331,12 +1299,9 @@ mod tests {
         let result = make_place(4, None);
 
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
                     id: InstructionId(0),
@@ -1384,12 +1349,10 @@ mod tests {
                     terminal: ReactiveTerminal::Return {
                         value: result,
                         id: InstructionId(4),
-                        loc: SourceLocation::Generated,
                     },
                     label: None,
                 }),
             ],
-            directives: vec![],
         };
 
         prune_unused_lvalues(&mut func);
@@ -1415,12 +1378,9 @@ mod tests {
         let result = make_place(4, None);
 
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
                     id: InstructionId(0),
@@ -1471,12 +1431,10 @@ mod tests {
                     terminal: ReactiveTerminal::Return {
                         value: result,
                         id: InstructionId(4),
-                        loc: SourceLocation::Generated,
                     },
                     label: None,
                 }),
             ],
-            directives: vec![],
         };
 
         prune_unused_lvalues(&mut func);
@@ -1501,12 +1459,9 @@ mod tests {
         let memo_decl = make_place(3, None);
 
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
                     id: InstructionId(0),
@@ -1554,12 +1509,10 @@ mod tests {
                     terminal: ReactiveTerminal::Return {
                         value: memo_decl,
                         id: InstructionId(4),
-                        loc: SourceLocation::Generated,
                     },
                     label: None,
                 }),
             ],
-            directives: vec![],
         };
 
         prune_unused_lvalues(&mut func);
@@ -1589,12 +1542,9 @@ mod tests {
         let result = make_place(5, None);
 
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
                     id: InstructionId(0),
@@ -1651,12 +1601,10 @@ mod tests {
                     terminal: ReactiveTerminal::Return {
                         value: result,
                         id: InstructionId(5),
-                        loc: SourceLocation::Generated,
                     },
                     label: None,
                 }),
             ],
-            directives: vec![],
         };
 
         prune_unused_lvalues(&mut func);

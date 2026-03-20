@@ -230,12 +230,9 @@ mod tests {
     #[test]
     fn test_stabilize_block_ids_sequential() {
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Terminal(ReactiveTerminalStatement {
                     terminal: ReactiveTerminal::Label {
@@ -244,12 +241,10 @@ mod tests {
                                 target: BlockId(100),
                                 target_kind: ReactiveTerminalTargetKind::Labeled,
                                 id: InstructionId(2),
-                                loc: SourceLocation::Generated,
                             },
                             label: None,
                         })],
                         id: InstructionId(0),
-                        loc: SourceLocation::Generated,
                     },
                     label: Some(ReactiveLabel {
                         id: BlockId(100),
@@ -260,7 +255,6 @@ mod tests {
                     terminal: ReactiveTerminal::Label {
                         block: vec![],
                         id: InstructionId(3),
-                        loc: SourceLocation::Generated,
                     },
                     label: Some(ReactiveLabel {
                         id: BlockId(200),
@@ -268,7 +262,6 @@ mod tests {
                     }),
                 }),
             ],
-            directives: vec![],
         };
 
         stabilize_block_ids(&mut func);
@@ -294,14 +287,10 @@ mod tests {
     #[test]
     fn test_stabilize_empty_function() {
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![],
-            directives: vec![],
         };
 
         stabilize_block_ids(&mut func);

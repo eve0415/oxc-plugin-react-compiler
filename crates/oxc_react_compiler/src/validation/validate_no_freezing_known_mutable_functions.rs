@@ -13,7 +13,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
 use crate::hir::types::*;
 use crate::hir::visitors::{for_each_instruction_operand, for_each_terminal_operand};
 use crate::inference::aliasing_effects::AliasingEffect;
@@ -43,7 +43,6 @@ fn push_mutable_function_error(
                  Consider using state instead",
             variable
         ),
-        category: Some(ErrorCategory::Immutability),
     });
 }
 

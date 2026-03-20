@@ -314,16 +314,6 @@ fn visit_instruction_value(value: &mut InstructionValue, scopes: &mut Scopes) {
             visit_instruction_value(left, scopes);
             visit_instruction_value(right, scopes);
         }
-        InstructionValue::ReactiveConditionalExpression {
-            test,
-            consequent,
-            alternate,
-            ..
-        } => {
-            visit_instruction_value(test, scopes);
-            visit_instruction_value(consequent, scopes);
-            visit_instruction_value(alternate, scopes);
-        }
         InstructionValue::TaggedTemplateExpression { tag, .. } => {
             scopes.visit(&mut tag.identifier);
         }
@@ -368,7 +358,6 @@ fn visit_instruction_value(value: &mut InstructionValue, scopes: &mut Scopes) {
         InstructionValue::Primitive { .. }
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::StartMemoize { .. }
         | InstructionValue::Debugger { .. } => {}
@@ -607,16 +596,6 @@ fn visit_hir_instruction_value(value: &mut InstructionValue, scopes: &mut Scopes
             visit_hir_instruction_value(left, scopes);
             visit_hir_instruction_value(right, scopes);
         }
-        InstructionValue::ReactiveConditionalExpression {
-            test,
-            consequent,
-            alternate,
-            ..
-        } => {
-            visit_hir_instruction_value(test, scopes);
-            visit_hir_instruction_value(consequent, scopes);
-            visit_hir_instruction_value(alternate, scopes);
-        }
         InstructionValue::NewExpression { callee, args, .. } => {
             scopes.visit(&mut callee.identifier);
             for arg in args.iter_mut() {
@@ -678,7 +657,6 @@ fn visit_hir_instruction_value(value: &mut InstructionValue, scopes: &mut Scopes
         InstructionValue::Primitive { .. }
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::StartMemoize { .. }
         | InstructionValue::Debugger { .. } => {}
@@ -751,7 +729,6 @@ fn visit_hir_terminal_places(terminal: &mut Terminal, scopes: &mut Scopes) {
         | Terminal::Logical { .. }
         | Terminal::Ternary { .. }
         | Terminal::Optional { .. }
-        | Terminal::MaybeThrow { .. }
         | Terminal::Unsupported { .. }
         | Terminal::Unreachable { .. } => {}
     }
@@ -1136,12 +1113,9 @@ mod tests {
     #[test]
     fn test_rename_promoted_temporaries() {
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
                     id: InstructionId(0),
@@ -1168,7 +1142,6 @@ mod tests {
                     loc: SourceLocation::Generated,
                 })),
             ],
-            directives: vec![],
         };
 
         let names = rename_variables(&mut func, false, None);
@@ -1209,17 +1182,13 @@ mod tests {
     #[test]
     fn test_rename_named_variables_no_conflict() {
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![Argument::Place(make_test_place(
                 1,
                 Some(IdentifierName::Named("x".to_string())),
             ))],
-            generator: false,
-            async_: false,
             body: vec![],
-            directives: vec![],
         };
 
         let names = rename_variables(&mut func, false, None);

@@ -338,16 +338,6 @@ fn visit_instruction_value_places(
             visit_instruction_value_places(id, left, last_usage);
             visit_instruction_value_places(id, right, last_usage);
         }
-        InstructionValue::ReactiveConditionalExpression {
-            test,
-            consequent,
-            alternate,
-            ..
-        } => {
-            visit_instruction_value_places(id, test, last_usage);
-            visit_instruction_value_places(id, consequent, last_usage);
-            visit_instruction_value_places(id, alternate, last_usage);
-        }
         InstructionValue::StoreGlobal { value, .. } => {
             visit_place_for_last_usage(id, value, last_usage);
         }
@@ -365,7 +355,6 @@ fn visit_instruction_value_places(
         | InstructionValue::JSXText { .. }
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::RegExpLiteral { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::Debugger { .. } => {}
     }
 }
@@ -1533,7 +1522,6 @@ fn instruction_value_kind_name(value: &InstructionValue) -> &'static str {
         InstructionValue::LoadGlobal { .. } => "LoadGlobal",
         InstructionValue::Destructure { .. } => "Destructure",
         InstructionValue::Debugger { .. } => "Debugger",
-        InstructionValue::MetaProperty { .. } => "MetaProperty",
         InstructionValue::Ternary { .. } => "Ternary",
         InstructionValue::LogicalExpression { .. } => "LogicalExpression",
         InstructionValue::PrefixUpdate { .. } => "PrefixUpdate",
@@ -1546,7 +1534,6 @@ fn instruction_value_kind_name(value: &InstructionValue) -> &'static str {
         InstructionValue::ReactiveSequenceExpression { .. } => "ReactiveSequenceExpression",
         InstructionValue::ReactiveOptionalExpression { .. } => "ReactiveOptionalExpression",
         InstructionValue::ReactiveLogicalExpression { .. } => "ReactiveLogicalExpression",
-        InstructionValue::ReactiveConditionalExpression { .. } => "ReactiveConditionalExpression",
     }
 }
 
@@ -1706,14 +1693,10 @@ mod tests {
 
     fn make_func(body: ReactiveBlock) -> ReactiveFunction {
         ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body,
-            directives: vec![],
         }
     }
 
@@ -2093,7 +2076,6 @@ mod tests {
                     consequent: vec![],
                     alternate: None,
                     id: InstructionId(10),
-                    loc: SourceLocation::Generated,
                 },
                 label: None,
             }),

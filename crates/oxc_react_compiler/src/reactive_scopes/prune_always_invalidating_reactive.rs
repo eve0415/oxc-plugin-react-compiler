@@ -402,12 +402,9 @@ mod tests {
         // Instruction outside scope creates an array (always-invalidating + unmemoized)
         // Scope depends on that value -> should be pruned
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 // Array expression outside any scope (unmemoized)
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
@@ -435,7 +432,6 @@ mod tests {
                     ))],
                 }),
             ],
-            directives: vec![],
         };
 
         prune_always_invalidating_scopes(&mut func);
@@ -451,12 +447,9 @@ mod tests {
     fn test_keep_scope_with_memoized_allocation() {
         // Array expression INSIDE a scope (memoized) — dependent scope should NOT be pruned
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 // Scope containing an array expression (memoized)
                 ReactiveStatement::Scope(ReactiveScopeBlock {
@@ -479,7 +472,6 @@ mod tests {
                     instructions: vec![],
                 }),
             ],
-            directives: vec![],
         };
 
         prune_always_invalidating_scopes(&mut func);
@@ -494,12 +486,9 @@ mod tests {
     #[test]
     fn test_no_scopes_nothing_to_prune() {
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Instruction(Box::new(
                 ReactiveInstruction {
                     id: InstructionId(0),
@@ -511,7 +500,6 @@ mod tests {
                     loc: SourceLocation::Generated,
                 },
             ))],
-            directives: vec![],
         };
 
         prune_always_invalidating_scopes(&mut func);

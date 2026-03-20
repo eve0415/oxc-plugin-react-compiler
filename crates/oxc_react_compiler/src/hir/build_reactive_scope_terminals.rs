@@ -124,9 +124,9 @@ fn generate_rewrites(
         }
 
         // Emit start for current scope
-        let block_id = BlockId::new(*next_block_id);
+        let block_id = BlockId(*next_block_id);
         *next_block_id += 1;
-        let fallthrough_id = BlockId::new(*next_block_id);
+        let fallthrough_id = BlockId(*next_block_id);
         *next_block_id += 1;
 
         fallthrough_map.insert(scopes[i].id, fallthrough_id);
@@ -433,10 +433,10 @@ fn renumber_instructions(body: &mut HIR) {
     for (_, block) in &mut body.blocks {
         for instr in &mut block.instructions {
             instr_id += 1;
-            instr.id = InstructionId::new(instr_id);
+            instr.id = InstructionId(instr_id);
         }
         instr_id += 1;
-        assign_terminal_id_inline(&mut block.terminal, InstructionId::new(instr_id));
+        assign_terminal_id_inline(&mut block.terminal, InstructionId(instr_id));
     }
 }
 
@@ -461,7 +461,6 @@ fn assign_terminal_id_inline(terminal: &mut Terminal, id: InstructionId) {
         | Terminal::Label { id: tid, .. }
         | Terminal::Sequence { id: tid, .. }
         | Terminal::Try { id: tid, .. }
-        | Terminal::MaybeThrow { id: tid, .. }
         | Terminal::Scope { id: tid, .. }
         | Terminal::PrunedScope { id: tid, .. } => *tid = id,
     }

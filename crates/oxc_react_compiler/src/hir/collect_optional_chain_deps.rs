@@ -682,7 +682,6 @@ mod tests {
     fn make_empty_func() -> HIRFunction {
         HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Component,
             params: vec![],
@@ -888,7 +887,6 @@ mod tests {
 
         let func = HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Component,
             params: vec![],

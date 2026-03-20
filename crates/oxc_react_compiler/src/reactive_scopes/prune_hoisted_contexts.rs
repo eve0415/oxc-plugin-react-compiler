@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
 use crate::hir::types::*;
 
 /// Prune hoisted context declarations and rewrite store kinds.
@@ -255,7 +255,6 @@ fn transform_instruction_in_place(
                     severity: DiagnosticSeverity::Todo,
                     message: "[PruneHoistedContexts] Rewrite hoisted function references"
                         .to_string(),
-                    category: Some(ErrorCategory::Todo),
                 }],
             }));
         }
@@ -278,7 +277,6 @@ fn transform_instruction_in_place(
                                     severity: DiagnosticSeverity::Invariant,
                                     message: "[PruneHoistedContexts] Unexpected hoisted function"
                                         .to_string(),
-                                    category: Some(ErrorCategory::Invariant),
                                 }],
                             }));
                         }
@@ -298,7 +296,6 @@ fn transform_instruction_in_place(
                                 "[PruneHoistedContexts] Unexpected kind ({:?})",
                                 lvalue.kind
                             ),
-                            category: Some(ErrorCategory::Todo),
                         }],
                     }));
                 }
@@ -353,7 +350,6 @@ fn visit_instruction_places(
                             severity: DiagnosticSeverity::Todo,
                             message: "[PruneHoistedContexts] Rewrite hoisted function references"
                                 .to_string(),
-                            category: Some(ErrorCategory::Todo),
                         }],
                     }));
                 }
@@ -519,12 +515,9 @@ mod tests {
     #[test]
     fn test_remove_hoisted_const_declare_context() {
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Instruction(Box::new(
                 ReactiveInstruction {
                     id: InstructionId(0),
@@ -539,7 +532,6 @@ mod tests {
                     loc: SourceLocation::Generated,
                 },
             ))],
-            directives: vec![],
         };
 
         prune_hoisted_contexts(&mut func).unwrap();
@@ -552,12 +544,9 @@ mod tests {
     #[test]
     fn test_keep_non_hoisted_declare_context() {
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Instruction(Box::new(
                 ReactiveInstruction {
                     id: InstructionId(0),
@@ -572,7 +561,6 @@ mod tests {
                     loc: SourceLocation::Generated,
                 },
             ))],
-            directives: vec![],
         };
 
         prune_hoisted_contexts(&mut func).unwrap();
@@ -596,12 +584,9 @@ mod tests {
         );
 
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Scope(ReactiveScopeBlock {
                 scope,
                 instructions: vec![ReactiveStatement::Instruction(Box::new(
@@ -620,7 +605,6 @@ mod tests {
                     },
                 ))],
             })],
-            directives: vec![],
         };
 
         prune_hoisted_contexts(&mut func).unwrap();

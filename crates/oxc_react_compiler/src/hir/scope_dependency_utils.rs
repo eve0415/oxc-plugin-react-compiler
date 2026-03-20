@@ -72,7 +72,7 @@ fn build_non_optional_dependency(
     let curr = make_temporary_identifier(curr_id, loc.clone());
 
     instructions.push(Instruction {
-        id: InstructionId::new(1),
+        id: InstructionId(1),
         lvalue: Place {
             identifier: curr.clone(),
             effect: Effect::Mutate,
@@ -100,7 +100,7 @@ fn build_non_optional_dependency(
         let next_ident = make_temporary_identifier(next_id, loc.clone());
 
         instructions.push(Instruction {
-            id: InstructionId::new(1),
+            id: InstructionId(1),
             lvalue: Place {
                 identifier: next_ident.clone(),
                 effect: Effect::Mutate,
@@ -141,8 +141,8 @@ fn build_non_optional_dependency(
             id: block_id,
             instructions,
             terminal: Terminal::Unsupported {
-                id: InstructionId::new(0),
                 loc: SourceLocation::Generated,
+                id: InstructionId(0),
             },
             preds: std::collections::HashSet::new(),
             phis: vec![],
@@ -185,7 +185,7 @@ fn build_optional_dependency(
     let curr = make_temporary_identifier(curr_id, loc.clone());
 
     instructions.push(Instruction {
-        id: InstructionId::new(1),
+        id: InstructionId(1),
         lvalue: Place {
             identifier: curr.clone(),
             effect: Effect::Mutate,
@@ -213,7 +213,7 @@ fn build_optional_dependency(
         let next_ident = make_temporary_identifier(next_id, loc.clone());
 
         instructions.push(Instruction {
-            id: InstructionId::new(1),
+            id: InstructionId(1),
             lvalue: Place {
                 identifier: next_ident.clone(),
                 effect: Effect::Mutate,
@@ -254,8 +254,8 @@ fn build_optional_dependency(
             id: block_id,
             instructions,
             terminal: Terminal::Unsupported {
-                id: InstructionId::new(0),
                 loc: SourceLocation::Generated,
+                id: InstructionId(0),
             },
             preds: std::collections::HashSet::new(),
             phis: vec![],
@@ -273,13 +273,13 @@ fn build_optional_dependency(
 }
 
 fn alloc_block_id(counter: &mut u32) -> BlockId {
-    let id = BlockId::new(*counter);
+    let id = BlockId(*counter);
     *counter += 1;
     id
 }
 
 fn alloc_identifier_id(counter: &mut u32) -> IdentifierId {
-    let id = IdentifierId::new(*counter);
+    let id = IdentifierId(*counter);
     *counter += 1;
     id
 }

@@ -475,16 +475,6 @@ fn visit_each_place_in_value<F: FnMut(&Place)>(value: &InstructionValue, visit: 
             visit_each_place_in_value(left, visit);
             visit_each_place_in_value(right, visit);
         }
-        InstructionValue::ReactiveConditionalExpression {
-            test,
-            consequent,
-            alternate,
-            ..
-        } => {
-            visit_each_place_in_value(test, visit);
-            visit_each_place_in_value(consequent, visit);
-            visit_each_place_in_value(alternate, visit);
-        }
         InstructionValue::TaggedTemplateExpression { tag, .. } => {
             visit(tag);
         }
@@ -530,7 +520,6 @@ fn visit_each_place_in_value<F: FnMut(&Place)>(value: &InstructionValue, visit: 
         | InstructionValue::Primitive { .. }
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::StartMemoize { .. }
         | InstructionValue::Debugger { .. } => {}
@@ -1589,12 +1578,9 @@ mod tests {
     fn test_prune_non_reactive_dep() {
         // Scope depends on id=1, but id=1 is not reactive => dep should be pruned
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Scope(ReactiveScopeBlock {
                 scope: make_scope_with_deps(1, vec![1]),
                 instructions: vec![ReactiveStatement::Instruction(Box::new(
@@ -1609,7 +1595,6 @@ mod tests {
                     },
                 ))],
             })],
-            directives: vec![],
         };
 
         prune_non_reactive_deps_reactive(&mut func);
@@ -1626,12 +1611,9 @@ mod tests {
     fn test_keep_reactive_dep() {
         // Scope depends on id=1, and id=1 IS reactive (place.reactive=true)
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 // An instruction that makes id=1 reactive
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
@@ -1658,7 +1640,6 @@ mod tests {
                     ))],
                 }),
             ],
-            directives: vec![],
         };
 
         prune_non_reactive_deps_reactive(&mut func);
@@ -1677,12 +1658,9 @@ mod tests {
         // id=1 is reactive, LoadLocal reads it into id=2,
         // scope depends on id=2 => should keep the dependency
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
                     id: InstructionId(0),
@@ -1708,7 +1686,6 @@ mod tests {
                     ))],
                 }),
             ],
-            directives: vec![],
         };
 
         prune_non_reactive_deps_reactive(&mut func);

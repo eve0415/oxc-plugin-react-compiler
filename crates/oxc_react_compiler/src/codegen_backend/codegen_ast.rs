@@ -86,7 +86,6 @@ pub struct CodegenOptions {
 
 pub struct CodegenFunctionResult<'a> {
     pub body: oxc_allocator::Vec<'a, ast::Statement<'a>>,
-    pub cache_size: u32,
     pub needs_cache_import: bool,
     pub param_names: Vec<String>,
     pub needs_hook_guards: bool,
@@ -100,7 +99,6 @@ pub struct CodegenFunctionResult<'a> {
 /// Used by the pipeline to extract codegen metadata without keeping the AST.
 #[derive(Clone)]
 pub struct CodegenMetadata {
-    pub cache_size: u32,
     pub needs_cache_import: bool,
     pub param_names: Vec<String>,
     pub needs_hook_guards: bool,
@@ -114,7 +112,6 @@ impl<'a> CodegenFunctionResult<'a> {
     /// Extract metadata without the AST body.
     pub fn metadata(&self) -> CodegenMetadata {
         CodegenMetadata {
-            cache_size: self.cache_size,
             needs_cache_import: self.needs_cache_import,
             param_names: self.param_names.clone(),
             needs_hook_guards: self.needs_hook_guards,
@@ -513,7 +510,6 @@ pub fn codegen_reactive_function<'a>(
 
     CodegenFunctionResult {
         body,
-        cache_size,
         needs_cache_import,
         param_names,
         needs_hook_guards: cx.emitted_hook_guards,
@@ -1529,13 +1525,6 @@ fn codegen_instruction_value<'a>(
                 target,
             ))
         }
-        InstructionValue::MetaProperty { meta, property, .. } => {
-            Some(cx.builder.expression_meta_property(
-                SPAN,
-                cx.builder.identifier_name(SPAN, cx.builder.ident(meta)),
-                cx.builder.identifier_name(SPAN, cx.builder.ident(property)),
-            ))
-        }
         InstructionValue::RegExpLiteral { pattern, flags, .. } => {
             let re_flags = parse_regexp_flags(flags);
             let regex = ast::RegExp {
@@ -1755,17 +1744,6 @@ fn codegen_instruction_value<'a>(
             codegen_instruction_value(cx, left)?,
             lower_logical_operator(*operator),
             codegen_instruction_value(cx, right)?,
-        )),
-        InstructionValue::ReactiveConditionalExpression {
-            test,
-            consequent,
-            alternate,
-            ..
-        } => Some(cx.builder.expression_conditional(
-            SPAN,
-            codegen_instruction_value(cx, test)?,
-            codegen_instruction_value(cx, consequent)?,
-            codegen_instruction_value(cx, alternate)?,
         )),
         // Statement-level variants handled in codegen_instruction before reaching here.
         InstructionValue::Debugger { .. }

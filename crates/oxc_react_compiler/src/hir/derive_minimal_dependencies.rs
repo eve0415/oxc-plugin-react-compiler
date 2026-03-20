@@ -315,7 +315,7 @@ mod tests {
     use super::*;
 
     fn make_id(id: u32) -> Identifier {
-        make_temporary_identifier(IdentifierId::new(id), SourceLocation::Generated)
+        make_temporary_identifier(IdentifierId(id), SourceLocation::Generated)
     }
 
     fn make_dep(id: u32, path: Vec<(&str, bool)>) -> ReactiveScopeDependency {

@@ -9,18 +9,18 @@
 //! - `oxc_codegen` for output generation
 
 mod codegen_backend;
-pub mod environment;
-pub mod error;
-pub mod hir;
-pub mod inference;
-pub mod optimization;
+pub(crate) mod environment;
+pub(crate) mod error;
+pub(crate) mod hir;
+pub(crate) mod inference;
+pub(crate) mod optimization;
 pub mod options;
-pub mod pipeline;
-pub mod reactive_scopes;
-pub mod source_lines;
-pub mod ssa;
-pub mod type_inference;
-pub mod validation;
+pub(crate) mod pipeline;
+pub(crate) mod reactive_scopes;
+pub(crate) mod source_lines;
+pub(crate) mod ssa;
+pub(crate) mod type_inference;
+pub(crate) mod validation;
 
 /// Compile a single file. Returns the transformed code and source map if compilation
 /// was applied, or `None` if the file was not transformed (e.g., no components/hooks found).

@@ -356,7 +356,6 @@ fn lower_function_inner<'a>(
     Ok(LowerResult {
         func: hir::HIRFunction {
             env,
-            loc: span_to_loc(func_span),
             id: func_id.map(|s| s.to_string()),
             fn_type: hir::ReactFunctionType::Other,
             params,
@@ -1963,27 +1962,26 @@ fn lower_nested_func<'a>(
                         builder.push_todo(msg.to_string());
                     }
                 }
-                stub_lowered_function(builder, func.span)
+                stub_lowered_function(builder)
             }
         }
     } else {
-        stub_lowered_function(builder, func.span)
+        stub_lowered_function(builder)
     }
 }
 
-fn stub_lowered_function(builder: &mut HIRBuilder, span: Span) -> hir::LoweredFunction {
+fn stub_lowered_function(builder: &mut HIRBuilder) -> hir::LoweredFunction {
     let env = builder.env.clone();
     hir::LoweredFunction {
         func: hir::HIRFunction {
             env,
-            loc: span_to_loc(span),
             id: None,
             fn_type: hir::ReactFunctionType::Other,
             params: Vec::new(),
             returns: builder.make_temporary_place(hir::SourceLocation::Generated),
             context: Vec::new(),
             body: hir::HIR {
-                entry: hir::BlockId::new(0),
+                entry: hir::BlockId(0),
                 blocks: Vec::new(),
             },
             generator: false,
@@ -5171,12 +5169,6 @@ fn lower_jsx_elem<'a>(
     source: &str,
 ) -> hir::InstructionValue {
     let loc = span_to_loc(jsx.span);
-    let opening_loc = span_to_loc(jsx.opening_element.span);
-    let closing_loc = jsx
-        .closing_element
-        .as_ref()
-        .map(|c| span_to_loc(c.span))
-        .unwrap_or(hir::SourceLocation::Generated);
 
     let tag = lower_jsx_name(builder, &jsx.opening_element.name, semantic, source);
 
@@ -5294,8 +5286,6 @@ fn lower_jsx_elem<'a>(
         props,
         children,
         loc,
-        opening_loc,
-        closing_loc,
     }
 }
 
@@ -5627,7 +5617,7 @@ fn lower_arrow<'a>(
                     builder.push_todo(msg.to_string());
                 }
             }
-            stub_lowered_function(builder, arrow.span)
+            stub_lowered_function(builder)
         }
     }
 }

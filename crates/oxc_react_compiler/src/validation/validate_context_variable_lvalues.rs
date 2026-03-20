@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
 use crate::hir::types::*;
 
 /// The kind of reference observed for a given identifier.
@@ -208,7 +208,6 @@ fn validate_impl(
                             diagnostics: vec![CompilerDiagnostic {
                                 severity: DiagnosticSeverity::Todo,
                                 message: "Handle lvalues for this instruction kind".to_string(),
-                                category: Some(ErrorCategory::Todo),
                             }],
                         }));
                     }
@@ -254,7 +253,6 @@ fn visit(
                     diagnostics: vec![CompilerDiagnostic {
                         severity: DiagnosticSeverity::Todo,
                         message: "Support destructuring of context variables".to_string(),
-                        category: Some(ErrorCategory::Todo),
                     }],
                 }));
             }
@@ -273,7 +271,6 @@ fn visit(
                 diagnostics: vec![CompilerDiagnostic {
                     severity: DiagnosticSeverity::Invariant,
                     message: format!("this is {:?}", prev_kind),
-                    category: Some(ErrorCategory::Invariant),
                 }],
             }));
         }
@@ -371,7 +368,6 @@ mod tests {
     fn make_hir_function(blocks: Vec<(BlockId, BasicBlock)>) -> HIRFunction {
         HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Component,
             params: vec![],

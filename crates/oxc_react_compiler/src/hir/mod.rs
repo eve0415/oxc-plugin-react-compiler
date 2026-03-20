@@ -7,23 +7,23 @@
 //! - Phi nodes for control flow merges
 //! - Places (identifier + optional property path) for tracking values
 
-pub mod build;
-pub mod build_reactive_scope_terminals;
-pub mod builder;
-pub mod collect_hoistable_property_loads;
-pub mod collect_optional_chain_deps;
-pub mod compute_unconditional_blocks;
-pub mod derive_minimal_dependencies;
-pub mod dominator;
-pub mod flatten_reactive_loops;
-pub mod flatten_scopes_with_hooks;
-pub mod globals;
-pub mod merge_consecutive_blocks;
-pub mod object_shape;
-pub mod propagate_scope_dependencies_hir;
-pub mod prune_maybe_throws;
-pub mod prune_unused_labels;
-pub mod scope_dependency_utils;
-pub mod transform_fire;
-pub mod types;
-pub mod visitors;
+pub(crate) mod build;
+pub(crate) mod build_reactive_scope_terminals;
+pub(crate) mod builder;
+pub(crate) mod collect_hoistable_property_loads;
+pub(crate) mod collect_optional_chain_deps;
+pub(crate) mod compute_unconditional_blocks;
+pub(crate) mod derive_minimal_dependencies;
+pub(crate) mod dominator;
+pub(crate) mod flatten_reactive_loops;
+pub(crate) mod flatten_scopes_with_hooks;
+pub(crate) mod globals;
+pub(crate) mod merge_consecutive_blocks;
+pub(crate) mod object_shape;
+pub(crate) mod propagate_scope_dependencies_hir;
+pub(crate) mod prune_maybe_throws;
+pub(crate) mod prune_unused_labels;
+pub(crate) mod scope_dependency_utils;
+pub(crate) mod transform_fire;
+pub(crate) mod types;
+pub(crate) mod visitors;

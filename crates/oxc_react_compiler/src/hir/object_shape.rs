@@ -36,16 +36,10 @@ pub const BUILT_IN_SET_ACTION_STATE_ID: ShapeId = "BuiltInSetActionState";
 pub const BUILT_IN_USE_REF_ID: ShapeId = "BuiltInUseRefId";
 pub const BUILT_IN_REF_VALUE_ID: ShapeId = "BuiltInRefValue";
 pub const BUILT_IN_MIXED_READONLY_ID: ShapeId = "BuiltInMixedReadonly";
-pub const BUILT_IN_USE_EFFECT_HOOK_ID: ShapeId = "BuiltInUseEffectHook";
-pub const BUILT_IN_USE_LAYOUT_EFFECT_HOOK_ID: ShapeId = "BuiltInUseLayoutEffectHook";
-pub const BUILT_IN_USE_INSERTION_EFFECT_HOOK_ID: ShapeId = "BuiltInUseInsertionEffectHook";
-pub const BUILT_IN_USE_OPERATOR_ID: ShapeId = "BuiltInUseOperator";
 pub const BUILT_IN_USE_REDUCER_ID: ShapeId = "BuiltInUseReducer";
 pub const BUILT_IN_DISPATCH_ID: ShapeId = "BuiltInDispatch";
-pub const BUILT_IN_USE_CONTEXT_HOOK_ID: ShapeId = "BuiltInUseContextHook";
 pub const BUILT_IN_USE_TRANSITION_ID: ShapeId = "BuiltInUseTransition";
 pub const BUILT_IN_START_TRANSITION_ID: ShapeId = "BuiltInStartTransition";
-pub const BUILT_IN_FIRE_ID: ShapeId = "BuiltInFire";
 pub const BUILT_IN_FIRE_FUNCTION_ID: ShapeId = "BuiltInFireFunction";
 pub const BUILT_IN_USE_EFFECT_EVENT_ID: ShapeId = "BuiltInUseEffectEvent";
 pub const BUILT_IN_EFFECT_EVENT_ID: ShapeId = "BuiltInEffectEventFunction";
@@ -82,29 +76,6 @@ pub const TEST_SHARED_RUNTIME_TYPED_CREATE_FROM_FN_ID: ShapeId = "SharedRuntimeT
 pub const TEST_SHARED_RUNTIME_TYPED_MUTATE_FN_ID: ShapeId = "SharedRuntimeTypedMutateFn";
 
 // ---------------------------------------------------------------------------
-// Hook kind
-// ---------------------------------------------------------------------------
-
-/// Hook kind classification -- mirrors upstream `HookKind` union type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HookKind {
-    UseContext,
-    UseState,
-    UseActionState,
-    UseReducer,
-    UseRef,
-    UseEffect,
-    UseLayoutEffect,
-    UseInsertionEffect,
-    UseMemo,
-    UseCallback,
-    UseTransition,
-    UseImperativeHandle,
-    UseEffectEvent,
-    Custom,
-}
-
-// ---------------------------------------------------------------------------
 // Return type
 // ---------------------------------------------------------------------------
 
@@ -138,7 +109,6 @@ pub struct FunctionSignature {
     pub return_value_kind: ValueKind,
     pub return_value_reason: Option<ValueReason>,
     pub callee_effect: Effect,
-    pub hook_kind: Option<HookKind>,
     /// When true, parameters are guaranteed not to alias each other or the
     /// return value. The compiler may skip memoizing arguments that do not
     /// otherwise escape.
@@ -164,7 +134,6 @@ impl Default for FunctionSignature {
             return_value_kind: ValueKind::Mutable,
             return_value_reason: None,
             callee_effect: Effect::Read,
-            hook_kind: None,
             no_alias: false,
             mutable_only_if_operands_are_mutable: false,
             impure: false,
@@ -228,13 +197,6 @@ impl ShapeRegistry {
         self.shapes
             .get(shape_id)
             .and_then(|s| s.properties.get(property).or_else(|| s.properties.get("*")))
-    }
-
-    /// Get the call/construct signature of a shape (if it is callable).
-    pub fn get_function_type(&self, shape_id: &str) -> Option<&FunctionSignature> {
-        self.shapes
-            .get(shape_id)
-            .and_then(|s| s.function_type.as_ref())
     }
 
     pub fn insert(&mut self, id: &'static str, shape: ObjectShape) {

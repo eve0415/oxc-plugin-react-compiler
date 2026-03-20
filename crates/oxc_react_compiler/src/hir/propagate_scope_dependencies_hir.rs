@@ -1270,7 +1270,6 @@ pub(crate) fn infer_minimal_dependencies_for_inner_fn(
                     Terminal::Scope { .. } => "scope",
                     Terminal::Try { .. } => "try",
                     Terminal::PrunedScope { .. } => "pruned_scope",
-                    Terminal::MaybeThrow { .. } => "maybe_throw",
                     Terminal::Label { .. } => "label",
                     Terminal::Unsupported { .. } => "unsupported",
                     _ => "other",
@@ -2148,7 +2147,6 @@ mod tests {
 
         let func = HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Component,
             params: vec![],

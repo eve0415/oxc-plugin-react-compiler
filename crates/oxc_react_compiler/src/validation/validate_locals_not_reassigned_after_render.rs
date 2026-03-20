@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
 use crate::hir::types::*;
 use crate::hir::visitors;
 use crate::inference::infer_mutation_aliasing_effects::get_function_call_signature;
@@ -41,7 +41,6 @@ pub fn validate_locals_not_reassigned_after_render(
                     "Reassigning {var_name} after render has completed can cause \
                      inconsistent behavior on subsequent renders. Consider using state instead"
                 ),
-                category: Some(ErrorCategory::Immutability),
             }],
         }));
     }
@@ -172,7 +171,6 @@ fn get_context_reassignment(
                                              cause inconsistent behavior on subsequent renders. \
                                              Consider using state instead"
                                         .to_string(),
-                                    category: Some(ErrorCategory::Immutability),
                                 }],
                             }));
                         }
@@ -472,7 +470,6 @@ mod tests {
     fn make_hir_function(blocks: Vec<(BlockId, BasicBlock)>) -> HIRFunction {
         HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Component,
             params: vec![],

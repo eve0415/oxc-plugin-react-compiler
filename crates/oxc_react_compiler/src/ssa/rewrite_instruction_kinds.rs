@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
 use crate::hir::types::*;
 
 /// Rewrite instruction kinds so that variables which are never reassigned
@@ -307,7 +307,6 @@ pub fn rewrite_instruction_kinds(func: &mut HIRFunction) -> Result<(), CompilerE
                                                 "No declaration for destructured identifier {} in value block",
                                                 place.identifier.id
                                             ),
-                                            category: Some(ErrorCategory::Invariant),
                                         }],
                                     }));
                                 }
@@ -354,7 +353,6 @@ pub fn rewrite_instruction_kinds(func: &mut HIRFunction) -> Result<(), CompilerE
                                             "Other places were `Const` but identifier {} is Reassign (declaration place was {})",
                                             place.identifier.id, prev_decl_id
                                         ),
-                                        category: Some(ErrorCategory::Invariant),
                                     }],
                                 }));
                             }
@@ -381,7 +379,6 @@ pub fn rewrite_instruction_kinds(func: &mut HIRFunction) -> Result<(), CompilerE
                                             "Other places were `Reassign` but identifier {} is Const/Let (reassign place was {})",
                                             place.identifier.id, prev_reassign_id
                                         ),
-                                        category: Some(ErrorCategory::Invariant),
                                     }],
                                 }));
                             }

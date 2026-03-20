@@ -125,7 +125,6 @@ pub fn map_terminal_operands(terminal: &mut Terminal, mut f: impl FnMut(&mut Pla
         | Terminal::Optional { .. }
         | Terminal::Label { .. }
         | Terminal::Sequence { .. }
-        | Terminal::MaybeThrow { .. }
         | Terminal::Scope { .. }
         | Terminal::PrunedScope { .. } => {}
     }
@@ -317,16 +316,6 @@ pub(crate) fn for_each_value_operand(value: &InstructionValue, f: &mut impl FnMu
             for_each_value_operand(left, f);
             for_each_value_operand(right, f);
         }
-        InstructionValue::ReactiveConditionalExpression {
-            test,
-            consequent,
-            alternate,
-            ..
-        } => {
-            for_each_value_operand(test, f);
-            for_each_value_operand(consequent, f);
-            for_each_value_operand(alternate, f);
-        }
         // FunctionExpression/ObjectMethod: context captures are operands
         InstructionValue::FunctionExpression { lowered_func, .. }
         | InstructionValue::ObjectMethod { lowered_func, .. } => {
@@ -348,7 +337,6 @@ pub(crate) fn for_each_value_operand(value: &InstructionValue, f: &mut impl FnMu
         InstructionValue::Primitive { .. }
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::DeclareLocal { .. }
         | InstructionValue::DeclareContext { .. }
@@ -542,16 +530,6 @@ fn map_value_operands(value: &mut InstructionValue, f: &mut impl FnMut(&mut Plac
             map_value_operands(left, f);
             map_value_operands(right, f);
         }
-        InstructionValue::ReactiveConditionalExpression {
-            test,
-            consequent,
-            alternate,
-            ..
-        } => {
-            map_value_operands(test, f);
-            map_value_operands(consequent, f);
-            map_value_operands(alternate, f);
-        }
         // FunctionExpression/ObjectMethod: context captures are operands
         InstructionValue::FunctionExpression { lowered_func, .. }
         | InstructionValue::ObjectMethod { lowered_func, .. } => {
@@ -573,7 +551,6 @@ fn map_value_operands(value: &mut InstructionValue, f: &mut impl FnMut(&mut Plac
         InstructionValue::Primitive { .. }
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::DeclareLocal { .. }
         | InstructionValue::DeclareContext { .. }

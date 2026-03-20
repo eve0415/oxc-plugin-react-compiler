@@ -14,9 +14,7 @@
 use std::cell::{Cell, RefCell};
 
 use hmac::{Hmac, Mac};
-use oxc_allocator::CloneIn;
 use oxc_ast::ast;
-use oxc_ast_visit::{VisitMut, walk_mut};
 use oxc_span::GetSpan;
 use sha2::Sha256;
 
@@ -1184,11 +1182,11 @@ fn codegen_outlined_function(
                 let ui = unique_identifiers.clone();
                 let alloc = oxc_allocator::Allocator::default();
                 let bld = oxc_ast::AstBuilder::new(&alloc);
-                let meta = crate::reactive_scopes::codegen_ast::codegen_reactive_function(
+                let meta = crate::codegen_backend::codegen_ast::codegen_reactive_function(
                     bld,
                     &alloc,
                     &reactive_fn,
-                    crate::reactive_scopes::codegen_ast::CodegenOptions {
+                    crate::codegen_backend::codegen_ast::CodegenOptions {
                         enable_change_variable_codegen,
                         enable_emit_hook_guards: false,
                         enable_change_detection_for_debugging: false,
@@ -1226,11 +1224,11 @@ fn codegen_outlined_function(
         let ui = unique_identifiers.clone();
         let alloc = oxc_allocator::Allocator::default();
         let bld = oxc_ast::AstBuilder::new(&alloc);
-        let meta = crate::reactive_scopes::codegen_ast::codegen_reactive_function(
+        let meta = crate::codegen_backend::codegen_ast::codegen_reactive_function(
             bld,
             &alloc,
             &reactive_fn,
-            crate::reactive_scopes::codegen_ast::CodegenOptions {
+            crate::codegen_backend::codegen_ast::CodegenOptions {
                 enable_change_variable_codegen,
                 enable_emit_hook_guards: false,
                 enable_change_detection_for_debugging: false,
@@ -1353,7 +1351,7 @@ fn dedupe_hir_outlined_functions(outlined: &mut Vec<(String, HIRFunction)>) {
 
 /// Result of running the HIR pipeline.
 struct PipelineOutput {
-    codegen_result: crate::reactive_scopes::codegen_ast::CodegenMetadata,
+    codegen_result: crate::codegen_backend::codegen_ast::CodegenMetadata,
     reactive_function: crate::hir::types::ReactiveFunction,
     final_hir_snapshot: HIRFunction,
     hir_outlined: Vec<optimization::outline_functions::OutlinedFunction>,
@@ -1807,7 +1805,6 @@ fn run_hir_pipeline(
                 diagnostics: vec![crate::error::CompilerDiagnostic {
                     severity: crate::error::DiagnosticSeverity::InvalidReact,
                     message: "Modifying a value used previously in an effect function or as an effect dependency is not allowed. Consider moving the modification before calling useEffect()".to_string(),
-                    category: Some(crate::error::ErrorCategory::Purity),
                 }],
             }));
         }
@@ -2169,17 +2166,11 @@ fn maybe_dump_hir_blocks(label: &str, hir: &crate::hir::types::HIRFunction) {
                     bid.0, instr_count, test.0, fallthrough.0
                 );
             }
-            Terminal::MaybeThrow { continuation, .. } => {
-                eprintln!(
-                    "  bb{} instrs={} term=maybe-throw cont=bb{}",
-                    bid.0, instr_count, continuation.0
-                );
-            }
-            Terminal::Unsupported { .. } => {
-                eprintln!("  bb{} instrs={} term=unsupported", bid.0, instr_count);
-            }
             Terminal::Unreachable { .. } => {
                 eprintln!("  bb{} instrs={} term=unreachable", bid.0, instr_count);
+            }
+            _ => {
+                eprintln!("  bb{} instrs={} term=other", bid.0, instr_count);
             }
         }
         if debug_hir_phi && !block.phis.is_empty() {
@@ -2659,7 +2650,7 @@ fn run_reactive_passes(
     fbt_operands: &std::collections::HashSet<crate::hir::types::IdentifierId>,
 ) -> Result<
     (
-        crate::reactive_scopes::codegen_ast::CodegenMetadata,
+        crate::codegen_backend::codegen_ast::CodegenMetadata,
         crate::hir::types::ReactiveFunction,
         std::collections::HashSet<String>,
     ),
@@ -2768,7 +2759,7 @@ fn run_reactive_passes(
     let mut codegen_result = {
         let alloc = oxc_allocator::Allocator::default();
         let bld = oxc_ast::AstBuilder::new(&alloc);
-        let opts = crate::reactive_scopes::codegen_ast::CodegenOptions {
+        let opts = crate::codegen_backend::codegen_ast::CodegenOptions {
             enable_change_variable_codegen: env_config.enable_change_variable_codegen,
             enable_emit_hook_guards: env_config.enable_emit_hook_guards,
             enable_change_detection_for_debugging: env_config.enable_change_detection_for_debugging,
@@ -2784,7 +2775,7 @@ fn run_reactive_passes(
             param_name_overrides: std::collections::HashMap::new(),
             enable_name_anonymous_functions: env_config.enable_name_anonymous_functions,
         };
-        crate::reactive_scopes::codegen_ast::codegen_reactive_function(
+        crate::codegen_backend::codegen_ast::codegen_reactive_function(
             bld,
             &alloc,
             &reactive_fn,
@@ -4719,7 +4710,6 @@ fn conflicting_global_bailout(name: &str) -> CompilerError {
         diagnostics: vec![crate::error::CompilerDiagnostic {
             severity: crate::error::DiagnosticSeverity::Todo,
             message: format!("Conflict from local binding {}.", name),
-            category: Some(crate::error::ErrorCategory::Todo),
         }],
     })
 }
@@ -6083,37 +6073,6 @@ struct ParamsResult {
     hir_outlined_functions: Vec<(String, HIRFunction)>,
 }
 
-#[allow(dead_code)]
-fn extract_simple_default_binding_candidate(
-    statement: &CompiledParamPrefixStatement,
-) -> Option<(String, String, String)> {
-    match (&statement.kind, &statement.pattern, &statement.init) {
-        (
-            ast::VariableDeclarationKind::Const,
-            CompiledBindingPattern::Identifier(name),
-            CompiledInitializer::UndefinedFallback {
-                temp_name,
-                default_expr,
-            },
-        ) if is_valid_binding_identifier(name) && is_valid_binding_identifier(temp_name) => {
-            Some((name.clone(), temp_name.clone(), default_expr.clone()))
-        }
-        _ => None,
-    }
-}
-
-#[allow(dead_code)]
-fn is_valid_binding_identifier(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .next()
-            .is_some_and(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphabetic())
-        && name
-            .chars()
-            .all(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphanumeric())
-}
-
 fn is_identifier_token_char(ch: char) -> bool {
     ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()
 }
@@ -6237,128 +6196,14 @@ fn align_params_result_with_codegen(params_result: &mut ParamsResult, param_name
     }
 }
 
-#[allow(dead_code)]
-fn is_outlined_temp_expr(expr: &str) -> bool {
-    let trimmed = expr.trim();
-    if !trimmed.starts_with("_temp") {
-        return false;
-    }
-    let suffix = &trimmed["_temp".len()..];
-    suffix.is_empty() || suffix.chars().all(|ch| ch.is_ascii_digit())
-}
-
-#[allow(dead_code)]
-fn rewrite_inline_empty_arrow_callback(expr: &str) -> (String, Vec<(String, HIRFunction)>) {
-    let trimmed = expr.trim();
-    for source_type in [
-        oxc_span::SourceType::mjs().with_jsx(true),
-        oxc_span::SourceType::ts().with_jsx(true),
-        oxc_span::SourceType::tsx(),
-    ] {
-        let allocator = oxc_allocator::Allocator::default();
-        let wrapper = format!("const __codex_expr = {trimmed};");
-        let mut parsed = oxc_parser::Parser::new(&allocator, &wrapper, source_type).parse();
-        if parsed.panicked || !parsed.errors.is_empty() {
-            continue;
-        }
-        let Some(ast::Statement::VariableDeclaration(declaration)) =
-            parsed.program.body.first_mut()
-        else {
-            continue;
-        };
-        let Some(init) = declaration
-            .declarations
-            .first_mut()
-            .and_then(|declarator| declarator.init.as_mut())
-        else {
-            continue;
-        };
-        let builder = oxc_ast::AstBuilder::new(&allocator);
-        let mut rewriter = InlineEmptyArrowCallbackRewriter {
-            builder,
-            replacements: 0,
-        };
-        rewriter.visit_expression(init);
-        if rewriter.replacements != 1 {
-            continue;
-        }
-        return (
-            codegen_expression_source(init),
-            vec![synthesized_empty_outlined_arrow_hir("_temp")],
-        );
-    }
-    (trimmed.to_string(), vec![])
-}
-
-#[allow(dead_code)]
-struct InlineEmptyArrowCallbackRewriter<'a> {
-    builder: oxc_ast::AstBuilder<'a>,
-    replacements: usize,
-}
-
-impl<'a> VisitMut<'a> for InlineEmptyArrowCallbackRewriter<'a> {
-    fn visit_expression(&mut self, expression: &mut ast::Expression<'a>) {
-        if is_inline_empty_arrow_expression(expression) {
-            self.replacements += 1;
-            if self.replacements == 1 {
-                *expression = self
-                    .builder
-                    .expression_identifier(oxc_span::SPAN, self.builder.ident("_temp"));
-            }
-            return;
-        }
-        walk_mut::walk_expression(self, expression);
-    }
-}
-
-#[allow(dead_code)]
-fn is_inline_empty_arrow_expression(expression: &ast::Expression<'_>) -> bool {
-    let ast::Expression::ArrowFunctionExpression(arrow) = expression.without_parentheses() else {
-        return false;
-    };
-    !arrow.r#async
-        && !arrow.expression
-        && arrow.params.items.is_empty()
-        && arrow.params.rest.is_none()
-        && arrow.body.statements.is_empty()
-}
-
-#[allow(dead_code)]
-fn codegen_expression_source(expression: &ast::Expression<'_>) -> String {
-    let allocator = oxc_allocator::Allocator::default();
-    let builder = oxc_ast::AstBuilder::new(&allocator);
-    let program = builder.program(
-        oxc_span::SPAN,
-        oxc_span::SourceType::mjs().with_jsx(true),
-        "",
-        builder.vec(),
-        None,
-        builder.vec(),
-        builder.vec1(builder.statement_expression(oxc_span::SPAN, expression.clone_in(&allocator))),
-    );
-    let code = oxc_codegen::Codegen::new()
-        .with_options(oxc_codegen::CodegenOptions {
-            indent_char: oxc_codegen::IndentChar::Space,
-            indent_width: 2,
-            ..oxc_codegen::CodegenOptions::default()
-        })
-        .build(&program)
-        .code;
-    let trimmed = code.trim_end();
-    trimmed.strip_suffix(';').unwrap_or(trimmed).to_string()
-}
-
-#[allow(dead_code)]
-type DefaultParamCacheSynthesis = (SynthesizedDefaultParamCache, Vec<(String, HIRFunction)>);
-
 struct PreparedGeneratedBody {
     synthesized_default_param_cache: Option<SynthesizedDefaultParamCache>,
     synthesized_hir_outlined_functions: Vec<(String, HIRFunction)>,
-    cache_prologue: Option<crate::reactive_scopes::codegen_ast::CachePrologue>,
+    cache_prologue: Option<crate::codegen_backend::codegen_ast::CachePrologue>,
 }
 
 fn prepare_generated_body(
-    codegen_result: &crate::reactive_scopes::codegen_ast::CodegenMetadata,
+    codegen_result: &crate::codegen_backend::codegen_ast::CodegenMetadata,
     _prefix_statements: &[CompiledParamPrefixStatement],
 ) -> PreparedGeneratedBody {
     PreparedGeneratedBody {
@@ -6366,61 +6211,6 @@ fn prepare_generated_body(
         synthesized_hir_outlined_functions: vec![],
         cache_prologue: codegen_result.cache_prologue.clone(),
     }
-}
-
-#[allow(dead_code)]
-fn synthesized_empty_outlined_arrow_hir(name: &str) -> (String, HIRFunction) {
-    let temp_undefined = crate::hir::types::Place {
-        identifier: crate::hir::types::make_temporary_identifier(
-            crate::hir::types::IdentifierId::new(0),
-            crate::hir::types::SourceLocation::Generated,
-        ),
-        effect: crate::hir::types::Effect::Read,
-        reactive: false,
-        loc: crate::hir::types::SourceLocation::Generated,
-    };
-    let hir_function = HIRFunction {
-        env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-        loc: crate::hir::types::SourceLocation::Generated,
-        id: Some(name.to_string()),
-        fn_type: crate::hir::types::ReactFunctionType::Other,
-        params: vec![],
-        returns: temp_undefined.clone(),
-        context: vec![],
-        body: crate::hir::types::HIR {
-            entry: crate::hir::types::BlockId::new(0),
-            blocks: vec![(
-                crate::hir::types::BlockId::new(0),
-                crate::hir::types::BasicBlock {
-                    kind: crate::hir::types::BlockKind::Block,
-                    id: crate::hir::types::BlockId::new(0),
-                    instructions: vec![crate::hir::types::Instruction {
-                        id: crate::hir::types::InstructionId::new(0),
-                        lvalue: temp_undefined.clone(),
-                        value: crate::hir::types::InstructionValue::Primitive {
-                            value: crate::hir::types::PrimitiveValue::Undefined,
-                            loc: crate::hir::types::SourceLocation::Generated,
-                        },
-                        loc: crate::hir::types::SourceLocation::Generated,
-                        effects: None,
-                    }],
-                    terminal: crate::hir::types::Terminal::Return {
-                        value: temp_undefined.clone(),
-                        return_variant: crate::hir::types::ReturnVariant::Explicit,
-                        id: crate::hir::types::InstructionId::new(1),
-                        loc: crate::hir::types::SourceLocation::Generated,
-                    },
-                    preds: std::collections::HashSet::new(),
-                    phis: vec![],
-                },
-            )],
-        },
-        generator: false,
-        async_: false,
-        directives: vec![],
-        aliasing_effects: None,
-    };
-    (name.to_string(), hir_function)
 }
 
 /// Generate a comma-separated parameter string from the AST, stripping type annotations.
@@ -6802,7 +6592,6 @@ fn collect_binding_pattern_names<'a>(
 
 /// Check if a statement contains any identifier references that are NOT own params
 /// and NOT known globals. Returns true if potential captures exist.
-#[allow(dead_code)]
 fn has_non_global_references_stmt(
     stmt: &ast::Statement,
     own_params: &std::collections::HashSet<&str>,
@@ -6852,7 +6641,6 @@ fn has_non_global_references_stmt(
 
 /// Check if an expression contains any identifier references that are NOT own params
 /// and NOT known globals.
-#[allow(dead_code)]
 fn has_non_global_references_expr(
     expr: &ast::Expression,
     own_params: &std::collections::HashSet<&str>,
@@ -6941,7 +6729,6 @@ fn has_non_global_references_expr(
 }
 
 /// Check if a name is a known JavaScript global.
-#[allow(dead_code)]
 fn is_known_global(name: &str) -> bool {
     matches!(
         name,
@@ -7291,7 +7078,6 @@ fn validate_no_unsupported_global_calls(func: &HIRFunction) -> Result<(), Compil
                                      It is an anti-pattern in JavaScript, and the code executed \
                                      cannot be analyzed by React Compiler."
                             .to_string(),
-                        category: Some(crate::error::ErrorCategory::Purity),
                     }],
                 }));
             }
@@ -7328,7 +7114,6 @@ fn validate_no_dynamic_components_or_hooks(
                  but it's defined inside `{parent_name}`. \
                  Components and Hooks should always be declared at module scope",
             ),
-            category: Some(crate::error::ErrorCategory::Purity),
         })
     }
 
@@ -7582,10 +7367,7 @@ mod tests {
 
     use crate::options::PluginOptions;
 
-    use super::{
-        align_params_result_with_codegen, extract_emitted_directives, params_to_result,
-        rewrite_inline_empty_arrow_callback,
-    };
+    use super::{align_params_result_with_codegen, extract_emitted_directives, params_to_result};
 
     #[test]
     fn params_to_result_collects_hir_for_outlined_default_arrow() {
@@ -7720,23 +7502,5 @@ mod tests {
             extract_emitted_directives(body),
             vec!["\"use no forget\"", "\"use memo\""]
         );
-    }
-
-    #[test]
-    fn rewrite_inline_empty_arrow_callback_rewrites_single_empty_arrow() {
-        let (rewritten, outlined) = rewrite_inline_empty_arrow_callback("foo(() => {})");
-
-        assert_eq!(rewritten, "foo(_temp)");
-        assert_eq!(outlined.len(), 1);
-        assert_eq!(outlined[0].0, "_temp");
-    }
-
-    #[test]
-    fn rewrite_inline_empty_arrow_callback_skips_multiple_empty_arrows() {
-        let source = "foo(() => {}, () => {})";
-        let (rewritten, outlined) = rewrite_inline_empty_arrow_callback(source);
-
-        assert_eq!(rewritten, source);
-        assert!(outlined.is_empty());
     }
 }
