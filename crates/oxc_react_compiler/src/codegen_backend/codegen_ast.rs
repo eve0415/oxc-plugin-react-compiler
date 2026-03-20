@@ -2389,9 +2389,7 @@ fn emit_var_decl_stmt_inner<'a>(
     init: Option<ast::Expression<'a>>,
     decl_id: Option<DeclarationId>,
 ) -> ast::Statement<'a> {
-    // Prevent duplicate `let`/`const` for the same logical variable.
-    // When a DIFFERENT DeclarationId uses the same name (block-scoped shadowing),
-    // allow the new declaration — this is valid JS.
+    // Prevent duplicate `let`/`const` for the same name at the same scope level.
     if cx.declared_names.contains(name) {
         let is_same_variable = decl_id.is_some_and(|did| cx.declared_decl_ids.contains(&did));
         if is_same_variable {
@@ -2400,7 +2398,22 @@ fn emit_var_decl_stmt_inner<'a>(
             }
             return cx.builder.statement_empty(SPAN);
         }
-        // Different DeclarationId — allow new declaration (block-scoped shadowing).
+        // Different DeclarationId with same temp-like name (e.g., label block
+        // fallthrough where rename_variables reused the name across scopes).
+        // Emit as assignment since the name is already declared.
+        let is_temp_like = name.starts_with('t')
+            && name.len() > 1
+            && name[1..].chars().all(|c| c.is_ascii_digit());
+        if is_temp_like {
+            if let Some(did) = decl_id {
+                cx.declared_decl_ids.insert(did);
+            }
+            if let Some(expr) = init {
+                return emit_assignment_stmt(cx, name, expr);
+            }
+            return cx.builder.statement_empty(SPAN);
+        }
+        // Non-temp: allow new declaration (block-scoped shadowing is valid JS).
     }
     cx.declared_names.insert(name.to_string());
     cx.register_scoped_name(name);
