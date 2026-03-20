@@ -1,6 +1,6 @@
 # React Compiler Conformance -- 99.9% parity rate
 
-**1751** parity_success, **1** parity_failure, **0** skipped
+**1753** parity_success, **1** parity_failure, **0** skipped
 
 ## Failed
 
@@ -251,6 +251,8 @@
 - `controlled-input`
 - `createElement-freeze`
 - `custom-opt-out-directive`
+- `custom/labeled-block-scoping`
+- `custom/usememo-property-dep`
 - `dce-loop`
 - `dce-unused-const`
 - `dce-unused-postfix-update`

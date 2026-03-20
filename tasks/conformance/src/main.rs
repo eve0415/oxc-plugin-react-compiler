@@ -11,7 +11,8 @@ mod reporting;
 use std::path::{Path, PathBuf};
 
 use fixtures::{
-    FixtureOutcome, FixtureResult, Status, collect_fixtures, find_fixture_dir, run_fixture_suite,
+    FixtureOutcome, FixtureResult, Status, collect_fixtures, find_custom_fixture_dir,
+    find_fixture_dir, run_fixture_suite,
 };
 use reporting::{
     build_failure_report, extract_cache_size, generate_snapshot, has_memo_cache,
@@ -65,7 +66,14 @@ fn main() {
         .map(PathBuf::from);
 
     let fixture_dir = find_fixture_dir();
-    let fixtures = collect_fixtures(&fixture_dir, filter.map(String::as_str));
+    let mut fixtures = collect_fixtures(&fixture_dir, filter.map(String::as_str), None);
+
+    // Also collect custom fixtures from tests/fixtures/compiler/
+    let custom_dir = find_custom_fixture_dir();
+    let custom_fixtures =
+        collect_fixtures(&custom_dir, filter.map(String::as_str), Some("custom/"));
+    fixtures.extend(custom_fixtures);
+    fixtures.sort_by(|a, b| a.name.cmp(&b.name));
 
     println!("Found {} fixtures", fixtures.len());
 
