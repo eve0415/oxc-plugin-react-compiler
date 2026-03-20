@@ -1,9 +1,16 @@
-# React Compiler Conformance -- 100.0% parity rate
+# React Compiler Conformance -- 99.6% parity rate
 
-**1758** parity_success, **0** parity_failure, **0** skipped
+**1758** parity_success, **7** parity_failure, **0** skipped
 
 ## Failed
 
+- `custom/closure-multiple-calls-scope-leak`: Output mismatch
+- `custom/import-meta-env-property`: Expected transformed output, but compiler bailed out/skipped
+- `custom/local-function-call-extra-memo`: Output mismatch
+- `custom/method-chain-sub-expression-memo`: Output mismatch
+- `custom/object-literal-sentinel-memoize`: Output mismatch
+- `custom/usememo-filter-sort-bail`: Expected transformed output, but compiler bailed out/skipped
+- `custom/useref-initial-value-sentinel`: Output mismatch
 
 ## Passed
 
