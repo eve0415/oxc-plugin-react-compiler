@@ -547,13 +547,12 @@ impl Visitor {
     /// Recursively visit values and instructions to collect declarations
     /// and property loads.
     fn record_deps_in_value(&mut self, value: &InstructionValue, state: &mut VisitorState) {
-        // In the upstream, this method also recurses into ReactiveValue variants
-        // (SequenceExpression, OptionalExpression, ConditionalExpression, LogicalExpression).
-        // The Rust port doesn't use ReactiveValue -- InstructionValue is used directly.
-        // So we handle the default case: collect maybe-memo dependencies and track stores.
-
+        // Upstream (eda778b8ae): collect maybe-memo dependencies first
         collect_maybe_memo_dependencies(value, &mut self.temporaries, false);
 
+        // Track lvalues for StoreLocal/StoreContext/Destructure in
+        // manualMemoState.decls and temporaries (matching upstream's
+        // eachInstructionValueLValue loop).
         match value {
             InstructionValue::StoreLocal { lvalue, .. }
             | InstructionValue::StoreContext { lvalue, .. } => {
@@ -593,31 +592,20 @@ impl Visitor {
     }
 
     fn record_temporaries(&mut self, instr: &ReactiveInstruction, state: &mut VisitorState) {
-        let lval_id = instr.lvalue.as_ref().map(|lv| lv.identifier.id);
-
-        // If we already have this lvalue tracked, skip
-        if let Some(id) = lval_id
-            && self.temporaries.contains_key(&id)
-        {
-            return;
-        }
-
-        let is_named_local = instr
-            .lvalue
-            .as_ref()
-            .is_some_and(|lv| matches!(lv.identifier.name, Some(IdentifierName::Named(_))));
-
-        if instr.lvalue.is_some()
-            && is_named_local
+        // Upstream (eda778b8ae): track lvalue decls in memo state
+        if let Some(ref lvalue) = instr.lvalue
             && let Some(ref mut memo_state) = state.manual_memo_state
         {
-            memo_state
-                .decls
-                .insert(instr.lvalue.as_ref().unwrap().identifier.declaration_id);
+            memo_state.decls.insert(lvalue.identifier.declaration_id);
         }
 
         self.record_deps_in_value(&instr.value, state);
 
+        // Upstream (eda778b8ae): ALWAYS set lvalue to self-referencing dep.
+        // This overwrites any entry from record_deps_in_value, ensuring
+        // that scope deps resolving through temporaries find the lvalue
+        // itself (not a deeper chain). If the lvalue is declared within
+        // the memo block, validate_inferred_dep will skip it.
         if let Some(ref lvalue) = instr.lvalue {
             self.temporaries.insert(
                 lvalue.identifier.id,
