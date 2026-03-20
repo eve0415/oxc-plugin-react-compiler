@@ -141,6 +141,9 @@ target/
 # napi
 *.node
 
+# Test fixture build outputs
+tests/fixtures/*/dist-*/
+
 # AI
 .claude/*.local.*
 .mcp.json
