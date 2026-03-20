@@ -1,9 +1,13 @@
-# React Compiler Conformance -- 100.0% parity rate
+# React Compiler Conformance -- 99.8% parity rate
 
-**1754** parity_success, **0** parity_failure, **0** skipped
+**1754** parity_success, **4** parity_failure, **0** skipped
 
 ## Failed
 
+- `custom/catch-forloop-same-name-variable`: Expected transformed output, but compiler bailed out/skipped
+- `custom/nested-math-method-calls`: Expected transformed output, but compiler bailed out/skipped
+- `custom/switch-break-inner-function`: Output mismatch
+- `custom/usememo-preserve-retry`: Expected transformed output, but compiler bailed out/skipped
 
 ## Passed
 
