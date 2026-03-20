@@ -1,4 +1,4 @@
-# React Compiler Conformance — 100.0% parity rate
+# React Compiler Conformance -- 100.0% parity rate
 
 **1752** parity_success, **0** parity_failure, **0** skipped
 

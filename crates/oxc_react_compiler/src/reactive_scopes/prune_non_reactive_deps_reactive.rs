@@ -475,16 +475,6 @@ fn visit_each_place_in_value<F: FnMut(&Place)>(value: &InstructionValue, visit: 
             visit_each_place_in_value(left, visit);
             visit_each_place_in_value(right, visit);
         }
-        InstructionValue::ReactiveConditionalExpression {
-            test,
-            consequent,
-            alternate,
-            ..
-        } => {
-            visit_each_place_in_value(test, visit);
-            visit_each_place_in_value(consequent, visit);
-            visit_each_place_in_value(alternate, visit);
-        }
         InstructionValue::TaggedTemplateExpression { tag, .. } => {
             visit(tag);
         }
@@ -530,7 +520,6 @@ fn visit_each_place_in_value<F: FnMut(&Place)>(value: &InstructionValue, visit: 
         | InstructionValue::Primitive { .. }
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::StartMemoize { .. }
         | InstructionValue::Debugger { .. } => {}
@@ -720,11 +709,26 @@ fn visit_and_prune_block(
     reassigned_decls: &HashSet<DeclarationId>,
 ) {
     let debug_flow = std::env::var("DEBUG_PRUNE_NONREACTIVE_FLOW").is_ok();
+    // Track output DeclarationIds of zero-dep scopes. After a zero-dep scope,
+    // any StoreLocal that assigns from a scope output to a named variable
+    // produces a non-reactive value (the scope is sentinel-memoized).
+    let mut zero_dep_scope_output_decl_ids: HashSet<DeclarationId> = HashSet::new();
     for i in 0..block.len() {
         let keep_nonreactive_reassigned_deps =
             should_retain_reassigned_deps_for_scope(&block[..i], reactive_ids, reactive_decls);
         match &mut block[i] {
             ReactiveStatement::Instruction(instr) => {
+                // Check if this instruction assigns a zero-dep scope output
+                // to a named variable (e.g., `content = t30` where t30 is
+                // from a sentinel scope). If so, the target is non-reactive.
+                if let InstructionValue::StoreLocal { lvalue, value, .. }
+                | InstructionValue::StoreContext { lvalue, value, .. } = &instr.value
+                    && lvalue.place.identifier.name.is_some()
+                    && zero_dep_scope_output_decl_ids.contains(&value.identifier.declaration_id)
+                {
+                    reactive_ids.remove(&lvalue.place.identifier.id);
+                    reactive_decls.remove(&lvalue.place.identifier.declaration_id);
+                }
                 propagate_reactivity(instr, reactive_ids, reactive_decls);
             }
             ReactiveStatement::Terminal(term_stmt) => {
@@ -803,7 +807,9 @@ fn visit_and_prune_block(
                     keep
                 });
 
-                // If the scope still has reactive deps, mark all outputs as reactive
+                // If the scope still has reactive deps, mark all outputs as reactive.
+                // If the scope has zero deps (sentinel), remove its outputs from the
+                // reactive set so downstream scopes don't treat them as reactive deps.
                 if !scope_block.scope.dependencies.is_empty() {
                     for decl in scope_block.scope.declarations.values() {
                         mark_reactive_identifier(
@@ -821,6 +827,29 @@ fn visit_and_prune_block(
                             reactive_decls,
                         );
                     }
+                } else {
+                    // Scope has zero reactive deps (sentinel). Remove its
+                    // outputs from the reactive set so downstream scopes
+                    // don't treat them as reactive deps.
+                    for decl in scope_block.scope.declarations.values() {
+                        reactive_ids.remove(&decl.identifier.id);
+                        reactive_decls.remove(&decl.identifier.declaration_id);
+                        // Track for subsequent StoreLocal detection
+                        zero_dep_scope_output_decl_ids.insert(decl.identifier.declaration_id);
+                    }
+                    for reassignment in &scope_block.scope.reassignments {
+                        reactive_ids.remove(&reassignment.id);
+                        reactive_decls.remove(&reassignment.declaration_id);
+                    }
+                    // Also scan body for StoreLocal/StoreContext assignments
+                    // to named variables. These are reassignments of outer
+                    // variables that may not be in scope.reassignments but
+                    // are effectively non-reactive outputs of a sentinel scope.
+                    collect_store_targets_from_block(
+                        &scope_block.instructions,
+                        reactive_ids,
+                        reactive_decls,
+                    );
                 }
             }
             ReactiveStatement::PrunedScope(scope_block) => {
@@ -831,8 +860,175 @@ fn visit_and_prune_block(
                     multi_source_decls,
                     reassigned_decls,
                 );
+                // After visiting the body (which prunes inner scope deps and
+                // conditionally marks outputs reactive), un-mark PrunedScope
+                // declarations whose value originates from an inner zero-dep
+                // scope.  Inner zero-dep scopes produce stable (sentinel-memoized)
+                // values that should not be treated as reactive.
+                let zero_dep_decl_ids =
+                    collect_zero_dep_inner_scope_decl_ids(&scope_block.instructions);
+                for decl in scope_block.scope.declarations.values() {
+                    if zero_dep_decl_ids.contains(&decl.identifier.declaration_id) {
+                        reactive_ids.remove(&decl.identifier.id);
+                        reactive_decls.remove(&decl.identifier.declaration_id);
+                    }
+                }
             }
         }
+    }
+}
+
+/// Scan a reactive block for StoreLocal/StoreContext instructions that assign
+/// to named variables, and remove those from the reactive set. Used when a
+/// sentinel scope assigns to variables declared outside it — these assignments
+/// produce stable (non-reactive) values.
+fn collect_store_targets_from_block(
+    block: &ReactiveBlock,
+    reactive_ids: &mut HashSet<IdentifierId>,
+    reactive_decls: &mut HashSet<DeclarationId>,
+) {
+    let debug_flow = std::env::var("DEBUG_PRUNE_NONREACTIVE_FLOW").is_ok();
+    for stmt in block {
+        match stmt {
+            ReactiveStatement::Instruction(instr) => match &instr.value {
+                InstructionValue::StoreLocal { lvalue, .. }
+                | InstructionValue::StoreContext { lvalue, .. } => {
+                    if lvalue.place.identifier.name.is_some() {
+                        if debug_flow {
+                            eprintln!(
+                                "[PRUNE_NONREACTIVE] STORE_SCAN removing name={} id={} decl={}",
+                                lvalue
+                                    .place
+                                    .identifier
+                                    .name
+                                    .as_ref()
+                                    .map(|n| n.value().to_string())
+                                    .unwrap_or_default(),
+                                lvalue.place.identifier.id.0,
+                                lvalue.place.identifier.declaration_id.0,
+                            );
+                        }
+                        reactive_ids.remove(&lvalue.place.identifier.id);
+                        reactive_decls.remove(&lvalue.place.identifier.declaration_id);
+                    }
+                }
+                _ => {}
+            },
+            ReactiveStatement::Terminal(term) => {
+                // Recurse into terminal branches
+                if let ReactiveTerminal::If {
+                    consequent,
+                    alternate,
+                    ..
+                } = &term.terminal
+                {
+                    collect_store_targets_from_block(consequent, reactive_ids, reactive_decls);
+                    if let Some(alt) = alternate {
+                        collect_store_targets_from_block(alt, reactive_ids, reactive_decls);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Collect declaration IDs from inner non-pruned scopes that have zero
+/// dependencies (after pruning).  Also follows StoreLocal/StoreContext
+/// chains so named bindings derived from inner scope outputs are included.
+fn collect_zero_dep_inner_scope_decl_ids(block: &ReactiveBlock) -> HashSet<DeclarationId> {
+    let mut ids = HashSet::new();
+    for stmt in block {
+        match stmt {
+            ReactiveStatement::Scope(scope_block) => {
+                if scope_block.scope.dependencies.is_empty() {
+                    for decl in scope_block.scope.declarations.values() {
+                        ids.insert(decl.identifier.declaration_id);
+                    }
+                }
+                ids.extend(collect_zero_dep_inner_scope_decl_ids(
+                    &scope_block.instructions,
+                ));
+            }
+            ReactiveStatement::PrunedScope(scope_block) => {
+                ids.extend(collect_zero_dep_inner_scope_decl_ids(
+                    &scope_block.instructions,
+                ));
+            }
+            ReactiveStatement::Terminal(term_stmt) => {
+                collect_zero_dep_decl_ids_terminal(&term_stmt.terminal, &mut ids);
+            }
+            ReactiveStatement::Instruction(instr) => {
+                if let InstructionValue::StoreLocal { lvalue, value, .. }
+                | InstructionValue::StoreContext { lvalue, value, .. } = &instr.value
+                    && ids.contains(&value.identifier.declaration_id)
+                {
+                    ids.insert(lvalue.place.identifier.declaration_id);
+                }
+            }
+        }
+    }
+    ids
+}
+
+fn collect_zero_dep_decl_ids_terminal(
+    terminal: &ReactiveTerminal,
+    ids: &mut HashSet<DeclarationId>,
+) {
+    match terminal {
+        ReactiveTerminal::If {
+            consequent,
+            alternate,
+            ..
+        } => {
+            ids.extend(collect_zero_dep_inner_scope_decl_ids(consequent));
+            if let Some(alt) = alternate {
+                ids.extend(collect_zero_dep_inner_scope_decl_ids(alt));
+            }
+        }
+        ReactiveTerminal::Switch { cases, .. } => {
+            for case in cases {
+                if let Some(block) = &case.block {
+                    ids.extend(collect_zero_dep_inner_scope_decl_ids(block));
+                }
+            }
+        }
+        ReactiveTerminal::DoWhile { loop_block, .. }
+        | ReactiveTerminal::While { loop_block, .. } => {
+            ids.extend(collect_zero_dep_inner_scope_decl_ids(loop_block));
+        }
+        ReactiveTerminal::For {
+            init,
+            update,
+            loop_block,
+            ..
+        } => {
+            ids.extend(collect_zero_dep_inner_scope_decl_ids(init));
+            if let Some(upd) = update {
+                ids.extend(collect_zero_dep_inner_scope_decl_ids(upd));
+            }
+            ids.extend(collect_zero_dep_inner_scope_decl_ids(loop_block));
+        }
+        ReactiveTerminal::ForOf {
+            init, loop_block, ..
+        }
+        | ReactiveTerminal::ForIn {
+            init, loop_block, ..
+        } => {
+            ids.extend(collect_zero_dep_inner_scope_decl_ids(init));
+            ids.extend(collect_zero_dep_inner_scope_decl_ids(loop_block));
+        }
+        ReactiveTerminal::Label { block, .. } => {
+            ids.extend(collect_zero_dep_inner_scope_decl_ids(block));
+        }
+        ReactiveTerminal::Try { block, handler, .. } => {
+            ids.extend(collect_zero_dep_inner_scope_decl_ids(block));
+            ids.extend(collect_zero_dep_inner_scope_decl_ids(handler));
+        }
+        ReactiveTerminal::Break { .. }
+        | ReactiveTerminal::Continue { .. }
+        | ReactiveTerminal::Return { .. }
+        | ReactiveTerminal::Throw { .. } => {}
     }
 }
 
@@ -1382,12 +1578,9 @@ mod tests {
     fn test_prune_non_reactive_dep() {
         // Scope depends on id=1, but id=1 is not reactive => dep should be pruned
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Scope(ReactiveScopeBlock {
                 scope: make_scope_with_deps(1, vec![1]),
                 instructions: vec![ReactiveStatement::Instruction(Box::new(
@@ -1402,7 +1595,6 @@ mod tests {
                     },
                 ))],
             })],
-            directives: vec![],
         };
 
         prune_non_reactive_deps_reactive(&mut func);
@@ -1419,12 +1611,9 @@ mod tests {
     fn test_keep_reactive_dep() {
         // Scope depends on id=1, and id=1 IS reactive (place.reactive=true)
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 // An instruction that makes id=1 reactive
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
@@ -1451,7 +1640,6 @@ mod tests {
                     ))],
                 }),
             ],
-            directives: vec![],
         };
 
         prune_non_reactive_deps_reactive(&mut func);
@@ -1470,12 +1658,9 @@ mod tests {
         // id=1 is reactive, LoadLocal reads it into id=2,
         // scope depends on id=2 => should keep the dependency
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
                     id: InstructionId(0),
@@ -1501,7 +1686,6 @@ mod tests {
                     ))],
                 }),
             ],
-            directives: vec![],
         };
 
         prune_non_reactive_deps_reactive(&mut func);

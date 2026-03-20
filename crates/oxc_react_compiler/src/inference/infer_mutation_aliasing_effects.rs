@@ -17,7 +17,7 @@ use crate::environment::Environment;
 use crate::error::{CompilerDiagnostic, DiagnosticSeverity};
 use crate::hir::builder::terminal_successors;
 use crate::hir::object_shape::{
-    FunctionSignature, HookKind, ReturnType, TEST_KNOWN_INCOMPATIBLE_INDIRECT_RESULT_ID,
+    FunctionSignature, ReturnType, TEST_KNOWN_INCOMPATIBLE_INDIRECT_RESULT_ID,
 };
 use crate::hir::types::*;
 use crate::hir::visitors;
@@ -195,7 +195,6 @@ impl InferenceState {
     }
 
     /// Append alias: add the values of `from_id` to `place_id`'s value set.
-    #[allow(dead_code)]
     fn append_alias(&mut self, place_id: IdentifierId, from_id: IdentifierId) {
         if let Some(from_vals) = self.variables.get(&from_id).cloned() {
             let entry = self.variables.entry(place_id).or_default();
@@ -449,8 +448,6 @@ enum MutationResult {
 /// Per-function context for the inference pass.
 struct InferContext {
     is_function_expression: bool,
-    /// Map from catch handler block ID to handler binding place.
-    catch_handlers_by_handler_block: HashMap<BlockId, Place>,
     /// Map from try-body block ID to catch handler binding place.
     /// This mirrors upstream `maybe-throw` handling when CFG simplification
     /// lowers try sub-blocks to plain gotos before this pass runs.
@@ -590,14 +587,10 @@ pub fn infer_mutation_aliasing_effects(
     let declaration_type_by_declaration = collect_declaration_type_hints(func);
     let local_declarations = collect_local_declarations(func);
     let reassigned_declarations = collect_reassigned_declarations(func);
-    let (
-        catch_handlers_by_handler_block,
-        catch_handlers_by_try_block,
-        catch_handler_successor_by_try_block,
-    ) = collect_catch_handlers(func);
+    let (_, catch_handlers_by_try_block, catch_handler_successor_by_try_block) =
+        collect_catch_handlers(func);
     let ctx = InferContext {
         is_function_expression,
-        catch_handlers_by_handler_block,
         catch_handlers_by_try_block,
         catch_handler_successor_by_try_block,
         hoisted_context_declarations: hoisted,
@@ -636,7 +629,11 @@ pub fn infer_mutation_aliasing_effects(
     // Queue the entry block
     queued_states.insert(func.body.entry, state);
 
-    // Fixpoint iteration
+    // Fixpoint iteration — matches upstream's single-map approach where
+    // queuedStates is read and written during the same iteration over blocks.
+    // This ensures that when a predecessor (e.g. switch case true) queues a
+    // state for a successor (e.g. case false), that state is available when
+    // the successor is reached later in the same iteration.
     let mut iteration_count = 0;
     while !queued_states.is_empty() {
         iteration_count += 1;
@@ -645,23 +642,25 @@ pub fn infer_mutation_aliasing_effects(
             break;
         }
 
-        // Take the current queued states so we can iterate blocks
-        let current_queued = std::mem::take(&mut queued_states);
+        for idx in 0..func.body.blocks.len() {
+            let block_id = func.body.blocks[idx].0;
 
-        for (block_id, block) in &mut func.body.blocks {
-            let incoming_state = match current_queued.get(block_id) {
+            // Read and remove the queued state for this block (matches upstream's
+            // queuedStates.get(blockId) + queuedStates.delete(blockId))
+            let incoming_state = match queued_states.remove(&block_id) {
                 Some(s) => s,
                 None => continue,
             };
 
-            states_by_block.insert(*block_id, incoming_state.clone());
-            let mut block_state = incoming_state.clone();
+            states_by_block.insert(block_id, incoming_state.clone());
+            let mut block_state = incoming_state;
 
-            infer_block(&ctx, &mut block_state, *block_id, block);
+            let block = &mut func.body.blocks[idx].1;
+            infer_block(&ctx, &mut block_state, block_id, block);
 
             // Queue successors
-            let mut successors = terminal_successors(&block.terminal);
-            if let Some(handler_succ) = ctx.catch_handler_successor_by_try_block.get(block_id)
+            let mut successors = terminal_successors(&func.body.blocks[idx].1.terminal);
+            if let Some(handler_succ) = ctx.catch_handler_successor_by_try_block.get(&block_id)
                 && !successors.contains(handler_succ)
             {
                 successors.push(*handler_succ);
@@ -1197,7 +1196,6 @@ fn infer_block(
             Terminal::Goto { .. } => "Goto",
             Terminal::Switch { .. } => "Switch",
             Terminal::Try { .. } => "Try",
-            Terminal::MaybeThrow { .. } => "MaybeThrow",
             Terminal::Unsupported { .. } => "Unsupported",
             Terminal::Unreachable { .. } => "Unreachable",
             Terminal::For { .. } => "For",
@@ -1342,10 +1340,7 @@ fn infer_block(
 
     // Upstream behavior: values produced by calls in a maybe-throw block may flow
     // into the catch binding; model this by appending handler aliases.
-    let catch_handler = match &block.terminal {
-        Terminal::MaybeThrow { handler, .. } => ctx.catch_handlers_by_handler_block.get(handler),
-        _ => ctx.catch_handlers_by_try_block.get(&block_id),
-    };
+    let catch_handler = ctx.catch_handlers_by_try_block.get(&block_id);
     if let Some(handler_param) = catch_handler {
         let handler_id = handler_param.identifier.id;
         if debug_apply {
@@ -1938,7 +1933,6 @@ fn apply_effect(
                     vec![(receiver.clone(), false), (function.clone(), false)];
                 for arg in args {
                     match arg {
-                        ApplyArg::Hole => {}
                         ApplyArg::Place(place) => {
                             all_operands.push((place.clone(), false));
                         }
@@ -2326,7 +2320,6 @@ fn collect_effect_identifier_ids(effect: &AliasingEffect, into: &mut HashSet<Ide
                     ApplyArg::Place(p) | ApplyArg::Spread(p) => {
                         into.insert(p.identifier.id);
                     }
-                    ApplyArg::Hole => {}
                 }
             }
         }
@@ -2416,7 +2409,6 @@ fn compute_effects_for_signature(
 
     for (i, arg) in args.iter().enumerate() {
         match arg {
-            ApplyArg::Hole => {}
             ApplyArg::Place(place) => {
                 if i >= signature.params.len() {
                     let rest = signature.rest?;
@@ -2641,7 +2633,6 @@ fn compute_effects_for_signature(
                 let mut apply_args = Vec::with_capacity(args.len());
                 for arg in args {
                     match arg {
-                        ApplyArg::Hole => apply_args.push(ApplyArg::Hole),
                         ApplyArg::Place(place) => {
                             let apply_arg = single_substitution_or_self(&substitutions, place)?;
                             apply_args.push(ApplyArg::Place(apply_arg));
@@ -3304,39 +3295,37 @@ fn compute_signature_for_instruction(
                     place: lval.place.clone(),
                     error: global_reassignment_diagnostic(&variable_name_for_error(&lval.place)),
                 });
-            } else {
-                if ctx.is_function_expression
-                    && ctx
-                        .captured_context_declarations
+            } else if ctx.is_function_expression
+                && ctx
+                    .captured_context_declarations
+                    .contains(&lval.place.identifier.declaration_id)
+            {
+                let target_place = resolve_captured_context_place(ctx, &lval.place);
+                if lval.kind == InstructionKind::Reassign
+                    || ctx
+                        .hoisted_context_declarations
                         .contains(&lval.place.identifier.declaration_id)
                 {
-                    let target_place = resolve_captured_context_place(ctx, &lval.place);
-                    if lval.kind == InstructionKind::Reassign
-                        || ctx
-                            .hoisted_context_declarations
-                            .contains(&lval.place.identifier.declaration_id)
-                    {
-                        effects.push(AliasingEffect::Mutate {
-                            value: target_place.clone(),
-                            reason: None,
-                        });
-                    } else {
-                        effects.push(AliasingEffect::Create {
-                            into: target_place.clone(),
-                            value: ValueKind::Mutable,
-                            reason: ValueReason::Other,
-                        });
-                    }
-                    effects.push(AliasingEffect::Capture {
-                        from: val.clone(),
-                        into: target_place,
+                    effects.push(AliasingEffect::Mutate {
+                        value: target_place.clone(),
+                        reason: None,
                     });
                 } else {
-                    effects.push(AliasingEffect::Assign {
-                        from: val.clone(),
-                        into: lval.place.clone(),
+                    effects.push(AliasingEffect::Create {
+                        into: target_place.clone(),
+                        value: ValueKind::Mutable,
+                        reason: ValueReason::Other,
                     });
                 }
+                effects.push(AliasingEffect::Capture {
+                    from: val.clone(),
+                    into: target_place,
+                });
+            } else {
+                effects.push(AliasingEffect::Assign {
+                    from: val.clone(),
+                    into: lval.place.clone(),
+                });
             }
             effects.push(AliasingEffect::Assign {
                 from: val.clone(),
@@ -3514,7 +3503,6 @@ fn compute_signature_for_instruction(
         | InstructionValue::BinaryExpression { .. }
         | InstructionValue::Debugger { .. }
         | InstructionValue::JSXText { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::Primitive { .. }
         | InstructionValue::RegExpLiteral { .. }
         | InstructionValue::TemplateLiteral { .. }
@@ -3586,8 +3574,7 @@ fn compute_signature_for_instruction(
         }
         InstructionValue::ReactiveSequenceExpression { .. }
         | InstructionValue::ReactiveOptionalExpression { .. }
-        | InstructionValue::ReactiveLogicalExpression { .. }
-        | InstructionValue::ReactiveConditionalExpression { .. } => {}
+        | InstructionValue::ReactiveLogicalExpression { .. } => {}
     }
 
     effects
@@ -3678,20 +3665,19 @@ fn compute_effects_for_legacy_signature(
         let arg_kinds: Vec<String> = args
             .iter()
             .enumerate()
-            .filter_map(|(idx, arg)| {
+            .map(|(idx, arg)| {
                 let place = match arg {
-                    ApplyArg::Hole => return None,
                     ApplyArg::Place(p) | ApplyArg::Spread(p) => p,
                 };
                 let kind = state.kind(place.identifier.id);
-                Some(format!(
+                format!(
                     "#{} id={} decl={} kind={:?} reasons={:?}",
                     idx,
                     place.identifier.id.0,
                     place.identifier.declaration_id.0,
                     kind.kind,
                     kind.reasons
-                ))
+                )
             })
             .collect();
         eprintln!(
@@ -3713,7 +3699,6 @@ fn compute_effects_for_legacy_signature(
         });
         for arg in args {
             let place = match arg {
-                ApplyArg::Hole => continue,
                 ApplyArg::Place(place) | ApplyArg::Spread(place) => place,
             };
             effects.push(AliasingEffect::ImmutableCapture {
@@ -3752,15 +3737,14 @@ fn compute_effects_for_legacy_signature(
     let args_places: Vec<(&Place, Effect)> = args
         .iter()
         .enumerate()
-        .filter_map(|(i, arg)| match arg {
-            ApplyArg::Hole => None,
+        .map(|(i, arg)| match arg {
             ApplyArg::Place(p) => {
                 let sig_effect = if i < signature.positional_params.len() {
                     signature.positional_params[i]
                 } else {
                     signature.rest_param.unwrap_or(Effect::ConditionallyMutate)
                 };
-                Some((p, sig_effect))
+                (p, sig_effect)
             }
             ApplyArg::Spread(p) => {
                 let signature_effect = if i < signature.positional_params.len() {
@@ -3769,7 +3753,7 @@ fn compute_effects_for_legacy_signature(
                     signature.rest_param.unwrap_or(Effect::ConditionallyMutate)
                 };
                 let sig_effect = get_argument_effect_for_spread(signature_effect);
-                Some((p, sig_effect))
+                (p, sig_effect)
             }
         })
         .collect();
@@ -3911,7 +3895,6 @@ fn are_arguments_immutable_and_non_mutating(
 ) -> bool {
     for arg in args {
         let place = match arg {
-            ApplyArg::Hole => continue,
             ApplyArg::Place(p) | ApplyArg::Spread(p) => p,
         };
         if let Some(global_name) = ctx
@@ -4068,7 +4051,6 @@ fn get_known_global_call_signature(
                 return_type: ReturnType::Poly,
                 return_value_kind: ValueKind::Frozen,
                 callee_effect: Effect::Read,
-                hook_kind: Some(HookKind::Custom),
                 known_incompatible: Some(
                     "useKnownIncompatible is known to be incompatible".to_string(),
                 ),
@@ -4093,7 +4075,6 @@ fn get_known_global_call_signature(
                 },
                 return_value_kind: ValueKind::Frozen,
                 callee_effect: Effect::Read,
-                hook_kind: Some(HookKind::Custom),
                 ..Default::default()
             })
         }
@@ -4153,7 +4134,6 @@ fn get_known_global_function_signature(global_name: &str) -> Option<FunctionSign
 fn nth_apply_arg_place(args: &[ApplyArg], idx: usize) -> Option<Place> {
     match args.get(idx)? {
         ApplyArg::Place(place) | ApplyArg::Spread(place) => Some(place.clone()),
-        ApplyArg::Hole => None,
     }
 }
 
@@ -4171,7 +4151,6 @@ fn compute_known_global_aliasing_effects(
             for arg in args {
                 let place = match arg {
                     ApplyArg::Place(place) | ApplyArg::Spread(place) => place,
-                    ApplyArg::Hole => continue,
                 };
                 effects.push(AliasingEffect::Freeze {
                     value: place.clone(),
@@ -4403,7 +4382,6 @@ fn get_signature_for_shape_id(shape_id: &str) -> Option<FunctionSignature> {
             return_value_kind: ValueKind::Frozen,
             return_value_reason: Some(ValueReason::State),
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::UseState),
             ..Default::default()
         }),
         "BuiltInUseReducerHookId" => Some(FunctionSignature {
@@ -4411,7 +4389,6 @@ fn get_signature_for_shape_id(shape_id: &str) -> Option<FunctionSignature> {
             return_value_kind: ValueKind::Frozen,
             return_value_reason: Some(ValueReason::ReducerState),
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::UseReducer),
             ..Default::default()
         }),
         "BuiltInUseContextHookId" => Some(FunctionSignature {
@@ -4419,14 +4396,12 @@ fn get_signature_for_shape_id(shape_id: &str) -> Option<FunctionSignature> {
             return_value_kind: ValueKind::Frozen,
             return_value_reason: Some(ValueReason::Context),
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::UseContext),
             ..Default::default()
         }),
         "BuiltInUseRefHookId" => Some(FunctionSignature {
             rest_param: Some(Effect::Capture),
             return_value_kind: ValueKind::Mutable,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::UseRef),
             ..Default::default()
         }),
         // useState/useReducer dispatchers and useActionState setter:
@@ -4443,34 +4418,29 @@ fn get_signature_for_shape_id(shape_id: &str) -> Option<FunctionSignature> {
             rest_param: Some(Effect::Freeze),
             return_value_kind: ValueKind::Frozen,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::UseMemo),
             ..Default::default()
         }),
         "BuiltInUseCallbackHookId" => Some(FunctionSignature {
             rest_param: Some(Effect::Freeze),
             return_value_kind: ValueKind::Frozen,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::UseCallback),
             ..Default::default()
         }),
         "BuiltInUseEffectHookId" => Some(FunctionSignature {
             rest_param: Some(Effect::Freeze),
             return_value_kind: ValueKind::Frozen,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::UseEffect),
             ..Default::default()
         }),
         "BuiltInUseTransitionHookId" => Some(FunctionSignature {
             return_value_kind: ValueKind::Frozen,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::UseTransition),
             ..Default::default()
         }),
         "BuiltInUseImperativeHandleHookId" => Some(FunctionSignature {
             rest_param: Some(Effect::Freeze),
             return_value_kind: ValueKind::Frozen,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::UseImperativeHandle),
             ..Default::default()
         }),
         "BuiltInUseActionStateHookId" => Some(FunctionSignature {
@@ -4478,7 +4448,6 @@ fn get_signature_for_shape_id(shape_id: &str) -> Option<FunctionSignature> {
             return_value_kind: ValueKind::Frozen,
             return_value_reason: Some(ValueReason::State),
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::UseActionState),
             ..Default::default()
         }),
         // Default mutating hook (custom hooks matching use* pattern when
@@ -4488,7 +4457,6 @@ fn get_signature_for_shape_id(shape_id: &str) -> Option<FunctionSignature> {
             return_type: ReturnType::Poly,
             return_value_kind: ValueKind::Mutable,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::Custom),
             ..Default::default()
         }),
         // Default non-mutating hook (custom hooks matching use* pattern)
@@ -4496,7 +4464,6 @@ fn get_signature_for_shape_id(shape_id: &str) -> Option<FunctionSignature> {
             rest_param: Some(Effect::Freeze),
             return_value_kind: ValueKind::Frozen,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::Custom),
             ..Default::default()
         }),
         "ReactCompilerKnownIncompatibleHook" => Some(FunctionSignature {
@@ -4504,7 +4471,6 @@ fn get_signature_for_shape_id(shape_id: &str) -> Option<FunctionSignature> {
             return_type: ReturnType::Poly,
             return_value_kind: ValueKind::Frozen,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::Custom),
             known_incompatible: Some("useKnownIncompatible is known to be incompatible".to_string()),
             ..Default::default()
         }),
@@ -4523,7 +4489,6 @@ fn get_signature_for_shape_id(shape_id: &str) -> Option<FunctionSignature> {
             },
             return_value_kind: ValueKind::Frozen,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::Custom),
             ..Default::default()
         }),
         "ReactCompilerKnownIncompatibleIndirectFunction" => Some(FunctionSignature {
@@ -4542,7 +4507,6 @@ fn get_signature_for_shape_id(shape_id: &str) -> Option<FunctionSignature> {
             return_type: ReturnType::Poly,
             return_value_kind: ValueKind::Frozen,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::Custom),
             ..Default::default()
         }),
         TEST_SHARED_RUNTIME_GRAPHQL_FN_ID => Some(FunctionSignature {
@@ -4559,7 +4523,6 @@ fn get_signature_for_shape_id(shape_id: &str) -> Option<FunctionSignature> {
             return_type: ReturnType::Poly,
             return_value_kind: ValueKind::Frozen,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::Custom),
             ..Default::default()
         }),
         TEST_SHARED_RUNTIME_USE_FRAGMENT_HOOK_ID => Some(FunctionSignature {
@@ -4570,7 +4533,6 @@ fn get_signature_for_shape_id(shape_id: &str) -> Option<FunctionSignature> {
             },
             return_value_kind: ValueKind::Frozen,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::Custom),
             no_alias: true,
             ..Default::default()
         }),
@@ -4580,7 +4542,6 @@ fn get_signature_for_shape_id(shape_id: &str) -> Option<FunctionSignature> {
             return_type: ReturnType::Poly,
             return_value_kind: ValueKind::Mutable,
             callee_effect: Effect::Read,
-            hook_kind: Some(HookKind::Custom),
             no_alias: true,
             ..Default::default()
         }),
@@ -4685,7 +4646,7 @@ fn uninitialized_value_kind_diagnostic(place: &Place) -> CompilerDiagnostic {
 
 fn should_allow_maybe_frozen_jsx_mutation(place: &Place, abs_val: &AbstractValue) -> bool {
     place.identifier.name.is_none()
-        && abs_val.kind == ValueKind::MaybeFrozen
+        && matches!(abs_val.kind, ValueKind::MaybeFrozen | ValueKind::Frozen)
         && abs_val.reasons.len() == 2
         && abs_val.reasons.contains(&ValueReason::JsxCaptured)
         && abs_val.reasons.contains(&ValueReason::Other)
@@ -4849,7 +4810,7 @@ mod tests {
     fn test_inference_state_basic() {
         let mut state = InferenceState::empty(false, true, true, true, false, false);
 
-        let id1 = IdentifierId::new(1);
+        let id1 = IdentifierId(1);
         let vid = state.initialize(AbstractValue::new(ValueKind::Mutable, ValueReason::Other));
         state.define(id1, vid);
 
@@ -4862,7 +4823,7 @@ mod tests {
     fn test_inference_state_freeze() {
         let mut state = InferenceState::empty(false, true, true, true, false, false);
 
-        let id1 = IdentifierId::new(1);
+        let id1 = IdentifierId(1);
         let vid = state.initialize(AbstractValue::new(ValueKind::Mutable, ValueReason::Other));
         state.define(id1, vid);
 
@@ -4881,8 +4842,8 @@ mod tests {
     fn test_inference_state_assign() {
         let mut state = InferenceState::empty(false, true, true, true, false, false);
 
-        let id1 = IdentifierId::new(1);
-        let id2 = IdentifierId::new(2);
+        let id1 = IdentifierId(1);
+        let id2 = IdentifierId(2);
 
         let vid = state.initialize(AbstractValue::new(ValueKind::Mutable, ValueReason::Other));
         state.define(id1, vid);
@@ -4904,12 +4865,12 @@ mod tests {
         let mut state1 = InferenceState::empty(false, true, true, true, false, false);
         let mut state2 = InferenceState::empty(false, true, true, true, false, false);
 
-        let id1 = IdentifierId::new(1);
+        let id1 = IdentifierId(1);
         let vid1 = state1.initialize(AbstractValue::new(ValueKind::Mutable, ValueReason::Other));
         state1.define(id1, vid1);
 
         // state2 has a different value for the same identifier
-        let id2 = IdentifierId::new(2);
+        let id2 = IdentifierId(2);
         let vid2 = state2.initialize(AbstractValue::new(
             ValueKind::Frozen,
             ValueReason::JsxCaptured,
@@ -4927,17 +4888,17 @@ mod tests {
     #[test]
     fn test_mutation_result() {
         let mut state = InferenceState::empty(false, true, true, true, false, false);
-        let id1 = IdentifierId::new(1);
+        let id1 = IdentifierId(1);
         let vid = state.initialize(AbstractValue::new(ValueKind::Mutable, ValueReason::Other));
         state.define(id1, vid);
         let place = Place {
             identifier: Identifier {
                 id: id1,
-                declaration_id: DeclarationId::new(1),
+                declaration_id: DeclarationId(1),
                 name: None,
                 mutable_range: MutableRange {
-                    start: InstructionId::new(0),
-                    end: InstructionId::new(0),
+                    start: InstructionId(0),
+                    end: InstructionId(0),
                 },
                 scope: None,
                 type_: Type::Poly,

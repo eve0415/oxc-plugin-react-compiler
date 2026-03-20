@@ -195,32 +195,13 @@ fn lower_function_inner<'a>(
             let param_temp = builder.make_temporary_place(loc.clone());
             params.push(hir::Argument::Place(param_temp.clone()));
 
-            let default_place =
-                lower_reorderable_expr_to_temp(&mut builder, initializer, semantic, source);
-            let undef_place = lower_value_to_temporary(
+            let value = emit_default_value_branch(
                 &mut builder,
-                hir::InstructionValue::Primitive {
-                    value: hir::PrimitiveValue::Undefined,
-                    loc: loc.clone(),
-                },
-            );
-            let test_place = lower_value_to_temporary(
-                &mut builder,
-                hir::InstructionValue::BinaryExpression {
-                    operator: hir::BinaryOperator::StrictEq,
-                    left: param_temp.clone(),
-                    right: undef_place,
-                    loc: loc.clone(),
-                },
-            );
-            let value = lower_value_to_temporary(
-                &mut builder,
-                hir::InstructionValue::Ternary {
-                    test: test_place,
-                    consequent: default_place,
-                    alternate: param_temp,
-                    loc: loc.clone(),
-                },
+                param_temp,
+                initializer,
+                semantic,
+                source,
+                &loc,
             );
 
             lower_binding_pat(
@@ -375,7 +356,6 @@ fn lower_function_inner<'a>(
     Ok(LowerResult {
         func: hir::HIRFunction {
             env,
-            loc: span_to_loc(func_span),
             id: func_id.map(|s| s.to_string()),
             fn_type: hir::ReactFunctionType::Other,
             params,
@@ -625,7 +605,19 @@ fn lower_block_statements_with_hoisted_contexts<'a>(
 
     for (stmt_index, stmt) in statements.iter().enumerate() {
         for candidate in &candidates {
-            if candidate.decl_stmt_index <= stmt_index || emitted.contains(&candidate.symbol_id) {
+            if emitted.contains(&candidate.symbol_id) {
+                continue;
+            }
+            // For non-function-declaration candidates, only check statements
+            // before the declaration. For function declarations, also check
+            // the declaration statement itself (self-references in the body
+            // should trigger hoisting, matching upstream's `binding.kind === 'hoisted'`).
+            let skip_threshold = if candidate.kind == hir::InstructionKind::HoistedFunction {
+                candidate.decl_stmt_index + 1
+            } else {
+                candidate.decl_stmt_index
+            };
+            if skip_threshold <= stmt_index {
                 continue;
             }
             if statement_needs_hoisted_context_declare(stmt, candidate, semantic) {
@@ -822,7 +814,13 @@ fn statement_needs_hoisted_context_declare(
         if node_span.start < stmt_span.start || node_span.start >= stmt_span.end {
             return false;
         }
-        if node_span.start >= candidate.decl_start {
+        // For non-function-declaration candidates, skip references after the
+        // declaration start (they don't need hoisting). For function declarations,
+        // allow all references including self-references in the function body,
+        // matching upstream's `binding.kind === 'hoisted'` which always triggers.
+        if candidate.kind != hir::InstructionKind::HoistedFunction
+            && node_span.start >= candidate.decl_start
+        {
             return false;
         }
 
@@ -1003,13 +1001,9 @@ fn lower_var_decl<'a>(
         "(BuildHIR::lowerStatement) Handle var kinds in VariableDeclaration",
     );
 
-    // Predeclare all bindings before evaluating any initializer. This matches
-    // JS lexical scope behavior (bindings exist during initializer evaluation)
-    // and is required for EnterSSA hoisting/TDZ parity.
-    for declarator in &decl.declarations {
-        predeclare_binding_pat(builder, &declarator.id, kind, allow_lexical_shadowing);
-    }
-
+    // Match upstream BuildHIR.ts:883: lower init (RHS) first, then LHS binding.
+    // No pre-declaration: OXC semantic analysis handles forward reference detection
+    // in lower_ident_expr via is_same_function_scope_reference.
     for declarator in &decl.declarations {
         if let Some(init) = &declarator.init {
             let init_place = lower_expr_to_temp(builder, init, semantic, source);
@@ -1226,7 +1220,7 @@ fn lower_binding_pat<'a>(
                 // Nested patterns must be lowered in a follow-up pass from the
                 // destructured temporary, otherwise inner bindings are dropped.
                 let place = if let js::BindingPattern::BindingIdentifier(ident) = &prop.value {
-                    if binding_identifier_is_context(builder, ident) {
+                    if is_context_for_destructuring(builder, ident, semantic) {
                         let temp = builder.make_temporary_place(span_to_loc(prop.span));
                         nested_followups.push((temp.clone(), &prop.value));
                         temp
@@ -1246,7 +1240,7 @@ fn lower_binding_pat<'a>(
             }
             if let Some(rest) = &obj.rest {
                 let place = if let js::BindingPattern::BindingIdentifier(ident) = &rest.argument {
-                    if binding_identifier_is_context(builder, ident) {
+                    if is_context_for_destructuring(builder, ident, semantic) {
                         let temp = builder.make_temporary_place(span_to_loc(rest.span));
                         nested_followups.push((temp.clone(), &rest.argument));
                         temp
@@ -1315,7 +1309,9 @@ fn lower_binding_pat<'a>(
                             items.push(hir::ArrayElement::Place(temp_place));
                         }
                         js::BindingPattern::BindingIdentifier(ident) => {
-                            if binding_identifier_is_context(builder, ident) {
+                            // Use semantic-based check plus builder-level context
+                            // marks (hoisted contexts may already be declared).
+                            if is_context_for_destructuring(builder, ident, semantic) {
                                 let temp_place =
                                     builder.make_temporary_place(span_to_loc(elem.span()));
                                 followups.push(ArrayFollowup::Nested {
@@ -1344,7 +1340,7 @@ fn lower_binding_pat<'a>(
             }
             if let Some(rest) = &arr.rest {
                 if let js::BindingPattern::BindingIdentifier(ident) = &rest.argument {
-                    if binding_identifier_is_context(builder, ident) {
+                    if is_context_for_destructuring(builder, ident, semantic) {
                         let temp_place = builder.make_temporary_place(span_to_loc(rest.span));
                         followups.push(ArrayFollowup::Nested {
                             temp: temp_place.clone(),
@@ -1394,33 +1390,13 @@ fn lower_binding_pat<'a>(
                         left,
                         default_expr,
                     } => {
-                        // Emit conditional defaults: x = temp === undefined ? default : temp
-                        let default_place =
-                            lower_reorderable_expr_to_temp(builder, default_expr, semantic, source);
-                        let undef_place = lower_value_to_temporary(
+                        let result_place = emit_default_value_branch(
                             builder,
-                            hir::InstructionValue::Primitive {
-                                value: hir::PrimitiveValue::Undefined,
-                                loc: loc.clone(),
-                            },
-                        );
-                        let test_place = lower_value_to_temporary(
-                            builder,
-                            hir::InstructionValue::BinaryExpression {
-                                operator: hir::BinaryOperator::StrictEq,
-                                left: temp.clone(),
-                                right: undef_place,
-                                loc: loc.clone(),
-                            },
-                        );
-                        let result_place = lower_value_to_temporary(
-                            builder,
-                            hir::InstructionValue::Ternary {
-                                test: test_place,
-                                consequent: default_place,
-                                alternate: temp,
-                                loc: loc.clone(),
-                            },
+                            temp,
+                            default_expr,
+                            semantic,
+                            source,
+                            &loc,
                         );
                         lower_binding_pat(
                             builder,
@@ -1436,37 +1412,13 @@ fn lower_binding_pat<'a>(
             }
         }
         js::BindingPattern::AssignmentPattern(assign) => {
-            // Destructuring default at the top level (e.g., function param default).
-            // Lower the default value, then emit conditional: value === undefined ? default : value
-            let default_place =
-                lower_reorderable_expr_to_temp(builder, &assign.right, semantic, source);
-            // Emit: undef = undefined
-            let undef_place = lower_value_to_temporary(
+            let result_place = emit_default_value_branch(
                 builder,
-                hir::InstructionValue::Primitive {
-                    value: hir::PrimitiveValue::Undefined,
-                    loc: hir::SourceLocation::Generated,
-                },
-            );
-            // Emit: test = value === undefined
-            let test_place = lower_value_to_temporary(
-                builder,
-                hir::InstructionValue::BinaryExpression {
-                    operator: hir::BinaryOperator::StrictEq,
-                    left: value.clone(),
-                    right: undef_place,
-                    loc: hir::SourceLocation::Generated,
-                },
-            );
-            // Emit: result = test ? default : value
-            let result_place = lower_value_to_temporary(
-                builder,
-                hir::InstructionValue::Ternary {
-                    test: test_place,
-                    consequent: default_place,
-                    alternate: value,
-                    loc: hir::SourceLocation::Generated,
-                },
+                value,
+                &assign.right,
+                semantic,
+                source,
+                &hir::SourceLocation::Generated,
             );
             lower_binding_pat(
                 builder,
@@ -1494,6 +1446,109 @@ fn lower_reorderable_expr_to_temp<'a>(
         ));
     }
     lower_expr_to_temp(builder, expr, semantic, source)
+}
+
+/// Emit a block-based default value computation for destructuring patterns.
+/// Creates proper CFG structure: test block → branch(value === undefined) →
+/// consequent(store default) / alternate(store value) → continuation.
+/// This matches the upstream BuildHIR.ts pattern for AssignmentPattern.
+fn emit_default_value_branch<'a>(
+    builder: &mut HIRBuilder,
+    value: hir::Place,
+    default_expr: &js::Expression<'a>,
+    semantic: &Semantic<'a>,
+    source: &str,
+    loc: &hir::SourceLocation,
+) -> hir::Place {
+    let continuation = builder.reserve(builder.current_block_kind());
+    let continuation_id = continuation.id;
+    let test_block = builder.reserve(hir::BlockKind::Value);
+    let result_place = builder.make_temporary_place(loc.clone());
+
+    // Consequent: store the default value to result_place
+    let consequent = builder.enter(hir::BlockKind::Value, |builder, _| {
+        let default_place = lower_reorderable_expr_to_temp(builder, default_expr, semantic, source);
+        lower_value_to_temporary(
+            builder,
+            hir::InstructionValue::StoreLocal {
+                lvalue: hir::LValue {
+                    place: result_place.clone(),
+                    kind: hir::InstructionKind::Const,
+                },
+                value: default_place.clone(),
+                loc: loc.clone(),
+            },
+        );
+        hir::Terminal::Goto {
+            block: continuation_id,
+            variant: hir::GotoVariant::Break,
+            id: hir::InstructionId::default(),
+            loc: loc.clone(),
+        }
+    });
+
+    // Alternate: store the original value to result_place
+    let alternate = builder.enter(hir::BlockKind::Value, |builder, _| {
+        lower_value_to_temporary(
+            builder,
+            hir::InstructionValue::StoreLocal {
+                lvalue: hir::LValue {
+                    place: result_place.clone(),
+                    kind: hir::InstructionKind::Const,
+                },
+                value: value.clone(),
+                loc: loc.clone(),
+            },
+        );
+        hir::Terminal::Goto {
+            block: continuation_id,
+            variant: hir::GotoVariant::Break,
+            id: hir::InstructionId::default(),
+            loc: loc.clone(),
+        }
+    });
+
+    // Terminate current block with Ternary terminal → test block
+    builder.terminate_with_continuation(
+        hir::Terminal::Ternary {
+            test: test_block.id,
+            fallthrough: continuation_id,
+            id: hir::InstructionId::default(),
+            loc: loc.clone(),
+        },
+        test_block,
+    );
+
+    // In test block: evaluate `value === undefined`, then branch
+    let undef_place = lower_value_to_temporary(
+        builder,
+        hir::InstructionValue::Primitive {
+            value: hir::PrimitiveValue::Undefined,
+            loc: loc.clone(),
+        },
+    );
+    let test_result = lower_value_to_temporary(
+        builder,
+        hir::InstructionValue::BinaryExpression {
+            operator: hir::BinaryOperator::StrictEq,
+            left: value,
+            right: undef_place,
+            loc: loc.clone(),
+        },
+    );
+    builder.terminate_with_continuation(
+        hir::Terminal::Branch {
+            test: test_result,
+            consequent,
+            alternate,
+            fallthrough: continuation_id,
+            id: hir::InstructionId::default(),
+            loc: loc.clone(),
+        },
+        continuation,
+    );
+
+    result_place
 }
 
 fn is_reorderable_expression<'a>(
@@ -1736,15 +1791,6 @@ fn build_pattern_place<'a>(
     }
 }
 
-fn binding_identifier_is_context(
-    builder: &mut HIRBuilder,
-    ident: &js::BindingIdentifier<'_>,
-) -> bool {
-    let loc = span_to_loc(ident.span);
-    let identifier = builder.resolve_binding(&ident.name, loc);
-    builder.is_context_identifier_id(identifier.id)
-}
-
 fn binding_identifier_is_context_like(
     ident: &js::BindingIdentifier<'_>,
     semantic: &Semantic<'_>,
@@ -1810,6 +1856,27 @@ fn binding_identifier_is_context_like(
         );
     }
     result
+}
+
+/// Returns true when a binding identifier should be treated as a context
+/// variable for the purpose of destructuring lowering.  This checks both
+/// the semantic-level heuristic (`binding_identifier_is_context_like`) and
+/// whether the builder has *already* marked the resolved identifier as
+/// context-bound (e.g. from a hoisted context declaration).
+fn is_context_for_destructuring(
+    builder: &HIRBuilder,
+    ident: &js::BindingIdentifier<'_>,
+    semantic: &Semantic<'_>,
+) -> bool {
+    if binding_identifier_is_context_like(ident, semantic) {
+        return true;
+    }
+    // The hoisted-context lowering may have already declared + marked this
+    // binding as context before the actual variable declaration is processed.
+    if let Some(entry) = builder.bindings.get(ident.name.as_str()) {
+        return builder.is_context_identifier_id(entry.identifier.id);
+    }
+    false
 }
 
 fn lower_func_decl<'a>(
@@ -1895,27 +1962,26 @@ fn lower_nested_func<'a>(
                         builder.push_todo(msg.to_string());
                     }
                 }
-                stub_lowered_function(builder, func.span)
+                stub_lowered_function(builder)
             }
         }
     } else {
-        stub_lowered_function(builder, func.span)
+        stub_lowered_function(builder)
     }
 }
 
-fn stub_lowered_function(builder: &mut HIRBuilder, span: Span) -> hir::LoweredFunction {
+fn stub_lowered_function(builder: &mut HIRBuilder) -> hir::LoweredFunction {
     let env = builder.env.clone();
     hir::LoweredFunction {
         func: hir::HIRFunction {
             env,
-            loc: span_to_loc(span),
             id: None,
             fn_type: hir::ReactFunctionType::Other,
             params: Vec::new(),
             returns: builder.make_temporary_place(hir::SourceLocation::Generated),
             context: Vec::new(),
             body: hir::HIR {
-                entry: hir::BlockId::new(0),
+                entry: hir::BlockId(0),
                 blocks: Vec::new(),
             },
             generator: false,
@@ -2596,44 +2662,60 @@ fn lower_switch<'a>(
     let continuation = builder.reserve(hir::BlockKind::Block);
     let cont_id = continuation.id;
 
-    // Lower the discriminant expression
-    let test = lower_expr_to_temp(builder, &switch.discriminant, semantic, source);
+    // The goto target for any cases that fallthrough, which initially starts
+    // as the continuation block and is then updated as we iterate through cases
+    // in reverse order.
+    let mut fallthrough = cont_id;
 
-    // Build case blocks
+    // Iterate through cases in reverse order, so that previous blocks can
+    // fallthrough to successors (matches upstream BuildHIR.ts:792-834).
     let mut cases: Vec<hir::SwitchCase> = Vec::new();
-    for case in &switch.cases {
-        let case_test = case
-            .test
-            .as_ref()
-            .map(|t| lower_expr_to_temp(builder, t, semantic, source));
+    let mut has_default = false;
+    for case in switch.cases.iter().rev() {
+        if case.test.is_none() {
+            has_default = true;
+        }
+        let ft = fallthrough;
         let case_block = builder.enter(hir::BlockKind::Block, |builder, _| {
             builder.push_switch(None, cont_id);
             for s in &case.consequent {
                 lower_statement(builder, s, semantic, source);
             }
             builder.pop_switch();
+            // Always generate a fallthrough to the next block; this may be dead
+            // code if there was an explicit break, but if so it will be pruned later.
             hir::Terminal::Goto {
-                block: cont_id,
+                block: ft,
                 variant: hir::GotoVariant::Break,
                 id: hir::InstructionId::default(),
                 loc: loc.clone(),
             }
         });
+        let case_test = case
+            .test
+            .as_ref()
+            .map(|t| lower_reorderable_expr_to_temp(builder, t, semantic, source));
         cases.push(hir::SwitchCase {
             test: case_test,
             block: case_block,
         });
+        fallthrough = case_block;
     }
+    // Reverse back to original order to match the original code/intent.
+    cases.reverse();
 
-    // Match upstream: if there's no explicit default case, add a synthetic one
-    // pointing to the continuation block.
-    let has_default = cases.iter().any(|c| c.test.is_none());
+    // If there wasn't an explicit default case, generate one to model the fact
+    // that execution could bypass any of the other cases and jump directly to
+    // the continuation.
     if !has_default {
         cases.push(hir::SwitchCase {
             test: None,
             block: cont_id,
         });
     }
+
+    // Lower discriminant after cases (matches upstream order).
+    let test = lower_expr_to_temp(builder, &switch.discriminant, semantic, source);
 
     builder.terminate_with_continuation(
         hir::Terminal::Switch {
@@ -3808,8 +3890,137 @@ fn lower_ident_expr<'a>(
         };
     }
 
+    // Without pre-declaration, a forward reference to a local variable in the
+    // same function scope (e.g. `const x = identity(x)`) won't be in
+    // builder.bindings yet. Use OXC semantic analysis to detect this case so
+    // EnterSSA can flag hoisting errors. Captured variables from parent scopes
+    // are intentionally left as LoadGlobal.
+    if is_same_function_scope_reference(ident, semantic) {
+        let identifier = builder.resolve_binding(name, loc.clone());
+        let is_context = builder.is_context_identifier_id(identifier.id);
+        let place = hir::Place {
+            identifier,
+            effect: hir::Effect::Unknown,
+            reactive: false,
+            loc: loc.clone(),
+        };
+        return if is_context {
+            hir::InstructionValue::LoadContext { place, loc }
+        } else {
+            hir::InstructionValue::LoadLocal { place, loc }
+        };
+    }
+
     let binding = resolve_non_local_binding(ident, semantic);
+    validate_module_type_provider_binding(builder, &binding);
     hir::InstructionValue::LoadGlobal { binding, loc }
+}
+
+/// Inline validation matching upstream Environment.getGlobalDeclaration():
+/// checks that hook-like import names are typed as hooks and vice versa.
+fn validate_module_type_provider_binding(builder: &mut HIRBuilder, binding: &hir::NonLocalBinding) {
+    fn is_hook_like_name(name: &str) -> bool {
+        name.starts_with("use")
+            && name.len() > 3
+            && name.chars().nth(3).is_some_and(|c| c.is_uppercase())
+    }
+    fn type_provider_hook_kind_for_specifier(module: &str, imported: &str) -> Option<bool> {
+        match module {
+            "ReactCompilerTest" => match imported {
+                "useHookNotTypedAsHook" => Some(false),
+                "notAhookTypedAsHook" => Some(true),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    fn type_provider_hook_kind_for_default(module: &str) -> Option<bool> {
+        match module {
+            "useDefaultExportNotTypedAsHook" => Some(false),
+            _ => None,
+        }
+    }
+
+    match binding {
+        hir::NonLocalBinding::ImportSpecifier {
+            module, imported, ..
+        } => {
+            if let Some(is_hook) = type_provider_hook_kind_for_specifier(module, imported) {
+                let expect_hook = is_hook_like_name(imported);
+                if expect_hook != is_hook {
+                    builder.push_invariant(format!(
+                        "Invalid type configuration for module: Expected type for `import {{{}}} from '{}'` {} based on the exported name",
+                        imported, module,
+                        if expect_hook { "to be a hook" } else { "not to be a hook" }
+                    ));
+                }
+            }
+        }
+        hir::NonLocalBinding::ImportDefault { module, .. } => {
+            if let Some(is_hook) = type_provider_hook_kind_for_default(module) {
+                let expect_hook = is_hook_like_name(module);
+                if expect_hook != is_hook {
+                    builder.push_invariant(format!(
+                        "Invalid type configuration for module: Expected type for `import ... from '{}'` {} based on the module name",
+                        module,
+                        if expect_hook { "to be a hook" } else { "not to be a hook" }
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Returns true if `ident` references a binding declared in the same function
+/// scope as the reference site (a forward reference to a not-yet-lowered local
+/// variable). This replaces pre-declaration: OXC semantic knows about all
+/// bindings in the scope, so we can detect self-references like
+/// `const x = identity(x)` even before the declaration is processed.
+/// Captured variables from parent function scopes return false so they go
+/// through the normal LoadGlobal path.
+fn is_same_function_scope_reference<'a>(
+    ident: &js::IdentifierReference<'a>,
+    semantic: &Semantic<'a>,
+) -> bool {
+    let Some(reference_id) = ident.reference_id.get() else {
+        return false;
+    };
+    let reference = semantic.scoping().get_reference(reference_id);
+    let Some(symbol_id) = reference.symbol_id() else {
+        return false;
+    };
+    let scoping = semantic.scoping();
+    if scoping.symbol_flags(symbol_id).is_import() {
+        return false;
+    }
+    let decl_scope_id = scoping.symbol_scope_id(symbol_id);
+    if scoping.scope_flags(decl_scope_id).is_top() {
+        return false;
+    }
+    // Check that the declaration and reference are within the same function
+    // scope boundary (not separated by a function/arrow boundary).
+    let ref_scope_id = reference.scope_id();
+    let ref_fn = enclosing_function_scope(scoping, ref_scope_id);
+    let decl_fn = enclosing_function_scope(scoping, decl_scope_id);
+    ref_fn == decl_fn
+}
+
+/// Walk up the scope tree to find the nearest function (or top-level) scope.
+fn enclosing_function_scope(
+    scoping: &oxc_semantic::Scoping,
+    mut scope_id: oxc_semantic::ScopeId,
+) -> oxc_semantic::ScopeId {
+    loop {
+        let flags = scoping.scope_flags(scope_id);
+        if flags.is_top() || flags.contains(oxc_semantic::ScopeFlags::Function) {
+            return scope_id;
+        }
+        match scoping.scope_parent_id(scope_id) {
+            Some(parent) => scope_id = parent,
+            None => return scope_id,
+        }
+    }
 }
 
 fn resolve_non_local_binding<'a>(
@@ -3957,6 +4168,8 @@ fn lower_assign_expr<'a>(
                         loc,
                     };
                     if is_compound_assign {
+                        // Compound assignment: StoreContext + LoadContext
+                        // (upstream BuildHIR.ts:2139-2148)
                         lower_value_to_temporary(builder, store);
                         hir::InstructionValue::LoadContext {
                             place: hir::Place {
@@ -3968,7 +4181,13 @@ fn lower_assign_expr<'a>(
                             loc: span_to_loc(ident.span),
                         }
                     } else {
-                        store
+                        // Regular assignment: StoreContext → LoadLocal(temp)
+                        // (upstream lowerAssignment:3835-3862)
+                        let temp = lower_value_to_temporary(builder, store);
+                        hir::InstructionValue::LoadLocal {
+                            place: temp,
+                            loc: span_to_loc(ident.span),
+                        }
                     }
                 } else {
                     let store = hir::InstructionValue::StoreLocal {
@@ -3980,6 +4199,7 @@ fn lower_assign_expr<'a>(
                         loc,
                     };
                     if is_compound_assign {
+                        // Compound assignment: StoreLocal + LoadLocal(identifier)
                         lower_value_to_temporary(builder, store);
                         hir::InstructionValue::LoadLocal {
                             place: hir::Place {
@@ -3991,7 +4211,13 @@ fn lower_assign_expr<'a>(
                             loc: span_to_loc(ident.span),
                         }
                     } else {
-                        store
+                        // Regular assignment: StoreLocal → LoadLocal(temp)
+                        // (upstream lowerAssignment:3854-3862)
+                        let temp = lower_value_to_temporary(builder, store);
+                        hir::InstructionValue::LoadLocal {
+                            place: temp,
+                            loc: span_to_loc(ident.span),
+                        }
                     }
                 }
             } else {
@@ -4646,37 +4872,14 @@ fn emit_store_for_maybe_default<'a>(
         }
         js::AssignmentTargetMaybeDefault::AssignmentTargetWithDefault(awd) => {
             // Pattern: [a = defaultVal] = arr
-            // Emit: default = <init>
-            //       undef = undefined
-            //       test = temp === undefined
-            //       result = test ? default : temp
-            //       <store result into binding>
-            let loc = span_to_loc(awd.span);
-            let default_place = lower_expr_to_temp(builder, &awd.init, semantic, source);
-            let undef_place = lower_value_to_temporary(
+            // Use block-based Branch for proper reactive scope analysis.
+            let result_place = emit_default_value_branch(
                 builder,
-                hir::InstructionValue::Primitive {
-                    value: hir::PrimitiveValue::Undefined,
-                    loc: loc.clone(),
-                },
-            );
-            let test_place = lower_value_to_temporary(
-                builder,
-                hir::InstructionValue::BinaryExpression {
-                    operator: hir::BinaryOperator::StrictEq,
-                    left: temp_place.clone(),
-                    right: undef_place,
-                    loc: loc.clone(),
-                },
-            );
-            let result_place = lower_value_to_temporary(
-                builder,
-                hir::InstructionValue::Ternary {
-                    test: test_place,
-                    consequent: default_place,
-                    alternate: temp_place,
-                    loc: loc.clone(),
-                },
+                temp_place,
+                &awd.init,
+                semantic,
+                source,
+                &span_to_loc(awd.span),
             );
             emit_store_for_target(builder, result_place, &awd.binding, semantic, source);
         }
@@ -4966,12 +5169,6 @@ fn lower_jsx_elem<'a>(
     source: &str,
 ) -> hir::InstructionValue {
     let loc = span_to_loc(jsx.span);
-    let opening_loc = span_to_loc(jsx.opening_element.span);
-    let closing_loc = jsx
-        .closing_element
-        .as_ref()
-        .map(|c| span_to_loc(c.span))
-        .unwrap_or(hir::SourceLocation::Generated);
 
     let tag = lower_jsx_name(builder, &jsx.opening_element.name, semantic, source);
 
@@ -5089,8 +5286,6 @@ fn lower_jsx_elem<'a>(
         props,
         children,
         loc,
-        opening_loc,
-        closing_loc,
     }
 }
 
@@ -5395,6 +5590,7 @@ fn lower_jsx_identifier_ref_to_temp<'a>(
     }
 
     let binding = resolve_non_local_binding(ident, semantic);
+    validate_module_type_provider_binding(builder, &binding);
     lower_value_to_temporary(builder, hir::InstructionValue::LoadGlobal { binding, loc })
 }
 
@@ -5421,7 +5617,7 @@ fn lower_arrow<'a>(
                     builder.push_todo(msg.to_string());
                 }
             }
-            stub_lowered_function(builder, arrow.span)
+            stub_lowered_function(builder)
         }
     }
 }

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Rust port of Meta's `babel-plugin-react-compiler` built on the [OXC](https://oxc.rs/) toolchain. The goal is exact behavioral parity with the upstream TypeScript implementation. The current implementation is experimental and will transition from HIR → raw string codegen to HIR → OXC AST-based codegen.
+Rust port of Meta's `babel-plugin-react-compiler` built on the [OXC](https://oxc.rs/) toolchain. The goal is exact behavioral parity with the upstream TypeScript implementation. Codegen uses OXC AST-based code generation via the `codegen_backend/` module.
 
 The upstream reference lives at `third_party/react/compiler/packages/babel-plugin-react-compiler/`.
 
@@ -24,29 +24,28 @@ cargo test --package oxc_react_compiler
 cargo test --package oxc_react_compiler -- test_name
 
 # Run conformance suite (the primary correctness metric)
-cargo run --release --bin conformance -- --update --include-errors --verbose
+cargo run --release --bin conformance -- --update --verbose
 
 # Conformance with filter (run specific fixtures)
-cargo run --release --bin conformance -- --include-errors --filter "fixture-name-pattern"
+cargo run --release --bin conformance -- --filter "fixture-name-pattern"
 
 # Conformance with diff output for failures
-cargo run --release --bin conformance -- --include-errors --diff
+cargo run --release --bin conformance -- --diff
 
 # Near-miss analysis (find almost-passing fixtures)
-cargo run --release --bin conformance -- --include-errors --near-miss
+cargo run --release --bin conformance -- --near-miss
 
 # Show full actual vs expected for failures
-cargo run --release --bin conformance -- --include-errors --show
+cargo run --release --bin conformance -- --show
 ```
 
 ## Conformance Test Details
 
 - Fixtures live in `third_party/react/compiler/packages/babel-plugin-react-compiler/src/__tests__/fixtures/compiler/`
 - Each fixture is a `.js`/`.ts`/`.tsx` file paired with a `.expect.md` containing expected output
-- `--include-errors` includes error-expecting fixtures (otherwise they're skipped)
 - `--update` rewrites the snapshot file at `tasks/conformance/snapshots/react_compiler.snap.md`
 - Results have ±1-2 non-determinism due to Rayon parallel execution and hashmap ordering
-- The conformance runner applies 56+ normalization passes to handle formatting differences between Rust string codegen and Babel codegen
+- The conformance runner's normalization layer compensates for cosmetic differences between OXC AST codegen and Babel output
 
 ## Architecture
 
@@ -60,7 +59,7 @@ Defined in `pipeline.rs`, this mirrors upstream's `Pipeline.ts`:
 4. **Mutation/Aliasing** — analyse_functions, infer_mutation_aliasing_effects, dead_code_elimination
 5. **Validation** — hooks usage, ref access, setState-in-render, etc.
 6. **Reactive Scope Construction** — infer reactive places, build scope terminals, flatten loops/hooks, propagate dependencies
-7. **Reactive Function + Codegen** — build_reactive_function (CFG → tree IR), scope alignment/merging/pruning, codegen_reactive (emit JS)
+7. **Reactive Function + Codegen** — build_reactive_function (CFG → tree IR), scope alignment/merging/pruning, codegen_backend (emit JS via OXC AST)
 
 ### Data Flow
 
@@ -71,7 +70,7 @@ Source → oxc_parser → OXC AST
   → Aliasing analysis → HIR with mutation ranges
   → Reactive scope inference → HIR with ReactiveScope annotations
   → build_reactive_function → ReactiveFunction (tree-shaped IR)
-  → codegen_reactive → JavaScript output with memoization
+  → codegen_backend → JavaScript output with memoization
 ```
 
 ### Core IR Types (in `hir/types.rs`)
@@ -85,21 +84,22 @@ Source → oxc_parser → OXC AST
 
 ### Key Modules
 
-| Module | Responsibility |
-|--------|---------------|
-| `hir/build.rs` | Lowers OXC AST → HIR CFG (largest file) |
-| `hir/types.rs` | All IR data structures |
-| `hir/globals.rs` | Known global function/type database |
-| `hir/propagate_scope_dependencies_hir.rs` | Scope dependency computation |
-| `hir/collect_hoistable_property_loads.rs` | Hoistable property analysis |
-| `pipeline.rs` | Pass orchestration (second largest file) |
-| `reactive_scopes/codegen_reactive.rs` | String-based JS codegen (largest file, future: migrate to OXC AstBuilder) |
-| `reactive_scopes/build_reactive_function.rs` | HIR CFG → tree-shaped ReactiveFunction |
-| `reactive_scopes/codegen.rs` | Alternative OXC AST-based codegen (in progress) |
-| `optimization/constant_propagation.rs` | SSA constant folding |
-| `optimization/dead_code_elimination.rs` | DCE pass |
-| `inference/infer_mutation_aliasing_effects.rs` | Aliasing side-effect analysis |
-| `options.rs` | PluginOptions, EnvironmentConfig, CompilationMode |
+| Module                                         | Responsibility                                                            |
+| ---------------------------------------------- | ------------------------------------------------------------------------- |
+| `hir/build.rs`                                 | Lowers OXC AST → HIR CFG (largest file)                                   |
+| `hir/types.rs`                                 | All IR data structures                                                    |
+| `hir/globals.rs`                               | Known global function/type database                                       |
+| `hir/propagate_scope_dependencies_hir.rs`      | Scope dependency computation                                              |
+| `hir/collect_hoistable_property_loads.rs`      | Hoistable property analysis                                               |
+| `pipeline.rs`                                  | Pass orchestration (second largest file)                                  |
+| `codegen_backend/codegen_ast.rs`               | OXC AST-based codegen (ReactiveFunction → OXC AST)                       |
+| `codegen_backend/module_emitter/`              | Module-level emission (directory module with 7 submodules)                |
+| `codegen_backend/hir_to_ast.rs`                | HIR instruction → OXC AST conversion                                     |
+| `reactive_scopes/build_reactive_function.rs`   | HIR CFG → tree-shaped ReactiveFunction                                    |
+| `optimization/constant_propagation.rs`         | SSA constant folding                                                      |
+| `optimization/dead_code_elimination.rs`        | DCE pass                                                                  |
+| `inference/infer_mutation_aliasing_effects.rs` | Aliasing side-effect analysis                                             |
+| `options.rs`                                   | PluginOptions, EnvironmentConfig, CompilationMode                         |
 
 ### Crate Structure
 
@@ -121,16 +121,17 @@ Each Rust module corresponds to an upstream TypeScript file. When debugging a pa
 - `pipeline.rs` ↔ `Entrypoint/Pipeline.ts`
 - `hir/build.rs` ↔ `HIR/BuildHIR.ts`
 - `hir/types.rs` ↔ `HIR/HIR.ts`
-- `reactive_scopes/codegen_reactive.rs` ↔ `ReactiveScopes/CodegenReactiveFunction.ts`
+- `codegen_backend/codegen_ast.rs` ↔ `ReactiveScopes/CodegenReactiveFunction.ts`
 - `reactive_scopes/build_reactive_function.rs` ↔ `ReactiveScopes/BuildReactiveFunction.ts`
 - `optimization/constant_propagation.rs` ↔ `Optimization/ConstantPropagation.ts`
 
 ## Development Notes
 
-- Rust edition 2024, OXC v0.116.0
-- `codegen_reactive.rs` uses raw string building; this will be migrated to OXC's AstBuilder for proper AST-based codegen
+- Rust edition 2024, OXC v0.120.0
+- All internal modules use `pub(crate)` visibility; only `compile()` and `options` are public
+- Flow syntax preprocessing is an inline function (`preprocess_flow_syntax`) in `pipeline.rs` (Rust-specific; Babel parses Flow natively)
 - Fixture pragmas (first line comments like `// @flow`, `// @compilationMode "all"`) control per-fixture compiler options
-- The conformance runner's normalization layer compensates for cosmetic differences (whitespace, semicolons, trailing commas) between Rust string codegen and Babel output
+- The conformance runner's normalization layer compensates for cosmetic differences (whitespace, semicolons, trailing commas) between OXC AST codegen and Babel output
 
 ## Pre-commit Checks
 

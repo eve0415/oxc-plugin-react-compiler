@@ -53,13 +53,13 @@ impl IdCounter {
     }
 
     pub fn next_block_id(&mut self) -> BlockId {
-        let id = BlockId::new(self.next_block);
+        let id = BlockId(self.next_block);
         self.next_block += 1;
         id
     }
 
     pub fn next_identifier_id(&mut self) -> IdentifierId {
-        let id = IdentifierId::new(self.next_identifier);
+        let id = IdentifierId(self.next_identifier);
         self.next_identifier += 1;
         id
     }
@@ -90,7 +90,6 @@ impl IdCounter {
 /// Binding info for a variable.
 #[derive(Clone)]
 pub struct BindingEntry {
-    pub name: String,
     pub identifier: Identifier,
     /// Whether this binding was declared with `const`.
     pub is_const: bool,
@@ -256,7 +255,6 @@ pub fn reverse_postorder_blocks(body: &mut HIR) {
                 | Terminal::Label { loc, .. }
                 | Terminal::Sequence { loc, .. }
                 | Terminal::Try { loc, .. }
-                | Terminal::MaybeThrow { loc, .. }
                 | Terminal::Scope { loc, .. }
                 | Terminal::PrunedScope { loc, .. } => loc.clone(),
             };
@@ -270,6 +268,73 @@ pub fn reverse_postorder_blocks(body: &mut HIR) {
     }
 
     body.blocks = new_blocks;
+}
+
+/// Port of upstream `removeUnreachableForUpdates` (HIRBuilder.ts:725-735).
+/// If a For terminal's update block was removed during dead-block elimination,
+/// null out the update pointer.
+pub fn remove_unreachable_for_updates(body: &mut HIR) {
+    let block_ids: HashSet<BlockId> = body.blocks.iter().map(|(id, _)| *id).collect();
+    for (_, block) in &mut body.blocks {
+        if let Terminal::For { update, .. } = &mut block.terminal
+            && let Some(update_id) = *update
+            && !block_ids.contains(&update_id)
+        {
+            *update = None;
+        }
+    }
+}
+
+/// Port of upstream `removeDeadDoWhileStatements` (HIRBuilder.ts:737-761).
+/// If a DoWhile terminal's test block is unreachable, replace the terminal
+/// with a Goto to the loop body (effectively inlining the loop body once).
+pub fn remove_dead_do_while_statements(body: &mut HIR) {
+    let block_ids: HashSet<BlockId> = body.blocks.iter().map(|(id, _)| *id).collect();
+    for (_, block) in &mut body.blocks {
+        if let Terminal::DoWhile {
+            test,
+            loop_block,
+            id,
+            loc,
+            ..
+        } = &block.terminal
+            && !block_ids.contains(test)
+        {
+            block.terminal = Terminal::Goto {
+                block: *loop_block,
+                variant: GotoVariant::Break,
+                id: *id,
+                loc: loc.clone(),
+            };
+        }
+    }
+}
+
+/// Remove Try terminals whose handler block was eliminated during RPO.
+/// Matches upstream removeUnnecessaryTryCatch in HIRBuilder.ts.
+pub fn remove_try_with_dead_handler(body: &mut HIR) {
+    let block_ids: HashSet<BlockId> = body.blocks.iter().map(|(id, _)| *id).collect();
+    for (_, block) in &mut body.blocks {
+        if let Terminal::Try {
+            block: try_block,
+            handler,
+            id,
+            loc,
+            ..
+        } = &block.terminal
+            && !block_ids.contains(handler)
+        {
+            let tb = *try_block;
+            let tid = *id;
+            let tloc = loc.clone();
+            block.terminal = Terminal::Goto {
+                block: tb,
+                variant: GotoVariant::Break,
+                id: tid,
+                loc: tloc,
+            };
+        }
+    }
 }
 
 /// Iterate control-flow successors using upstream `eachTerminalSuccessor` semantics.
@@ -300,11 +365,6 @@ pub fn each_terminal_successor(terminal: &Terminal) -> Vec<BlockId> {
             vec![*init]
         }
         Terminal::Label { block, .. } | Terminal::Sequence { block, .. } => vec![*block],
-        Terminal::MaybeThrow {
-            continuation,
-            handler,
-            ..
-        } => vec![*continuation, *handler],
         // Upstream `eachTerminalSuccessor` excludes `try.handler` because try
         // bodies are modeled with `MaybeThrow` edges. This Rust port does not
         // yet emit per-instruction `MaybeThrow` in try bodies, so excluding
@@ -328,7 +388,7 @@ impl HIRBuilder {
         env: crate::environment::Environment,
         binding_name_counters: Rc<RefCell<HashMap<String, u32>>>,
     ) -> Self {
-        let entry = BlockId::new(env.next_block_id());
+        let entry = BlockId(env.next_block_id());
         let current = WipBlock {
             id: entry,
             instructions: Vec::new(),
@@ -377,11 +437,6 @@ impl HIRBuilder {
         !self.errors.is_empty()
     }
 
-    /// Read-only view of completed blocks, used by lowering-time checks.
-    pub fn completed_blocks(&self) -> &Vec<(BlockId, BasicBlock)> {
-        &self.completed
-    }
-
     /// Push an instruction onto the current block.
     pub fn push(&mut self, instruction: Instruction) {
         self.current.instructions.push(instruction);
@@ -402,28 +457,9 @@ impl HIRBuilder {
         }
     }
 
-    /// Create a named place (for catch bindings, etc.).
-    pub fn make_named_place(&mut self, name: String, loc: SourceLocation) -> Place {
-        let id = IdentifierId::new(self.env.next_identifier_id());
-        Place {
-            identifier: Identifier {
-                id,
-                declaration_id: DeclarationId(id.0),
-                name: Some(IdentifierName::Named(name)),
-                mutable_range: MutableRange::default(),
-                scope: None,
-                type_: make_type(),
-                loc: loc.clone(),
-            },
-            effect: Effect::Unknown,
-            reactive: false,
-            loc,
-        }
-    }
-
     /// Reserve a block that can be referenced before construction.
     pub fn reserve(&mut self, kind: BlockKind) -> WipBlock {
-        let id = BlockId::new(self.env.next_block_id());
+        let id = BlockId(self.env.next_block_id());
         WipBlock {
             id,
             instructions: Vec::new(),
@@ -442,7 +478,7 @@ impl HIRBuilder {
         let wip = std::mem::replace(
             &mut self.current,
             WipBlock {
-                id: BlockId::new(u32::MAX),
+                id: BlockId(u32::MAX),
                 instructions: Vec::new(),
                 kind: BlockKind::Block,
             },
@@ -459,7 +495,7 @@ impl HIRBuilder {
             },
         ));
         if let Some(kind) = next_block_kind {
-            let next_id = BlockId::new(self.env.next_block_id());
+            let next_id = BlockId(self.env.next_block_id());
             self.current = WipBlock {
                 id: next_id,
                 instructions: Vec::new(),
@@ -639,8 +675,8 @@ impl HIRBuilder {
         if let Some(entry) = self.bindings.get(name) {
             return entry.identifier.clone();
         }
-        let id = IdentifierId::new(self.env.next_identifier_id());
-        let decl_id = DeclarationId::new(id.0);
+        let id = IdentifierId(self.env.next_identifier_id());
+        let decl_id = DeclarationId(id.0);
         let emitted_name = self.allocate_unique_binding_name(name);
         let identifier = Identifier {
             id,
@@ -654,7 +690,6 @@ impl HIRBuilder {
         self.bindings.insert(
             name.to_string(),
             BindingEntry {
-                name: emitted_name,
                 identifier: identifier.clone(),
                 is_const: false,
             },
@@ -695,8 +730,8 @@ impl HIRBuilder {
                 .last()
                 .is_some_and(|scope| scope.iter().any(|(n, _)| n == name))
         {
-            let id = IdentifierId::new(self.env.next_identifier_id());
-            let decl_id = DeclarationId::new(id.0);
+            let id = IdentifierId(self.env.next_identifier_id());
+            let decl_id = DeclarationId(id.0);
             let emitted_name = self.allocate_unique_binding_name(name);
             let identifier = Identifier {
                 id,
@@ -708,7 +743,6 @@ impl HIRBuilder {
                 loc: loc.clone(),
             };
             let entry = BindingEntry {
-                name: emitted_name,
                 identifier: identifier.clone(),
                 is_const: false,
             };
@@ -762,20 +796,6 @@ impl HIRBuilder {
         self.context_identifier_ids.contains(&id)
     }
 
-    /// Materialize function context places in stable insertion order.
-    pub fn context_places(&self) -> Vec<Place> {
-        self.context_identifier_order
-            .iter()
-            .filter_map(|id| self.context_identifiers.get(id))
-            .map(|identifier| Place {
-                identifier: identifier.clone(),
-                effect: Effect::Unknown,
-                reactive: false,
-                loc: identifier.loc.clone(),
-            })
-            .collect()
-    }
-
     /// Build the final HIR from completed blocks.
     pub fn build(self) -> HIR {
         let mut hir = HIR {
@@ -786,16 +806,21 @@ impl HIRBuilder {
         // Ensure RPO
         reverse_postorder_blocks(&mut hir);
 
+        // Post-RPO cleanup (matches upstream HIRBuilder.build)
+        remove_unreachable_for_updates(&mut hir);
+        remove_dead_do_while_statements(&mut hir);
+        remove_try_with_dead_handler(&mut hir);
+
         // Assign instruction IDs
         let mut instr_id = 0u32;
         for (_, block) in &mut hir.blocks {
             for instr in &mut block.instructions {
                 instr_id += 1;
-                instr.id = InstructionId::new(instr_id);
+                instr.id = InstructionId(instr_id);
             }
             instr_id += 1;
             // Assign terminal ID based on terminal type
-            assign_terminal_id(&mut block.terminal, InstructionId::new(instr_id));
+            assign_terminal_id(&mut block.terminal, InstructionId(instr_id));
         }
 
         // Mark predecessors
@@ -855,7 +880,6 @@ fn assign_terminal_id(terminal: &mut Terminal, id: InstructionId) {
         | Terminal::Label { id: tid, .. }
         | Terminal::Sequence { id: tid, .. }
         | Terminal::Try { id: tid, .. }
-        | Terminal::MaybeThrow { id: tid, .. }
         | Terminal::Scope { id: tid, .. }
         | Terminal::PrunedScope { id: tid, .. } => *tid = id,
     }
@@ -952,11 +976,6 @@ pub fn terminal_successors(terminal: &Terminal) -> Vec<BlockId> {
         } => {
             vec![*block, *handler, *fallthrough]
         }
-        Terminal::MaybeThrow {
-            continuation,
-            handler,
-            ..
-        } => vec![*continuation, *handler],
         Terminal::Scope {
             block, fallthrough, ..
         } => vec![*block, *fallthrough],

@@ -39,10 +39,23 @@ pub fn rename_variables(
 
 fn rename_variables_impl(func: &mut ReactiveFunction, scopes: &mut Scopes) {
     scopes.enter();
-    for param in &mut func.params {
-        match param {
-            Argument::Place(place) => scopes.visit(&mut place.identifier),
-            Argument::Spread(place) => scopes.visit(&mut place.identifier),
+    for (param_idx, param) in func.params.iter_mut().enumerate() {
+        let ident = match param {
+            Argument::Place(place) => &mut place.identifier,
+            Argument::Spread(place) => &mut place.identifier,
+        };
+        if ident.name.is_some() {
+            scopes.visit(ident);
+        } else {
+            // Unnamed params get temp names (t0, t1...) in codegen.
+            // Reserve those names in the scope so subsequent promoted temps
+            // don't collide. This matches upstream where the parameter temp
+            // name is accounted for in the rename pass.
+            let temp_name = format!("t{param_idx}");
+            if let Some(frame) = scopes.stack.last_mut() {
+                frame.insert(temp_name.clone(), ident.declaration_id);
+            }
+            scopes.names.insert(temp_name);
         }
     }
     visit_block(&mut func.body, scopes);
@@ -66,10 +79,21 @@ fn visit_statement(stmt: &mut ReactiveStatement, scopes: &mut Scopes) {
             visit_terminal_stmt(term, scopes);
         }
         ReactiveStatement::Scope(scope_block) => {
+            // Match upstream RenameVariables.ts:96-101: visit ONLY declarations
+            // before the body. Dependencies and reassignments are visited AFTER
+            // the body to match upstream's visit order (where they get renamed
+            // via shared object references during body traversal).
             for decl in scope_block.scope.declarations.values_mut() {
                 scopes.visit(&mut decl.identifier);
             }
 
+            visit_block(&mut scope_block.instructions, scopes);
+
+            // Post-body: update dependency and reassignment identifier copies.
+            // In upstream TypeScript, these share object references with
+            // instruction-level identifiers, so renaming happens automatically.
+            // In Rust, we must explicitly visit them to copy the renamed names
+            // from the seen map.
             for dep in &mut scope_block.scope.dependencies {
                 scopes.visit(&mut dep.identifier);
             }
@@ -78,19 +102,17 @@ fn visit_statement(stmt: &mut ReactiveStatement, scopes: &mut Scopes) {
                 scopes.visit(reassignment);
             }
 
-            // Visit the early return value identifier if present.
-            // In the upstream TS compiler, earlyReturnValue.value and the corresponding
-            // declaration share the same object reference, so renaming the declaration
-            // also renames the early return value. In Rust, these are separate clones,
-            // so we must explicitly visit the early return value identifier.
             if let Some(early_return) = &mut scope_block.scope.early_return_value {
                 scopes.visit(&mut early_return.value);
             }
-
-            visit_block(&mut scope_block.instructions, scopes);
         }
         ReactiveStatement::PrunedScope(scope_block) => {
-            visit_block(&mut scope_block.instructions, scopes);
+            // Upstream RenameVariables.visitPrunedScope calls traverseBlock
+            // directly (without enter/leave) so pruned scope body statements
+            // are visited at the current scope level.
+            for inner_stmt in scope_block.instructions.iter_mut() {
+                visit_statement(inner_stmt, scopes);
+            }
         }
     }
 }
@@ -292,16 +314,6 @@ fn visit_instruction_value(value: &mut InstructionValue, scopes: &mut Scopes) {
             visit_instruction_value(left, scopes);
             visit_instruction_value(right, scopes);
         }
-        InstructionValue::ReactiveConditionalExpression {
-            test,
-            consequent,
-            alternate,
-            ..
-        } => {
-            visit_instruction_value(test, scopes);
-            visit_instruction_value(consequent, scopes);
-            visit_instruction_value(alternate, scopes);
-        }
         InstructionValue::TaggedTemplateExpression { tag, .. } => {
             scopes.visit(&mut tag.identifier);
         }
@@ -346,7 +358,6 @@ fn visit_instruction_value(value: &mut InstructionValue, scopes: &mut Scopes) {
         InstructionValue::Primitive { .. }
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::StartMemoize { .. }
         | InstructionValue::Debugger { .. } => {}
@@ -362,12 +373,14 @@ fn visit_argument(arg: &mut Argument, scopes: &mut Scopes) {
 }
 
 fn visit_lvalue_pattern(pat: &mut LValuePattern, scopes: &mut Scopes) {
+    // Match upstream RenameVariables.ts: visitLValue calls visit() only, not promote.
+    // Promotion is handled by PromoteUsedTemporaries.
     match &mut pat.pattern {
         Pattern::Array(arr) => {
             for elem in arr.items.iter_mut() {
                 match elem {
                     ArrayElement::Place(place) | ArrayElement::Spread(place) => {
-                        scopes.visit_and_promote(&mut place.identifier);
+                        scopes.visit(&mut place.identifier);
                     }
                     ArrayElement::Hole => {}
                 }
@@ -377,10 +390,10 @@ fn visit_lvalue_pattern(pat: &mut LValuePattern, scopes: &mut Scopes) {
             for prop in obj.properties.iter_mut() {
                 match prop {
                     ObjectPropertyOrSpread::Property(p) => {
-                        scopes.visit_and_promote(&mut p.place.identifier);
+                        scopes.visit(&mut p.place.identifier);
                     }
                     ObjectPropertyOrSpread::Spread(place) => {
-                        scopes.visit_and_promote(&mut place.identifier);
+                        scopes.visit(&mut place.identifier);
                     }
                 }
             }
@@ -583,16 +596,6 @@ fn visit_hir_instruction_value(value: &mut InstructionValue, scopes: &mut Scopes
             visit_hir_instruction_value(left, scopes);
             visit_hir_instruction_value(right, scopes);
         }
-        InstructionValue::ReactiveConditionalExpression {
-            test,
-            consequent,
-            alternate,
-            ..
-        } => {
-            visit_hir_instruction_value(test, scopes);
-            visit_hir_instruction_value(consequent, scopes);
-            visit_hir_instruction_value(alternate, scopes);
-        }
         InstructionValue::NewExpression { callee, args, .. } => {
             scopes.visit(&mut callee.identifier);
             for arg in args.iter_mut() {
@@ -654,7 +657,6 @@ fn visit_hir_instruction_value(value: &mut InstructionValue, scopes: &mut Scopes
         InstructionValue::Primitive { .. }
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::StartMemoize { .. }
         | InstructionValue::Debugger { .. } => {}
@@ -727,7 +729,6 @@ fn visit_hir_terminal_places(terminal: &mut Terminal, scopes: &mut Scopes) {
         | Terminal::Logical { .. }
         | Terminal::Ternary { .. }
         | Terminal::Optional { .. }
-        | Terminal::MaybeThrow { .. }
         | Terminal::Unsupported { .. }
         | Terminal::Unreachable { .. } => {}
     }
@@ -983,18 +984,6 @@ impl Scopes {
         }
     }
 
-    /// Visit an identifier that MUST have a name (e.g., destructuring pattern targets,
-    /// StoreLocal/StoreContext lvalues). If the identifier is unnamed, promote it first.
-    fn visit_and_promote(&mut self, identifier: &mut Identifier) {
-        if identifier.name.is_none() {
-            identifier.name = Some(IdentifierName::Promoted(format!(
-                "#t{}",
-                identifier.declaration_id.0
-            )));
-        }
-        self.visit(identifier);
-    }
-
     fn visit(&mut self, identifier: &mut Identifier) {
         let debug_trace = std::env::var("DEBUG_RENAME_TRACE").is_ok();
         if let Some(mapped) = self.seen.get(&identifier.declaration_id) {
@@ -1052,10 +1041,8 @@ impl Scopes {
                 name = format!("T{id}");
                 id += 1;
             } else {
-                // Upstream uses `$` in RenameVariables.ts:159, but Babel's printer
-                // outputs `_` as the separator (e.g., `a_0`, `z_0`). Since we bypass
-                // Babel, emit `_` directly to match expected fixture output.
-                name = format!("{}_{id}", original_name.value());
+                // Upstream uses `$` in RenameVariables.ts:159.
+                name = format!("{}${id}", original_name.value());
                 id += 1;
             }
         }
@@ -1126,12 +1113,9 @@ mod tests {
     #[test]
     fn test_rename_promoted_temporaries() {
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
                     id: InstructionId(0),
@@ -1158,7 +1142,6 @@ mod tests {
                     loc: SourceLocation::Generated,
                 })),
             ],
-            directives: vec![],
         };
 
         let names = rename_variables(&mut func, false, None);
@@ -1199,17 +1182,13 @@ mod tests {
     #[test]
     fn test_rename_named_variables_no_conflict() {
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![Argument::Place(make_test_place(
                 1,
                 Some(IdentifierName::Named("x".to_string())),
             ))],
-            generator: false,
-            async_: false,
             body: vec![],
-            directives: vec![],
         };
 
         let names = rename_variables(&mut func, false, None);

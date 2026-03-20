@@ -31,39 +31,9 @@ fn instruction_may_throw(instr: &Instruction) -> bool {
 ///
 /// Returns a mapping from removed continuation blocks to the source block that
 /// now skips them, or `None` if no changes were made.
-fn prune_maybe_throws_impl(func: &mut HIRFunction) -> Option<HashMap<BlockId, BlockId>> {
-    let mut terminal_mapping: HashMap<BlockId, BlockId> = HashMap::new();
-
-    for (_block_id, block) in &mut func.body.blocks {
-        let (continuation, term_id, term_loc) = match &block.terminal {
-            Terminal::MaybeThrow {
-                continuation,
-                id,
-                loc,
-                ..
-            } => (*continuation, *id, loc.clone()),
-            _ => continue,
-        };
-
-        let can_throw = block.instructions.iter().any(instruction_may_throw);
-
-        if !can_throw {
-            let source = terminal_mapping.get(&block.id).copied().unwrap_or(block.id);
-            terminal_mapping.insert(continuation, source);
-            block.terminal = Terminal::Goto {
-                block: continuation,
-                variant: GotoVariant::Break,
-                id: term_id,
-                loc: term_loc,
-            };
-        }
-    }
-
-    if terminal_mapping.is_empty() {
-        None
-    } else {
-        Some(terminal_mapping)
-    }
+fn prune_maybe_throws_impl(_func: &mut HIRFunction) -> Option<HashMap<BlockId, BlockId>> {
+    // MaybeThrow terminals no longer exist in the IR, so this pass is a no-op.
+    None
 }
 
 /// Recompute predecessor sets for all blocks in the HIR body.
@@ -101,11 +71,11 @@ pub fn mark_instruction_ids(body: &mut HIR) {
     for (_block_id, block) in &mut body.blocks {
         for instr in &mut block.instructions {
             next_id += 1;
-            instr.id = InstructionId::new(next_id);
+            instr.id = InstructionId(next_id);
         }
         next_id += 1;
         // Assign the terminal its ID
-        assign_terminal_id_value(&mut block.terminal, InstructionId::new(next_id));
+        assign_terminal_id_value(&mut block.terminal, InstructionId(next_id));
     }
 }
 
@@ -130,7 +100,6 @@ fn assign_terminal_id_value(terminal: &mut Terminal, id: InstructionId) {
         | Terminal::Label { id: tid, .. }
         | Terminal::Sequence { id: tid, .. }
         | Terminal::Try { id: tid, .. }
-        | Terminal::MaybeThrow { id: tid, .. }
         | Terminal::Scope { id: tid, .. }
         | Terminal::PrunedScope { id: tid, .. } => *tid = id,
     }

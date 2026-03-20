@@ -734,16 +734,6 @@ fn collect_operands(value: &InstructionValue) -> Vec<&Place> {
             operands.extend(collect_operands(left));
             operands.extend(collect_operands(right));
         }
-        InstructionValue::ReactiveConditionalExpression {
-            test,
-            consequent,
-            alternate,
-            ..
-        } => {
-            operands.extend(collect_operands(test));
-            operands.extend(collect_operands(consequent));
-            operands.extend(collect_operands(alternate));
-        }
         InstructionValue::TaggedTemplateExpression { tag, .. } => {
             operands.push(tag);
         }
@@ -763,7 +753,6 @@ fn collect_operands(value: &InstructionValue) -> Vec<&Place> {
         // No operands
         InstructionValue::Primitive { .. }
         | InstructionValue::JSXText { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::DeclareLocal { .. }
         | InstructionValue::DeclareContext { .. }
@@ -872,8 +861,7 @@ fn compute_memoization_inputs<'a>(
         },
         InstructionValue::ReactiveSequenceExpression { .. }
         | InstructionValue::ReactiveOptionalExpression { .. }
-        | InstructionValue::ReactiveLogicalExpression { .. }
-        | InstructionValue::ReactiveConditionalExpression { .. } => MemoizationInputs {
+        | InstructionValue::ReactiveLogicalExpression { .. } => MemoizationInputs {
             lvalues: lvalue
                 .map(|p| {
                     vec![LValueMemoization {
@@ -957,7 +945,6 @@ fn compute_memoization_inputs<'a>(
         | InstructionValue::ComputedDelete { .. }
         | InstructionValue::PropertyDelete { .. }
         | InstructionValue::LoadGlobal { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::TemplateLiteral { .. }
         | InstructionValue::Primitive { .. }
         | InstructionValue::JSXText { .. }
@@ -2751,10 +2738,6 @@ fn debug_print_scopes(block: &ReactiveBlock, memoized: &HashSet<DeclarationId>) 
 /// instructions are considered for memoization. When true (corresponding to
 /// upstream `enablePreserveExistingMemoizationGuarantees` or `enableForest`),
 /// primitives are treated as Conditional rather than Never.
-pub fn prune_non_escaping_scopes(func: &mut ReactiveFunction) {
-    prune_non_escaping_scopes_with_options(func, false);
-}
-
 /// Same as `prune_non_escaping_scopes` but allows configuring
 /// `force_memoize_primitives`.
 pub fn prune_non_escaping_scopes_with_options(
@@ -2976,12 +2959,9 @@ mod tests {
     fn test_prune_non_escaping_simple() {
         // Simple case: an object expression that is not returned should be pruned
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Scope(ReactiveScopeBlock {
                     scope: make_reactive_scope(0, &[(1, Some("a"))]),
@@ -3001,15 +2981,13 @@ mod tests {
                     terminal: ReactiveTerminal::Return {
                         value: make_place(99, None),
                         id: InstructionId(10),
-                        loc: SourceLocation::Generated,
                     },
                     label: None,
                 }),
             ],
-            directives: vec![],
         };
 
-        prune_non_escaping_scopes(&mut func);
+        prune_non_escaping_scopes_with_options(&mut func, false);
 
         // The scope should be pruned since `a` doesn't escape
         assert!(
@@ -3022,12 +3000,9 @@ mod tests {
     fn test_keep_escaping_scope() {
         // The object is returned, so its scope should be kept
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Scope(ReactiveScopeBlock {
                     scope: make_reactive_scope(0, &[(1, Some("a"))]),
@@ -3047,15 +3022,13 @@ mod tests {
                     terminal: ReactiveTerminal::Return {
                         value: make_place(1, Some("a")),
                         id: InstructionId(10),
-                        loc: SourceLocation::Generated,
                     },
                     label: None,
                 }),
             ],
-            directives: vec![],
         };
 
-        prune_non_escaping_scopes(&mut func);
+        prune_non_escaping_scopes_with_options(&mut func, false);
 
         // The scope should be kept since `a` is returned
         assert!(
@@ -3068,12 +3041,9 @@ mod tests {
     fn test_empty_scope_kept() {
         // Empty scopes (no declarations or reassignments) should be kept
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Scope(ReactiveScopeBlock {
                 scope: ReactiveScope {
                     id: ScopeId(0),
@@ -3089,10 +3059,9 @@ mod tests {
                 },
                 instructions: vec![],
             })],
-            directives: vec![],
         };
 
-        prune_non_escaping_scopes(&mut func);
+        prune_non_escaping_scopes_with_options(&mut func, false);
 
         // Empty scope should be kept (pruned later by PruneUnusedScopes)
         assert!(matches!(&func.body[0], ReactiveStatement::Scope(_)));
@@ -3102,12 +3071,9 @@ mod tests {
     fn test_hook_args_escape() {
         // Values passed to hooks should be treated as escaping
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Scope(ReactiveScopeBlock {
                     scope: make_reactive_scope(0, &[(1, Some("callback"))]),
@@ -3122,7 +3088,6 @@ mod tests {
                                         env: crate::environment::Environment::new(
                                             crate::options::EnvironmentConfig::default(),
                                         ),
-                                        loc: SourceLocation::Generated,
                                         id: None,
                                         fn_type: ReactFunctionType::Other,
                                         params: vec![],
@@ -3161,15 +3126,13 @@ mod tests {
                     terminal: ReactiveTerminal::Return {
                         value: make_place(99, None),
                         id: InstructionId(20),
-                        loc: SourceLocation::Generated,
                     },
                     label: None,
                 }),
             ],
-            directives: vec![],
         };
 
-        prune_non_escaping_scopes(&mut func);
+        prune_non_escaping_scopes_with_options(&mut func, false);
 
         // The scope for `callback` should be kept because it's passed to a hook
         assert!(

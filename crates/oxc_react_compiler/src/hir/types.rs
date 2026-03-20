@@ -20,12 +20,6 @@ macro_rules! define_id {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
         pub struct $name(pub u32);
 
-        impl $name {
-            pub fn new(id: u32) -> Self {
-                Self(id)
-            }
-        }
-
         impl std::fmt::Display for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "{}", self.0)
@@ -71,6 +65,7 @@ pub struct SourcePosition {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Default)]
+#[allow(clippy::enum_variant_names)]
 pub enum Type {
     Primitive,
     Function {
@@ -89,18 +84,7 @@ pub enum Type {
     Phi {
         operands: Vec<Type>,
     },
-    Property {
-        object_type: Box<Type>,
-        object_name: String,
-        property_name: PropertyName,
-    },
     ObjectMethod,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum PropertyName {
-    Literal(PropertyLiteral),
-    Computed(Box<Type>),
 }
 
 // ---------------------------------------------------------------------------
@@ -286,12 +270,6 @@ pub enum InstructionValue {
         flags: String,
         loc: SourceLocation,
     },
-    MetaProperty {
-        meta: String,
-        property: String,
-        loc: SourceLocation,
-    },
-
     // Expressions
     BinaryExpression {
         operator: BinaryOperator,
@@ -351,8 +329,6 @@ pub enum InstructionValue {
         props: Vec<JsxAttribute>,
         children: Option<Vec<Place>>,
         loc: SourceLocation,
-        opening_loc: SourceLocation,
-        closing_loc: SourceLocation,
     },
     JsxFragment {
         children: Vec<Place>,
@@ -493,14 +469,12 @@ pub enum InstructionValue {
     /// top-level instructions.
     ReactiveSequenceExpression {
         instructions: Vec<ReactiveInstruction>,
-        id: InstructionId,
         value: Box<InstructionValue>,
         loc: SourceLocation,
     },
     /// Reactive-only value used by BuildReactiveFunction to preserve optional
     /// chaining structure through codegen.
     ReactiveOptionalExpression {
-        optional: bool,
         value: Box<InstructionValue>,
         loc: SourceLocation,
     },
@@ -512,15 +486,6 @@ pub enum InstructionValue {
         right: Box<InstructionValue>,
         loc: SourceLocation,
     },
-    /// Reactive-only conditional expression whose branches may themselves be
-    /// nested reactive values.
-    ReactiveConditionalExpression {
-        test: Box<InstructionValue>,
-        consequent: Box<InstructionValue>,
-        alternate: Box<InstructionValue>,
-        loc: SourceLocation,
-    },
-
     // Other
     Debugger {
         loc: SourceLocation,
@@ -540,7 +505,6 @@ impl InstructionValue {
             | Self::Primitive { loc, .. }
             | Self::JSXText { loc, .. }
             | Self::RegExpLiteral { loc, .. }
-            | Self::MetaProperty { loc, .. }
             | Self::BinaryExpression { loc, .. }
             | Self::UnaryExpression { loc, .. }
             | Self::CallExpression { loc, .. }
@@ -576,7 +540,6 @@ impl InstructionValue {
             | Self::ReactiveSequenceExpression { loc, .. }
             | Self::ReactiveOptionalExpression { loc, .. }
             | Self::ReactiveLogicalExpression { loc, .. }
-            | Self::ReactiveConditionalExpression { loc, .. }
             | Self::Debugger { loc, .. } => loc,
         }
     }
@@ -678,8 +641,6 @@ pub enum JsxTag {
     Component(Place),
     /// A built-in HTML tag like "div", "span", etc.
     BuiltinTag(String),
-    /// A fragment `<>...</>`.
-    Fragment,
 }
 
 /// A JSX attribute.
@@ -947,12 +908,6 @@ pub enum Terminal {
         id: InstructionId,
         loc: SourceLocation,
     },
-    MaybeThrow {
-        continuation: BlockId,
-        handler: BlockId,
-        id: InstructionId,
-        loc: SourceLocation,
-    },
     Scope {
         block: BlockId,
         fallthrough: BlockId,
@@ -991,7 +946,6 @@ impl Terminal {
             | Self::Label { id, .. }
             | Self::Sequence { id, .. }
             | Self::Try { id, .. }
-            | Self::MaybeThrow { id, .. }
             | Self::Scope { id, .. }
             | Self::PrunedScope { id, .. } => *id,
         }
@@ -1021,8 +975,7 @@ impl Terminal {
             | Self::Unreachable { .. }
             | Self::Throw { .. }
             | Self::Return { .. }
-            | Self::Goto { .. }
-            | Self::MaybeThrow { .. } => None,
+            | Self::Goto { .. } => None,
         }
     }
 }
@@ -1030,7 +983,6 @@ impl Terminal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReturnVariant {
     Void,
-    Implicit,
     Explicit,
 }
 
@@ -1038,7 +990,6 @@ pub enum ReturnVariant {
 pub enum GotoVariant {
     Break,
     Continue,
-    Try,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1085,13 +1036,6 @@ pub struct BasicBlock {
     pub phis: Vec<Phi>,
 }
 
-impl BasicBlock {
-    /// Get the InstructionId assigned to this block's terminal.
-    pub fn terminal_id(&self) -> InstructionId {
-        get_terminal_id(&self.terminal)
-    }
-}
-
 /// Extract the InstructionId from a terminal.
 pub fn get_terminal_id(terminal: &Terminal) -> InstructionId {
     match terminal {
@@ -1115,8 +1059,7 @@ pub fn get_terminal_id(terminal: &Terminal) -> InstructionId {
         | Terminal::Sequence { id, .. }
         | Terminal::Logical { id, .. }
         | Terminal::Ternary { id, .. }
-        | Terminal::Optional { id, .. }
-        | Terminal::MaybeThrow { id, .. } => *id,
+        | Terminal::Optional { id, .. } => *id,
     }
 }
 
@@ -1126,6 +1069,7 @@ pub fn get_terminal_id(terminal: &Terminal) -> InstructionId {
 
 /// The HIR control-flow graph: an entry block and a map of blocks.
 #[derive(Debug, Clone)]
+#[allow(clippy::upper_case_acronyms)]
 pub struct HIR {
     pub entry: BlockId,
     /// Blocks stored in reverse postorder (predecessors before successors).
@@ -1148,7 +1092,6 @@ pub enum ReactFunctionType {
 #[derive(Debug, Clone)]
 pub struct HIRFunction {
     pub env: crate::environment::Environment,
-    pub loc: SourceLocation,
     pub id: Option<String>,
     pub fn_type: ReactFunctionType,
     pub params: Vec<Argument>,
@@ -1209,21 +1152,17 @@ pub struct ReactiveScopeDependency {
 
 /// A reactive function is the tree-shaped output of the reactive scope analysis.
 /// It's the input to the codegen phase.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ReactiveFunction {
-    pub loc: SourceLocation,
     pub id: Option<String>,
     pub name_hint: Option<String>,
     pub params: Vec<Argument>,
-    pub generator: bool,
-    pub async_: bool,
     pub body: ReactiveBlock,
-    pub directives: Vec<String>,
 }
 
 pub type ReactiveBlock = Vec<ReactiveStatement>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ReactiveStatement {
     Instruction(Box<ReactiveInstruction>),
     Terminal(ReactiveTerminalStatement),
@@ -1239,25 +1178,25 @@ pub struct ReactiveInstruction {
     pub loc: SourceLocation,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ReactiveTerminalStatement {
     pub terminal: ReactiveTerminal,
     pub label: Option<ReactiveLabel>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ReactiveLabel {
     pub id: BlockId,
     pub implicit: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ReactiveScopeBlock {
     pub scope: ReactiveScope,
     pub instructions: ReactiveBlock,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PrunedReactiveScopeBlock {
     pub scope: ReactiveScope,
     pub instructions: ReactiveBlock,
@@ -1273,91 +1212,79 @@ pub enum ReactiveTerminalTargetKind {
     Labeled,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ReactiveTerminal {
     Break {
         target: BlockId,
         target_kind: ReactiveTerminalTargetKind,
         id: InstructionId,
-        loc: SourceLocation,
     },
     Continue {
         target: BlockId,
         target_kind: ReactiveTerminalTargetKind,
         id: InstructionId,
-        loc: SourceLocation,
     },
     Return {
         value: Place,
         id: InstructionId,
-        loc: SourceLocation,
     },
     Throw {
         value: Place,
         id: InstructionId,
-        loc: SourceLocation,
     },
     Switch {
         test: Place,
         cases: Vec<ReactiveSwitchCase>,
         id: InstructionId,
-        loc: SourceLocation,
     },
     DoWhile {
         loop_block: ReactiveBlock,
         test: Place,
         id: InstructionId,
-        loc: SourceLocation,
     },
     While {
         test: Place,
         loop_block: ReactiveBlock,
         id: InstructionId,
-        loc: SourceLocation,
     },
     For {
         init: ReactiveBlock,
         test: Place,
         update: Option<ReactiveBlock>,
+        update_value: Option<Box<InstructionValue>>,
         loop_block: ReactiveBlock,
         id: InstructionId,
-        loc: SourceLocation,
     },
     ForOf {
         init: ReactiveBlock,
         test: Place,
         loop_block: ReactiveBlock,
         id: InstructionId,
-        loc: SourceLocation,
     },
     ForIn {
         init: ReactiveBlock,
         loop_block: ReactiveBlock,
         id: InstructionId,
-        loc: SourceLocation,
     },
     If {
         test: Place,
         consequent: ReactiveBlock,
         alternate: Option<ReactiveBlock>,
         id: InstructionId,
-        loc: SourceLocation,
     },
     Label {
         block: ReactiveBlock,
         id: InstructionId,
-        loc: SourceLocation,
     },
     Try {
         block: ReactiveBlock,
         handler_binding: Option<Place>,
         handler: ReactiveBlock,
         id: InstructionId,
-        loc: SourceLocation,
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ReactiveSwitchCase {
     pub test: Option<Place>,
     pub block: Option<ReactiveBlock>,
@@ -1381,16 +1308,9 @@ pub fn make_identifier_id(id: u32) -> IdentifierId {
     IdentifierId(id)
 }
 
-pub fn make_declaration_id(id: u32) -> DeclarationId {
-    DeclarationId(id)
-}
-
-pub fn make_scope_id(id: u32) -> ScopeId {
-    ScopeId(id)
-}
-
 /// Create a minimal ReactiveScope with only the given ScopeId.
 /// Used for ScopeDeclaration.scope where only the id matters (for has_own_declaration check).
+#[cfg(test)]
 pub fn make_declaration_scope(id: ScopeId) -> ReactiveScope {
     ReactiveScope {
         id,

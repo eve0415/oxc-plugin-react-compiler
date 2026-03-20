@@ -1018,11 +1018,21 @@ impl DependencyCollectionContext {
                 let is_active = self.scope_stack.iter().any(|s| s.id == scope.id);
                 if !is_active {
                     let scope_decls = self.scope_decls.entry(scope.id).or_default();
-                    if let indexmap::map::Entry::Vacant(e) = scope_decls.entry(dep.identifier.id) {
-                        e.insert(ScopeDeclaration {
-                            identifier: dep.identifier.clone(),
-                            scope: innermost_scope.clone(),
-                        });
+                    // Match upstream: dedup by declarationId across all values,
+                    // not by IdentifierId key. Upstream checks:
+                    //   !Iterable_some(scope.declarations.values(),
+                    //     decl => decl.identifier.declarationId === dep.identifier.declarationId)
+                    let already_declared = scope_decls
+                        .values()
+                        .any(|d| d.identifier.declaration_id == dep.identifier.declaration_id);
+                    if !already_declared {
+                        scope_decls.insert(
+                            dep.identifier.id,
+                            ScopeDeclaration {
+                                identifier: dep.identifier.clone(),
+                                scope: innermost_scope.clone(),
+                            },
+                        );
                     }
                 }
             }
@@ -1260,7 +1270,6 @@ pub(crate) fn infer_minimal_dependencies_for_inner_fn(
                     Terminal::Scope { .. } => "scope",
                     Terminal::Try { .. } => "try",
                     Terminal::PrunedScope { .. } => "pruned_scope",
-                    Terminal::MaybeThrow { .. } => "maybe_throw",
                     Terminal::Label { .. } => "label",
                     Terminal::Unsupported { .. } => "unsupported",
                     _ => "other",
@@ -1865,6 +1874,24 @@ fn minimize_and_apply(
         }
         let mut minimal = tree.derive_minimal_dependencies();
 
+        // Deduplicate by declaration_id + path (matching upstream
+        // PropagateScopeDependenciesHIR.ts:112-123 which checks
+        // existingDep.identifier.declarationId === candidateDep.identifier.declarationId
+        // && areEqualPaths).
+        {
+            let mut seen: HashSet<(DeclarationId, Vec<(String, bool)>)> = HashSet::new();
+            minimal.retain(|dep| {
+                let key = (
+                    dep.identifier.declaration_id,
+                    dep.path
+                        .iter()
+                        .map(|e| (e.property.clone(), e.optional))
+                        .collect::<Vec<_>>(),
+                );
+                seen.insert(key)
+            });
+        }
+
         // Sort deps deterministically by identifier ID then path.
         // Upstream JS Map preserves insertion order; Rust HashMap does not.
         minimal.sort_by(|a, b| {
@@ -2120,7 +2147,6 @@ mod tests {
 
         let func = HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Component,
             params: vec![],

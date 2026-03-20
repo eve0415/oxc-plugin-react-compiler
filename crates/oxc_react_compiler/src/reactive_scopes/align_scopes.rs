@@ -894,11 +894,6 @@ fn terminal_successors(terminal: &Terminal) -> Vec<BlockId> {
             fallthrough,
             ..
         } => vec![*block, *handler, *fallthrough],
-        Terminal::MaybeThrow {
-            continuation,
-            handler,
-            ..
-        } => vec![*continuation, *handler],
         Terminal::Scope {
             block, fallthrough, ..
         } => vec![*block, *fallthrough],
@@ -978,7 +973,6 @@ mod tests {
 
         let mut func = HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Component,
             params: vec![],
@@ -1119,7 +1113,6 @@ mod tests {
     fn test_no_scopes_is_noop() {
         let mut func = HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Component,
             params: vec![],

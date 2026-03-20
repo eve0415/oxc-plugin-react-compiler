@@ -74,7 +74,6 @@ pub fn flatten_reactive_loops_hir(func: &mut HIRFunction) {
             | Terminal::If { .. }
             | Terminal::Label { .. }
             | Terminal::Logical { .. }
-            | Terminal::MaybeThrow { .. }
             | Terminal::Optional { .. }
             | Terminal::PrunedScope { .. }
             | Terminal::Return { .. }
@@ -114,7 +113,6 @@ mod tests {
     fn make_func(blocks: Vec<(BlockId, BasicBlock)>) -> HIRFunction {
         HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Component,
             params: vec![],

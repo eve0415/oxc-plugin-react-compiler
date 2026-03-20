@@ -12,10 +12,10 @@ use std::collections::{HashMap, HashSet};
 
 use crate::hir::types::{
     BasicBlock, BlockId, DeclarationId, Effect, GotoVariant, HIRFunction, Identifier,
-    InstructionId, InstructionValue, Place, PrunedReactiveScopeBlock, ReactiveBlock,
-    ReactiveFunction, ReactiveInstruction, ReactiveLabel, ReactiveScopeBlock, ReactiveStatement,
-    ReactiveSwitchCase, ReactiveTerminal, ReactiveTerminalStatement, ReactiveTerminalTargetKind,
-    SourceLocation, Terminal,
+    InstructionId, InstructionKind, InstructionValue, Place, PrunedReactiveScopeBlock,
+    ReactiveBlock, ReactiveFunction, ReactiveInstruction, ReactiveLabel, ReactiveScopeBlock,
+    ReactiveStatement, ReactiveSwitchCase, ReactiveTerminal, ReactiveTerminalStatement,
+    ReactiveTerminalTargetKind, SourceLocation, Terminal,
 };
 
 // ---------------------------------------------------------------------------
@@ -513,7 +513,7 @@ impl Driver {
         Place {
             identifier: Identifier {
                 id: crate::hir::types::make_identifier_id(0),
-                declaration_id: DeclarationId::new(0),
+                declaration_id: DeclarationId(0),
                 name: None,
                 mutable_range: crate::hir::types::MutableRange::default(),
                 scope: None,
@@ -597,16 +597,16 @@ impl Driver {
         let mut schedule_ids: Vec<usize> = Vec::new();
 
         match terminal {
-            Terminal::Return { value, id, loc, .. } => {
+            Terminal::Return { value, id, .. } => {
                 block_value.push(ReactiveStatement::Terminal(ReactiveTerminalStatement {
-                    terminal: ReactiveTerminal::Return { value, id, loc },
+                    terminal: ReactiveTerminal::Return { value, id },
                     label: None,
                 }));
             }
 
-            Terminal::Throw { value, id, loc } => {
+            Terminal::Throw { value, id, .. } => {
                 block_value.push(ReactiveStatement::Terminal(ReactiveTerminalStatement {
-                    terminal: ReactiveTerminal::Throw { value, id, loc },
+                    terminal: ReactiveTerminal::Throw { value, id },
                     label: None,
                 }));
             }
@@ -617,7 +617,7 @@ impl Driver {
                 alternate,
                 fallthrough,
                 id,
-                loc,
+                ..
             } => {
                 let fallthrough_id =
                     if self.cx.reachable(fallthrough) && !self.cx.is_scheduled(fallthrough) {
@@ -659,7 +659,6 @@ impl Driver {
                         consequent: consequent_block,
                         alternate: alternate_block,
                         id,
-                        loc,
                     },
                     label: fallthrough_id.map(|ft| ReactiveLabel {
                         id: ft,
@@ -676,7 +675,7 @@ impl Driver {
                 cases,
                 fallthrough,
                 id,
-                loc,
+                ..
             } => {
                 let fallthrough_id =
                     if self.cx.reachable(fallthrough) && !self.cx.is_scheduled(fallthrough) {
@@ -720,7 +719,6 @@ impl Driver {
                         test,
                         cases: reactive_cases,
                         id,
-                        loc: loc.clone(),
                     },
                     label: fallthrough_id.map(|ft| ReactiveLabel {
                         id: ft,
@@ -735,7 +733,6 @@ impl Driver {
                         terminal: ReactiveTerminal::Label {
                             block: vec![inner_switch_stmt],
                             id,
-                            loc,
                         },
                         label: Some(ReactiveLabel {
                             id: outer_label,
@@ -793,7 +790,6 @@ impl Driver {
                         loop_block: loop_body,
                         test: test_place,
                         id,
-                        loc,
                     },
                     label: fallthrough_id.map(|ft| ReactiveLabel {
                         id: ft,
@@ -837,11 +833,74 @@ impl Driver {
 
                 self.cx.unschedule_all(&schedule_ids);
 
-                let test_place = Self::effective_value_place(&test_result);
+                let mut test_place = Self::effective_value_place(&test_result);
 
                 // Emit test instructions as leading statements (they populate
                 // the temp map so codegen can inline the test expression).
-                for instr in test_result.instructions {
+                // Also detect orphaned side-effecting temps (from sequence
+                // expressions like `while ((foo(), true))`) and wrap them
+                // into a ReactiveSequenceExpression that codegen inlines.
+                let mut test_instrs = test_result.instructions;
+                if test_instrs.len() > 1 {
+                    let last = test_instrs.last().unwrap().clone();
+                    let prefix_slice = &test_instrs[..test_instrs.len() - 1];
+                    let has_orphaned = prefix_slice.iter().any(|instr| {
+                        if let Some(lv) = &instr.lvalue
+                            && lv.identifier.name.is_none()
+                            && matches!(
+                                instr.value,
+                                InstructionValue::CallExpression { .. }
+                                    | InstructionValue::MethodCall { .. }
+                                    | InstructionValue::PostfixUpdate { .. }
+                                    | InstructionValue::PrefixUpdate { .. }
+                            )
+                        {
+                            // Check against ALL other instructions (prefix + last),
+                            // not just the last, to avoid false positives when a
+                            // prefix instruction is consumed by another prefix instruction.
+                            let others: Vec<_> = prefix_slice
+                                .iter()
+                                .chain(std::iter::once(&last))
+                                .filter(|i| {
+                                    i.lvalue.as_ref().map(|ilv| ilv.identifier.declaration_id)
+                                        != Some(lv.identifier.declaration_id)
+                                })
+                                .cloned()
+                                .collect();
+                            !is_decl_id_referenced_in_instructions(
+                                lv.identifier.declaration_id,
+                                &others,
+                            )
+                        } else {
+                            false
+                        }
+                    });
+                    if has_orphaned {
+                        let prefix: Vec<_> = prefix_slice.to_vec();
+                        let seq_value = InstructionValue::ReactiveSequenceExpression {
+                            instructions: prefix,
+                            value: Box::new(last.value.clone()),
+                            loc: loc.clone(),
+                        };
+                        // Replace last instruction with the sequence
+                        // and update test_place to match its lvalue so
+                        // codegen picks up the comma expression.
+                        let seq_lvalue = last.lvalue.clone().unwrap_or_else(|| test_place.clone());
+                        let seq_instr = ReactiveInstruction {
+                            id: last.id,
+                            lvalue: Some(seq_lvalue.clone()),
+                            value: seq_value,
+                            loc: loc.clone(),
+                        };
+                        // Remove the flat prefix instructions and the
+                        // original last; emit only the sequence wrapper.
+                        test_instrs.clear();
+                        test_instrs.push(seq_instr);
+                        // Update test_place to point to the sequence.
+                        test_place = seq_lvalue;
+                    }
+                }
+                for instr in test_instrs {
                     block_value.push(ReactiveStatement::Instruction(Box::new(instr)));
                 }
 
@@ -850,7 +909,6 @@ impl Driver {
                         test: test_place,
                         loop_block: loop_body,
                         id,
-                        loc,
                     },
                     label: fallthrough_id.map(|ft| ReactiveLabel {
                         id: ft,
@@ -921,15 +979,15 @@ impl Driver {
                     test_result.place = place;
                 }
 
-                let update_block = if let Some(upd) = update {
+                let (update_block, update_value) = if let Some(upd) = update {
                     let upd_result = self.visit_value_block(upd, &loc);
                     let mut stmts: ReactiveBlock = Vec::new();
                     for instr in upd_result.instructions {
                         stmts.push(ReactiveStatement::Instruction(Box::new(instr)));
                     }
-                    Some(stmts)
+                    (Some(stmts), Some(Box::new(upd_result.value)))
                 } else {
-                    None
+                    (None, None)
                 };
 
                 let loop_body = if let Some(lid) = loop_id {
@@ -958,9 +1016,9 @@ impl Driver {
                         init: init_block,
                         test: test_place,
                         update: update_block,
+                        update_value,
                         loop_block: loop_body,
                         id,
-                        loc,
                     },
                     label: fallthrough_id.map(|ft| ReactiveLabel {
                         id: ft,
@@ -1023,7 +1081,6 @@ impl Driver {
                         test: test_place,
                         loop_block: loop_body,
                         id,
-                        loc,
                     },
                     label: fallthrough_id.map(|ft| ReactiveLabel {
                         id: ft,
@@ -1076,7 +1133,6 @@ impl Driver {
                         init: init_block,
                         loop_block: loop_body,
                         id,
-                        loc,
                     },
                     label: fallthrough_id.map(|ft| ReactiveLabel {
                         id: ft,
@@ -1093,11 +1149,10 @@ impl Driver {
                 consequent,
                 alternate,
                 id,
-                loc,
                 ..
             } => {
                 let consequent_block = if self.cx.is_scheduled(consequent) {
-                    let break_ = self.visit_break(consequent, id, &loc);
+                    let break_ = self.visit_break(consequent, id);
                     break_.map(|b| vec![b])
                 } else {
                     Some(self.traverse_block(consequent))
@@ -1114,7 +1169,6 @@ impl Driver {
                         consequent: consequent_block.unwrap_or_default(),
                         alternate: Some(alternate_block),
                         id,
-                        loc,
                     },
                     label: None,
                 }));
@@ -1124,7 +1178,7 @@ impl Driver {
                 block: label_block,
                 fallthrough,
                 id,
-                loc,
+                ..
             } => {
                 let fallthrough_id =
                     if self.cx.reachable(fallthrough) && !self.cx.is_scheduled(fallthrough) {
@@ -1148,7 +1202,6 @@ impl Driver {
                     terminal: ReactiveTerminal::Label {
                         block: label_body,
                         id,
-                        loc,
                     },
                     label: fallthrough_id.map(|ft| ReactiveLabel {
                         id: ft,
@@ -1160,13 +1213,128 @@ impl Driver {
                 }
             }
 
-            terminal @ (Terminal::Sequence { .. }
-            | Terminal::Optional { .. }
+            Terminal::Sequence {
+                block: _seq_block,
+                fallthrough,
+                id: terminal_id,
+                loc: ref terminal_loc,
+            } => {
+                let loc = terminal_loc.clone();
+                let fallthrough_id = if !self.cx.is_scheduled(fallthrough) {
+                    Some(fallthrough)
+                } else {
+                    None
+                };
+                if let Some(ft) = fallthrough_id {
+                    let sid = self.cx.schedule(ft, "if");
+                    schedule_ids.push(sid);
+                }
+
+                let vbt_result = self.visit_value_block_terminal_owned(terminal, block_id);
+
+                self.cx.unschedule_all(&schedule_ids);
+
+                // Emit flat instructions for reactive scope analysis.
+                for instr in &vbt_result.instructions {
+                    block_value.push(ReactiveStatement::Instruction(Box::new(instr.clone())));
+                }
+
+                // For multi-instruction sequences at statement level, also
+                // emit a ReactiveSequenceExpression so codegen can
+                // reconstruct the comma expression — but ONLY when the
+                // flat codegen would lose side effects (orphaned
+                // side-effecting temp instructions).
+                if vbt_result.instructions.len() > 1 {
+                    let mut prefix = vbt_result.instructions;
+                    let last = prefix.pop().unwrap();
+
+                    // Check if we need a ReactiveSequenceExpression to
+                    // preserve the comma-expression form at codegen time.
+                    //
+                    // Two cases:
+                    // 1. Orphaned temps: side-effecting unnamed temp whose
+                    //    result is never referenced — flat codegen would
+                    //    silently drop its side effects.
+                    // 2. Named-variable Reassign: the sequence has a
+                    //    reassignment to a named variable (e.g. `y = e`)
+                    //    followed by a read of that variable (e.g. `y`).
+                    //    Upstream preserves this as `((y = e), y)` — a
+                    //    sequence expression where the value is the
+                    //    variable read, not the assignment result.  Flat
+                    //    codegen would emit `y = e;` and drop the read.
+                    let has_orphaned = prefix.iter().any(|instr| {
+                        // Case 2: Reassign to a named variable (StoreLocal or
+                        // StoreContext). The sequence must be preserved as
+                        // `((y = e), y)` regardless of whether the instruction
+                        // has an outer lvalue.
+                        if matches!(
+                            &instr.value,
+                            InstructionValue::StoreLocal {
+                                lvalue: store_lv,
+                                ..
+                            }
+                            | InstructionValue::StoreContext {
+                                lvalue: store_lv,
+                                ..
+                            } if matches!(store_lv.kind, InstructionKind::Reassign)
+                        ) {
+                            return true;
+                        }
+
+                        // Case 1: orphaned unnamed temp
+                        if let Some(lv) = &instr.lvalue
+                            && lv.identifier.name.is_none()
+                            && matches!(
+                                instr.value,
+                                InstructionValue::CallExpression { .. }
+                                    | InstructionValue::MethodCall { .. }
+                                    | InstructionValue::PostfixUpdate { .. }
+                                    | InstructionValue::PrefixUpdate { .. }
+                                    | InstructionValue::StoreLocal { .. }
+                            )
+                        {
+                            let others: Vec<_> = prefix
+                                .iter()
+                                .chain(std::iter::once(&last))
+                                .filter(|i| !std::ptr::eq(*i, instr))
+                                .cloned()
+                                .collect();
+                            return !is_decl_id_referenced_in_instructions(
+                                lv.identifier.declaration_id,
+                                &others,
+                            );
+                        }
+
+                        false
+                    });
+
+                    if has_orphaned {
+                        let seq_value = InstructionValue::ReactiveSequenceExpression {
+                            instructions: prefix,
+                            value: Box::new(last.value),
+                            loc: loc.clone(),
+                        };
+                        block_value.push(ReactiveStatement::Instruction(Box::new(
+                            ReactiveInstruction {
+                                id: terminal_id,
+                                lvalue: last.lvalue,
+                                value: seq_value,
+                                loc,
+                            },
+                        )));
+                    }
+                }
+
+                if let Some(ft) = fallthrough_id {
+                    self.visit_block(ft, block_value);
+                }
+            }
+
+            terminal @ (Terminal::Optional { .. }
             | Terminal::Ternary { .. }
             | Terminal::Logical { .. }) => {
                 let fallthrough = match &terminal {
-                    Terminal::Sequence { fallthrough, .. }
-                    | Terminal::Optional { fallthrough, .. }
+                    Terminal::Optional { fallthrough, .. }
                     | Terminal::Ternary { fallthrough, .. }
                     | Terminal::Logical { fallthrough, .. } => *fallthrough,
                     _ => unreachable!(),
@@ -1202,11 +1370,11 @@ impl Driver {
                 block: goto_block,
                 variant,
                 id,
-                loc,
+                ..
             } => {
                 match variant {
                     GotoVariant::Break => {
-                        if let Some(break_stmt) = self.visit_break(goto_block, id, &loc) {
+                        if let Some(break_stmt) = self.visit_break(goto_block, id) {
                             block_value.push(break_stmt);
                         } else if !self.cx.is_scheduled(goto_block)
                             && !self.cx.emitted.contains(&goto_block)
@@ -1217,21 +1385,10 @@ impl Driver {
                         }
                     }
                     GotoVariant::Continue => {
-                        if let Some(continue_stmt) = self.visit_continue(goto_block, id, &loc) {
+                        if let Some(continue_stmt) = self.visit_continue(goto_block, id) {
                             block_value.push(continue_stmt);
                         }
                     }
-                    GotoVariant::Try => {
-                        // noop
-                    }
-                }
-            }
-
-            Terminal::MaybeThrow { continuation, .. } => {
-                // ReactiveFunction does not explicitly model maybe-throw semantics,
-                // so these terminals flatten away.
-                if !self.cx.is_scheduled(continuation) {
-                    self.visit_block(continuation, block_value);
                 }
             }
 
@@ -1241,7 +1398,7 @@ impl Driver {
                 handler,
                 fallthrough,
                 id,
-                loc,
+                ..
             } => {
                 let fallthrough_id =
                     if self.cx.reachable(fallthrough) && !self.cx.is_scheduled(fallthrough) {
@@ -1265,7 +1422,6 @@ impl Driver {
                         handler_binding,
                         handler: handler_body,
                         id,
-                        loc,
                     },
                     label: fallthrough_id.map(|ft| ReactiveLabel {
                         id: ft,
@@ -1367,7 +1523,7 @@ impl Driver {
             let place = Place {
                 identifier: Identifier {
                     id: crate::hir::types::make_identifier_id(0),
-                    declaration_id: DeclarationId::new(0),
+                    declaration_id: DeclarationId(0),
                     name: None,
                     mutable_range: crate::hir::types::MutableRange::default(),
                     scope: None,
@@ -1386,7 +1542,7 @@ impl Driver {
                     loc: place.loc.clone(),
                 },
                 place,
-                id: InstructionId::new(0),
+                id: InstructionId(0),
                 branch_targets: None,
             };
         };
@@ -1465,7 +1621,7 @@ impl Driver {
                     let place = Place {
                         identifier: Identifier {
                             id: crate::hir::types::make_identifier_id(0),
-                            declaration_id: DeclarationId::new(0),
+                            declaration_id: DeclarationId(0),
                             name: None,
                             mutable_range: crate::hir::types::MutableRange::default(),
                             scope: None,
@@ -1484,7 +1640,7 @@ impl Driver {
                             loc: place.loc.clone(),
                         },
                         place,
-                        id: InstructionId::new(0),
+                        id: InstructionId(0),
                         branch_targets: None,
                     };
                 }
@@ -1603,7 +1759,7 @@ impl Driver {
                 let place = Place {
                     identifier: Identifier {
                         id: crate::hir::types::make_identifier_id(0),
-                        declaration_id: DeclarationId::new(0),
+                        declaration_id: DeclarationId(0),
                         name: None,
                         mutable_range: crate::hir::types::MutableRange::default(),
                         scope: None,
@@ -1755,10 +1911,13 @@ impl Driver {
                                         Box::new(ReactiveInstruction {
                                             id: consequent_result.id,
                                             lvalue: Some(consequent_result.place.clone()),
-                                            value: InstructionValue::PropertyLoad {
-                                                object: object.clone(),
-                                                property: property.clone(),
-                                                optional: true,
+                                            value: InstructionValue::ReactiveOptionalExpression {
+                                                value: Box::new(InstructionValue::PropertyLoad {
+                                                    object: object.clone(),
+                                                    property: property.clone(),
+                                                    optional: true,
+                                                    loc: loc.clone(),
+                                                }),
                                                 loc: loc.clone(),
                                             },
                                             loc: loc.clone(),
@@ -1842,6 +2001,148 @@ impl Driver {
                 if let Some((cons_id, alt_id)) = test.branch_targets {
                     let left = self.visit_value_block(cons_id, &loc);
                     let right = self.visit_value_block(alt_id, &loc);
+
+                    // When the TEST block has store instructions (e.g.,
+                    // `(x = 1) && (x = 2)`), use ReactiveLogicalExpression
+                    // to preserve conditional structure. The test block's
+                    // stores must remain in a SequenceExpression so the
+                    // assignment side-effect and logical test are both emitted.
+                    let test_has_stores = test.instructions.iter().any(|i| {
+                        matches!(
+                            &i.value,
+                            InstructionValue::StoreLocal { .. }
+                                | InstructionValue::StoreContext { .. }
+                        )
+                    });
+                    if test_has_stores {
+                        let mut lsi = test.instructions;
+                        lsi.extend(left.instructions);
+                        let lv = if lsi.is_empty() {
+                            left.value.clone()
+                        } else {
+                            InstructionValue::ReactiveSequenceExpression {
+                                instructions: lsi,
+                                value: Box::new(left.value.clone()),
+                                loc: loc.clone(),
+                            }
+                        };
+                        let rv = if right.instructions.is_empty() {
+                            right.value.clone()
+                        } else {
+                            InstructionValue::ReactiveSequenceExpression {
+                                instructions: right.instructions,
+                                value: Box::new(right.value.clone()),
+                                loc: loc.clone(),
+                            }
+                        };
+                        return ValueBlockTerminalResult {
+                            instructions: vec![],
+                            final_instruction: Some(ReactiveInstruction {
+                                id,
+                                lvalue: Some(left.place.clone()),
+                                value: InstructionValue::ReactiveLogicalExpression {
+                                    operator,
+                                    left: Box::new(lv),
+                                    right: Box::new(rv),
+                                    loc: loc.clone(),
+                                },
+                                loc: loc.clone(),
+                            }),
+                            fallthrough,
+                        };
+                    }
+
+                    // When left/right blocks have Reassign store
+                    // instructions (e.g., `true && (x = [])` or
+                    // `true && ((x = []), null)`), use
+                    // ReactiveLogicalExpression to preserve the logical
+                    // structure. The store instructions stay as flat
+                    // prefix instructions (preserving scope escape
+                    // analysis) and the logical expression references
+                    // the store results through temps, producing output
+                    // like `true && (x = [])`.
+                    let branch_has_reassign_stores = [&left.instructions, &right.instructions]
+                        .iter()
+                        .any(|instrs| {
+                            instrs.iter().any(|i| {
+                                matches!(
+                                    &i.value,
+                                    InstructionValue::StoreLocal {
+                                        lvalue: crate::hir::types::LValue {
+                                            kind: InstructionKind::Reassign,
+                                            ..
+                                        },
+                                        ..
+                                    } | InstructionValue::StoreContext {
+                                        lvalue: crate::hir::types::LValue {
+                                            kind: InstructionKind::Reassign,
+                                            ..
+                                        },
+                                        ..
+                                    }
+                                )
+                            })
+                        });
+                    if branch_has_reassign_stores {
+                        // Preserve logical expression structure while
+                        // keeping flat instructions for scope escape
+                        // analysis. The flat instructions provide the
+                        // scope system with reassignment visibility
+                        // (preventing incorrect scope pruning). The
+                        // ReactiveLogicalExpression produces the correct
+                        // `true && (x = [])` or `true && ((x = []), null)`
+                        // output.
+                        //
+                        // Both the flat instructions and the
+                        // ReactiveSequenceExpression process the same
+                        // stores — the flat ones store temps that are
+                        // overwritten (harmlessly) by the sequence
+                        // expression codegen.
+                        let mut prefix_instrs: Vec<ReactiveInstruction> = Vec::new();
+                        prefix_instrs.extend(test.instructions.iter().cloned());
+                        prefix_instrs.extend(left.instructions.iter().cloned());
+                        prefix_instrs.extend(right.instructions.iter().cloned());
+
+                        // Build left SequenceExpression with test
+                        // instructions (matching upstream).
+                        let mut lsi = test.instructions;
+                        lsi.extend(left.instructions);
+                        let lv = if lsi.is_empty() {
+                            left.value.clone()
+                        } else {
+                            InstructionValue::ReactiveSequenceExpression {
+                                instructions: lsi,
+                                value: Box::new(left.value.clone()),
+                                loc: loc.clone(),
+                            }
+                        };
+                        let rv = if right.instructions.is_empty() {
+                            right.value.clone()
+                        } else {
+                            InstructionValue::ReactiveSequenceExpression {
+                                instructions: right.instructions,
+                                value: Box::new(right.value.clone()),
+                                loc: loc.clone(),
+                            }
+                        };
+
+                        return ValueBlockTerminalResult {
+                            instructions: prefix_instrs,
+                            final_instruction: Some(ReactiveInstruction {
+                                id,
+                                lvalue: None,
+                                value: InstructionValue::ReactiveLogicalExpression {
+                                    operator,
+                                    left: Box::new(lv),
+                                    right: Box::new(rv),
+                                    loc: loc.clone(),
+                                },
+                                loc: loc.clone(),
+                            }),
+                            fallthrough,
+                        };
+                    }
+
                     let left_place = Self::effective_value_place(&left);
                     let right_place = Self::effective_value_place(&right);
                     let mut all_instrs = test.instructions;
@@ -1907,13 +2208,6 @@ impl Driver {
                     final_instruction: None,
                     fallthrough,
                 }
-            }
-            Terminal::MaybeThrow { .. } => {
-                // Upstream throws a TODO: "Support value blocks (conditional, logical,
-                // optional chaining, etc) within a try/catch statement"
-                panic!(
-                    "Value blocks within try/catch (MaybeThrow in value block) not yet supported"
-                );
             }
             Terminal::Scope {
                 block: scope_block,
@@ -2007,12 +2301,7 @@ impl Driver {
     }
 
     /// Emit a break statement for a goto that targets a scheduled block.
-    fn visit_break(
-        &self,
-        block: BlockId,
-        id: InstructionId,
-        loc: &SourceLocation,
-    ) -> Option<ReactiveStatement> {
+    fn visit_break(&self, block: BlockId, id: InstructionId) -> Option<ReactiveStatement> {
         if std::env::var("DEBUG_BREAK_TARGET").is_ok() {
             eprintln!(
                 "[VISIT_BREAK] goto-break target=bb{} id={} stack={}",
@@ -2056,19 +2345,13 @@ impl Driver {
                 target: target_block,
                 target_kind,
                 id,
-                loc: loc.clone(),
             },
             label: None,
         }))
     }
 
     /// Emit a continue statement for a goto that targets a scheduled continue block.
-    fn visit_continue(
-        &self,
-        block: BlockId,
-        id: InstructionId,
-        loc: &SourceLocation,
-    ) -> Option<ReactiveStatement> {
+    fn visit_continue(&self, block: BlockId, id: InstructionId) -> Option<ReactiveStatement> {
         let Some((target_block, target_kind)) = self.cx.get_continue_target(block) else {
             // Continue target not found — skip
             return None;
@@ -2079,7 +2362,6 @@ impl Driver {
                 target: target_block,
                 target_kind,
                 id,
-                loc: loc.clone(),
             },
             label: None,
         }))
@@ -2105,15 +2387,97 @@ pub fn build_reactive_function(func: HIRFunction) -> ReactiveFunction {
     let body = driver.traverse_block(entry);
 
     ReactiveFunction {
-        loc: func.loc,
         id: func.id,
         name_hint: None,
         params: func.params,
-        generator: func.generator,
-        async_: func.async_,
         body,
-        directives: func.directives,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Check if a given declaration ID is referenced as an operand in any of the
+/// provided instructions' values. This uses a simple check of the most common
+/// value variants (StoreLocal, StoreContext, LoadLocal, CallExpression, etc.)
+/// to detect when a temp's result is consumed by a subsequent instruction.
+fn is_decl_id_referenced_in_instructions(
+    decl_id: crate::hir::types::DeclarationId,
+    instructions: &[ReactiveInstruction],
+) -> bool {
+    fn place_matches(place: &Place, target: crate::hir::types::DeclarationId) -> bool {
+        place.identifier.declaration_id == target
+    }
+
+    for instr in instructions {
+        match &instr.value {
+            InstructionValue::StoreLocal { value: v, .. }
+            | InstructionValue::StoreContext { value: v, .. } => {
+                if place_matches(v, decl_id) {
+                    return true;
+                }
+            }
+            InstructionValue::LoadLocal { place, .. }
+            | InstructionValue::LoadContext { place, .. } => {
+                if place_matches(place, decl_id) {
+                    return true;
+                }
+            }
+            InstructionValue::PropertyLoad { object, .. } => {
+                if place_matches(object, decl_id) {
+                    return true;
+                }
+            }
+            InstructionValue::ComputedLoad {
+                object, property, ..
+            } => {
+                if place_matches(object, decl_id) || place_matches(property, decl_id) {
+                    return true;
+                }
+            }
+            InstructionValue::CallExpression { callee, args, .. } => {
+                if place_matches(callee, decl_id) {
+                    return true;
+                }
+                for arg in args {
+                    let p = match arg {
+                        crate::hir::types::Argument::Place(p)
+                        | crate::hir::types::Argument::Spread(p) => p,
+                    };
+                    if place_matches(p, decl_id) {
+                        return true;
+                    }
+                }
+            }
+            InstructionValue::MethodCall { receiver, args, .. } => {
+                if place_matches(receiver, decl_id) {
+                    return true;
+                }
+                for arg in args {
+                    let p = match arg {
+                        crate::hir::types::Argument::Place(p)
+                        | crate::hir::types::Argument::Spread(p) => p,
+                    };
+                    if place_matches(p, decl_id) {
+                        return true;
+                    }
+                }
+            }
+            InstructionValue::BinaryExpression { left, right, .. } => {
+                if place_matches(left, decl_id) || place_matches(right, decl_id) {
+                    return true;
+                }
+            }
+            InstructionValue::UnaryExpression { value: v, .. } => {
+                if place_matches(v, decl_id) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -2163,7 +2527,6 @@ mod tests {
         //   bb0: instructions=[LoadLocal], terminal=Return
         let func = HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: Some("test".to_string()),
             fn_type: ReactFunctionType::Component,
             params: vec![],
@@ -2226,7 +2589,6 @@ mod tests {
 
         let func = HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: Some("test_if".to_string()),
             fn_type: ReactFunctionType::Component,
             params: vec![],
@@ -2364,7 +2726,6 @@ mod tests {
 
         let func = HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: Some("test_scope".to_string()),
             fn_type: ReactFunctionType::Component,
             params: vec![],
@@ -2475,7 +2836,6 @@ mod tests {
 
         let func = HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: Some("test_while".to_string()),
             fn_type: ReactFunctionType::Component,
             params: vec![],
@@ -2604,7 +2964,6 @@ mod tests {
         // bb0: terminal=Throw(value)
         let func = HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: Some("test_throw".to_string()),
             fn_type: ReactFunctionType::Component,
             params: vec![],

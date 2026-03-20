@@ -387,12 +387,9 @@ mod tests {
     fn test_no_transform_when_all_new_declarations() {
         // Destructure where none of the operands are already declared
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Instruction(Box::new(
                 ReactiveInstruction {
                     id: InstructionId(0),
@@ -419,7 +416,6 @@ mod tests {
                     loc: SourceLocation::Generated,
                 },
             ))],
-            directives: vec![],
         };
 
         extract_scope_destructuring(&mut func);
@@ -442,12 +438,9 @@ mod tests {
         );
 
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Scope(ReactiveScopeBlock {
                 scope,
                 instructions: vec![ReactiveStatement::Instruction(Box::new(
@@ -481,7 +474,6 @@ mod tests {
                     },
                 ))],
             })],
-            directives: vec![],
         };
 
         extract_scope_destructuring(&mut func);

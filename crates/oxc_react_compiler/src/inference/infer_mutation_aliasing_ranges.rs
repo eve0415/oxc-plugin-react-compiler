@@ -27,7 +27,6 @@ use crate::inference::aliasing_effects::{AliasingEffect, MutationReason};
 /// Strength of a mutation: None < Conditional < Definite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MutationKind {
-    None = 0,
     Conditional = 1,
     Definite = 2,
 }
@@ -55,8 +54,6 @@ enum NodeValue {
 #[derive(Debug, Clone)]
 struct MutationInfo {
     kind: MutationKind,
-    #[allow(dead_code)]
-    loc: SourceLocation,
 }
 
 // ---------------------------------------------------------------------------
@@ -65,9 +62,6 @@ struct MutationInfo {
 
 #[derive(Debug)]
 struct Node {
-    /// The identifier this node tracks.
-    #[allow(dead_code)]
-    id: IdentifierId,
     /// Edges from values that this node was created from (CreateFrom).
     created_from: HashMap<IdentifierId, usize>,
     /// Edges from values captured into this node.
@@ -134,13 +128,12 @@ struct PendingRender {
     identifier_id: IdentifierId,
 }
 
-struct MutationRequest<'a> {
+struct MutationRequest {
     index: usize,
     start: IdentifierId,
     end: Option<InstructionId>,
     transitive: bool,
     start_kind: MutationKind,
-    loc: &'a SourceLocation,
     reason: Option<MutationReason>,
 }
 
@@ -163,7 +156,6 @@ impl AliasingState {
         self.nodes.insert(
             identifier_id,
             Node {
-                id: identifier_id,
                 created_from: HashMap::new(),
                 captures: HashMap::new(),
                 aliases: HashMap::new(),
@@ -261,7 +253,7 @@ impl AliasingState {
     /// records reachability via `last_mutated` but does not extend ranges.
     fn mutate(
         &mut self,
-        request: MutationRequest<'_>,
+        request: MutationRequest,
         errors: &mut Vec<crate::error::CompilerDiagnostic>,
     ) {
         let MutationRequest {
@@ -270,7 +262,6 @@ impl AliasingState {
             end,
             transitive,
             start_kind,
-            loc,
             reason,
         } = request;
         let debug_mutate = std::env::var("DEBUG_RANGES_MUTATE_TRACE").is_ok();
@@ -401,32 +392,20 @@ impl AliasingState {
                 if transitive {
                     match &node.transitive {
                         None => {
-                            node.transitive = Some(MutationInfo {
-                                kind,
-                                loc: loc.clone(),
-                            });
+                            node.transitive = Some(MutationInfo { kind });
                         }
                         Some(existing) if existing.kind < kind => {
-                            node.transitive = Some(MutationInfo {
-                                kind,
-                                loc: loc.clone(),
-                            });
+                            node.transitive = Some(MutationInfo { kind });
                         }
                         _ => {}
                     }
                 } else {
                     match &node.local {
                         None => {
-                            node.local = Some(MutationInfo {
-                                kind,
-                                loc: loc.clone(),
-                            });
+                            node.local = Some(MutationInfo { kind });
                         }
                         Some(existing) if existing.kind < kind => {
-                            node.local = Some(MutationInfo {
-                                kind,
-                                loc: loc.clone(),
-                            });
+                            node.local = Some(MutationInfo { kind });
                         }
                         _ => {}
                     }
@@ -519,7 +498,6 @@ impl AliasingState {
     }
 
     /// Propagate render effects through the aliasing graph.
-    #[allow(dead_code)]
     fn render(
         &self,
         index: usize,
@@ -609,24 +587,6 @@ fn place_from_argument(arg: &Argument) -> &Place {
     }
 }
 
-fn is_call_like(value: &InstructionValue) -> bool {
-    matches!(
-        value,
-        InstructionValue::CallExpression { .. } | InstructionValue::MethodCall { .. }
-    )
-}
-
-fn has_handler_alias(instr: &Instruction, handler_id: IdentifierId) -> bool {
-    instr.effects.as_ref().is_some_and(|effects| {
-        effects.iter().any(|effect| {
-            matches!(
-                effect,
-                AliasingEffect::Alias { into, .. } if into.identifier.id == handler_id
-            )
-        })
-    })
-}
-
 fn append_node_mutation_effects(
     place: &mut Place,
     state: &AliasingState,
@@ -638,10 +598,8 @@ fn append_node_mutation_effects(
 
     let mut mutated = false;
     if let Some(local) = &node.local {
-        let mut value = place.clone();
-        value.loc = local.loc.clone();
+        let value = place.clone();
         match local.kind {
-            MutationKind::None => {}
             MutationKind::Conditional => {
                 mutated = true;
                 function_effects.push(AliasingEffect::MutateConditionally { value });
@@ -656,10 +614,8 @@ fn append_node_mutation_effects(
         }
     }
     if let Some(transitive) = &node.transitive {
-        let mut value = place.clone();
-        value.loc = transitive.loc.clone();
+        let value = place.clone();
         match transitive.kind {
-            MutationKind::None => {}
             MutationKind::Conditional => {
                 mutated = true;
                 function_effects.push(AliasingEffect::MutateTransitiveConditionally { value });
@@ -770,22 +726,6 @@ pub fn infer_mutation_aliasing_ranges(
     let mut mutations: Vec<PendingMutation> = Vec::new();
     let mut renders: Vec<PendingRender> = Vec::new();
     let mut index: usize = 0;
-
-    // Track catch-handler bindings by handler block. Upstream models this as
-    // terminal.effects on MaybeThrow; our HIR terminals don't carry effects.
-    let catch_bindings: HashMap<BlockId, Place> = func
-        .body
-        .blocks
-        .iter()
-        .filter_map(|(_, block)| match &block.terminal {
-            Terminal::Try {
-                handler_binding: Some(binding),
-                handler,
-                ..
-            } => Some((*handler, binding.clone())),
-            _ => None,
-        })
-        .collect();
 
     // Create nodes for params, context vars, and the return place
     for param in &func.params {
@@ -986,21 +926,6 @@ pub fn infer_mutation_aliasing_ranges(
             state.assign(index, value.identifier.id, returns_id);
             index += 1;
         }
-
-        // Approximate upstream terminal.effects for MaybeThrow by synthesizing
-        // catch aliases for call-like instruction results in this block.
-        if let Terminal::MaybeThrow { handler, .. } = terminal
-            && let Some(binding) = catch_bindings.get(handler)
-        {
-            let handler_id = binding.identifier.id;
-            for instr in &func.body.blocks[block_idx].1.instructions {
-                if !is_call_like(&instr.value) || has_handler_alias(instr, handler_id) {
-                    continue;
-                }
-                state.assign(index, instr.lvalue.identifier.id, handler_id);
-                index += 1;
-            }
-        }
     }
 
     // Error diagnostics collected from mutation/render propagation and inner functions.
@@ -1009,9 +934,6 @@ pub fn infer_mutation_aliasing_ranges(
     // Apply mutations
     for mutation in &mutations {
         let end = make_instruction_id(mutation.instruction_id.0 + 1);
-        // We need a SourceLocation for the mutation. Since we don't store it on the
-        // PendingMutation, use Generated. The upstream uses `mutation.place.loc`.
-        let loc = SourceLocation::Generated;
         state.mutate(
             MutationRequest {
                 index: mutation.index,
@@ -1019,7 +941,6 @@ pub fn infer_mutation_aliasing_ranges(
                 end: Some(end),
                 transitive: mutation.transitive,
                 start_kind: mutation.kind,
-                loc: &loc,
                 reason: mutation.reason,
             },
             &mut error_diagnostics,
@@ -1115,7 +1036,6 @@ pub fn infer_mutation_aliasing_ranges(
                 end: None, // simulated mutation — no range extension
                 transitive: true,
                 start_kind: MutationKind::Conditional,
-                loc: &into.loc,
                 reason: None,
             },
             &mut ignored_errors,
@@ -1914,7 +1834,6 @@ fn set_value_operand_effects(value: &mut InstructionValue, effect: Effect) {
         InstructionValue::Primitive { .. }
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::DeclareLocal { .. }
         | InstructionValue::DeclareContext { .. }
@@ -1922,7 +1841,6 @@ fn set_value_operand_effects(value: &mut InstructionValue, effect: Effect) {
         | InstructionValue::ReactiveSequenceExpression { .. }
         | InstructionValue::ReactiveOptionalExpression { .. }
         | InstructionValue::ReactiveLogicalExpression { .. }
-        | InstructionValue::ReactiveConditionalExpression { .. }
         | InstructionValue::Debugger { .. } => {}
     }
 }
@@ -2149,7 +2067,6 @@ fn apply_operand_effects_to_value(
         InstructionValue::Primitive { .. }
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::DeclareLocal { .. }
         | InstructionValue::DeclareContext { .. }
@@ -2157,7 +2074,6 @@ fn apply_operand_effects_to_value(
         | InstructionValue::ReactiveSequenceExpression { .. }
         | InstructionValue::ReactiveOptionalExpression { .. }
         | InstructionValue::ReactiveLogicalExpression { .. }
-        | InstructionValue::ReactiveConditionalExpression { .. }
         | InstructionValue::Debugger { .. } => {}
     }
 }
@@ -2192,7 +2108,6 @@ mod tests {
     fn make_hir_function(blocks: Vec<(BlockId, BasicBlock)>) -> HIRFunction {
         HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: Some("test".to_string()),
             fn_type: ReactFunctionType::Component,
             params: vec![Argument::Place(make_place(0))],

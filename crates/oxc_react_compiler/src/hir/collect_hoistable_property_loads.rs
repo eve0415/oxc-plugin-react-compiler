@@ -149,7 +149,6 @@ impl PropertyPathRegistry {
 /// Per-block information about which property paths are assumed non-null.
 #[derive(Debug, Clone)]
 pub struct BlockInfo {
-    pub block_id: BlockId,
     /// Set of `PropertyPathNodeId`s that are assumed non-null in this block.
     pub assumed_non_null_objects: HashSet<PropertyPathNodeId>,
 }
@@ -430,7 +429,6 @@ fn collect_non_nulls_in_blocks(
         nodes.insert(
             block.id,
             BlockInfo {
-                block_id: block.id,
                 assumed_non_null_objects,
             },
         );
@@ -764,7 +762,8 @@ fn get_assumed_invoked_functions_impl(
                         temporaries.insert(lvalue.place.identifier.id, entry);
                     }
                 }
-                InstructionValue::LoadLocal { place, .. } => {
+                InstructionValue::LoadLocal { place, .. }
+                | InstructionValue::LoadContext { place, .. } => {
                     if let Some(entry) = temporaries.get(&place.identifier.id).cloned() {
                         temporaries.insert(instr.lvalue.identifier.id, entry);
                     }
@@ -910,6 +909,7 @@ fn collect_hoistable_property_loads_impl(
 ///
 /// # Returns
 /// A map from `BlockId` to `BlockInfo` containing the assumed non-null objects.
+#[cfg(test)]
 pub fn collect_hoistable_property_loads(
     func: &HIRFunction,
     temporaries: &HashMap<IdentifierId, ResolvedDep>,
@@ -938,42 +938,6 @@ pub fn collect_hoistable_property_loads(
         nested_fn_immutable_context: None,
         assumed_invoked_fns,
         enable_preserve_existing_memoization_guarantees: false,
-    };
-
-    collect_hoistable_property_loads_impl(func, &mut ctx)
-}
-
-/// Variant that accepts environment config flags explicitly.
-pub fn collect_hoistable_property_loads_with_config(
-    func: &HIRFunction,
-    temporaries: &HashMap<IdentifierId, ResolvedDep>,
-    hoistable_from_optionals: &HashMap<BlockId, ReactiveScopeDependency>,
-    enable_treat_function_deps_as_conditional: bool,
-    enable_preserve_existing_memoization_guarantees: bool,
-) -> HashMap<BlockId, BlockInfo> {
-    let mut known_immutable_identifiers = HashSet::new();
-    if func.fn_type == ReactFunctionType::Component || func.fn_type == ReactFunctionType::Hook {
-        for p in &func.params {
-            if let Argument::Place(place) = p {
-                known_immutable_identifiers.insert(place.identifier.id);
-            }
-        }
-    }
-
-    let assumed_invoked_fns = if enable_treat_function_deps_as_conditional {
-        HashSet::new()
-    } else {
-        get_assumed_invoked_functions(func)
-    };
-
-    let mut ctx = CollectContext {
-        temporaries,
-        known_immutable_identifiers,
-        hoistable_from_optionals,
-        registry: PropertyPathRegistry::new(),
-        nested_fn_immutable_context: None,
-        assumed_invoked_fns,
-        enable_preserve_existing_memoization_guarantees,
     };
 
     collect_hoistable_property_loads_impl(func, &mut ctx)
@@ -1031,29 +995,6 @@ pub fn collect_hoistable_property_loads_in_inner_fn(
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// Maps `BlockId`-keyed results to `ScopeId`-keyed results by scanning for
-/// `Terminal::Scope` blocks.
-pub fn key_by_scope_id(
-    func: &HIRFunction,
-    source: &HashMap<BlockId, BlockInfo>,
-) -> HashMap<ScopeId, BlockInfo> {
-    let mut keyed_by_scope_id: HashMap<ScopeId, BlockInfo> = HashMap::new();
-
-    for (_, block) in &func.body.blocks {
-        if let Terminal::Scope {
-            scope,
-            block: scope_block,
-            ..
-        } = &block.terminal
-            && let Some(info) = source.get(scope_block)
-        {
-            keyed_by_scope_id.insert(scope.id, info.clone());
-        }
-    }
-
-    keyed_by_scope_id
 }
 
 /// Collect hoistable property loads and return them keyed by scope ID with
@@ -1210,7 +1151,6 @@ mod tests {
     fn make_basic_func(blocks: Vec<(BlockId, BasicBlock)>) -> HIRFunction {
         HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Component,
             params: vec![Argument::Place(make_place(0, Some("props")))],

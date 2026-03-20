@@ -289,13 +289,14 @@ pub fn rewrite_instruction_kinds(func: &mut HIRFunction) -> Result<(), CompilerE
                             pattern_places(&lvalue.pattern).len()
                         );
                     }
-                    let mut mixed_kind_error: Option<String> = None;
-                    let mut observed_kind: Option<InstructionKind> = None;
+                    let mut first_reassign_place: Option<IdentifierId> = None;
+                    let mut first_declaration_place: Option<IdentifierId> = None;
+                    let mut declaration_requires_let = false;
                     for place in pattern_places(&lvalue.pattern) {
-                        let place_kind = if place.identifier.name.is_some() {
+                        let is_reassign = if place.identifier.name.is_some() {
                             let decl_id = place.identifier.declaration_id;
                             if seen_decls_in_order.contains(&decl_id) {
-                                InstructionKind::Reassign
+                                true
                             } else {
                                 if block.kind == BlockKind::Value {
                                     return Err(CompilerError::Bail(BailOut {
@@ -310,10 +311,13 @@ pub fn rewrite_instruction_kinds(func: &mut HIRFunction) -> Result<(), CompilerE
                                     }));
                                 }
                                 seen_decls_in_order.insert(decl_id);
-                                InstructionKind::Const
+                                if reassigned.contains(&decl_id) {
+                                    declaration_requires_let = true;
+                                }
+                                false
                             }
                         } else {
-                            InstructionKind::Const
+                            false
                         };
                         if debug_rewrite {
                             eprintln!(
@@ -321,39 +325,74 @@ pub fn rewrite_instruction_kinds(func: &mut HIRFunction) -> Result<(), CompilerE
                                 place.identifier.id,
                                 place.identifier.name.is_some(),
                                 place.identifier.declaration_id.0,
-                                place_kind,
-                                seen_decls_in_order.contains(&place.identifier.declaration_id)
+                                if is_reassign {
+                                    InstructionKind::Reassign
+                                } else if declaration_requires_let {
+                                    InstructionKind::Let
+                                } else {
+                                    InstructionKind::Const
+                                },
+                                reassigned.contains(&place.identifier.declaration_id)
                             );
                         }
-                        if let Some(prev_kind) = observed_kind {
-                            if prev_kind != place_kind {
+                        if is_reassign {
+                            if let Some(prev_decl_id) = first_declaration_place {
                                 if debug_rewrite {
                                     eprintln!(
                                         "[DEBUG_REWRITE_KINDS]   mixed destructure kind prev={:?} current={:?}",
-                                        prev_kind, place_kind
+                                        InstructionKind::Const,
+                                        InstructionKind::Reassign
                                     );
                                 }
-                                mixed_kind_error = Some(format!(
-                                    "Other places were `{prev_kind:?}` but identifier {} is {:?}",
-                                    place.identifier.id, place_kind
-                                ));
-                                break;
+                                return Err(CompilerError::Bail(BailOut {
+                                    reason: "Expected consistent kind for destructuring"
+                                        .to_string(),
+                                    diagnostics: vec![CompilerDiagnostic {
+                                        severity: DiagnosticSeverity::Invariant,
+                                        message: format!(
+                                            "Other places were `Const` but identifier {} is Reassign (declaration place was {})",
+                                            place.identifier.id, prev_decl_id
+                                        ),
+                                    }],
+                                }));
                             }
+                            first_reassign_place.get_or_insert(place.identifier.id);
                         } else {
-                            observed_kind = Some(place_kind);
+                            if let Some(prev_reassign_id) = first_reassign_place {
+                                if debug_rewrite {
+                                    eprintln!(
+                                        "[DEBUG_REWRITE_KINDS]   mixed destructure kind prev={:?} current={:?}",
+                                        InstructionKind::Reassign,
+                                        if declaration_requires_let {
+                                            InstructionKind::Let
+                                        } else {
+                                            InstructionKind::Const
+                                        }
+                                    );
+                                }
+                                return Err(CompilerError::Bail(BailOut {
+                                    reason: "Expected consistent kind for destructuring"
+                                        .to_string(),
+                                    diagnostics: vec![CompilerDiagnostic {
+                                        severity: DiagnosticSeverity::Invariant,
+                                        message: format!(
+                                            "Other places were `Reassign` but identifier {} is Const/Let (reassign place was {})",
+                                            place.identifier.id, prev_reassign_id
+                                        ),
+                                    }],
+                                }));
+                            }
+                            first_declaration_place.get_or_insert(place.identifier.id);
                         }
                     }
-                    if let Some(description) = mixed_kind_error {
-                        return Err(CompilerError::Bail(BailOut {
-                            reason: "Expected consistent kind for destructuring".to_string(),
-                            diagnostics: vec![CompilerDiagnostic {
-                                severity: DiagnosticSeverity::Invariant,
-                                message: description,
-                            }],
-                        }));
-                    }
-                    if let Some(kind) = observed_kind {
-                        lvalue.kind = kind;
+                    if first_reassign_place.is_some() {
+                        lvalue.kind = InstructionKind::Reassign;
+                    } else if first_declaration_place.is_some() {
+                        lvalue.kind = if declaration_requires_let {
+                            InstructionKind::Let
+                        } else {
+                            InstructionKind::Const
+                        };
                     }
                 }
                 _ => {}

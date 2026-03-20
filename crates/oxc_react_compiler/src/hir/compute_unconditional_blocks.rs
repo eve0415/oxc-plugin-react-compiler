@@ -55,7 +55,7 @@ mod tests {
 
     fn make_place() -> Place {
         Place {
-            identifier: make_temporary_identifier(IdentifierId::new(0), SourceLocation::Generated),
+            identifier: make_temporary_identifier(IdentifierId(0), SourceLocation::Generated),
             effect: Effect::Unknown,
             reactive: false,
             loc: SourceLocation::Generated,
@@ -63,12 +63,12 @@ mod tests {
     }
 
     fn make_test_function(blocks: Vec<(u32, HashSet<u32>, Terminal)>) -> HIRFunction {
-        let entry = BlockId::new(blocks[0].0);
+        let entry = BlockId(blocks[0].0);
         let body_blocks: Vec<(BlockId, BasicBlock)> = blocks
             .into_iter()
             .map(|(id, preds, terminal)| {
-                let block_id = BlockId::new(id);
-                let pred_set: HashSet<BlockId> = preds.into_iter().map(BlockId::new).collect();
+                let block_id = BlockId(id);
+                let pred_set: HashSet<BlockId> = preds.into_iter().map(BlockId).collect();
                 (
                     block_id,
                     BasicBlock {
@@ -85,7 +85,6 @@ mod tests {
 
         HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Component,
             params: vec![],
@@ -111,20 +110,20 @@ mod tests {
                 0,
                 HashSet::new(),
                 Terminal::Goto {
-                    block: BlockId::new(1),
+                    block: BlockId(1),
                     variant: GotoVariant::Break,
-                    id: InstructionId::new(0),
                     loc: SourceLocation::Generated,
+                    id: InstructionId(0),
                 },
             ),
             (
                 1,
                 HashSet::from([0]),
                 Terminal::Goto {
-                    block: BlockId::new(2),
+                    block: BlockId(2),
                     variant: GotoVariant::Break,
-                    id: InstructionId::new(0),
                     loc: SourceLocation::Generated,
+                    id: InstructionId(0),
                 },
             ),
             (
@@ -133,16 +132,16 @@ mod tests {
                 Terminal::Return {
                     value: make_place(),
                     return_variant: ReturnVariant::Explicit,
-                    id: InstructionId::new(0),
                     loc: SourceLocation::Generated,
+                    id: InstructionId(0),
                 },
             ),
         ]);
 
         let unconditional = compute_unconditional_blocks(&func);
-        assert!(unconditional.contains(&BlockId::new(0)));
-        assert!(unconditional.contains(&BlockId::new(1)));
-        assert!(unconditional.contains(&BlockId::new(2)));
+        assert!(unconditional.contains(&BlockId(0)));
+        assert!(unconditional.contains(&BlockId(1)));
+        assert!(unconditional.contains(&BlockId(2)));
     }
 
     #[test]
@@ -158,31 +157,31 @@ mod tests {
                 HashSet::new(),
                 Terminal::If {
                     test: make_place(),
-                    consequent: BlockId::new(1),
-                    alternate: BlockId::new(2),
-                    fallthrough: BlockId::new(3),
-                    id: InstructionId::new(0),
                     loc: SourceLocation::Generated,
+                    consequent: BlockId(1),
+                    alternate: BlockId(2),
+                    fallthrough: BlockId(3),
+                    id: InstructionId(0),
                 },
             ),
             (
                 1,
                 HashSet::from([0]),
                 Terminal::Goto {
-                    block: BlockId::new(3),
+                    block: BlockId(3),
                     variant: GotoVariant::Break,
-                    id: InstructionId::new(0),
                     loc: SourceLocation::Generated,
+                    id: InstructionId(0),
                 },
             ),
             (
                 2,
                 HashSet::from([0]),
                 Terminal::Goto {
-                    block: BlockId::new(3),
+                    block: BlockId(3),
                     variant: GotoVariant::Break,
-                    id: InstructionId::new(0),
                     loc: SourceLocation::Generated,
+                    id: InstructionId(0),
                 },
             ),
             (
@@ -191,16 +190,16 @@ mod tests {
                 Terminal::Return {
                     value: make_place(),
                     return_variant: ReturnVariant::Explicit,
-                    id: InstructionId::new(0),
                     loc: SourceLocation::Generated,
+                    id: InstructionId(0),
                 },
             ),
         ]);
 
         let unconditional = compute_unconditional_blocks(&func);
-        assert!(unconditional.contains(&BlockId::new(0)));
-        assert!(!unconditional.contains(&BlockId::new(1)));
-        assert!(!unconditional.contains(&BlockId::new(2)));
-        assert!(unconditional.contains(&BlockId::new(3)));
+        assert!(unconditional.contains(&BlockId(0)));
+        assert!(!unconditional.contains(&BlockId(1)));
+        assert!(!unconditional.contains(&BlockId(2)));
+        assert!(unconditional.contains(&BlockId(3)));
     }
 }

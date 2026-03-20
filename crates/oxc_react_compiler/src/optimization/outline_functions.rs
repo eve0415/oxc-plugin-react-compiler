@@ -145,9 +145,6 @@ fn outline_functions_inner(
             };
 
             if should_outline {
-                let name = generate_temp_name(name_counter, used_names);
-                used_names.insert(name.clone());
-
                 // Extract the FunctionExpression fields
                 let old_value = std::mem::replace(
                     &mut instr.value,
@@ -161,6 +158,15 @@ fn outline_functions_inner(
                 } = old_value
                 {
                     let mut outlined_func = lowered_func.func;
+                    // Use the function's nameHint (set by name_anonymous_functions)
+                    // as the basis for the outlined function name, matching upstream's
+                    // generateGloballyUniqueIdentifierName(loweredFunc.nameHint).
+                    let name = if let Some(hint) = &outlined_func.id {
+                        generate_name_from_hint(hint, used_names)
+                    } else {
+                        generate_temp_name(name_counter, used_names)
+                    };
+                    used_names.insert(name.clone());
                     outlined_func.id = Some(name.clone());
 
                     outlined.push(OutlinedFunction {
@@ -610,12 +616,50 @@ fn generate_temp_name(counter: &mut u32, used: &HashSet<String>) -> String {
         let name = if *counter == 0 {
             "_temp".to_string()
         } else {
-            format!("_temp{}", counter)
+            format!("_temp{}", counter.saturating_add(1))
         };
         *counter += 1;
         if !used.contains(&name) {
             return name;
         }
+    }
+}
+
+/// Generate an outlined function name from a nameHint like "Component[callback]".
+/// Converts to a valid JS identifier: `_ComponentCallback` (matching Babel's
+/// `scope.generateUidIdentifier` which strips brackets and PascalCases segments).
+fn generate_name_from_hint(hint: &str, used: &HashSet<String>) -> String {
+    // Convert hint to a valid identifier by PascalCasing segments split on non-alphanumeric chars
+    let mut result = String::from("_");
+    let mut capitalize_next = true;
+    for ch in hint.chars() {
+        if ch.is_alphanumeric() || ch == '_' {
+            if capitalize_next {
+                for c in ch.to_uppercase() {
+                    result.push(c);
+                }
+                capitalize_next = false;
+            } else {
+                result.push(ch);
+            }
+        } else {
+            // Non-alphanumeric char (brackets, dots, spaces, angle brackets) → skip, capitalize next
+            capitalize_next = true;
+        }
+    }
+
+    // Ensure uniqueness
+    if !used.contains(&result) {
+        return result;
+    }
+    let base = result.clone();
+    let mut idx = 2u32;
+    loop {
+        let candidate = format!("{base}{idx}");
+        if !used.contains(&candidate) {
+            return candidate;
+        }
+        idx += 1;
     }
 }
 
@@ -643,5 +687,20 @@ fn collect_used_names(func: &HIRFunction, names: &mut HashSet<String>) {
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    #[test]
+    fn generate_temp_name_matches_babel_uid_suffixes() {
+        let mut counter = 0;
+        let used = HashSet::new();
+
+        assert_eq!(super::generate_temp_name(&mut counter, &used), "_temp");
+        assert_eq!(super::generate_temp_name(&mut counter, &used), "_temp2");
+        assert_eq!(super::generate_temp_name(&mut counter, &used), "_temp3");
     }
 }

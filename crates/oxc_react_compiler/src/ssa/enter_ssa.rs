@@ -237,7 +237,7 @@ fn enter_ssa_with_next_id(func: &mut HIRFunction, next_id: &mut u32) -> Result<(
             };
 
             func.body.blocks[i].1.phis.push(phi);
-            ctx.set_def(block_id, orig_id, phi_id);
+            ctx.set_phi_def(block_id, orig_id, phi_id);
         }
     }
 
@@ -481,6 +481,12 @@ struct SSAContext {
     unknown_uses: HashMap<IdentifierId, Identifier>,
     /// Deferred error raised when a previously unknown identifier is later defined.
     pending_error: Option<CompilerError>,
+    /// Track which (block, orig_id) pairs have instruction-level definitions.
+    /// When a phi is placed at a block that already has an instruction-level def
+    /// for the same variable, the phi must not overwrite the block's outgoing
+    /// definition: the last instruction-level def is what flows OUT of the block
+    /// to successor phis.
+    instr_defs: HashSet<(BlockId, IdentifierId)>,
 }
 
 impl SSAContext {
@@ -499,11 +505,12 @@ impl SSAContext {
             visited: HashSet::new(),
             unknown_uses: HashMap::new(),
             pending_error: None,
+            instr_defs: HashSet::new(),
         }
     }
 
     fn make_ssa_id(&mut self, old_id: &Identifier) -> Identifier {
-        let id = IdentifierId::new(self.next_id);
+        let id = IdentifierId(self.next_id);
         self.next_id += 1;
         Identifier {
             id,
@@ -549,6 +556,7 @@ impl SSAContext {
                 // (notably function declarations) so later def-use passes can
                 // still connect the first use to its eventual definition.
                 self.set_def(block_id, old_id.id, undefined_ident.clone());
+                self.instr_defs.insert((block_id, old_id.id));
                 return undefined_ident;
             } else {
                 let name = match &undefined_ident.name {
@@ -573,6 +581,7 @@ impl SSAContext {
         }
         let new_id = self.make_ssa_id(old_id);
         self.set_def(block_id, old_id.id, new_id.clone());
+        self.instr_defs.insert((block_id, old_id.id));
         new_id
     }
 
@@ -581,6 +590,24 @@ impl SSAContext {
             .entry(block_id)
             .or_default()
             .insert(orig_id, ssa_id.clone());
+        self.global_defs.insert(orig_id, ssa_id);
+    }
+
+    /// Set definition from a phi node. Unlike instruction-level definitions,
+    /// phi definitions should NOT overwrite the block's outgoing definition
+    /// in `block_defs` if an instruction-level definition already exists.
+    /// The phi represents the ENTRY value of the variable, while the instruction
+    /// definition is the EXIT value that flows to successor blocks.
+    fn set_phi_def(&mut self, block_id: BlockId, orig_id: IdentifierId, ssa_id: Identifier) {
+        if !self.instr_defs.contains(&(block_id, orig_id)) {
+            // No instruction-level def in this block; phi is the outgoing def
+            self.block_defs
+                .entry(block_id)
+                .or_default()
+                .insert(orig_id, ssa_id.clone());
+        }
+        // Always update global_defs so downstream blocks see this phi as a
+        // potential reaching def (if they don't have their own definition).
         self.global_defs.insert(orig_id, ssa_id);
     }
 

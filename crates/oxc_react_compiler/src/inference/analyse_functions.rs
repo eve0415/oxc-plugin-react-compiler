@@ -460,6 +460,12 @@ pub fn analyse_functions(func: &mut HIRFunction) {
             }
         }
     }
+
+    // Context lowering (populate_context_variables) creates new LoadContext/StoreContext
+    // instructions on the outer function that may reference constants. Re-run CP on the
+    // outer function to fold these, matching the upstream where BuildHIR already lowers
+    // context before constant propagation runs.
+    crate::optimization::constant_propagation::constant_propagation(func);
 }
 
 /// Collect all named variable identifiers from a function.
@@ -1350,7 +1356,6 @@ mod tests {
     fn make_hir_function(blocks: Vec<(BlockId, BasicBlock)>) -> HIRFunction {
         HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: Some("test".to_string()),
             fn_type: ReactFunctionType::Component,
             params: vec![Argument::Place(make_place(0))],
@@ -1395,7 +1400,6 @@ mod tests {
     fn make_inner_function(context: Vec<Place>, blocks: Vec<(BlockId, BasicBlock)>) -> HIRFunction {
         HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],

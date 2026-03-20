@@ -45,12 +45,14 @@ impl Graph {
 // ---------------------------------------------------------------------------
 
 /// A dominator tree storing the immediate dominator for each block.
+#[cfg(test)]
 #[derive(Debug)]
 pub struct Dominator {
     entry: BlockId,
     nodes: HashMap<BlockId, BlockId>,
 }
 
+#[cfg(test)]
 impl Dominator {
     /// Returns the entry node.
     pub fn entry(&self) -> BlockId {
@@ -121,6 +123,7 @@ pub struct PostDominatorOptions {
 ///
 /// A block X dominates block Y in the CFG if all paths to Y must flow through X.
 /// The entry block dominates all other blocks.
+#[cfg(test)]
 pub fn compute_dominator_tree(func: &HIRFunction) -> Dominator {
     let graph = build_graph(func);
     let nodes = compute_immediate_dominators(&graph);
@@ -161,6 +164,7 @@ pub fn compute_post_dominator_tree(
 // ---------------------------------------------------------------------------
 
 /// Build a forward graph from the HIRFunction.
+#[cfg(test)]
 fn build_graph(func: &HIRFunction) -> Graph {
     let mut nodes = Vec::new();
     let mut node_index = HashMap::new();
@@ -197,7 +201,7 @@ fn build_reverse_graph(func: &HIRFunction, include_throws_as_exit_node: bool) ->
         .map(|(id, _)| id.0)
         .max()
         .unwrap_or(0);
-    let exit_id = BlockId::new(max_id + 1);
+    let exit_id = BlockId(max_id + 1);
 
     let mut raw_nodes: HashMap<BlockId, Node> = HashMap::new();
 
@@ -368,12 +372,12 @@ mod tests {
     /// Helper to build a minimal HIRFunction from a list of blocks
     /// with specified successors and predecessors.
     fn make_test_function(blocks: Vec<(u32, HashSet<u32>, Terminal)>) -> HIRFunction {
-        let entry = BlockId::new(blocks[0].0);
+        let entry = BlockId(blocks[0].0);
         let body_blocks: Vec<(BlockId, BasicBlock)> = blocks
             .into_iter()
             .map(|(id, preds, terminal)| {
-                let block_id = BlockId::new(id);
-                let pred_set: HashSet<BlockId> = preds.into_iter().map(BlockId::new).collect();
+                let block_id = BlockId(id);
+                let pred_set: HashSet<BlockId> = preds.into_iter().map(BlockId).collect();
                 (
                     block_id,
                     BasicBlock {
@@ -390,15 +394,11 @@ mod tests {
 
         HIRFunction {
             env: crate::environment::Environment::new(crate::options::EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Component,
             params: vec![],
             returns: Place {
-                identifier: make_temporary_identifier(
-                    IdentifierId::new(0),
-                    SourceLocation::Generated,
-                ),
+                identifier: make_temporary_identifier(IdentifierId(0), SourceLocation::Generated),
                 effect: Effect::Unknown,
                 reactive: false,
                 loc: SourceLocation::Generated,
@@ -417,46 +417,40 @@ mod tests {
 
     fn goto_terminal(target: u32) -> Terminal {
         Terminal::Goto {
-            block: BlockId::new(target),
+            block: BlockId(target),
             variant: GotoVariant::Break,
-            id: InstructionId::new(0),
             loc: SourceLocation::Generated,
+            id: InstructionId(0),
         }
     }
 
     fn if_terminal(consequent: u32, alternate: u32, fallthrough: u32) -> Terminal {
         Terminal::If {
             test: Place {
-                identifier: make_temporary_identifier(
-                    IdentifierId::new(0),
-                    SourceLocation::Generated,
-                ),
+                identifier: make_temporary_identifier(IdentifierId(0), SourceLocation::Generated),
                 effect: Effect::Unknown,
                 reactive: false,
                 loc: SourceLocation::Generated,
             },
-            consequent: BlockId::new(consequent),
-            alternate: BlockId::new(alternate),
-            fallthrough: BlockId::new(fallthrough),
-            id: InstructionId::new(0),
             loc: SourceLocation::Generated,
+            consequent: BlockId(consequent),
+            alternate: BlockId(alternate),
+            fallthrough: BlockId(fallthrough),
+            id: InstructionId(0),
         }
     }
 
     fn return_terminal() -> Terminal {
         Terminal::Return {
             value: Place {
-                identifier: make_temporary_identifier(
-                    IdentifierId::new(0),
-                    SourceLocation::Generated,
-                ),
+                identifier: make_temporary_identifier(IdentifierId(0), SourceLocation::Generated),
                 effect: Effect::Unknown,
                 reactive: false,
                 loc: SourceLocation::Generated,
             },
             return_variant: ReturnVariant::Explicit,
-            id: InstructionId::new(0),
             loc: SourceLocation::Generated,
+            id: InstructionId(0),
         }
     }
 
@@ -471,13 +465,13 @@ mod tests {
 
         let dom = compute_dominator_tree(&func);
 
-        assert_eq!(dom.entry(), BlockId::new(0));
+        assert_eq!(dom.entry(), BlockId(0));
         // bb0 dominates itself (returns None)
-        assert_eq!(dom.get(BlockId::new(0)), None);
+        assert_eq!(dom.get(BlockId(0)), None);
         // bb1's immediate dominator is bb0
-        assert_eq!(dom.get(BlockId::new(1)), Some(BlockId::new(0)));
+        assert_eq!(dom.get(BlockId(1)), Some(BlockId(0)));
         // bb2's immediate dominator is bb1
-        assert_eq!(dom.get(BlockId::new(2)), Some(BlockId::new(1)));
+        assert_eq!(dom.get(BlockId(2)), Some(BlockId(1)));
     }
 
     #[test]
@@ -495,11 +489,11 @@ mod tests {
 
         let dom = compute_dominator_tree(&func);
 
-        assert_eq!(dom.get(BlockId::new(0)), None);
-        assert_eq!(dom.get(BlockId::new(1)), Some(BlockId::new(0)));
-        assert_eq!(dom.get(BlockId::new(2)), Some(BlockId::new(0)));
+        assert_eq!(dom.get(BlockId(0)), None);
+        assert_eq!(dom.get(BlockId(1)), Some(BlockId(0)));
+        assert_eq!(dom.get(BlockId(2)), Some(BlockId(0)));
         // bb3's immediate dominator is bb0 (the merge point)
-        assert_eq!(dom.get(BlockId::new(3)), Some(BlockId::new(0)));
+        assert_eq!(dom.get(BlockId(3)), Some(BlockId(0)));
     }
 
     #[test]
@@ -513,12 +507,12 @@ mod tests {
 
         let dom = compute_dominator_tree(&func);
 
-        assert!(dom.dominates(BlockId::new(0), BlockId::new(0)));
-        assert!(dom.dominates(BlockId::new(0), BlockId::new(1)));
-        assert!(dom.dominates(BlockId::new(0), BlockId::new(2)));
-        assert!(dom.dominates(BlockId::new(1), BlockId::new(2)));
-        assert!(!dom.dominates(BlockId::new(2), BlockId::new(0)));
-        assert!(!dom.dominates(BlockId::new(1), BlockId::new(0)));
+        assert!(dom.dominates(BlockId(0), BlockId(0)));
+        assert!(dom.dominates(BlockId(0), BlockId(1)));
+        assert!(dom.dominates(BlockId(0), BlockId(2)));
+        assert!(dom.dominates(BlockId(1), BlockId(2)));
+        assert!(!dom.dominates(BlockId(2), BlockId(0)));
+        assert!(!dom.dominates(BlockId(1), BlockId(0)));
     }
 
     #[test]
@@ -542,11 +536,11 @@ mod tests {
         );
 
         // bb3 post-dominates all blocks since all paths lead to it
-        assert_eq!(post_dom.get(BlockId::new(0)), Some(BlockId::new(3)));
-        assert_eq!(post_dom.get(BlockId::new(1)), Some(BlockId::new(3)));
-        assert_eq!(post_dom.get(BlockId::new(2)), Some(BlockId::new(3)));
+        assert_eq!(post_dom.get(BlockId(0)), Some(BlockId(3)));
+        assert_eq!(post_dom.get(BlockId(1)), Some(BlockId(3)));
+        assert_eq!(post_dom.get(BlockId(2)), Some(BlockId(3)));
         // bb3's post-dominator is the exit node
-        assert_eq!(post_dom.get(BlockId::new(3)), Some(post_dom.exit()));
+        assert_eq!(post_dom.get(BlockId(3)), Some(post_dom.exit()));
     }
 
     #[test]
@@ -566,8 +560,8 @@ mod tests {
         );
 
         // In a linear chain, each block's post-dominator is the next block
-        assert_eq!(post_dom.get(BlockId::new(0)), Some(BlockId::new(1)));
-        assert_eq!(post_dom.get(BlockId::new(1)), Some(BlockId::new(2)));
-        assert_eq!(post_dom.get(BlockId::new(2)), Some(post_dom.exit()));
+        assert_eq!(post_dom.get(BlockId(0)), Some(BlockId(1)));
+        assert_eq!(post_dom.get(BlockId(1)), Some(BlockId(2)));
+        assert_eq!(post_dom.get(BlockId(2)), Some(post_dom.exit()));
     }
 }

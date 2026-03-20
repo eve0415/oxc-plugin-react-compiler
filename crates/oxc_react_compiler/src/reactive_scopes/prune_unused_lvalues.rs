@@ -44,7 +44,15 @@ fn prune_unused_lvalues_once(func: &mut ReactiveFunction) -> bool {
         return false;
     }
 
-    prune_lvalues_in_block(&mut func.body, &to_prune)
+    // Pre-compute the set of DeclarationIds that have HoistedLet declarations
+    // anywhere in the reactive function. This is needed by
+    // should_preserve_reassign_result_load to distinguish TDZ-check reads
+    // (which must be kept) from dead comma-expression artifact reads (which
+    // should be dropped).
+    let mut hoisted_let_decls = HashSet::new();
+    collect_hoisted_let_decl_ids(&func.body, &mut hoisted_let_decls);
+
+    prune_lvalues_in_block(&mut func.body, &to_prune, &hoisted_let_decls)
 }
 
 fn collect_lvalues_and_refs(
@@ -68,6 +76,21 @@ fn collect_lvalues_and_refs(
                 collect_refs_from_terminal(&term_stmt.terminal, candidates, to_prune);
             }
             ReactiveStatement::Scope(scope) => {
+                // Visit scope metadata references (matching upstream's visitor
+                // which calls visitPlace for all places including scope
+                // declarations, dependencies, and reassignments).
+                for decl in scope.scope.declarations.values() {
+                    candidates.remove(&decl.identifier.declaration_id);
+                }
+                for dep in &scope.scope.dependencies {
+                    candidates.remove(&dep.identifier.declaration_id);
+                }
+                for reassignment in &scope.scope.reassignments {
+                    candidates.remove(&reassignment.declaration_id);
+                }
+                if let Some(early_return) = &scope.scope.early_return_value {
+                    candidates.remove(&early_return.value.declaration_id);
+                }
                 collect_lvalues_and_refs(&scope.instructions, candidates, to_prune);
             }
             ReactiveStatement::PrunedScope(scope) => {
@@ -267,16 +290,6 @@ fn collect_refs_from_value(
             collect_refs_from_value(left, candidates);
             collect_refs_from_value(right, candidates);
         }
-        InstructionValue::ReactiveConditionalExpression {
-            test,
-            consequent,
-            alternate,
-            ..
-        } => {
-            collect_refs_from_value(test, candidates);
-            collect_refs_from_value(consequent, candidates);
-            collect_refs_from_value(alternate, candidates);
-        }
         InstructionValue::TaggedTemplateExpression { tag, .. } => {
             collect_refs_from_place(tag, candidates);
         }
@@ -329,7 +342,6 @@ fn collect_refs_from_value(
         InstructionValue::Primitive { .. }
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::StartMemoize { .. }
         | InstructionValue::Debugger { .. } => {}
@@ -489,9 +501,111 @@ fn collect_refs_from_terminal(
     }
 }
 
+/// Collect all DeclarationIds that have a HoistedLet declaration anywhere in
+/// the reactive function tree.  Used to distinguish TDZ-enforcement reads
+/// (must keep) from dead comma-expression artifact reads (should drop).
+fn collect_hoisted_let_decl_ids(block: &ReactiveBlock, out: &mut HashSet<DeclarationId>) {
+    for stmt in block {
+        match stmt {
+            ReactiveStatement::Instruction(instr) => {
+                if matches!(
+                    &instr.value,
+                    InstructionValue::DeclareLocal { lvalue, .. }
+                        | InstructionValue::DeclareContext { lvalue, .. }
+                        if lvalue.kind == InstructionKind::HoistedLet
+                ) {
+                    if let Some(lv) = &instr.lvalue {
+                        out.insert(lv.identifier.declaration_id);
+                    }
+                    // Also capture the inner lvalue's declaration_id from the
+                    // DeclareLocal/DeclareContext value itself.
+                    match &instr.value {
+                        InstructionValue::DeclareLocal { lvalue, .. }
+                        | InstructionValue::DeclareContext { lvalue, .. } => {
+                            out.insert(lvalue.place.identifier.declaration_id);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            ReactiveStatement::Terminal(term_stmt) => {
+                collect_hoisted_let_decl_ids_in_terminal(&term_stmt.terminal, out);
+            }
+            ReactiveStatement::Scope(scope) => {
+                collect_hoisted_let_decl_ids(&scope.instructions, out);
+            }
+            ReactiveStatement::PrunedScope(scope) => {
+                collect_hoisted_let_decl_ids(&scope.instructions, out);
+            }
+        }
+    }
+}
+
+fn collect_hoisted_let_decl_ids_in_terminal(
+    terminal: &ReactiveTerminal,
+    out: &mut HashSet<DeclarationId>,
+) {
+    match terminal {
+        ReactiveTerminal::If {
+            consequent,
+            alternate,
+            ..
+        } => {
+            collect_hoisted_let_decl_ids(consequent, out);
+            if let Some(alt) = alternate {
+                collect_hoisted_let_decl_ids(alt, out);
+            }
+        }
+        ReactiveTerminal::Switch { cases, .. } => {
+            for case in cases {
+                if let Some(block) = &case.block {
+                    collect_hoisted_let_decl_ids(block, out);
+                }
+            }
+        }
+        ReactiveTerminal::DoWhile { loop_block, .. }
+        | ReactiveTerminal::While { loop_block, .. } => {
+            collect_hoisted_let_decl_ids(loop_block, out);
+        }
+        ReactiveTerminal::For {
+            init,
+            update,
+            loop_block,
+            ..
+        } => {
+            collect_hoisted_let_decl_ids(init, out);
+            if let Some(upd) = update {
+                collect_hoisted_let_decl_ids(upd, out);
+            }
+            collect_hoisted_let_decl_ids(loop_block, out);
+        }
+        ReactiveTerminal::ForOf {
+            init, loop_block, ..
+        }
+        | ReactiveTerminal::ForIn {
+            init, loop_block, ..
+        } => {
+            collect_hoisted_let_decl_ids(init, out);
+            collect_hoisted_let_decl_ids(loop_block, out);
+        }
+        ReactiveTerminal::Label { block, .. } => {
+            collect_hoisted_let_decl_ids(block, out);
+        }
+        ReactiveTerminal::Try { block, handler, .. } => {
+            collect_hoisted_let_decl_ids(block, out);
+            collect_hoisted_let_decl_ids(handler, out);
+        }
+        ReactiveTerminal::Break { .. }
+        | ReactiveTerminal::Continue { .. }
+        | ReactiveTerminal::Return { .. }
+        | ReactiveTerminal::Throw { .. } => {}
+    }
+}
+
 fn prune_lvalues_in_block(
     block: &mut ReactiveBlock,
     to_prune: &std::collections::HashSet<InstructionId>,
+    hoisted_let_decls: &HashSet<DeclarationId>,
 ) -> bool {
     let mut changed = false;
     for stmt in block.iter_mut() {
@@ -502,18 +616,21 @@ fn prune_lvalues_in_block(
                 }
             }
             ReactiveStatement::Terminal(term_stmt) => {
-                changed |= prune_lvalues_in_terminal(&mut term_stmt.terminal, to_prune);
+                changed |=
+                    prune_lvalues_in_terminal(&mut term_stmt.terminal, to_prune, hoisted_let_decls);
             }
             ReactiveStatement::Scope(scope) => {
-                changed |= prune_lvalues_in_block(&mut scope.instructions, to_prune);
+                changed |=
+                    prune_lvalues_in_block(&mut scope.instructions, to_prune, hoisted_let_decls);
             }
             ReactiveStatement::PrunedScope(scope) => {
-                changed |= prune_lvalues_in_block(&mut scope.instructions, to_prune);
+                changed |=
+                    prune_lvalues_in_block(&mut scope.instructions, to_prune, hoisted_let_decls);
             }
         }
     }
 
-    changed |= remove_pruned_alias_instructions_in_block(block, to_prune);
+    changed |= remove_pruned_alias_instructions_in_block(block, to_prune, hoisted_let_decls);
 
     changed
 }
@@ -521,6 +638,7 @@ fn prune_lvalues_in_block(
 fn prune_lvalues_in_terminal(
     terminal: &mut ReactiveTerminal,
     to_prune: &std::collections::HashSet<InstructionId>,
+    hoisted_let_decls: &HashSet<DeclarationId>,
 ) -> bool {
     match terminal {
         ReactiveTerminal::If {
@@ -528,9 +646,9 @@ fn prune_lvalues_in_terminal(
             alternate,
             ..
         } => {
-            let mut changed = prune_lvalues_in_block(consequent, to_prune);
+            let mut changed = prune_lvalues_in_block(consequent, to_prune, hoisted_let_decls);
             if let Some(alt) = alternate {
-                changed |= prune_lvalues_in_block(alt, to_prune);
+                changed |= prune_lvalues_in_block(alt, to_prune, hoisted_let_decls);
             }
             changed
         }
@@ -538,14 +656,14 @@ fn prune_lvalues_in_terminal(
             let mut changed = false;
             for case in cases.iter_mut() {
                 if let Some(block) = &mut case.block {
-                    changed |= prune_lvalues_in_block(block, to_prune);
+                    changed |= prune_lvalues_in_block(block, to_prune, hoisted_let_decls);
                 }
             }
             changed
         }
         ReactiveTerminal::DoWhile { loop_block, .. }
         | ReactiveTerminal::While { loop_block, .. } => {
-            prune_lvalues_in_block(loop_block, to_prune)
+            prune_lvalues_in_block(loop_block, to_prune, hoisted_let_decls)
         }
         ReactiveTerminal::For {
             init,
@@ -553,31 +671,33 @@ fn prune_lvalues_in_terminal(
             loop_block,
             ..
         } => {
-            let mut changed = prune_lvalues_in_block(init, to_prune);
+            let mut changed = prune_lvalues_in_block(init, to_prune, hoisted_let_decls);
             if let Some(upd) = update {
-                changed |= prune_lvalues_in_block(upd, to_prune);
+                changed |= prune_lvalues_in_block(upd, to_prune, hoisted_let_decls);
             }
-            changed |= prune_lvalues_in_block(loop_block, to_prune);
+            changed |= prune_lvalues_in_block(loop_block, to_prune, hoisted_let_decls);
             changed
         }
         ReactiveTerminal::ForOf {
             init, loop_block, ..
         } => {
-            let mut changed = prune_lvalues_in_block(init, to_prune);
-            changed |= prune_lvalues_in_block(loop_block, to_prune);
+            let mut changed = prune_lvalues_in_block(init, to_prune, hoisted_let_decls);
+            changed |= prune_lvalues_in_block(loop_block, to_prune, hoisted_let_decls);
             changed
         }
         ReactiveTerminal::ForIn {
             init, loop_block, ..
         } => {
-            let mut changed = prune_lvalues_in_block(init, to_prune);
-            changed |= prune_lvalues_in_block(loop_block, to_prune);
+            let mut changed = prune_lvalues_in_block(init, to_prune, hoisted_let_decls);
+            changed |= prune_lvalues_in_block(loop_block, to_prune, hoisted_let_decls);
             changed
         }
-        ReactiveTerminal::Label { block, .. } => prune_lvalues_in_block(block, to_prune),
+        ReactiveTerminal::Label { block, .. } => {
+            prune_lvalues_in_block(block, to_prune, hoisted_let_decls)
+        }
         ReactiveTerminal::Try { block, handler, .. } => {
-            let mut changed = prune_lvalues_in_block(block, to_prune);
-            changed |= prune_lvalues_in_block(handler, to_prune);
+            let mut changed = prune_lvalues_in_block(block, to_prune, hoisted_let_decls);
+            changed |= prune_lvalues_in_block(handler, to_prune, hoisted_let_decls);
             changed
         }
         ReactiveTerminal::Break { .. }
@@ -590,13 +710,16 @@ fn prune_lvalues_in_terminal(
 fn remove_pruned_alias_instructions_in_block(
     block: &mut ReactiveBlock,
     to_prune: &std::collections::HashSet<InstructionId>,
+    hoisted_let_decls: &HashSet<DeclarationId>,
 ) -> bool {
     let mut changed = false;
     let original = std::mem::take(block);
     let should_drop: Vec<bool> = original
         .iter()
         .enumerate()
-        .map(|(index, stmt)| should_drop_pruned_instruction(&original, stmt, index, to_prune))
+        .map(|(index, stmt)| {
+            should_drop_pruned_instruction(&original, stmt, index, to_prune, hoisted_let_decls)
+        })
         .collect();
     let mut next_block = Vec::with_capacity(original.len());
 
@@ -610,18 +733,27 @@ fn remove_pruned_alias_instructions_in_block(
                 }
             }
             ReactiveStatement::Terminal(term_stmt) => {
-                changed |=
-                    remove_pruned_alias_instructions_in_terminal(&mut term_stmt.terminal, to_prune);
+                changed |= remove_pruned_alias_instructions_in_terminal(
+                    &mut term_stmt.terminal,
+                    to_prune,
+                    hoisted_let_decls,
+                );
                 next_block.push(stmt);
             }
             ReactiveStatement::Scope(scope) => {
-                changed |=
-                    remove_pruned_alias_instructions_in_block(&mut scope.instructions, to_prune);
+                changed |= remove_pruned_alias_instructions_in_block(
+                    &mut scope.instructions,
+                    to_prune,
+                    hoisted_let_decls,
+                );
                 next_block.push(stmt);
             }
             ReactiveStatement::PrunedScope(scope) => {
-                changed |=
-                    remove_pruned_alias_instructions_in_block(&mut scope.instructions, to_prune);
+                changed |= remove_pruned_alias_instructions_in_block(
+                    &mut scope.instructions,
+                    to_prune,
+                    hoisted_let_decls,
+                );
                 next_block.push(stmt);
             }
         }
@@ -634,6 +766,7 @@ fn remove_pruned_alias_instructions_in_block(
 fn remove_pruned_alias_instructions_in_terminal(
     terminal: &mut ReactiveTerminal,
     to_prune: &std::collections::HashSet<InstructionId>,
+    hoisted_let_decls: &HashSet<DeclarationId>,
 ) -> bool {
     match terminal {
         ReactiveTerminal::If {
@@ -641,9 +774,14 @@ fn remove_pruned_alias_instructions_in_terminal(
             alternate,
             ..
         } => {
-            let mut changed = remove_pruned_alias_instructions_in_block(consequent, to_prune);
+            let mut changed =
+                remove_pruned_alias_instructions_in_block(consequent, to_prune, hoisted_let_decls);
             if let Some(alternate) = alternate {
-                changed |= remove_pruned_alias_instructions_in_block(alternate, to_prune);
+                changed |= remove_pruned_alias_instructions_in_block(
+                    alternate,
+                    to_prune,
+                    hoisted_let_decls,
+                );
             }
             changed
         }
@@ -651,14 +789,18 @@ fn remove_pruned_alias_instructions_in_terminal(
             let mut changed = false;
             for case in cases {
                 if let Some(block) = &mut case.block {
-                    changed |= remove_pruned_alias_instructions_in_block(block, to_prune);
+                    changed |= remove_pruned_alias_instructions_in_block(
+                        block,
+                        to_prune,
+                        hoisted_let_decls,
+                    );
                 }
             }
             changed
         }
         ReactiveTerminal::DoWhile { loop_block, .. }
         | ReactiveTerminal::While { loop_block, .. } => {
-            remove_pruned_alias_instructions_in_block(loop_block, to_prune)
+            remove_pruned_alias_instructions_in_block(loop_block, to_prune, hoisted_let_decls)
         }
         ReactiveTerminal::For {
             init,
@@ -666,11 +808,14 @@ fn remove_pruned_alias_instructions_in_terminal(
             loop_block,
             ..
         } => {
-            let mut changed = remove_pruned_alias_instructions_in_block(init, to_prune);
+            let mut changed =
+                remove_pruned_alias_instructions_in_block(init, to_prune, hoisted_let_decls);
             if let Some(update) = update {
-                changed |= remove_pruned_alias_instructions_in_block(update, to_prune);
+                changed |=
+                    remove_pruned_alias_instructions_in_block(update, to_prune, hoisted_let_decls);
             }
-            changed |= remove_pruned_alias_instructions_in_block(loop_block, to_prune);
+            changed |=
+                remove_pruned_alias_instructions_in_block(loop_block, to_prune, hoisted_let_decls);
             changed
         }
         ReactiveTerminal::ForOf {
@@ -679,16 +824,20 @@ fn remove_pruned_alias_instructions_in_terminal(
         | ReactiveTerminal::ForIn {
             init, loop_block, ..
         } => {
-            let mut changed = remove_pruned_alias_instructions_in_block(init, to_prune);
-            changed |= remove_pruned_alias_instructions_in_block(loop_block, to_prune);
+            let mut changed =
+                remove_pruned_alias_instructions_in_block(init, to_prune, hoisted_let_decls);
+            changed |=
+                remove_pruned_alias_instructions_in_block(loop_block, to_prune, hoisted_let_decls);
             changed
         }
         ReactiveTerminal::Label { block, .. } => {
-            remove_pruned_alias_instructions_in_block(block, to_prune)
+            remove_pruned_alias_instructions_in_block(block, to_prune, hoisted_let_decls)
         }
         ReactiveTerminal::Try { block, handler, .. } => {
-            let mut changed = remove_pruned_alias_instructions_in_block(block, to_prune);
-            changed |= remove_pruned_alias_instructions_in_block(handler, to_prune);
+            let mut changed =
+                remove_pruned_alias_instructions_in_block(block, to_prune, hoisted_let_decls);
+            changed |=
+                remove_pruned_alias_instructions_in_block(handler, to_prune, hoisted_let_decls);
             changed
         }
         ReactiveTerminal::Break { .. }
@@ -703,6 +852,7 @@ fn should_drop_pruned_instruction(
     stmt: &ReactiveStatement,
     index: usize,
     to_prune: &std::collections::HashSet<InstructionId>,
+    hoisted_let_decls: &HashSet<DeclarationId>,
 ) -> bool {
     let ReactiveStatement::Instruction(instr) = stmt else {
         return false;
@@ -713,13 +863,25 @@ fn should_drop_pruned_instruction(
 
     match &instr.value {
         InstructionValue::LoadLocal { place, .. } | InstructionValue::LoadContext { place, .. } => {
+            let preserve_reassign_result_load = should_preserve_reassign_result_load(
+                stmts,
+                index,
+                place.identifier.declaration_id,
+                hoisted_let_decls,
+            );
             let preserve_named_scope_bridge = place.identifier.name.is_some()
                 && (should_preserve_named_scope_bridge_load(stmts, index)
                     || has_prior_hoisted_let_declaration(
                         &stmts[..index],
                         place.identifier.declaration_id,
                     ));
-            !preserve_named_scope_bridge
+            !preserve_reassign_result_load
+                && !preserve_named_scope_bridge
+                && !should_preserve_manual_memo_leading_root_load(
+                    stmts,
+                    index,
+                    place.identifier.declaration_id,
+                )
                 && !should_preserve_manual_memo_tail_root_load(
                     stmts,
                     index,
@@ -731,11 +893,71 @@ fn should_drop_pruned_instruction(
     }
 }
 
+/// Preserve a LoadLocal/LoadContext that immediately follows a Reassign
+/// StoreLocal/StoreContext for the same variable, but ONLY when the variable
+/// has a HoistedLet declaration.  These reads serve as TDZ checks that the
+/// upstream emits.  Without the hoisted-let guard, this also incorrectly
+/// preserves dead reads from flattened comma expressions in deps lists
+/// (e.g., `((y = x.concat(arr2)), y)` produces a trailing `y` that should
+/// be dropped when the deps array is removed).
+fn should_preserve_reassign_result_load(
+    stmts: &[ReactiveStatement],
+    index: usize,
+    declaration_id: DeclarationId,
+    hoisted_let_decls: &HashSet<DeclarationId>,
+) -> bool {
+    // Only preserve for variables with HoistedLet declarations — these need
+    // TDZ enforcement reads after reassignment.
+    if !hoisted_let_decls.contains(&declaration_id) {
+        return false;
+    }
+
+    let Some(ReactiveStatement::Instruction(prev_instr)) = index
+        .checked_sub(1)
+        .and_then(|prev_index| stmts.get(prev_index))
+    else {
+        return false;
+    };
+
+    matches!(
+        &prev_instr.value,
+        InstructionValue::StoreLocal { lvalue, .. }
+            | InstructionValue::StoreContext { lvalue, .. }
+            if lvalue.kind == InstructionKind::Reassign
+                && lvalue.place.identifier.declaration_id == declaration_id
+    )
+}
+
 fn should_preserve_named_scope_bridge_load(stmts: &[ReactiveStatement], index: usize) -> bool {
     matches!(
         stmts.get(index + 1),
         Some(ReactiveStatement::Scope(_) | ReactiveStatement::PrunedScope(_))
     )
+}
+
+fn should_preserve_manual_memo_leading_root_load(
+    stmts: &[ReactiveStatement],
+    index: usize,
+    root_decl: DeclarationId,
+) -> bool {
+    let Some(ReactiveStatement::Instruction(prev_instr)) = index
+        .checked_sub(1)
+        .and_then(|prev_index| stmts.get(prev_index))
+    else {
+        return false;
+    };
+
+    match &prev_instr.value {
+        InstructionValue::StartMemoize { deps, .. } => deps.iter().flatten().any(|dep| {
+            dep.path.is_empty()
+                && matches!(
+                    &dep.root,
+                    ManualMemoRoot::NamedLocal(place)
+                        if place.identifier.declaration_id == root_decl
+                )
+        }),
+        _ => false,
+    }
 }
 
 fn has_prior_hoisted_let_declaration(
@@ -872,12 +1094,9 @@ mod tests {
     fn test_prune_unreferenced_temporary_lvalue() {
         // Instruction with unnamed lvalue that is never read => should be pruned
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Instruction(Box::new(
                 ReactiveInstruction {
                     id: InstructionId(0),
@@ -889,7 +1108,6 @@ mod tests {
                     loc: SourceLocation::Generated,
                 },
             ))],
-            directives: vec![],
         };
 
         prune_unused_lvalues(&mut func);
@@ -906,12 +1124,9 @@ mod tests {
     fn test_keep_referenced_temporary_lvalue() {
         // Instruction with unnamed lvalue that IS read later => should be kept
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
                     id: InstructionId(0),
@@ -932,7 +1147,6 @@ mod tests {
                     loc: SourceLocation::Generated,
                 })),
             ],
-            directives: vec![],
         };
 
         prune_unused_lvalues(&mut func);
@@ -949,12 +1163,9 @@ mod tests {
     fn test_keep_named_lvalue() {
         // Instruction with a named lvalue should never be pruned regardless
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Instruction(Box::new(
                 ReactiveInstruction {
                     id: InstructionId(0),
@@ -966,7 +1177,6 @@ mod tests {
                     loc: SourceLocation::Generated,
                 },
             ))],
-            directives: vec![],
         };
 
         prune_unused_lvalues(&mut func);
@@ -985,12 +1195,9 @@ mod tests {
         let alias = make_place(2, None);
 
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
                     id: InstructionId(0),
@@ -1014,12 +1221,10 @@ mod tests {
                     terminal: ReactiveTerminal::Return {
                         value: source,
                         id: InstructionId(2),
-                        loc: SourceLocation::Generated,
                     },
                     label: None,
                 }),
             ],
-            directives: vec![],
         };
 
         prune_unused_lvalues(&mut func);
@@ -1053,12 +1258,9 @@ mod tests {
         let alias2 = make_place(3, None);
 
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
                     id: InstructionId(0),
@@ -1079,7 +1281,6 @@ mod tests {
                     loc: SourceLocation::Generated,
                 })),
             ],
-            directives: vec![],
         };
 
         prune_unused_lvalues(&mut func);
@@ -1098,12 +1299,9 @@ mod tests {
         let result = make_place(4, None);
 
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
                     id: InstructionId(0),
@@ -1151,12 +1349,10 @@ mod tests {
                     terminal: ReactiveTerminal::Return {
                         value: result,
                         id: InstructionId(4),
-                        loc: SourceLocation::Generated,
                     },
                     label: None,
                 }),
             ],
-            directives: vec![],
         };
 
         prune_unused_lvalues(&mut func);
@@ -1182,12 +1378,9 @@ mod tests {
         let result = make_place(4, None);
 
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
                     id: InstructionId(0),
@@ -1238,12 +1431,10 @@ mod tests {
                     terminal: ReactiveTerminal::Return {
                         value: result,
                         id: InstructionId(4),
-                        loc: SourceLocation::Generated,
                     },
                     label: None,
                 }),
             ],
-            directives: vec![],
         };
 
         prune_unused_lvalues(&mut func);
@@ -1262,6 +1453,87 @@ mod tests {
     }
 
     #[test]
+    fn test_preserve_manual_memo_leading_root_load_for_non_function_result() {
+        let source = make_place(1, Some(IdentifierName::Named("input".into())));
+        let temp = make_place(2, None);
+        let memo_decl = make_place(3, None);
+
+        let mut func = ReactiveFunction {
+            id: None,
+            name_hint: None,
+            params: vec![],
+            body: vec![
+                ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                    id: InstructionId(0),
+                    lvalue: None,
+                    value: InstructionValue::StartMemoize {
+                        manual_memo_id: 0,
+                        deps: Some(vec![ManualMemoDependency {
+                            root: ManualMemoRoot::NamedLocal(source.clone()),
+                            path: vec![],
+                        }]),
+                        loc: SourceLocation::Generated,
+                    },
+                    loc: SourceLocation::Generated,
+                })),
+                ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                    id: InstructionId(1),
+                    lvalue: Some(temp),
+                    value: InstructionValue::LoadLocal {
+                        place: source,
+                        loc: SourceLocation::Generated,
+                    },
+                    loc: SourceLocation::Generated,
+                })),
+                ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                    id: InstructionId(2),
+                    lvalue: Some(memo_decl.clone()),
+                    value: InstructionValue::Primitive {
+                        value: PrimitiveValue::Number(1.0),
+                        loc: SourceLocation::Generated,
+                    },
+                    loc: SourceLocation::Generated,
+                })),
+                ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                    id: InstructionId(3),
+                    lvalue: None,
+                    value: InstructionValue::FinishMemoize {
+                        manual_memo_id: 0,
+                        decl: memo_decl.clone(),
+                        pruned: false,
+                        loc: SourceLocation::Generated,
+                    },
+                    loc: SourceLocation::Generated,
+                })),
+                ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                    terminal: ReactiveTerminal::Return {
+                        value: memo_decl,
+                        id: InstructionId(4),
+                    },
+                    label: None,
+                }),
+            ],
+        };
+
+        prune_unused_lvalues(&mut func);
+
+        assert_eq!(func.body.len(), 5);
+        match &func.body[1] {
+            ReactiveStatement::Instruction(instr) => {
+                assert_eq!(instr.id, InstructionId(1));
+                assert!(
+                    instr.lvalue.is_none(),
+                    "leading manual memo root load should become bare expr"
+                );
+            }
+            other => panic!(
+                "expected preserved leading load instruction, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
     fn test_preserve_manual_memo_root_load_after_alias_drop() {
         let source = make_place(1, Some(IdentifierName::Named("y".into())));
         let temp = make_place(2, None);
@@ -1270,12 +1542,9 @@ mod tests {
         let result = make_place(5, None);
 
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![
                 ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
                     id: InstructionId(0),
@@ -1332,12 +1601,10 @@ mod tests {
                     terminal: ReactiveTerminal::Return {
                         value: result,
                         id: InstructionId(5),
-                        loc: SourceLocation::Generated,
                     },
                     label: None,
                 }),
             ],
-            directives: vec![],
         };
 
         prune_unused_lvalues(&mut func);

@@ -143,9 +143,14 @@ target/
 
 # AI
 .claude/*.local.*
+.mcp.json
+plans/
+docs/superpowers/
 
 # JetBrains IDEs
 .idea/
+
+# git
 .worktrees/
 .claude/worktrees/
 

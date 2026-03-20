@@ -1,5 +1,5 @@
-pub mod aliasing_effects;
-pub mod analyse_functions;
-pub mod infer_effect_dependencies;
-pub mod infer_mutation_aliasing_effects;
-pub mod infer_mutation_aliasing_ranges;
+pub(crate) mod aliasing_effects;
+pub(crate) mod analyse_functions;
+pub(crate) mod infer_effect_dependencies;
+pub(crate) mod infer_mutation_aliasing_effects;
+pub(crate) mod infer_mutation_aliasing_ranges;

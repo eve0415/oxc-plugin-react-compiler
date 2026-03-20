@@ -7,7 +7,7 @@
 //! replaces instructions whose operands are known constants with the computed result.
 //! Also prunes unreachable branches when an if-condition is a known constant.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use crate::hir::types::*;
 
@@ -30,6 +30,13 @@ struct EvaluationContext<'a> {
     mutated_captured_decl_ids: &'a HashSet<DeclarationId>,
     captured_reassigned_decl_ids: &'a HashSet<DeclarationId>,
     reassigned_decl_ids: &'a HashSet<DeclarationId>,
+    /// Names of variables declared in an outer function scope. Used to
+    /// prevent propagating `Global(name)` constants through user-named
+    /// variables in nested functions — these "globals" are really
+    /// outer-scope locals that will become `LoadContext` after context
+    /// lowering, and upstream's CP (which runs after context lowering)
+    /// doesn't propagate LoadContext values.
+    outer_local_names: &'a HashSet<String>,
 }
 
 #[inline]
@@ -45,6 +52,24 @@ fn capture_may_mutate(effect: Effect) -> bool {
             | Effect::ConditionallyMutate
             | Effect::ConditionallyMutateIterator
     )
+}
+
+/// Collect declaration IDs referenced by LoadLocal/LoadContext in a function body.
+/// Non-recursive: only inspects the immediate function, not nested ones.
+fn collect_referenced_decl_ids_in_body(func: &HIRFunction) -> HashSet<DeclarationId> {
+    let mut out = HashSet::new();
+    for (_, block) in &func.body.blocks {
+        for instr in &block.instructions {
+            match &instr.value {
+                InstructionValue::LoadLocal { place, .. }
+                | InstructionValue::LoadContext { place, .. } => {
+                    out.insert(place.identifier.declaration_id);
+                }
+                _ => {}
+            }
+        }
+    }
+    out
 }
 
 fn collect_reassigned_decl_ids_in_function(func: &HIRFunction, out: &mut HashSet<DeclarationId>) {
@@ -72,105 +97,42 @@ fn collect_reassigned_decl_ids_in_function(func: &HIRFunction, out: &mut HashSet
 }
 
 /// Run constant propagation on the given function (fixpoint iteration).
-/// After branch pruning, unreachable phi operands are removed and the pass
-/// is re-run so that phis with fewer operands can resolve to constants.
+/// After branch pruning, the full upstream cleanup sequence is applied:
+/// reorder blocks, remove unreachable for updates, remove dead do-while,
+/// prune try-catch, renumber instruction ids, recompute predecessors,
+/// prune phi operands, eliminate redundant phis, and merge consecutive blocks.
 pub fn constant_propagation(func: &mut HIRFunction) {
-    // Iterate until no more branches are pruned
+    // Iterate until no more branches are pruned (matches upstream while(true) loop)
     for _ in 0..10 {
         let mut constants: Constants = HashMap::new();
         let pruned = apply_constant_propagation(func, &mut constants);
         if pruned == 0 {
             break;
         }
-        // After pruning, update phi operands and eliminate dead blocks so that
-        // the next iteration's multi_reassign_decl_ids computation only sees
-        // reachable stores (stores in pruned dead branches should not count).
-        update_phi_operands_after_pruning(func);
-        eliminate_dead_blocks(func);
-    }
-}
+        // Full upstream cleanup sequence (ConstantPropagation.ts:73-99)
+        crate::hir::builder::reverse_postorder_blocks(&mut func.body);
+        crate::hir::builder::remove_unreachable_for_updates(&mut func.body);
+        crate::hir::builder::remove_dead_do_while_statements(&mut func.body);
+        crate::hir::prune_maybe_throws::remove_unnecessary_try_catch(&mut func.body);
+        crate::hir::prune_maybe_throws::mark_instruction_ids(&mut func.body);
+        crate::hir::builder::mark_predecessors(&mut func.body);
 
-/// Remove blocks unreachable from the entry block.
-fn eliminate_dead_blocks(func: &mut HIRFunction) {
-    let entry = func.body.entry;
-    let mut reachable: HashSet<BlockId> = HashSet::new();
-    let mut queue: VecDeque<BlockId> = VecDeque::new();
-    queue.push_back(entry);
-    reachable.insert(entry);
-    while let Some(block_id) = queue.pop_front() {
-        let terminal = func
-            .body
-            .blocks
-            .iter()
-            .find(|(id, _)| *id == block_id)
-            .map(|(_, b)| &b.terminal);
-        if let Some(terminal) = terminal {
-            for succ in crate::hir::builder::terminal_successors(terminal) {
-                if reachable.insert(succ) {
-                    queue.push_back(succ);
-                }
+        // Now that predecessors are updated, prune phi operands that can
+        // never be reached (upstream ConstantPropagation.ts:81-89)
+        for (_, block) in &mut func.body.blocks {
+            for phi in &mut block.phis {
+                phi.operands
+                    .retain(|pred_id, _| block.preds.contains(pred_id));
             }
         }
-    }
-    let before = func.body.blocks.len();
-    func.body.blocks.retain(|(id, _)| reachable.contains(id));
-    if func.body.blocks.len() < before {
-        // Update predecessor sets after removing blocks
-        update_phi_operands_after_pruning(func);
-    }
-}
 
-/// Remove phi operands that reference blocks which are no longer predecessors.
-fn update_phi_operands_after_pruning(func: &mut HIRFunction) {
-    use std::collections::HashSet;
+        // By removing some phi operands, there may be phis that were not
+        // previously redundant but now are
+        crate::ssa::eliminate_redundant_phi::eliminate_redundant_phi(func);
 
-    // Compute reachable blocks from entry first — unreachable blocks
-    // (e.g., dead if-branches after pruning) must not count as predecessors.
-    let reachable: HashSet<BlockId> = {
-        let block_id_to_index: HashMap<BlockId, usize> = func
-            .body
-            .blocks
-            .iter()
-            .enumerate()
-            .map(|(i, (id, _))| (*id, i))
-            .collect();
-        let mut visited: HashSet<BlockId> = HashSet::new();
-        let mut queue: VecDeque<BlockId> = VecDeque::new();
-        queue.push_back(func.body.entry);
-        visited.insert(func.body.entry);
-        while let Some(bid) = queue.pop_front() {
-            if let Some(&idx) = block_id_to_index.get(&bid) {
-                let terminal = &func.body.blocks[idx].1.terminal;
-                for succ in crate::hir::builder::terminal_successors(terminal) {
-                    if visited.insert(succ) {
-                        queue.push_back(succ);
-                    }
-                }
-            }
-        }
-        visited
-    };
-
-    // Rebuild predecessor sets from terminals of REACHABLE blocks only
-    let mut actual_preds: HashMap<BlockId, HashSet<BlockId>> = HashMap::new();
-    for (block_id, block) in &func.body.blocks {
-        if !reachable.contains(block_id) {
-            continue;
-        }
-        let succs = crate::hir::builder::terminal_successors(&block.terminal);
-        for succ in succs {
-            actual_preds.entry(succ).or_default().insert(*block_id);
-        }
-    }
-
-    // For each block with phis, remove operands from non-predecessor blocks
-    for (block_id, block) in &mut func.body.blocks {
-        let preds = actual_preds.get(block_id).cloned().unwrap_or_default();
-        for phi in &mut block.phis {
-            phi.operands.retain(|pred_id, _| preds.contains(pred_id));
-        }
-        // Also update block.preds
-        block.preds = preds.into_iter().collect();
+        // Finally, merge together any blocks that are now guaranteed to
+        // execute consecutively
+        crate::hir::merge_consecutive_blocks::merge_consecutive_blocks(func);
     }
 }
 
@@ -280,6 +242,14 @@ fn collect_captured_decl_ids(func: &HIRFunction, out: &mut HashSet<DeclarationId
 
 /// Returns the number of if-terminals that were pruned to gotos.
 fn apply_constant_propagation(func: &mut HIRFunction, constants: &mut Constants) -> usize {
+    apply_constant_propagation_inner(func, constants, &HashSet::new())
+}
+
+fn apply_constant_propagation_inner(
+    func: &mut HIRFunction,
+    constants: &mut Constants,
+    outer_local_names: &HashSet<String>,
+) -> usize {
     let mut pruned = 0;
     let mutated_captured_decl_ids = collect_mutated_captured_decl_ids(func);
 
@@ -589,6 +559,34 @@ fn apply_constant_propagation(func: &mut HIRFunction, constants: &mut Constants)
         }
     }
 
+    // Collect this function's local variable names for passing to inner
+    // function CP calls. These names are used to identify outer-scope
+    // locals that masquerade as Global bindings in nested functions.
+    let local_var_names: HashSet<String> = {
+        let mut names = HashSet::new();
+        for (_, blk) in &func.body.blocks {
+            for inner_instr in &blk.instructions {
+                if let InstructionValue::StoreLocal { lvalue: sl, .. }
+                | InstructionValue::DeclareLocal { lvalue: sl, .. }
+                | InstructionValue::StoreContext { lvalue: sl, .. }
+                | InstructionValue::DeclareContext { lvalue: sl, .. } = &inner_instr.value
+                    && let Some(n) = &sl.place.identifier.name
+                {
+                    names.insert(n.value().to_string());
+                }
+            }
+        }
+        for param in &func.params {
+            let p = match param {
+                crate::hir::types::Argument::Place(p) | crate::hir::types::Argument::Spread(p) => p,
+            };
+            if let Some(n) = &p.identifier.name {
+                names.insert(n.value().to_string());
+            }
+        }
+        names
+    };
+
     // Match upstream SCCP traversal: walk the CFG in stored block order.
     for (_, block) in &mut func.body.blocks {
         // Initialize phi values if all operands have the same known constant value
@@ -695,9 +693,30 @@ fn apply_constant_propagation(func: &mut HIRFunction, constants: &mut Constants)
                             );
                         }
                     }
+                    // Collect which declarations are referenced before CP.
+                    let pre_cp_refs = collect_referenced_decl_ids_in_body(&lowered_func.func);
+
                     // Upstream recurses CP into nested lowered functions using
-                    // the same constants map.
-                    apply_constant_propagation(&mut lowered_func.func, constants);
+                    // the same constants map. Pass the union of all outer-scope
+                    // local names so the inner CP can skip Global-binding
+                    // propagation for outer-scope locals.
+                    let mut inner_outer_names = outer_local_names.clone();
+                    inner_outer_names.extend(local_var_names.iter().cloned());
+                    apply_constant_propagation_inner(
+                        &mut lowered_func.func,
+                        constants,
+                        &inner_outer_names,
+                    );
+
+                    // After CP inlines constants into the nested body, remove
+                    // context captures whose references were eliminated by CP
+                    // (present before but absent after). Keep captures that were
+                    // never referenced — they may serve aliasing/other purposes.
+                    let post_cp_refs = collect_referenced_decl_ids_in_body(&lowered_func.func);
+                    lowered_func.func.context.retain(|cap| {
+                        let decl = cap.identifier.declaration_id;
+                        post_cp_refs.contains(&decl) || !pre_cp_refs.contains(&decl)
+                    });
                     continue;
                 }
                 _ => {}
@@ -712,6 +731,7 @@ fn apply_constant_propagation(func: &mut HIRFunction, constants: &mut Constants)
                 mutated_captured_decl_ids: &mutated_captured_decl_ids,
                 captured_reassigned_decl_ids: &captured_reassigned_decl_ids,
                 reassigned_decl_ids: &reassigned_decl_ids,
+                outer_local_names,
             };
             if let Some(value) = evaluate_instruction(constants, instr, &eval_ctx) {
                 constants.insert(instr.lvalue.identifier.id, value);
@@ -970,19 +990,24 @@ fn evaluate_instruction(
                 return None;
             }
             let place_value = read(constants, value)?;
-            // Keep mutable alias variables when initialized from a different
-            // non-local name (e.g. `let logLevel = level; ...; logLevel = ...`).
-            // Upstream's context lowering prevents this from over-folding.
+            // Don't propagate a Global binding through a user-named local
+            // when the Global name is an outer-scope local variable. Before
+            // context lowering, outer-scope locals appear as Global bindings
+            // in nested functions. Upstream runs CP after context lowering,
+            // so these are LoadContext (not propagatable). Skipping here
+            // prevents DCE from eliminating user variables like `const copy = x`.
+            // Also covers mutable alias variables (e.g. `let logLevel = level`).
             if let Constant::LoadGlobal(NonLocalBinding::Global { name }, _) = &place_value
-                && ctx
-                    .reassigned_decl_ids
-                    .contains(&lvalue.place.identifier.declaration_id)
                 && lvalue
                     .place
                     .identifier
                     .name
                     .as_ref()
                     .is_some_and(|local| local.value() != name)
+                && (ctx.outer_local_names.contains(name)
+                    || ctx
+                        .reassigned_decl_ids
+                        .contains(&lvalue.place.identifier.declaration_id))
             {
                 if debug_cp_trace_enabled() {
                     eprintln!(
@@ -1425,7 +1450,12 @@ fn evaluate_unary_op(op: UnaryOperator, operand: &PrimitiveValue) -> Option<Prim
             Some(PrimitiveValue::Boolean(!is_truthy))
         }
         UnaryOperator::Minus => match operand {
-            PrimitiveValue::Number(n) => Some(PrimitiveValue::Number(-n)),
+            PrimitiveValue::Number(n) => {
+                let result = -n;
+                // Normalize -0.0 to 0.0 to match Babel's printer behavior
+                let result = if result == 0.0 { 0.0 } else { result };
+                Some(PrimitiveValue::Number(result))
+            }
             _ => None,
         },
         // Upstream only folds ! and - for unary operators

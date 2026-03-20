@@ -79,8 +79,7 @@ fn set_terminal_fallthrough(terminal: &mut Terminal, new_fallthrough: BlockId) {
         | Terminal::Unreachable { .. }
         | Terminal::Throw { .. }
         | Terminal::Return { .. }
-        | Terminal::Goto { .. }
-        | Terminal::MaybeThrow { .. } => {}
+        | Terminal::Goto { .. } => {}
     }
 }
 

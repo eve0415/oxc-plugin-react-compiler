@@ -2,8 +2,7 @@
 //!
 //! Port of `Environment.ts` from upstream.
 
-use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::hir::types::{Identifier, IdentifierId, SourceLocation, make_temporary_identifier};
@@ -22,7 +21,6 @@ struct EnvironmentInner {
     next_identifier_id: Cell<u32>,
     has_inferred_effect: Cell<bool>,
     has_fire_rewrite: Cell<bool>,
-    inferred_effect_locations: RefCell<HashSet<SourceLocation>>,
 }
 
 impl Environment {
@@ -34,7 +32,6 @@ impl Environment {
                 next_identifier_id: Cell::new(0),
                 has_inferred_effect: Cell::new(false),
                 has_fire_rewrite: Cell::new(false),
-                inferred_effect_locations: RefCell::new(HashSet::new()),
             }),
         }
     }
@@ -87,16 +84,9 @@ impl Environment {
         self.inner.has_fire_rewrite.set(value);
     }
 
-    pub fn add_inferred_effect_location(&self, loc: SourceLocation) {
-        self.inner
-            .inferred_effect_locations
-            .borrow_mut()
-            .insert(loc);
-    }
-
     pub fn make_temporary_identifier(&self, loc: SourceLocation) -> Identifier {
         let id = self.next_identifier_id();
-        make_temporary_identifier(IdentifierId::new(id), loc)
+        make_temporary_identifier(IdentifierId(id), loc)
     }
 
     /// Check if a name follows React hook naming convention.
@@ -113,20 +103,18 @@ impl Environment {
             false
         }
     }
+}
 
+#[cfg(test)]
+impl Environment {
     /// Check if a name follows React component naming convention.
-    ///
-    /// Returns `true` if the name starts with an uppercase ASCII letter.
-    pub fn is_component_name(name: &str) -> bool {
+    fn is_component_name(name: &str) -> bool {
         name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
     }
 
-    /// Check if the given name matches the configured hook pattern, falling back
-    /// to the standard [`Self::is_hook_name`] check when no pattern is configured.
-    pub fn matches_hook_pattern(&self, name: &str) -> bool {
+    /// Check if the given name matches the configured hook pattern.
+    fn matches_hook_pattern(&self, name: &str) -> bool {
         if let Some(ref pattern) = self.inner.config.hook_pattern {
-            // Simple prefix matching for now; will be replaced with regex
-            // when the hook_pattern feature is fully ported.
             name.starts_with(pattern.as_str())
         } else {
             Self::is_hook_name(name)

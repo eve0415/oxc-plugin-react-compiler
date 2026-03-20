@@ -515,12 +515,9 @@ mod tests {
     #[test]
     fn test_remove_hoisted_const_declare_context() {
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Instruction(Box::new(
                 ReactiveInstruction {
                     id: InstructionId(0),
@@ -535,7 +532,6 @@ mod tests {
                     loc: SourceLocation::Generated,
                 },
             ))],
-            directives: vec![],
         };
 
         prune_hoisted_contexts(&mut func).unwrap();
@@ -548,12 +544,9 @@ mod tests {
     #[test]
     fn test_keep_non_hoisted_declare_context() {
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Instruction(Box::new(
                 ReactiveInstruction {
                     id: InstructionId(0),
@@ -568,7 +561,6 @@ mod tests {
                     loc: SourceLocation::Generated,
                 },
             ))],
-            directives: vec![],
         };
 
         prune_hoisted_contexts(&mut func).unwrap();
@@ -592,12 +584,9 @@ mod tests {
         );
 
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Scope(ReactiveScopeBlock {
                 scope,
                 instructions: vec![ReactiveStatement::Instruction(Box::new(
@@ -616,7 +605,6 @@ mod tests {
                     },
                 ))],
             })],
-            directives: vec![],
         };
 
         prune_hoisted_contexts(&mut func).unwrap();

@@ -11,8 +11,6 @@ pub enum DiagnosticSeverity {
     InvalidReact,
     /// Input is valid but cannot be compiled (e.g., unsupported pattern).
     CannotPreserveMemoization,
-    /// Internal compiler invariant violation.
-    InvalidConfig,
     /// Todo — feature not yet implemented.
     Todo,
     /// Invariant violation (bug in the compiler).
@@ -24,6 +22,15 @@ pub enum DiagnosticSeverity {
 pub struct CompilerDiagnostic {
     pub severity: DiagnosticSeverity,
     pub message: String,
+}
+
+impl Default for CompilerDiagnostic {
+    fn default() -> Self {
+        Self {
+            severity: DiagnosticSeverity::Invariant,
+            message: String::new(),
+        }
+    }
 }
 
 impl fmt::Display for CompilerDiagnostic {
@@ -41,7 +48,11 @@ pub struct BailOut {
 
 impl fmt::Display for BailOut {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "BailOut: {}", self.reason)
+        write!(f, "BailOut: {}", self.reason)?;
+        for diag in &self.diagnostics {
+            write!(f, "\n  {diag}")?;
+        }
+        Ok(())
     }
 }
 
@@ -52,17 +63,33 @@ impl std::error::Error for BailOut {}
 pub enum CompilerError {
     /// Validation failure — bail to original code
     Bail(BailOut),
-    /// Internal error — also bail to original code
-    Internal(String),
     /// Lowering failure
     LoweringFailed(String),
+}
+
+impl CompilerError {
+    /// Create a bail error for an invariant violation.
+    pub fn invariant(reason: impl Into<String>, description: Option<String>) -> Self {
+        let reason = reason.into();
+        let message = if let Some(ref desc) = description {
+            format!("{reason}. {desc}.")
+        } else {
+            reason.clone()
+        };
+        Self::Bail(BailOut {
+            reason: reason.clone(),
+            diagnostics: vec![CompilerDiagnostic {
+                severity: DiagnosticSeverity::Invariant,
+                message,
+            }],
+        })
+    }
 }
 
 impl fmt::Display for CompilerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Bail(b) => write!(f, "Bail: {}", b),
-            Self::Internal(msg) => write!(f, "Internal: {}", msg),
             Self::LoweringFailed(msg) => write!(f, "Lowering failed: {}", msg),
         }
     }
@@ -73,5 +100,27 @@ impl std::error::Error for CompilerError {}
 impl From<BailOut> for CompilerError {
     fn from(b: BailOut) -> Self {
         Self::Bail(b)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_factory_methods() {
+        let err = CompilerError::invariant("unexpected null", None);
+        match &err {
+            CompilerError::Bail(b) => assert!(!b.diagnostics.is_empty()),
+            _ => panic!("expected Bail"),
+        }
+    }
+
+    #[test]
+    fn test_backward_compat() {
+        let _diag = CompilerDiagnostic {
+            severity: DiagnosticSeverity::InvalidReact,
+            message: "test".to_string(),
+        };
     }
 }

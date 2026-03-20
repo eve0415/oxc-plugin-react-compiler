@@ -25,10 +25,6 @@ use crate::hir::visitors;
 ///    top, merge from the outer scope through the top.
 /// 6. Rewrite all scope references to point to the merged group representative.
 pub fn merge_overlapping_reactive_scopes(func: &mut HIRFunction) {
-    if std::env::var("DISABLE_OVERLAP_MERGE").is_ok() {
-        return;
-    }
-
     // Step 1: Collect scope info — all places with scopes and scope ranges.
     // We need to collect scopes eagerly because some scopes begin before
     // the first instruction that references them (due to alignReactiveScopesToBlocks).
@@ -104,11 +100,11 @@ pub fn merge_overlapping_reactive_scopes(func: &mut HIRFunction) {
         }
         scope_starts = starts_map
             .into_iter()
-            .map(|(id, scopes)| (InstructionId::new(id), scopes))
+            .map(|(id, scopes)| (InstructionId(id), scopes))
             .collect();
         scope_ends = ends_map
             .into_iter()
-            .map(|(id, scopes)| (InstructionId::new(id), scopes))
+            .map(|(id, scopes)| (InstructionId(id), scopes))
             .collect();
     }
 
@@ -334,8 +330,8 @@ pub fn merge_overlapping_reactive_scopes(func: &mut HIRFunction) {
     for (scope_id, scope) in &scope_map {
         let root = find(&mut uf_parent, *scope_id);
         let entry = merged_ranges.entry(root).or_insert(scope.range.clone());
-        entry.start = InstructionId::new(entry.start.0.min(scope.range.start.0));
-        entry.end = InstructionId::new(entry.end.0.max(scope.range.end.0));
+        entry.start = InstructionId(entry.start.0.min(scope.range.start.0));
+        entry.end = InstructionId(entry.end.0.max(scope.range.end.0));
     }
 
     // Step 5: Rewrite all scope annotations.

@@ -9,22 +9,23 @@
 //! - `oxc_codegen` for output generation
 
 mod codegen_backend;
-pub mod environment;
-pub mod error;
-pub mod hir;
-pub mod inference;
-pub mod optimization;
+pub(crate) mod environment;
+pub(crate) mod error;
+pub(crate) mod hir;
+pub(crate) mod inference;
+pub(crate) mod optimization;
 pub mod options;
-pub mod pipeline;
-pub mod reactive_scopes;
-pub mod source_lines;
-pub mod ssa;
-pub mod type_inference;
-pub mod validation;
+pub(crate) mod pipeline;
+pub(crate) mod reactive_scopes;
+pub(crate) mod source_lines;
+pub(crate) mod ssa;
+pub(crate) mod type_inference;
+pub(crate) mod validation;
 
 /// Compile a single file. Returns the transformed code and source map if compilation
 /// was applied, or `None` if the file was not transformed (e.g., no components/hooks found).
 pub fn compile(filename: &str, source: &str, options: &options::PluginOptions) -> CompileResult {
+    crate::optimization::dead_code_elimination::clear_preserved_top_level_let_initializers();
     pipeline::compile(filename, source, options)
 }
 
@@ -77,6 +78,36 @@ function Component(props) {
         eprintln!("{}", result.code);
         eprintln!("---END---");
         assert!(result.transformed);
+    }
+
+    #[test]
+    fn test_conditional_set_state_in_render_bails_out() {
+        let source = r#"function Component(props) {
+  const [x, setX] = useState(0);
+
+  const foo = () => {
+    setX(1);
+  };
+
+  if (props.cond) {
+    setX(2);
+    foo();
+  }
+
+  return x;
+}
+
+export const FIXTURE_ENTRYPOINT = {
+  fn: Component,
+  params: ['TodoAdd'],
+  isComponent: 'TodoAdd',
+};"#;
+        let options = options::PluginOptions::default();
+        let result = compile("conditional-set-state-in-render.js", source, &options);
+        assert!(
+            !result.transformed,
+            "conditional set-state fixture should bail out"
+        );
     }
 
     #[test]
@@ -242,6 +273,45 @@ function Component(props) {
             result.code.contains("const y = []"),
             "y should be const, got:\n{}",
             result.code
+        );
+    }
+
+    /// Regression: useLayoutEffect callback captures updateStyles from a zero-dep
+    /// sentinel scope. The callback scope should also be zero-dep (sentinel).
+    #[test]
+    fn test_repro_mutate_ref_in_function_passed_to_hook() {
+        let source = r#"// @flow
+component Example() {
+  const fooRef = useRef();
+  function updateStyles() {
+    const foo = fooRef.current;
+    if (barRef.current == null || foo == null) {
+      return;
+    }
+    foo.style.height = '100px';
+  }
+  const barRef = useRef(null);
+  const resizeRef = useResizeObserver(
+    rect => {
+      const {width} = rect;
+      barRef.current = width;
+    }
+  );
+  useLayoutEffect(() => {
+    const observer = new ResizeObserver(_ => {
+      updateStyles();
+    });
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+  return <div ref={resizeRef} />;
+}"#;
+        let result = compile("test.flow.js", source, &options::PluginOptions::default());
+        assert!(result.transformed);
+        assert!(
+            !result.code.contains("!== updateStyles"),
+            "useLayoutEffect callback should NOT depend on updateStyles"
         );
     }
 

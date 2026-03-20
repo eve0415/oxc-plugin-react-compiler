@@ -504,7 +504,6 @@ fn is_fbt_jsx_expression(
         InstructionValue::JsxExpression { tag, .. } => match tag {
             JsxTag::Component(place) => fbt_values.contains(&place.identifier.id),
             JsxTag::BuiltinTag(name) => matches_exact_tag(name, fbt_macro_tags),
-            JsxTag::Fragment => false,
         },
         _ => false,
     }

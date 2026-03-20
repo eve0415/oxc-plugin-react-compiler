@@ -8,10 +8,17 @@
 //! - `let _ = <div a={a} />` where `_` is never read
 //! - Unused temporaries
 
-use std::collections::{HashMap, HashSet};
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet, VecDeque};
 
+use crate::hir::builder::each_terminal_successor;
 use crate::hir::types::*;
 use crate::hir::visitors;
+
+thread_local! {
+    static PRESERVED_TOP_LEVEL_LET_INITIALIZERS: RefCell<HashMap<DeclarationId, String>> =
+        RefCell::new(HashMap::new());
+}
 
 #[derive(Clone, Copy, Default)]
 struct DceOptions {
@@ -41,6 +48,16 @@ pub fn dead_code_elimination_post_outline(func: &mut HIRFunction) {
             preserve_unused_named_declare_locals: true,
         },
     );
+}
+
+pub(crate) fn preserved_top_level_let_initializer_for_decl(
+    decl_id: DeclarationId,
+) -> Option<String> {
+    PRESERVED_TOP_LEVEL_LET_INITIALIZERS.with(|slot| slot.borrow().get(&decl_id).cloned())
+}
+
+pub(crate) fn clear_preserved_top_level_let_initializers() {
+    PRESERVED_TOP_LEVEL_LET_INITIALIZERS.with(|slot| slot.borrow_mut().clear());
 }
 
 fn dead_code_elimination_with_options(func: &mut HIRFunction, options: DceOptions) {
@@ -129,7 +146,6 @@ fn is_pruneable(
         }
         // Read-only operations: safe to prune
         InstructionValue::RegExpLiteral { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::ArrayExpression { .. }
         | InstructionValue::BinaryExpression { .. }
@@ -185,7 +201,6 @@ fn is_pruneable(
         | InstructionValue::ReactiveSequenceExpression { .. }
         | InstructionValue::ReactiveOptionalExpression { .. }
         | InstructionValue::ReactiveLogicalExpression { .. }
-        | InstructionValue::ReactiveConditionalExpression { .. }
         | InstructionValue::FinishMemoize { .. } => false,
     }
 }
@@ -247,6 +262,147 @@ fn collect_try_prefix_reassigned_decls(
     }
 
     result
+}
+
+fn terminal_immediate_successors(terminal: &Terminal) -> Vec<BlockId> {
+    match terminal {
+        Terminal::Switch {
+            cases, fallthrough, ..
+        } => {
+            let mut successors: Vec<BlockId> = cases.iter().map(|case_| case_.block).collect();
+            successors.push(*fallthrough);
+            successors
+        }
+        _ => each_terminal_successor(terminal),
+    }
+}
+
+fn instruction_reads_declaration(instr: &Instruction, decl_id: DeclarationId) -> bool {
+    let mut reads_decl = false;
+    visitors::for_each_instruction_value_operand(&instr.value, |place| {
+        if place.identifier.declaration_id == decl_id {
+            reads_decl = true;
+        }
+    });
+    reads_decl
+}
+
+fn instruction_writes_declaration(instr: &Instruction, decl_id: DeclarationId) -> bool {
+    match &instr.value {
+        InstructionValue::StoreLocal { lvalue, .. }
+        | InstructionValue::StoreContext { lvalue, .. }
+        | InstructionValue::DeclareLocal { lvalue, .. }
+        | InstructionValue::DeclareContext { lvalue, .. } => {
+            lvalue.place.identifier.declaration_id == decl_id
+        }
+        InstructionValue::Destructure { lvalue, .. } => pattern_places(&lvalue.pattern)
+            .into_iter()
+            .any(|place| place.identifier.declaration_id == decl_id),
+        InstructionValue::PrefixUpdate { lvalue, .. }
+        | InstructionValue::PostfixUpdate { lvalue, .. } => {
+            lvalue.identifier.declaration_id == decl_id
+        }
+        _ => false,
+    }
+}
+
+fn terminal_reads_declaration(terminal: &Terminal, decl_id: DeclarationId) -> bool {
+    let mut reads_decl = false;
+    visitors::for_each_terminal_operand(terminal, |place| {
+        if place.identifier.declaration_id == decl_id {
+            reads_decl = true;
+        }
+    });
+    reads_decl
+}
+
+fn scan_block_for_reassign_before_read(
+    block: &BasicBlock,
+    start_idx: usize,
+    decl_id: DeclarationId,
+    mut reassigned: bool,
+) -> Option<bool> {
+    for instr in block.instructions.iter().skip(start_idx) {
+        if !reassigned && instruction_reads_declaration(instr, decl_id) {
+            return None;
+        }
+        if instruction_writes_declaration(instr, decl_id) {
+            reassigned = true;
+        }
+    }
+
+    if !reassigned && terminal_reads_declaration(&block.terminal, decl_id) {
+        return None;
+    }
+
+    Some(reassigned)
+}
+
+fn top_level_literal_initializer_is_elidable(
+    func: &HIRFunction,
+    block_map: &HashMap<BlockId, &BasicBlock>,
+    entry_instr_index: usize,
+    decl_id: DeclarationId,
+) -> bool {
+    let Some(entry_block) = block_map.get(&func.body.entry).copied() else {
+        return false;
+    };
+
+    let Some(initial_state) =
+        scan_block_for_reassign_before_read(entry_block, entry_instr_index + 1, decl_id, false)
+    else {
+        return false;
+    };
+
+    let mut queue: VecDeque<(BlockId, bool)> = terminal_immediate_successors(&entry_block.terminal)
+        .into_iter()
+        .map(|block_id| (block_id, initial_state))
+        .collect();
+    let mut seen_false: HashSet<BlockId> = HashSet::new();
+    let mut seen_true: HashSet<BlockId> = HashSet::new();
+
+    while let Some((block_id, reassigned)) = queue.pop_front() {
+        let seen = if reassigned {
+            &mut seen_true
+        } else {
+            &mut seen_false
+        };
+        if !seen.insert(block_id) {
+            continue;
+        }
+
+        let Some(block) = block_map.get(&block_id).copied() else {
+            return false;
+        };
+        let Some(next_state) = scan_block_for_reassign_before_read(block, 0, decl_id, reassigned)
+        else {
+            return false;
+        };
+
+        for succ in terminal_immediate_successors(&block.terminal) {
+            queue.push_back((succ, next_state));
+        }
+    }
+
+    true
+}
+
+fn primitive_to_js(value: &PrimitiveValue) -> String {
+    match value {
+        PrimitiveValue::Null => "null".to_string(),
+        PrimitiveValue::Undefined => "undefined".to_string(),
+        PrimitiveValue::Boolean(value) => value.to_string(),
+        PrimitiveValue::Number(value) => {
+            if *value == 0.0 && value.is_sign_negative() {
+                "0".to_string()
+            } else if *value < 0.0 {
+                format!("-{}", -*value)
+            } else {
+                value.to_string()
+            }
+        }
+        PrimitiveValue::String(value) => format!("{value:?}"),
+    }
 }
 
 fn dead_code_elimination_pass(
@@ -490,8 +646,38 @@ fn dead_code_elimination_pass(
             // Process phi nodes
             for phi in &block.phis {
                 if is_id_or_name_used(&phi.place.identifier, &used_ids, &used_names) {
-                    for operand in phi.operands.values() {
-                        reference(&operand.identifier, &mut used_ids, &mut used_names);
+                    // Upstream uses a demand-driven SSA algorithm (Braun) that only
+                    // creates phis when a variable is actually read at a merge point.
+                    // Our SSA pass eagerly places phis at ALL merge points where
+                    // different defs are visible. This creates spurious phis for
+                    // variables that are immediately overwritten before being read
+                    // in the block. Skip propagating liveness through such phis to
+                    // match upstream's DCE behavior.
+                    //
+                    // A phi is considered dead if:
+                    //  1. Its specific SSA ID is not used (only alive by name)
+                    //  2. The declaration is written in this block before being read
+                    //  3. The terminal doesn't read the declaration
+                    let phi_dead = !used_ids.contains(&phi.place.identifier.id) && {
+                        let phi_decl = phi.place.identifier.declaration_id;
+                        // Scan instructions: is the first access a write (not a read)?
+                        let mut written_before_read = false;
+                        for instr in &block.instructions {
+                            if instruction_reads_declaration(instr, phi_decl) {
+                                break;
+                            }
+                            if instruction_writes_declaration(instr, phi_decl) {
+                                written_before_read = true;
+                                break;
+                            }
+                        }
+                        written_before_read
+                            && !terminal_reads_declaration(&block.terminal, phi_decl)
+                    };
+                    if !phi_dead {
+                        for operand in phi.operands.values() {
+                            reference(&operand.identifier, &mut used_ids, &mut used_names);
+                        }
                     }
                 }
             }
@@ -506,6 +692,23 @@ fn dead_code_elimination_pass(
     // Phase 2: Rewrite and prune
 
     let try_prefix_reassigned_decls = collect_try_prefix_reassigned_decls(func);
+    let block_map: HashMap<BlockId, &BasicBlock> = func
+        .body
+        .blocks
+        .iter()
+        .map(|(id, block)| (*id, block))
+        .collect();
+    let value_defs: HashMap<IdentifierId, &InstructionValue> = func
+        .body
+        .blocks
+        .iter()
+        .flat_map(|(_, block)| {
+            block
+                .instructions
+                .iter()
+                .map(|instr| (instr.lvalue.identifier.id, &instr.value))
+        })
+        .collect();
 
     // Rewrite StoreLocal → DeclareLocal when the initializer value is dead
     // but the variable binding is still needed.
@@ -515,9 +718,11 @@ fn dead_code_elimination_pass(
     // The variable may still be needed (alive by name), but the initializer is dead
     // because the variable is always overwritten before being read.
     let mut rewritten_to_declare_instr_ids: HashSet<InstructionId> = HashSet::new();
-    for (_, block) in &mut func.body.blocks {
+    let mut rewritten_rhs_ids: HashMap<InstructionId, IdentifierId> = HashMap::new();
+    let mut preserved_initializers: HashMap<DeclarationId, String> = HashMap::new();
+    for (_, block) in &func.body.blocks {
         let num_instrs = block.instructions.len();
-        for (idx, instr) in block.instructions.iter_mut().enumerate() {
+        for (idx, instr) in block.instructions.iter().enumerate() {
             let is_block_value = block.kind != BlockKind::Block && idx == num_instrs - 1;
             if is_block_value {
                 // Upstream does not rewrite the terminal value instruction for value blocks.
@@ -553,8 +758,44 @@ fn dead_code_elimination_pass(
             };
             if let InstructionValue::StoreLocal { lvalue, value, .. } = &instr.value
                 && lvalue.kind != InstructionKind::Reassign
-                && (!used_ids.contains(&lvalue.place.identifier.id) || force_rewrite_for_try)
             {
+                let primitive_literal = (block.id == func.body.entry
+                    && lvalue.kind == InstructionKind::Let
+                    && lvalue.place.identifier.name.is_some()
+                    && !captured_context_decl_ids
+                        .contains(&lvalue.place.identifier.declaration_id))
+                .then(|| match value_defs.get(&value.identifier.id) {
+                    Some(InstructionValue::Primitive { value, .. }) => Some(value),
+                    _ => None,
+                })
+                .flatten();
+                let precise_literal_let_rewrite = primitive_literal.map(|_| {
+                    top_level_literal_initializer_is_elidable(
+                        func,
+                        &block_map,
+                        idx,
+                        lvalue.place.identifier.declaration_id,
+                    )
+                });
+                let should_rewrite = if force_rewrite_for_try {
+                    true
+                } else if let Some(is_elidable) = precise_literal_let_rewrite {
+                    is_elidable
+                } else {
+                    !used_ids.contains(&lvalue.place.identifier.id)
+                };
+                if !force_rewrite_for_try
+                    && let (Some(false), Some(primitive)) =
+                        (precise_literal_let_rewrite, primitive_literal)
+                {
+                    preserved_initializers.insert(
+                        lvalue.place.identifier.declaration_id,
+                        primitive_to_js(primitive),
+                    );
+                }
+                if !should_rewrite {
+                    continue;
+                }
                 if debug_dce_rewrite {
                     let name = match &lvalue.place.identifier.name {
                         Some(IdentifierName::Named(n)) | Some(IdentifierName::Promoted(n)) => {
@@ -573,17 +814,30 @@ fn dead_code_elimination_pass(
                         force_rewrite_for_try,
                     );
                 }
+                rewritten_rhs_ids.insert(instr.id, value.identifier.id);
+                rewritten_to_declare_instr_ids.insert(instr.id);
+            }
+        }
+    }
+
+    for (_, block) in &mut func.body.blocks {
+        for instr in &mut block.instructions {
+            if !rewritten_to_declare_instr_ids.contains(&instr.id) {
+                continue;
+            }
+            let InstructionValue::StoreLocal { lvalue, .. } = &instr.value else {
+                continue;
+            };
+            let new_lvalue = lvalue.clone();
+            let loc = instr.value.loc().clone();
+            instr.value = InstructionValue::DeclareLocal {
+                lvalue: new_lvalue,
+                loc,
+            };
+            if let Some(rhs_id) = rewritten_rhs_ids.get(&instr.id) {
                 // The RHS value temp is no longer referenced after the rewrite,
                 // so remove it from used_ids to allow pruning the Primitive.
-                let rhs_id = value.identifier.id;
-                let new_lvalue = lvalue.clone();
-                let loc = instr.value.loc().clone();
-                instr.value = InstructionValue::DeclareLocal {
-                    lvalue: new_lvalue,
-                    loc,
-                };
-                used_ids.remove(&rhs_id);
-                rewritten_to_declare_instr_ids.insert(instr.id);
+                used_ids.remove(rhs_id);
             }
         }
     }
@@ -655,6 +909,10 @@ fn dead_code_elimination_pass(
     // Without this, stale context entries can block later outlining parity.
     func.context
         .retain(|context_var| is_id_or_name_used(&context_var.identifier, &used_ids, &used_names));
+
+    PRESERVED_TOP_LEVEL_LET_INITIALIZERS.with(|slot| {
+        slot.borrow_mut().extend(preserved_initializers);
+    });
 }
 
 /// Check if a place's identifier is used.

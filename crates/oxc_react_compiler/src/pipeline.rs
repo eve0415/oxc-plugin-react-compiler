@@ -15,12 +15,16 @@ use std::cell::{Cell, RefCell};
 
 use hmac::{Hmac, Mac};
 use oxc_ast::ast;
-use oxc_codegen::{Codegen, CodegenOptions, Context as CodegenContext, Gen, IndentChar};
 use oxc_span::GetSpan;
 use sha2::Sha256;
 
 use crate::CompileResult;
-use crate::codegen_backend::{CodegenBackend, CompiledFunction, ModuleEmitArgs};
+use crate::codegen_backend::{
+    CompiledArrayPattern, CompiledBindingPattern, CompiledFunction, CompiledInitializer,
+    CompiledObjectPattern, CompiledObjectPatternProperty, CompiledOutlinedFunction, CompiledParam,
+    CompiledParamPrefixStatement, CompiledPropertyKey, ModuleEmitArgs,
+    SynthesizedDefaultParamCache,
+};
 use crate::error::CompilerError;
 use crate::hir::build;
 use crate::hir::types::HIRFunction;
@@ -31,11 +35,9 @@ use crate::optimization::drop_manual_memoization;
 use crate::optimization::inline_iifes;
 use crate::options::{CompilationMode, PanicThreshold, PluginOptions};
 use crate::reactive_scopes::align_scopes;
-use crate::reactive_scopes::codegen;
 use crate::reactive_scopes::infer_reactive;
 use crate::reactive_scopes::infer_scope_variables;
 use crate::reactive_scopes::merge_overlapping_scopes;
-use crate::reactive_scopes::prune_non_reactive_deps;
 use crate::ssa::eliminate_redundant_phi;
 use crate::ssa::enter_ssa;
 use crate::ssa::rewrite_instruction_kinds;
@@ -50,7 +52,6 @@ use crate::inference::infer_effect_dependencies;
 use crate::validation::validate_context_variable_lvalues;
 use crate::validation::validate_hooks_usage;
 use crate::validation::validate_locals_not_reassigned_after_render;
-use crate::validation::validate_module_type_provider_config;
 use crate::validation::validate_no_capitalized_calls;
 use crate::validation::validate_no_derived_computations_in_effects;
 use crate::validation::validate_no_freezing_known_mutable_functions;
@@ -78,7 +79,6 @@ use crate::reactive_scopes::memoize_fbt_operands;
 
 // Phase 6: BuildReactiveFunction + post-reactive passes + codegen
 use crate::reactive_scopes::build_reactive_function;
-use crate::reactive_scopes::codegen_reactive;
 use crate::reactive_scopes::extract_scope_destructuring;
 use crate::reactive_scopes::merge_scopes_invalidate_together;
 use crate::reactive_scopes::promote_used_temporaries;
@@ -108,6 +108,17 @@ thread_local! {
         RefCell::new(std::collections::HashSet::new());
     static FLOW_HOOK_NAMES: RefCell<std::collections::HashSet<String>> =
         RefCell::new(std::collections::HashSet::new());
+    static FAST_REFRESH_SOURCE_HASH: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+fn set_fast_refresh_source_hash(hash: Option<String>) {
+    FAST_REFRESH_SOURCE_HASH.with(|slot| {
+        *slot.borrow_mut() = hash;
+    });
+}
+
+fn get_fast_refresh_source_hash() -> Option<String> {
+    FAST_REFRESH_SOURCE_HASH.with(|slot| slot.borrow().clone())
 }
 
 const FLOW_CAST_REWRITE_MARKER: &str = "/*__FLOW_CAST__*/";
@@ -129,7 +140,7 @@ struct FastRefreshHashGuard;
 
 impl Drop for FastRefreshHashGuard {
     fn drop(&mut self) {
-        codegen_reactive::set_fast_refresh_source_hash(None);
+        set_fast_refresh_source_hash(None);
     }
 }
 
@@ -469,7 +480,7 @@ fn strip_flow_function_signature_types(source: &str) -> String {
 /// `(value: Foo)` -> `(value as /*__FLOW_CAST__*/ Foo)`
 ///
 /// The marker comment allows HIR lowering to recover cast-style emission.
-fn rewrite_flow_cast_expressions(source: &str) -> String {
+pub(crate) fn rewrite_flow_cast_expressions(source: &str) -> String {
     fn split_flow_cast_inner(inner: &str) -> Option<(String, String)> {
         let chars: Vec<(usize, char)> = inner.char_indices().collect();
         let mut depth_paren = 0usize;
@@ -1128,81 +1139,16 @@ fn collect_named_identifiers_hir(func: &HIRFunction) -> std::collections::HashSe
     names
 }
 
-/// Convert an outlined HIR function to (params_str, body_str) for emission.
+/// Convert an outlined HIR function to rendered outlined metadata for emission.
 ///
 /// Prefer the reactive codegen path for parity with nested context/capture handling.
 /// Fall back to the legacy outlined emitter if reactive codegen reports an error.
 fn codegen_outlined_function(
     func: &HIRFunction,
     enable_change_variable_codegen: bool,
-    reserved_names: &std::collections::HashSet<String>,
-) -> (String, String) {
-    fn is_ident_char(ch: char) -> bool {
-        ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()
-    }
-
-    fn replace_identifier_tokens(input: &str, from: &str, to: &str) -> String {
-        if from.is_empty() || from == to {
-            return input.to_string();
-        }
-        let mut out = String::with_capacity(input.len());
-        let mut i = 0usize;
-        while i < input.len() {
-            let rest = &input[i..];
-            if let Some(found) = rest.find(from) {
-                let start = i + found;
-                let end = start + from.len();
-                let before_ok = if start == 0 {
-                    true
-                } else {
-                    !is_ident_char(input.as_bytes()[start - 1] as char)
-                };
-                let after_ok = if end >= input.len() {
-                    true
-                } else {
-                    !is_ident_char(input.as_bytes()[end] as char)
-                };
-                out.push_str(&input[i..start]);
-                if before_ok && after_ok {
-                    out.push_str(to);
-                } else {
-                    out.push_str(from);
-                }
-                i = end;
-            } else {
-                out.push_str(rest);
-                break;
-            }
-        }
-        out
-    }
-
-    let retry_no_memo_mode = RETRY_NO_MEMO_MODE.with(|flag| flag.get());
-    let direct_codegen = || {
-        let mut reactive_fn = build_reactive_function::build_reactive_function(func.clone());
-        prune_unused_labels_reactive::prune_unused_labels(&mut reactive_fn);
-        prune_unused_lvalues::prune_unused_lvalues(&mut reactive_fn);
-        if prune_hoisted_contexts::prune_hoisted_contexts(&mut reactive_fn).is_err() {
-            return None;
-        }
-        let unique_identifiers = rename_variables::rename_variables(
-            &mut reactive_fn,
-            enable_change_variable_codegen,
-            Some(reserved_names),
-        );
-        Some(codegen_reactive::codegen_reactive_function_with_options(
-            &reactive_fn,
-            unique_identifiers,
-            retry_no_memo_mode,
-            enable_change_variable_codegen,
-            false,
-            false,
-        ))
-    };
-
-    // Outlined JSX helpers are components and require full pipeline parity.
-    // Non-component outlined functions should stay on the direct path.
-    let codegen = if matches!(
+    _reserved_names: &std::collections::HashSet<String>,
+) -> Option<CompiledOutlinedFunction> {
+    let (codegen, outlined_reactive_fn, own_unique_identifiers) = if matches!(
         func.fn_type,
         crate::hir::types::ReactFunctionType::Component
     ) {
@@ -1212,208 +1158,174 @@ fn codegen_outlined_function(
             func.env.config(),
         ) {
             Ok(pipeline_output) if pipeline_output.codegen_result.error.is_none() => {
-                pipeline_output.codegen_result
+                let ui = pipeline_output.unique_identifiers.clone();
+                (
+                    pipeline_output.codegen_result,
+                    Some(pipeline_output.reactive_function),
+                    ui,
+                )
             }
-            _ => match direct_codegen() {
-                Some(fallback) => fallback,
-                None => return codegen::codegen_outlined_fn(func),
-            },
-        }
-    } else {
-        match direct_codegen() {
-            Some(fallback) => fallback,
-            None => return codegen::codegen_outlined_fn(func),
-        }
-    };
-
-    if codegen.error.is_some() {
-        return codegen::codegen_outlined_fn(func);
-    }
-
-    let mut rendered_params = Vec::with_capacity(func.params.len());
-    let mut rename_pairs: Vec<(String, String)> = Vec::new();
-    let mut unnamed_counter = 0usize;
-    for (index, param) in func.params.iter().enumerate() {
-        let (source_name, is_spread, was_unnamed) = match param {
-            crate::hir::types::Argument::Place(p) => match &p.identifier.name {
-                Some(name) => (name.value().to_string(), false, false),
-                None => {
-                    let current = format!("t{}", unnamed_counter);
-                    unnamed_counter += 1;
-                    (current, false, true)
-                }
-            },
-            crate::hir::types::Argument::Spread(p) => match &p.identifier.name {
-                Some(name) => (name.value().to_string(), true, false),
-                None => {
-                    let current = format!("t{}", unnamed_counter);
-                    unnamed_counter += 1;
-                    (current, true, true)
-                }
-            },
-        };
-        let emitted_name = codegen
-            .param_names
-            .get(index)
-            .cloned()
-            .unwrap_or_else(|| source_name.clone());
-        if was_unnamed && emitted_name != source_name {
-            rename_pairs.push((emitted_name.clone(), source_name.clone()));
-        }
-        if is_spread {
-            rendered_params.push(format!("...{}", source_name));
-        } else {
-            rendered_params.push(source_name);
-        }
-    }
-    let mut body = codegen.body;
-    for (from, to) in rename_pairs {
-        body = replace_identifier_tokens(&body, &from, &to);
-    }
-    (rendered_params.join(", "), body)
-}
-
-/// Upstream parity guard: outlined functions are codegen'd through the reactive
-/// path, which may raise invariants for unnamed temporaries. Validate that path
-/// before emitting outlined code with the legacy string emitter.
-fn validate_outlined_function_codegen(
-    func: &HIRFunction,
-    enable_change_variable_codegen: bool,
-    reserved_names: &std::collections::HashSet<String>,
-) -> Result<(), crate::error::CompilerError> {
-    let retry_no_memo_mode = RETRY_NO_MEMO_MODE.with(|flag| flag.get());
-
-    let mut reactive_fn = build_reactive_function::build_reactive_function(func.clone());
-    prune_unused_labels_reactive::prune_unused_labels(&mut reactive_fn);
-    prune_unused_lvalues::prune_unused_lvalues(&mut reactive_fn);
-    prune_hoisted_contexts::prune_hoisted_contexts(&mut reactive_fn)?;
-
-    let unique_identifiers = rename_variables::rename_variables(
-        &mut reactive_fn,
-        enable_change_variable_codegen,
-        Some(reserved_names),
-    );
-    for (index, param) in reactive_fn.params.iter().enumerate() {
-        let (place, is_spread_param) = match param {
-            crate::hir::types::Argument::Place(p) => (p, false),
-            crate::hir::types::Argument::Spread(p) => (p, true),
-        };
-        let name = match &place.identifier.name {
-            Some(crate::hir::types::IdentifierName::Named(name)) => name.as_str(),
-            Some(crate::hir::types::IdentifierName::Promoted(name)) => name.as_str(),
-            None => "<unnamed>",
-        };
-        if std::env::var("DEBUG_BAILOUT_REASON").is_ok() {
-            let current_file = CURRENT_FILENAME.with(|cell| cell.borrow().to_string());
-            eprintln!(
-                "[DEBUG_BAILOUT_REASON] file={} outlined_param idx={} id={} decl={} spread={} name={}",
-                current_file,
-                index,
-                place.identifier.id.0,
-                place.identifier.declaration_id.0,
-                is_spread_param,
-                name,
-            );
-        }
-        if is_spread_param && place.identifier.name.is_none() {
-            if std::env::var("DEBUG_BAILOUT_REASON").is_ok() {
-                let current_file = CURRENT_FILENAME.with(|cell| cell.borrow().to_string());
-                eprintln!(
-                    "[DEBUG_BAILOUT_REASON] file={} outlined_spread_param_invariant id={} decl={}",
-                    current_file, place.identifier.id.0, place.identifier.declaration_id.0,
-                );
-            }
-            return Err(crate::error::CompilerError::Bail(crate::error::BailOut {
-                reason:
-                    "Expected temporaries to be promoted to named identifiers in an earlier pass"
-                        .to_string(),
-                diagnostics: vec![crate::error::CompilerDiagnostic {
-                    severity: crate::error::DiagnosticSeverity::Invariant,
-                    message: format!("identifier {} is unnamed.", place.identifier.id.0),
-                }],
-            }));
-        }
-    }
-    let codegen = codegen_reactive::codegen_reactive_function_with_options(
-        &reactive_fn,
-        unique_identifiers,
-        retry_no_memo_mode,
-        enable_change_variable_codegen,
-        false,
-        false,
-    );
-
-    if let Some(err) = codegen.error {
-        return Err(err);
-    }
-
-    Ok(())
-}
-
-fn disambiguate_outlined_params(outer_body: &str, outlined: &mut Vec<(String, String, String)>) {
-    fn is_ident_start(ch: char) -> bool {
-        ch == '_' || ch == '$' || ch.is_ascii_alphabetic()
-    }
-    fn is_ident_continue(ch: char) -> bool {
-        ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()
-    }
-    fn is_valid_ident(name: &str) -> bool {
-        let mut chars = name.chars();
-        let Some(first) = chars.next() else {
-            return false;
-        };
-        is_ident_start(first) && chars.all(is_ident_continue)
-    }
-    fn parse_decl_name_from_line(line: &str, keyword: &str) -> Option<String> {
-        let rest = line.strip_prefix(keyword)?.trim_start();
-        let mut ident = String::new();
-        for ch in rest.chars() {
-            if ident.is_empty() {
-                if is_ident_start(ch) {
-                    ident.push(ch);
-                } else {
+            _ => {
+                let mut reactive_fn =
+                    build_reactive_function::build_reactive_function(func.clone());
+                prune_unused_labels_reactive::prune_unused_labels(&mut reactive_fn);
+                prune_unused_lvalues::prune_unused_lvalues(&mut reactive_fn);
+                if prune_hoisted_contexts::prune_hoisted_contexts(&mut reactive_fn).is_err() {
                     return None;
                 }
-            } else if is_ident_continue(ch) {
-                ident.push(ch);
-            } else {
-                break;
+                promote_used_temporaries::promote_used_temporaries_for_outlined(&mut reactive_fn);
+                let unique_identifiers = rename_variables::rename_variables(
+                    &mut reactive_fn,
+                    enable_change_variable_codegen,
+                    None,
+                );
+                let ui = unique_identifiers.clone();
+                let alloc = oxc_allocator::Allocator::default();
+                let bld = oxc_ast::AstBuilder::new(&alloc);
+                let meta = crate::codegen_backend::codegen_ast::codegen_reactive_function(
+                    bld,
+                    &alloc,
+                    &reactive_fn,
+                    crate::codegen_backend::codegen_ast::CodegenOptions {
+                        enable_change_variable_codegen,
+                        enable_emit_hook_guards: false,
+                        enable_change_detection_for_debugging: false,
+                        enable_reset_cache_on_source_file_changes: false,
+                        fast_refresh_source_hash: None,
+                        disable_memoization_features: RETRY_NO_MEMO_MODE.with(|flag| flag.get()),
+                        disable_memoization_for_debugging: false,
+                        fbt_operands: Default::default(),
+                        cache_binding_name: None,
+                        unique_identifiers,
+                        param_name_overrides: std::collections::HashMap::new(),
+                        enable_name_anonymous_functions: false,
+                    },
+                )
+                .metadata();
+                if meta.error.is_some() {
+                    return None;
+                }
+                (meta, Some(reactive_fn), ui)
             }
         }
-        if is_valid_ident(&ident) {
-            Some(ident)
-        } else {
-            None
+    } else {
+        let mut reactive_fn = build_reactive_function::build_reactive_function(func.clone());
+        prune_unused_labels_reactive::prune_unused_labels(&mut reactive_fn);
+        prune_unused_lvalues::prune_unused_lvalues(&mut reactive_fn);
+        if prune_hoisted_contexts::prune_hoisted_contexts(&mut reactive_fn).is_err() {
+            return None;
         }
-    }
-
-    let mut forbidden: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for line in outer_body.lines() {
-        let trimmed = line.trim_start();
-        if let Some(name) = parse_decl_name_from_line(trimmed, "let") {
-            forbidden.insert(name);
+        promote_used_temporaries::promote_used_temporaries_for_outlined(&mut reactive_fn);
+        let unique_identifiers = rename_variables::rename_variables(
+            &mut reactive_fn,
+            enable_change_variable_codegen,
+            None,
+        );
+        let ui = unique_identifiers.clone();
+        let alloc = oxc_allocator::Allocator::default();
+        let bld = oxc_ast::AstBuilder::new(&alloc);
+        let meta = crate::codegen_backend::codegen_ast::codegen_reactive_function(
+            bld,
+            &alloc,
+            &reactive_fn,
+            crate::codegen_backend::codegen_ast::CodegenOptions {
+                enable_change_variable_codegen,
+                enable_emit_hook_guards: false,
+                enable_change_detection_for_debugging: false,
+                enable_reset_cache_on_source_file_changes: false,
+                fast_refresh_source_hash: None,
+                disable_memoization_features: RETRY_NO_MEMO_MODE.with(|flag| flag.get()),
+                disable_memoization_for_debugging: false,
+                fbt_operands: Default::default(),
+                cache_binding_name: None,
+                unique_identifiers,
+                param_name_overrides: std::collections::HashMap::new(),
+                enable_name_anonymous_functions: false,
+            },
+        )
+        .metadata();
+        if meta.error.is_some() {
+            return None;
         }
-        if let Some(name) = parse_decl_name_from_line(trimmed, "const") {
-            forbidden.insert(name);
-        }
-        if let Some(name) = parse_decl_name_from_line(trimmed, "function") {
-            forbidden.insert(name);
-        }
-    }
-
-    // Outlined functions are separate function declarations, so their param names
-    // live in a different scope from the outer body's declarations.
-    let _ = forbidden;
-    let _ = outlined;
+        (meta, Some(reactive_fn), ui)
+    };
+    let rendered_params: Vec<CompiledParam> = func
+        .params
+        .iter()
+        .enumerate()
+        .map(|(index, param)| {
+            let is_rest = matches!(param, crate::hir::types::Argument::Spread(_));
+            let source_name = match param {
+                crate::hir::types::Argument::Place(p) | crate::hir::types::Argument::Spread(p) => p
+                    .identifier
+                    .name
+                    .as_ref()
+                    .map(|n| n.value().to_string())
+                    .unwrap_or_default(),
+            };
+            // Use param name from codegen (handles rename_variables renaming).
+            let name = codegen
+                .param_names
+                .get(index)
+                .cloned()
+                .unwrap_or(source_name);
+            CompiledParam { name, is_rest }
+        })
+        .collect();
+    Some(CompiledOutlinedFunction {
+        name: func.id.as_ref()?.clone(),
+        params: rendered_params,
+        directives: func.directives.iter().map(|d| format!("\"{d}\"")).collect(),
+        cache_prologue: codegen.cache_prologue.clone(),
+        needs_function_hook_guard_wrapper: codegen.needs_function_hook_guard_wrapper,
+        is_async: func.async_,
+        is_generator: func.generator,
+        reactive_function: outlined_reactive_fn,
+        unique_identifiers: own_unique_identifiers,
+    })
 }
 
-fn dedupe_outlined_functions(outlined: &mut Vec<(String, String, String)>) {
+fn outlined_function_needs_backend_render(
+    outlined_function: &CompiledOutlinedFunction,
+    hir_function: &HIRFunction,
+) -> bool {
+    let _ = hir_function;
+    outlined_function.reactive_function.is_some()
+}
+
+fn dedupe_outlined_functions(outlined: &mut Vec<CompiledOutlinedFunction>) {
     let debug = std::env::var("DEBUG_OUTLINE_DEDUPE").is_ok();
     if debug {
-        for (idx, (name, params, body)) in outlined.iter().enumerate() {
+        for (idx, outlined_function) in outlined.iter().enumerate() {
             eprintln!(
-                "[OUTLINE_DEDUPE] before idx={} name={} params={:?} body={:?}",
-                idx, name, params, body
+                "[OUTLINE_DEDUPE] before idx={} name={} params={:?}",
+                idx, outlined_function.name, outlined_function.params
+            );
+        }
+    }
+    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut kept_rev: Vec<CompiledOutlinedFunction> = Vec::with_capacity(outlined.len());
+    for outlined_function in outlined.drain(..).rev() {
+        if seen_names.insert(outlined_function.name.clone()) {
+            kept_rev.push(outlined_function);
+        } else if debug {
+            eprintln!(
+                "[OUTLINE_DEDUPE] drop-duplicate name={} params={:?}",
+                outlined_function.name, outlined_function.params
+            );
+        }
+    }
+    kept_rev.reverse();
+    *outlined = kept_rev;
+}
+
+fn dedupe_hir_outlined_functions(outlined: &mut Vec<(String, HIRFunction)>) {
+    let debug = std::env::var("DEBUG_OUTLINE_DEDUPE").is_ok();
+    if debug {
+        for (idx, (name, hir_function)) in outlined.iter().enumerate() {
+            eprintln!(
+                "[OUTLINE_DEDUPE] before idx={} name={} hir_id={:?}",
+                idx, name, hir_function.id
             );
         }
     }
@@ -1421,15 +1333,12 @@ fn dedupe_outlined_functions(outlined: &mut Vec<(String, String, String)>) {
     // This lets source-derived default-param outline bodies win over HIR
     // auto-outlines when both produce `_temp`.
     let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut kept_rev: Vec<(String, String, String)> = Vec::with_capacity(outlined.len());
-    for (name, params, body) in outlined.drain(..).rev() {
+    let mut kept_rev: Vec<(String, HIRFunction)> = Vec::with_capacity(outlined.len());
+    for (name, hir_function) in outlined.drain(..).rev() {
         if seen_names.insert(name.clone()) {
-            kept_rev.push((name, params, body));
+            kept_rev.push((name, hir_function));
         } else if debug {
-            eprintln!(
-                "[OUTLINE_DEDUPE] drop-duplicate name={} params={:?} body={:?}",
-                name, params, body
-            );
+            eprintln!("[OUTLINE_DEDUPE] drop-duplicate name={}", name);
         }
     }
     kept_rev.reverse();
@@ -1442,7 +1351,8 @@ fn dedupe_outlined_functions(outlined: &mut Vec<(String, String, String)>) {
 
 /// Result of running the HIR pipeline.
 struct PipelineOutput {
-    codegen_result: codegen_reactive::CodegenResult,
+    codegen_result: crate::codegen_backend::codegen_ast::CodegenMetadata,
+    reactive_function: crate::hir::types::ReactiveFunction,
     final_hir_snapshot: HIRFunction,
     hir_outlined: Vec<optimization::outline_functions::OutlinedFunction>,
     reserved_removed_names: std::collections::HashSet<String>,
@@ -1450,6 +1360,8 @@ struct PipelineOutput {
     has_inferred_effect: bool,
     has_lower_context_access: bool,
     retry_no_memo_mode: bool,
+    fbt_operands: std::collections::HashSet<crate::hir::types::IdentifierId>,
+    unique_identifiers: std::collections::HashSet<String>,
 }
 
 /// Run the full HIR pipeline (from pruneMaybeThrows through codegen).
@@ -1463,7 +1375,8 @@ fn run_hir_pipeline(
     env_config: &crate::options::EnvironmentConfig,
 ) -> Result<PipelineOutput, crate::error::CompilerError> {
     let retry_no_memo_mode = RETRY_NO_MEMO_MODE.with(|flag| flag.get());
-    let mut had_validation_error = false;
+    // Note: validation errors in retry mode are logged but don't gate dememoization
+    // (retry always dememoizes).
     let debug_pass = std::env::var("DEBUG_PASS").is_ok();
     macro_rules! trace_pass {
         ($name:expr) => {
@@ -1484,7 +1397,6 @@ fn run_hir_pipeline(
                 if !retry_no_memo_mode {
                     return Err(err);
                 }
-                had_validation_error = true;
                 if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
                     eprintln!("[RETRY_VALIDATION_IGNORED] {}: {:?}", name, err);
                 }
@@ -1504,11 +1416,8 @@ fn run_hir_pipeline(
     // Phase 0.5: Pre-validation checks on the raw HIR
     // -----------------------------------------------------------------------
 
-    // Check for unsupported global function calls (upstream BuildHIR.ts:3681)
+    // Check for unsupported global function calls (matches upstream BuildHIR.ts:3681)
     run_validation!(validate_no_unsupported_global_calls(&hir_func));
-    run_validation!(
-        validate_module_type_provider_config::validate_module_type_provider_config(&hir_func)
-    );
 
     // -----------------------------------------------------------------------
     // Phase 1: HIR Pre-processing (before SSA)
@@ -1516,7 +1425,6 @@ fn run_hir_pipeline(
 
     // pruneMaybeThrows (1st pass)
     prune_maybe_throws::prune_maybe_throws(&mut hir_func);
-    optimization::remove_unnecessary_try_catch::cleanup_after_terminal_changes(&mut hir_func);
 
     // Validation — bail on error (return original source)
     run_validation!(
@@ -1611,17 +1519,6 @@ fn run_hir_pipeline(
     analyse_functions::analyse_functions(&mut hir_func);
 
     // Port adaptation: captured context lowering for nested functions happens
-    // during analyse_functions (later than upstream BuildHIR). Re-run constant
-    // propagation here to recover equivalent simplifications on nested closures.
-    trace_pass!("constant_propagation_post_analyse_functions");
-    constant_propagation::constant_propagation(&mut hir_func);
-    if std::env::var("DEBUG_HIR_BLOCKS_EARLY").is_ok() {
-        maybe_dump_hir_blocks(
-            "after constant_propagation_post_analyse_functions",
-            &hir_func,
-        );
-    }
-
     trace_pass!("infer_mutation_aliasing_effects");
     infer_mutation_aliasing_effects::infer_mutation_aliasing_effects(
         &mut hir_func,
@@ -1649,10 +1546,6 @@ fn run_hir_pipeline(
     }
 
     prune_maybe_throws::prune_maybe_throws(&mut hir_func);
-    optimization::remove_unnecessary_try_catch::cleanup_after_terminal_changes(&mut hir_func);
-    // Number instructions BEFORE aliasing ranges so they have valid IDs
-    infer_scope_variables::number_instructions(&mut hir_func);
-
     if let Err(err) =
         crate::inference::infer_mutation_aliasing_ranges::infer_mutation_aliasing_ranges(
             &mut hir_func,
@@ -1662,9 +1555,8 @@ fn run_hir_pipeline(
         if !retry_no_memo_mode {
             return Err(err);
         }
-        // Retry mode: this validation failure should trigger per-function
-        // dememoization, matching upstream bailout-retry behavior.
-        had_validation_error = true;
+        // Retry mode: validation failure logged but not used for dememoization
+        // since retry always dememoizes.
         if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
             eprintln!("[RETRY_VALIDATION_IGNORED] {}: {:?}", name, err);
         }
@@ -1835,13 +1727,8 @@ fn run_hir_pipeline(
     }
 
     // Scope alignment
-    if std::env::var("DISABLE_ALIGN_METHOD_CALL_SCOPES").is_err() {
-        align_method_call_scopes::align_method_call_scopes(&mut hir_func);
-        if std::env::var("DEBUG_HIR_BLOCKS_TRACE").is_ok() {
-            maybe_dump_hir_blocks("after align_method_call_scopes", &hir_func);
-        }
-        maybe_dump_identifier_scopes("after align_method_call_scopes", &hir_func);
-    }
+    align_method_call_scopes::align_method_call_scopes(&mut hir_func);
+    maybe_dump_identifier_scopes("after align_method_call_scopes", &hir_func);
     align_object_method_scopes::align_object_method_scopes(&mut hir_func);
     if std::env::var("DEBUG_HIR_BLOCKS_TRACE").is_ok() {
         maybe_dump_hir_blocks("after align_object_method_scopes", &hir_func);
@@ -1876,8 +1763,9 @@ fn run_hir_pipeline(
     maybe_dump_hir_scope_terminals("after flatten_scopes_with_hooks", &hir_func);
     maybe_dump_hir_blocks("after flatten_scopes_with_hooks", &hir_func);
 
-    // Outlining can leave dead locals in the parent function (e.g. constants that
-    // were only needed before extraction). Clean them up before dependency propagation.
+    // Post-outline DCE: our outlining passes create dead locals that upstream's
+    // BuildHIR avoids. TODO: fix outline_functions to not create dead locals,
+    // then remove this pass.
     trace_pass!("dead_code_elimination_post_outline");
     dead_code_elimination::dead_code_elimination_post_outline(&mut hir_func);
 
@@ -1928,18 +1816,6 @@ fn run_hir_pipeline(
         maybe_dump_hir_blocks("after inline_jsx_transform", &hir_func);
     }
 
-    // Upstream parity: HIR-level non-reactive dep pruning is not part of the
-    // default pipeline. Keep this Rust-only pass behind an opt-in env toggle.
-    if std::env::var("ENABLE_HIR_NON_REACTIVE_DEPS_PRUNE").is_ok() {
-        prune_non_reactive_deps::prune_non_reactive_dependencies(&mut hir_func);
-        maybe_dump_hir_scope_terminals("after prune_non_reactive_deps_hir", &hir_func);
-        maybe_dump_hir_blocks("after prune_non_reactive_deps_hir", &hir_func);
-    } else if std::env::var("DEBUG_PASS").is_ok() {
-        eprintln!(
-            "[PASS] {name}: skip prune_non_reactive_deps_hir (set ENABLE_HIR_NON_REACTIVE_DEPS_PRUNE=1 to enable)"
-        );
-    }
-
     // -----------------------------------------------------------------------
     // Phase 8: BuildReactiveFunction + Post-Reactive Passes + Codegen
     // -----------------------------------------------------------------------
@@ -1959,11 +1835,12 @@ fn run_hir_pipeline(
     let mut reserved_removed_names: std::collections::HashSet<String> = pre_dce_named_identifiers;
     reserved_removed_names.retain(|name| !post_hir_named_identifiers.contains(name));
 
-    // New reactive codegen path: buildReactiveFunction + post-reactive passes + codegen_reactive.
+    // New reactive codegen path: buildReactiveFunction + post-reactive passes + codegen.
     // Old codegen fallback has been removed to keep a single implementation path.
-    // Only dememoize if this specific function had a validation error that was swallowed.
-    let should_dememoize = retry_no_memo_mode && had_validation_error;
-    let codegen_result = run_reactive_passes(
+    // In retry-no-memo mode, always dememoize: the entire purpose of the retry is
+    // to compile without memoization (matching upstream's noMemoize codegen path).
+    let should_dememoize = retry_no_memo_mode;
+    let (codegen_result, reactive_function, unique_identifiers) = run_reactive_passes(
         hir_func,
         retry_no_memo_mode,
         should_dememoize,
@@ -1974,6 +1851,7 @@ fn run_hir_pipeline(
 
     Ok(PipelineOutput {
         codegen_result,
+        reactive_function,
         final_hir_snapshot,
         hir_outlined,
         reserved_removed_names,
@@ -1981,6 +1859,8 @@ fn run_hir_pipeline(
         has_inferred_effect,
         has_lower_context_access,
         retry_no_memo_mode,
+        fbt_operands,
+        unique_identifiers,
     })
 }
 
@@ -2286,17 +2166,11 @@ fn maybe_dump_hir_blocks(label: &str, hir: &crate::hir::types::HIRFunction) {
                     bid.0, instr_count, test.0, fallthrough.0
                 );
             }
-            Terminal::MaybeThrow { continuation, .. } => {
-                eprintln!(
-                    "  bb{} instrs={} term=maybe-throw cont=bb{}",
-                    bid.0, instr_count, continuation.0
-                );
-            }
-            Terminal::Unsupported { .. } => {
-                eprintln!("  bb{} instrs={} term=unsupported", bid.0, instr_count);
-            }
             Terminal::Unreachable { .. } => {
                 eprintln!("  bb{} instrs={} term=unreachable", bid.0, instr_count);
+            }
+            _ => {
+                eprintln!("  bb{} instrs={} term=other", bid.0, instr_count);
             }
         }
         if debug_hir_phi && !block.phis.is_empty() {
@@ -2766,7 +2640,7 @@ fn dump_reactive_scope_block_with_depth(body: &crate::hir::types::ReactiveBlock,
     }
 }
 
-/// Run buildReactiveFunction + all post-reactive passes + codegen_reactive.
+/// Run buildReactiveFunction + all post-reactive passes + AST codegen.
 fn run_reactive_passes(
     hir_func: HIRFunction,
     retry_no_memo_mode: bool,
@@ -2774,7 +2648,14 @@ fn run_reactive_passes(
     env_config: &crate::options::EnvironmentConfig,
     reserved_names: &std::collections::HashSet<String>,
     fbt_operands: &std::collections::HashSet<crate::hir::types::IdentifierId>,
-) -> Result<codegen_reactive::CodegenResult, crate::error::CompilerError> {
+) -> Result<
+    (
+        crate::codegen_backend::codegen_ast::CodegenMetadata,
+        crate::hir::types::ReactiveFunction,
+        std::collections::HashSet<String>,
+    ),
+    crate::error::CompilerError,
+> {
     let debug = std::env::var("DEBUG_REACTIVE").is_ok();
 
     // Build reactive function tree from HIR CFG (consumes the HIRFunction).
@@ -2873,33 +2754,39 @@ fn run_reactive_passes(
         dememoize_reactive_block(&mut reactive_fn.body);
     }
 
-    // Codegen-shaping parity pass: keep trailing nullish default returns inside
-    // the preceding memoized scope when they are structurally equivalent.
-    crate::reactive_scopes::fuse_trailing_nullish_return_into_scope::fuse_trailing_nullish_return_into_scope(&mut reactive_fn);
-
-    // Codegen from reactive function tree
-    let mut codegen_result =
-        codegen_reactive::codegen_reactive_function_with_options_and_fbt_operands(
+    // Codegen: pure AST path.
+    let unique_identifiers_for_ast = unique_identifiers.clone();
+    let mut codegen_result = {
+        let alloc = oxc_allocator::Allocator::default();
+        let bld = oxc_ast::AstBuilder::new(&alloc);
+        let opts = crate::codegen_backend::codegen_ast::CodegenOptions {
+            enable_change_variable_codegen: env_config.enable_change_variable_codegen,
+            enable_emit_hook_guards: env_config.enable_emit_hook_guards,
+            enable_change_detection_for_debugging: env_config.enable_change_detection_for_debugging,
+            enable_reset_cache_on_source_file_changes: env_config
+                .enable_reset_cache_on_source_file_changes
+                .unwrap_or(false),
+            fast_refresh_source_hash: get_fast_refresh_source_hash(),
+            disable_memoization_features: retry_no_memo_mode,
+            disable_memoization_for_debugging: env_config.disable_memoization_for_debugging,
+            fbt_operands: fbt_operands.clone(),
+            cache_binding_name: None,
+            unique_identifiers: unique_identifiers_for_ast.clone(),
+            param_name_overrides: std::collections::HashMap::new(),
+            enable_name_anonymous_functions: env_config.enable_name_anonymous_functions,
+        };
+        crate::codegen_backend::codegen_ast::codegen_reactive_function(
+            bld,
+            &alloc,
             &reactive_fn,
-            unique_identifiers,
-            codegen_reactive::CodegenReactiveOptions {
-                disable_memoization_features: retry_no_memo_mode,
-                disable_memoization_for_debugging: env_config.disable_memoization_for_debugging,
-                enable_change_variable_codegen: env_config.enable_change_variable_codegen,
-                enable_emit_hook_guards: env_config.enable_emit_hook_guards,
-                enable_change_detection_for_debugging: env_config
-                    .enable_change_detection_for_debugging,
-                enable_reset_cache_on_source_file_changes: env_config
-                    .enable_reset_cache_on_source_file_changes
-                    .unwrap_or(false),
-                enable_name_anonymous_functions: env_config.enable_name_anonymous_functions,
-            },
-            fbt_operands.clone(),
-        );
+            opts,
+        )
+        .metadata()
+    };
     if let Some(err) = codegen_result.error.take() {
         return Err(err);
     }
-    Ok(codegen_result)
+    Ok((codegen_result, reactive_fn, unique_identifiers_for_ast))
 }
 
 fn dememoize_reactive_block(block: &mut crate::hir::types::ReactiveBlock) {
@@ -2972,20 +2859,14 @@ fn dememoize_reactive_terminal(terminal: &mut crate::hir::types::ReactiveTermina
     }
 }
 
-/// Extract directives from a function body that should be preserved in compiled output.
-/// Excludes opt-out directives ("use no forget", "use no memo") and "use memo" (opt-in).
-fn extract_preserved_directives(body: &ast::FunctionBody<'_>) -> Vec<String> {
+/// Extract directives from a function body that should be re-emitted in compiled output.
+///
+/// Even directives that affected compilation decisions, such as ignored opt-out directives,
+/// still belong in the emitted function body when compilation proceeds.
+fn extract_emitted_directives(body: &ast::FunctionBody<'_>) -> Vec<String> {
     body.directives
         .iter()
-        .filter_map(|d| {
-            let value = d.expression.value.as_str();
-            // Skip opt-out directives (they're consumed by the compiler, not preserved)
-            if OPT_OUT_DIRECTIVES.contains(&value) {
-                return None;
-            }
-            // Preserve "use memo" / "use forget" and all other directives
-            Some(format!("\"{}\"", value))
-        })
+        .map(|d| format!("\"{}\"", d.expression.value.as_str()))
         .collect()
 }
 
@@ -3018,45 +2899,10 @@ pub(crate) struct RuntimeImportMergePlan {
     pub(crate) start: u32,
     pub(crate) end: u32,
     pub(crate) replacement: Option<String>,
+    pub(crate) merged_specs: Vec<(String, String)>,
     pub(crate) cache_local_name: Option<String>,
     pub(crate) has_cache_after: bool,
     pub(crate) has_use_fire_after: bool,
-}
-
-pub(crate) fn rewrite_source_segment_with_runtime_import_merge(
-    source: &str,
-    start: usize,
-    end: usize,
-    plan: Option<&RuntimeImportMergePlan>,
-) -> String {
-    if start >= end {
-        return String::new();
-    }
-    let Some(plan) = plan else {
-        return source[start..end].to_string();
-    };
-    let merge_start = plan.start as usize;
-    let merge_end = plan.end as usize;
-    if merge_start >= end || merge_end <= start {
-        return source[start..end].to_string();
-    }
-    // Import spans should be copied atomically in one chunk; if not, fall back.
-    if merge_start < start || merge_end > end {
-        return source[start..end].to_string();
-    }
-
-    let mut rewritten =
-        String::with_capacity((end - start) + plan.replacement.as_ref().map_or(0, String::len));
-    if merge_start > start {
-        rewritten.push_str(&source[start..merge_start]);
-    }
-    if let Some(replacement) = plan.replacement.as_ref() {
-        rewritten.push_str(replacement);
-    }
-    if merge_end < end {
-        rewritten.push_str(&source[merge_end..end]);
-    }
-    rewritten
 }
 
 pub(crate) fn plan_runtime_import_merge(
@@ -3083,7 +2929,7 @@ pub(crate) fn plan_runtime_import_merge(
 
         // Only merge into named-import forms:
         // import { ... } from "react/compiler-runtime"
-        let mut rendered_specs: Vec<String> = Vec::new();
+        let mut merged_specs: Vec<(String, String)> = Vec::new();
         let mut has_cache = false;
         let mut has_use_fire = false;
         let mut cache_local_name: Option<String> = None;
@@ -3109,11 +2955,7 @@ pub(crate) fn plan_runtime_import_merge(
             } else if imported == "useFire" {
                 has_use_fire = true;
             }
-            rendered_specs.push(if imported == local {
-                imported.to_string()
-            } else {
-                format!("{imported} as {local}")
-            });
+            merged_specs.push((imported.to_string(), local.to_string()));
         }
 
         if !can_merge {
@@ -3122,21 +2964,27 @@ pub(crate) fn plan_runtime_import_merge(
 
         let mut changed = false;
         if needs_cache_import && !has_cache {
-            if cache_import_name == "c" {
-                rendered_specs.push("c".to_string());
-            } else {
-                rendered_specs.push(format!("c as {cache_import_name}"));
-            }
+            merged_specs.push(("c".to_string(), cache_import_name.to_string()));
             has_cache = true;
             changed = true;
         }
         if needs_fire_import && !has_use_fire {
-            rendered_specs.push("useFire".to_string());
+            merged_specs.push(("useFire".to_string(), "useFire".to_string()));
             has_use_fire = true;
             changed = true;
         }
 
         let replacement = if changed {
+            let rendered_specs = merged_specs
+                .iter()
+                .map(|(imported, local)| {
+                    if imported == local {
+                        imported.clone()
+                    } else {
+                        format!("{imported} as {local}")
+                    }
+                })
+                .collect::<Vec<_>>();
             Some(format!(
                 "import {{ {} }} from \"react/compiler-runtime\";",
                 rendered_specs.join(", ")
@@ -3149,6 +2997,7 @@ pub(crate) fn plan_runtime_import_merge(
             start: import_decl.span.start,
             end: import_decl.span.end,
             replacement,
+            merged_specs,
             cache_local_name,
             has_cache_after: has_cache,
             has_use_fire_after: has_use_fire,
@@ -3603,14 +3452,19 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
     } else {
         None
     };
-    codegen_reactive::set_fast_refresh_source_hash(fast_refresh_hash);
+    set_fast_refresh_source_hash(fast_refresh_hash);
+    macro_rules! untransformed_result {
+        ($code:expr) => {{
+            return CompileResult {
+                transformed: false,
+                code: $code,
+                map: None,
+            };
+        }};
+    }
 
     if options.no_emit {
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     // Pre-process: convert Flow `component`/`hook` declarations to `function`
@@ -3638,7 +3492,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
     // If JS/JSX parsing has errors, try again as TypeScript (some upstream fixtures
     // use TypeScript syntax in .js files, e.g. type annotations on parameters).
     // If that also fails, do a best-effort Flow signature type stripping fallback.
-    let (program, _source_type_used) = if !parser_ret.errors.is_empty()
+    let (program, source_type_used) = if !parser_ret.errors.is_empty()
         && !source_type.is_typescript()
     {
         let ts_type = oxc_span::SourceType::tsx();
@@ -3693,11 +3547,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
                         (parsed.program, ts_type)
                     } else {
                         if parser_ret.panicked {
-                            return CompileResult {
-                                transformed: false,
-                                code: source.to_string(),
-                                map: None,
-                            };
+                            untransformed_result!(source.to_string());
                         }
                         (parser_ret.program, source_type)
                     }
@@ -3705,11 +3555,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
             } else {
                 // TS parsing also failed — fall back to original parse result.
                 if parser_ret.panicked {
-                    return CompileResult {
-                        transformed: false,
-                        code: source.to_string(),
-                        map: None,
-                    };
+                    untransformed_result!(source.to_string());
                 }
                 (parser_ret.program, source_type)
             }
@@ -3724,11 +3570,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
         }
     } else {
         if parser_ret.panicked {
-            return CompileResult {
-                transformed: false,
-                code: source.to_string(),
-                map: None,
-            };
+            untransformed_result!(source.to_string());
         }
         (parser_ret.program, source_type)
     };
@@ -3737,22 +3579,14 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
 
     // File-level skip: already compiled (has runtime import)
     if has_memo_cache_import(&program) {
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     // Module-level opt-out: 'use no memo' / 'use no forget' / custom directives
     if !options.ignore_use_no_forget
         && has_module_scope_opt_out(&program, &options.custom_opt_out_directives)
     {
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     // Scan for eslint/flow suppression comments that prevent compilation.
@@ -3763,11 +3597,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
             && (options.environment.enable_fire
                 || options.environment.infer_effect_dependencies.is_some()))
     {
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     // Validate config: disableMemoizationForDebugging and enableChangeDetectionForDebugging
@@ -3775,11 +3605,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
     if options.environment.disable_memoization_for_debugging
         && options.environment.enable_change_detection_for_debugging
     {
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     // Validate blocklisted imports: if any import statement references a blocklisted
@@ -3791,11 +3617,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
             if let oxc_ast::ast::Statement::ImportDeclaration(import_decl) = stmt {
                 let module_name = import_decl.source.value.as_str();
                 if blocklisted.iter().any(|b| b == module_name) {
-                    return CompileResult {
-                        transformed: false,
-                        code: source.to_string(),
-                        map: None,
-                    };
+                    untransformed_result!(source.to_string());
                 }
             }
         }
@@ -3808,11 +3630,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
         .validate_no_dynamically_created_components_or_hooks
         && validate_no_dynamic_components_or_hooks_program(&program).is_err()
     {
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     // Build semantic analysis
@@ -3842,19 +3660,11 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
                 filename
             );
         }
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     if compiled.is_empty() {
-        return CompileResult {
-            transformed: false,
-            code: source_untransformed,
-            map: None,
-        };
+        untransformed_result!(source_untransformed);
     }
 
     // Dynamic gating: parse directive `use memo if(<identifier>)`.
@@ -3864,20 +3674,12 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
             .environment
             .validate_preserve_existing_memoization_guarantees
         {
-            return CompileResult {
-                transformed: false,
-                code: source.to_string(),
-                map: None,
-            };
+            untransformed_result!(source.to_string());
         }
         match parse_dynamic_gating_identifier(source) {
             Some(ident) => Some(ident),
             None => {
-                return CompileResult {
-                    transformed: false,
-                    code: source.to_string(),
-                    map: None,
-                };
+                untransformed_result!(source.to_string());
             }
         }
     } else {
@@ -3891,22 +3693,14 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
         && (options.gating.is_some() || dynamic_gate_ident.is_some())
         && source.contains("AUTODEPS")
     {
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     // Upstream currently bails out for AUTODEPS on default-import module property calls
     // (e.g. `React.useEffect(..., React.AUTODEPS)`), where effect inference cannot
     // reliably resolve dependencies in this path.
     if has_infer_effect_autodeps_default_import_property_call(&program, source, options) {
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
     // Upstream currently errors for nested fbt/fbs calls inside `fbt.param`/`fbs.param`
@@ -3919,20 +3713,15 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
                 filename
             );
         }
-        return CompileResult {
-            transformed: false,
-            code: source.to_string(),
-            map: None,
-        };
+        untransformed_result!(source.to_string());
     }
 
-    let backend = CodegenBackend::from_env();
     crate::codegen_backend::emit_module(
-        backend,
         ModuleEmitArgs {
             filename,
             source,
             source_untransformed: &source_untransformed,
+            source_type: source_type_used,
             program: &program,
             options,
             dynamic_gate_ident: dynamic_gate_ident.as_deref(),
@@ -3997,373 +3786,12 @@ fn is_ident_continue_byte_for_transform_flag(byte: u8) -> bool {
     byte == b'_' || byte == b'$' || (byte as char).is_ascii_alphanumeric()
 }
 
-pub(crate) fn trim_trailing_blank_lines(text: &str) -> String {
-    let mut out = text.to_string();
-    while out.ends_with("\r\n\r\n") {
-        out.truncate(out.len() - 2);
-    }
-    while out.ends_with("\n\n") || out.ends_with("\r\r") {
-        out.pop();
-    }
-    out
-}
-
-pub(crate) fn insert_blank_lines_for_guarded_cache_init(body: &str) -> String {
-    let lines: Vec<&str> = body.lines().collect();
-    if lines.len() < 5 {
-        return body.to_string();
-    }
-
-    let mut out: Vec<String> = Vec::with_capacity(lines.len() + 2);
-    let mut i = 0usize;
-    while i < lines.len() {
-        if i + 4 < lines.len()
-            && lines[i].trim_start().starts_with("const $ = _c(")
-            && lines[i + 1].trim_start().starts_with("if (")
-            && lines[i + 2].trim_start().starts_with("return ")
-            && lines[i + 3].trim() == "}"
-            && lines[i + 4].trim_start().starts_with("const ")
-        {
-            out.push(lines[i].to_string());
-            out.push(String::new());
-            out.push(lines[i + 1].to_string());
-            out.push(lines[i + 2].to_string());
-            out.push(lines[i + 3].to_string());
-            out.push(String::new());
-            i += 4;
-            continue;
-        }
-        out.push(lines[i].to_string());
-        i += 1;
-    }
-    out.join("\n")
-}
-
-fn should_preserve_leading_body_statement(stmt: &ast::Statement<'_>) -> bool {
+pub(crate) fn should_preserve_leading_body_statement(stmt: &ast::Statement<'_>) -> bool {
     matches!(stmt, ast::Statement::TSEnumDeclaration(_))
-}
-
-fn codegen_preserved_body_statement(stmt: &ast::Statement<'_>) -> String {
-    let options = CodegenOptions {
-        indent_char: IndentChar::Space,
-        indent_width: 2,
-        initial_indent: 0,
-        ..CodegenOptions::default()
-    };
-    let mut codegen = Codegen::new().with_options(options);
-    stmt.r#gen(&mut codegen, CodegenContext::default());
-    let rendered = codegen
-        .into_source_text()
-        .trim_end_matches('\n')
-        .to_string();
-    match stmt {
-        ast::Statement::TSEnumDeclaration(_) => ensure_trailing_comma_in_enum_members(&rendered),
-        _ => rendered,
-    }
-}
-
-fn collect_leading_preserved_body_statements(body: &ast::FunctionBody<'_>) -> Vec<String> {
-    let mut preserved = Vec::new();
-    for stmt in &body.statements {
-        if should_preserve_leading_body_statement(stmt) {
-            preserved.push(codegen_preserved_body_statement(stmt));
-            continue;
-        }
-        break;
-    }
-    preserved
-}
-
-fn ensure_trailing_comma_in_enum_members(rendered: &str) -> String {
-    let mut lines: Vec<String> = rendered.lines().map(str::to_string).collect();
-    if lines.len() < 3 {
-        return rendered.to_string();
-    }
-
-    let Some(last_member_idx) = lines.iter().rposition(|line| {
-        let trimmed = line.trim();
-        !trimmed.is_empty() && trimmed != "}"
-    }) else {
-        return rendered.to_string();
-    };
-
-    if !lines[last_member_idx].trim_end().ends_with(',') {
-        lines[last_member_idx].push(',');
-    }
-    lines.join("\n")
-}
-
-pub(crate) fn insert_preserved_body_statements(body: &str, statements: &[String]) -> String {
-    let non_empty: Vec<&String> = statements
-        .iter()
-        .filter(|stmt| !stmt.trim().is_empty())
-        .collect();
-    if non_empty.is_empty() {
-        return body.to_string();
-    }
-
-    if let Some(cache_line_end) = body
-        .find("_c(")
-        .and_then(|start| body[start..].find('\n').map(|nl| start + nl + 1))
-    {
-        let mut result = String::new();
-        result.push_str(&body[..cache_line_end]);
-        for stmt in non_empty {
-            result.push_str(stmt.trim_end());
-            result.push('\n');
-        }
-        result.push_str(&body[cache_line_end..]);
-        result
-    } else {
-        let mut result = String::new();
-        for stmt in non_empty {
-            result.push_str(stmt.trim_end());
-            result.push('\n');
-        }
-        result.push_str(body);
-        result
-    }
 }
 
 fn is_identifier_char(c: char) -> bool {
     c == '_' || c == '$' || c.is_ascii_alphanumeric()
-}
-
-fn replace_identifier_token(source: &str, from: &str, to: &str) -> String {
-    if from.is_empty() || from == to || !source.contains(from) {
-        return source.to_string();
-    }
-    let mut output = String::with_capacity(source.len() + to.len());
-    let mut last = 0usize;
-    for (idx, _) in source.match_indices(from) {
-        let start_ok = source[..idx]
-            .chars()
-            .next_back()
-            .is_none_or(|c| !is_identifier_char(c));
-        let end = idx + from.len();
-        let end_ok = source[end..]
-            .chars()
-            .next()
-            .is_none_or(|c| !is_identifier_char(c));
-        if !start_ok || !end_ok {
-            continue;
-        }
-        output.push_str(&source[last..idx]);
-        output.push_str(to);
-        last = end;
-    }
-    if last == 0 {
-        return source.to_string();
-    }
-    output.push_str(&source[last..]);
-    output
-}
-
-fn normalize_use_fire_binding_temp_names(body: &str) -> String {
-    let mut declared_names: Vec<String> = Vec::new();
-    for line in body.lines() {
-        let trimmed = line.trim_start();
-        let rest = if let Some(rest) = trimmed.strip_prefix("let ") {
-            rest
-        } else if let Some(rest) = trimmed.strip_prefix("const ") {
-            rest
-        } else {
-            continue;
-        };
-        let name_end = rest
-            .char_indices()
-            .take_while(|(_, c)| is_identifier_char(*c))
-            .map(|(idx, c)| idx + c.len_utf8())
-            .last()
-            .unwrap_or(0);
-        if name_end == 0 {
-            continue;
-        }
-        let name = &rest[..name_end];
-        let Some(temp_index) = parse_temp_token_index(name) else {
-            continue;
-        };
-        let after_name = rest[name_end..].trim_start();
-        if !after_name.starts_with("= useFire(") {
-            continue;
-        }
-        if declared_names.iter().any(|existing| existing == name) {
-            continue;
-        }
-        // Keep `tN` ordering stable and numeric.
-        let _ = temp_index;
-        declared_names.push(name.to_string());
-    }
-
-    if declared_names.len() < 2 {
-        return body.to_string();
-    }
-    let mut desired = declared_names.clone();
-    desired.sort_by_key(|name| parse_temp_token_index(name).unwrap_or(u32::MAX));
-    if desired == declared_names {
-        return body.to_string();
-    }
-
-    let mut rewritten = body.to_string();
-    for (idx, from) in declared_names.iter().enumerate() {
-        let placeholder = format!("__USE_FIRE_TMP_{}__", idx);
-        rewritten = replace_identifier_token(&rewritten, from, &placeholder);
-    }
-    for (idx, to) in desired.iter().enumerate() {
-        let placeholder = format!("__USE_FIRE_TMP_{}__", idx);
-        rewritten = replace_identifier_token(&rewritten, &placeholder, to);
-    }
-    rewritten
-}
-
-fn parse_temp_token_index(name: &str) -> Option<u32> {
-    let digits = name.strip_prefix('t')?;
-    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    digits.parse::<u32>().ok()
-}
-
-pub(crate) fn maybe_align_hook_guard_name(body: &str, hook_guard_ident: &str) -> String {
-    if hook_guard_ident == "$dispatcherGuard" {
-        return body.to_string();
-    }
-    replace_identifier_token(body, "$dispatcherGuard", hook_guard_ident)
-}
-
-pub(crate) fn maybe_align_structural_check_name(
-    body: &str,
-    structural_check_ident: &str,
-) -> String {
-    if structural_check_ident.is_empty() || structural_check_ident == "$structuralCheck" {
-        return body.to_string();
-    }
-    replace_identifier_token(body, "$structuralCheck", structural_check_ident)
-}
-
-pub(crate) fn maybe_align_lower_context_access_name(
-    body: &str,
-    imported_name: &str,
-    lower_context_access_ident: &str,
-) -> String {
-    if imported_name == lower_context_access_ident {
-        return body.to_string();
-    }
-    replace_identifier_token(body, imported_name, lower_context_access_ident)
-}
-
-fn is_simple_identifier_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !(first == '_' || first == '$' || first.is_ascii_alphabetic()) {
-        return false;
-    }
-    chars.all(is_identifier_char)
-}
-
-fn split_simple_assignment_line(line: &str) -> Option<(&str, &str)> {
-    if !line.ends_with(';') {
-        return None;
-    }
-    let no_semicolon = &line[..line.len().saturating_sub(1)];
-    let eq = no_semicolon.find('=')?;
-    if eq == 0 || eq + 1 >= no_semicolon.len() {
-        return None;
-    }
-    let bytes = no_semicolon.as_bytes();
-    let prev = bytes[eq.saturating_sub(1)];
-    let next = bytes[eq + 1];
-    if matches!(
-        prev,
-        b'=' | b'!' | b'<' | b'>' | b'+' | b'-' | b'*' | b'/' | b'%' | b'&' | b'|' | b'^'
-    ) || next == b'='
-    {
-        return None;
-    }
-    let lhs = no_semicolon[..eq].trim();
-    let rhs = no_semicolon[eq + 1..].trim();
-    if lhs.is_empty() || rhs.is_empty() {
-        return None;
-    }
-    Some((lhs, rhs))
-}
-
-fn parse_cache_access(expr: &str) -> Option<(&str, u32)> {
-    let trimmed = expr.trim();
-    let lb = trimmed.find('[')?;
-    if !trimmed.ends_with(']') || lb == 0 {
-        return None;
-    }
-    let cache_name = trimmed[..lb].trim();
-    if !is_simple_identifier_name(cache_name) {
-        return None;
-    }
-    let slot_text = trimmed[lb + 1..trimmed.len().saturating_sub(1)].trim();
-    let slot = slot_text.parse::<u32>().ok()?;
-    Some((cache_name, slot))
-}
-
-pub(crate) fn maybe_apply_emit_freeze_to_cache_stores(
-    body: &str,
-    freeze_ident: &str,
-    function_name: &str,
-) -> String {
-    if freeze_ident.is_empty() || function_name.is_empty() {
-        return body.to_string();
-    }
-
-    let mut output_slots: std::collections::HashSet<(String, u32)> =
-        std::collections::HashSet::new();
-    for line in body.lines() {
-        let trimmed = line.trim();
-        let Some((lhs, rhs)) = split_simple_assignment_line(trimmed) else {
-            continue;
-        };
-        if !is_simple_identifier_name(lhs) {
-            continue;
-        }
-        if let Some((cache_name, slot)) = parse_cache_access(rhs) {
-            output_slots.insert((cache_name.to_string(), slot));
-        }
-    }
-    if output_slots.is_empty() {
-        return body.to_string();
-    }
-
-    let escaped_fn_name = function_name.replace('\\', "\\\\").replace('"', "\\\"");
-    let mut changed = false;
-    let mut output = String::with_capacity(body.len() + 96);
-    for line in body.lines() {
-        let trimmed = line.trim();
-        let mut rewritten: Option<String> = None;
-        if let Some((lhs, rhs)) = split_simple_assignment_line(trimmed)
-            && let Some((cache_name, slot)) = parse_cache_access(lhs)
-            && output_slots.contains(&(cache_name.to_string(), slot))
-            && !rhs.contains(freeze_ident)
-        {
-            rewritten = Some(format!(
-                "{}[{}] = __DEV__ ? {}({}, \"{}\") : {};",
-                cache_name, slot, freeze_ident, rhs, escaped_fn_name, rhs
-            ));
-        }
-
-        if let Some(new_line) = rewritten {
-            let indent_len = line.len().saturating_sub(line.trim_start().len());
-            output.push_str(&line[..indent_len]);
-            output.push_str(&new_line);
-            changed = true;
-        } else {
-            output.push_str(line);
-        }
-        output.push('\n');
-    }
-
-    if !body.ends_with('\n') && output.ends_with('\n') {
-        output.pop();
-    }
-    if changed { output } else { body.to_string() }
 }
 
 pub(crate) fn collect_top_level_bindings(
@@ -5286,45 +4714,6 @@ fn conflicting_global_bailout(name: &str) -> CompilerError {
     })
 }
 
-pub(crate) fn is_expression_context(before_trimmed: &str) -> bool {
-    before_trimmed.ends_with('=')
-        || before_trimmed.ends_with('(')
-        || before_trimmed.ends_with(',')
-        || before_trimmed.ends_with(':')
-        || before_trimmed.ends_with('?')
-        || before_trimmed.ends_with("return")
-        || before_trimmed.ends_with("=>")
-}
-
-pub(crate) fn rename_function_declaration_name(
-    source: &str,
-    old_name: &str,
-    new_name: &str,
-) -> String {
-    if old_name.is_empty() || new_name.is_empty() {
-        return source.to_string();
-    }
-    let needle = format!("function {}", old_name);
-    if let Some(start) = source.find(&needle) {
-        let name_start = start + "function ".len();
-        let name_end = name_start + old_name.len();
-        let mut output = String::with_capacity(source.len() + new_name.len());
-        output.push_str(&source[..name_start]);
-        output.push_str(new_name);
-        output.push_str(&source[name_end..]);
-        return output;
-    }
-    source.to_string()
-}
-
-pub(crate) fn count_param_slots(params_str: &str) -> usize {
-    params_str
-        .split(',')
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .count()
-}
-
 pub(crate) fn has_early_binding_reference(before: &str, ident: &str) -> bool {
     if ident.is_empty() {
         return false;
@@ -5360,27 +4749,6 @@ pub(crate) fn has_early_binding_reference(before: &str, ident: &str) -> bool {
         }
     }
     false
-}
-
-pub(crate) fn strip_directive_lines(body: &str, directives: &[String]) -> String {
-    if directives.is_empty() {
-        return body.to_string();
-    }
-    let directive_lines: std::collections::HashSet<String> =
-        directives.iter().map(|d| format!("{};", d)).collect();
-    let mut out = String::with_capacity(body.len());
-    let mut first = true;
-    for line in body.lines() {
-        if directive_lines.contains(line.trim()) {
-            continue;
-        }
-        if !first {
-            out.push('\n');
-        }
-        out.push_str(line);
-        first = false;
-    }
-    out
 }
 
 fn is_valid_js_identifier(name: &str) -> bool {
@@ -5451,21 +4819,6 @@ fn parse_dynamic_gating_identifier(source: &str) -> Option<String> {
     } else {
         None
     }
-}
-
-pub(crate) fn gate_fixture_entrypoint_arrows(mut code: String, gate_name: &str) -> String {
-    let gated_empty_arrow = format!("{gate_name}() ? () =>{{}} : () =>{{}}");
-    code = code.replace("fn: () =>{}", &format!("fn: {}", gated_empty_arrow));
-    code = code.replace("fn: () => {}", &format!("fn: {}", gated_empty_arrow));
-    code = code.replace(
-        "useHook: () =>{}",
-        &format!("useHook: {}", gated_empty_arrow),
-    );
-    code = code.replace(
-        "useHook: () => {}",
-        &format!("useHook: {}", gated_empty_arrow),
-    );
-    code
 }
 
 /// Collect all compilable functions from a statement.
@@ -6124,7 +5477,6 @@ fn try_compile_function<'a>(
     }
 
     // TODO: implement validate_no_dynamic_components_or_hooks
-
     let env = crate::environment::Environment::new(options.environment.clone());
 
     // Phase 1: Lower to HIR
@@ -6165,7 +5517,8 @@ fn try_compile_function<'a>(
 
     // Compute parameter destructuring (reactive codegen inlines these in body).
     let mut temp_counter = 0;
-    let params_result = params_to_result(&func.params, source, &mut temp_counter);
+    let mut params_result =
+        params_to_result(&func.params, source, semantic, options, &mut temp_counter);
 
     // Run the shared HIR pipeline (all passes from pruneMaybeThrows through codegen)
     let pipeline_output = match run_hir_pipeline_with_optional_retry(hir_func, name, options) {
@@ -6195,92 +5548,114 @@ fn try_compile_function<'a>(
     }
 
     let codegen_result = pipeline_output.codegen_result;
-    let mut generated_body = codegen_result.body.clone();
-    let mut synthesized_param_default_cache = false;
-    let mut synthesized_outlined_functions: Vec<(String, String, String)> = vec![];
-    if let Some((synthesized, synthesized_outlined)) =
-        synthesize_default_param_cache_body(&generated_body, &params_result.destructurings)
-    {
-        generated_body = synthesized;
-        synthesized_outlined_functions = synthesized_outlined;
-        synthesized_param_default_cache = true;
-    }
-    if pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite {
-        generated_body = normalize_use_fire_binding_temp_names(&generated_body);
-    }
+    align_params_result_with_codegen(&mut params_result, &codegen_result.param_names);
+    let PreparedGeneratedBody {
+        synthesized_default_param_cache,
+        synthesized_hir_outlined_functions,
+        cache_prologue,
+    } = prepare_generated_body(&codegen_result, &params_result.prefix_statements);
+    let normalize_use_fire_binding_temps =
+        pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite;
 
-    let mut outlined = codegen_result.outlined_functions;
-    outlined.extend(params_result.outlined_functions);
-    outlined.extend(synthesized_outlined_functions);
-    // Add HIR-level outlined functions
+    let ParamsResult {
+        compiled_params,
+        prefix_statements,
+        hir_outlined_functions: param_hir_outlined_functions,
+    } = params_result;
+
+    let pipeline_hir_outlined_functions: Vec<(String, HIRFunction)> = pipeline_output
+        .hir_outlined
+        .iter()
+        .map(|of| {
+            let mut hir_function = of.func.clone();
+            hir_function.id = Some(of.name.clone());
+            (of.name.clone(), hir_function)
+        })
+        .collect();
+    let mut outlined = Vec::new();
     for of in &pipeline_output.hir_outlined {
-        if let Err(e) = validate_outlined_function_codegen(
+        let Some(outlined_function) = codegen_outlined_function(
             &of.func,
             options.environment.enable_change_variable_codegen,
             &pipeline_output.reserved_removed_names,
-        ) {
+        ) else {
             if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
                 eprintln!(
-                    "[PIPELINE_FAIL] {}: outlined {} failed reactive codegen: {:?}",
-                    name, of.name, e
+                    "[PIPELINE_FAIL] {}: outlined {} emitted no rendered body",
+                    name, of.name
                 );
             }
             FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
             return Ok(None);
+        };
+        if outlined_function_needs_backend_render(&outlined_function, &of.func) {
+            outlined.push(outlined_function);
         }
-        let (params_str, body_str) = codegen_outlined_function(
-            &of.func,
-            options.environment.enable_change_variable_codegen,
-            &pipeline_output.reserved_removed_names,
-        );
-        outlined.push((of.name.clone(), params_str, body_str));
     }
-    disambiguate_outlined_params(&generated_body, &mut outlined);
     dedupe_outlined_functions(&mut outlined);
-    let directives = extract_preserved_directives(body);
-    let preserved_body_statements = collect_leading_preserved_body_statements(body);
+    let mut hir_outlined_functions = param_hir_outlined_functions;
+    hir_outlined_functions.extend(synthesized_hir_outlined_functions);
+    hir_outlined_functions.extend(pipeline_hir_outlined_functions.clone());
+    dedupe_hir_outlined_functions(&mut hir_outlined_functions);
     let needs_instrument_forget = options.environment.enable_emit_instrument_forget
         && codegen_result.needs_cache_import
         && !name.is_empty();
     let needs_emit_freeze =
         options.environment.enable_emit_freeze && codegen_result.needs_cache_import;
-    let param_destructurings = if synthesized_param_default_cache {
+    let param_prefix_statements = if synthesized_default_param_cache.is_some() {
         vec![]
-    } else if params_result
-        .destructurings
-        .iter()
-        .any(|line| line.contains("=== undefined ?"))
-    {
-        params_result.destructurings.clone()
+    } else if prefix_statements.iter().any(|statement| {
+        matches!(
+            &statement.init,
+            CompiledInitializer::UndefinedFallback { .. }
+        )
+    }) {
+        prefix_statements.clone()
     } else {
         vec![]
     };
+
+    let needs_cache_import =
+        codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
         start: func.span.start,
         end: func.span.end,
-        generated_body,
-        needs_cache_import: codegen_result.needs_cache_import || synthesized_param_default_cache,
-        params_str: params_result.params_str,
-        original_params_str: func_params_to_string(&func.params, source),
-        param_destructurings,
-        is_async: func.r#async,
-        is_generator: func.generator,
-        is_arrow: false,
+        reactive_function: Some(pipeline_output.reactive_function),
+        needs_cache_import,
+        compiled_params,
+        param_prefix_statements,
+        synthesized_default_param_cache,
         is_function_declaration,
-        body_start: body.span.start,
-        body_end: body.span.end,
-        directives,
-        preserved_body_statements,
+        directives: extract_emitted_directives(body),
         hir_function: Some(pipeline_output.final_hir_snapshot),
+        cache_prologue,
+        needs_function_hook_guard_wrapper: codegen_result.needs_function_hook_guard_wrapper,
+        normalize_use_fire_binding_temps,
         needs_instrument_forget,
         needs_emit_freeze,
         outlined_functions: outlined,
+        hir_outlined_functions,
         has_fire_rewrite: pipeline_output.has_fire_rewrite,
         needs_hook_guards: codegen_result.needs_hook_guards,
         needs_structural_check_import: codegen_result.needs_structural_check_import,
         needs_lower_context_access: pipeline_output.has_lower_context_access,
+        enable_change_variable_codegen: options.environment.enable_change_variable_codegen,
+        enable_emit_hook_guards: options.environment.enable_emit_hook_guards,
+        enable_change_detection_for_debugging: options
+            .environment
+            .enable_change_detection_for_debugging,
+        enable_reset_cache_on_source_file_changes: options
+            .environment
+            .enable_reset_cache_on_source_file_changes
+            .unwrap_or(false),
+        fast_refresh_source_hash: get_fast_refresh_source_hash(),
+        disable_memoization_features: pipeline_output.retry_no_memo_mode,
+        disable_memoization_for_debugging: options.environment.disable_memoization_for_debugging,
+        fbt_operands: pipeline_output.fbt_operands,
+        unique_identifiers: pipeline_output.unique_identifiers,
+        enable_name_anonymous_functions: options.environment.enable_name_anonymous_functions,
     }))
 }
 
@@ -6307,7 +5682,6 @@ fn try_compile_function_with_name<'a>(
     }
 
     // TODO: implement validate_no_dynamic_components_or_hooks
-
     let env = crate::environment::Environment::new(options.environment.clone());
 
     // Phase 1: Lower to HIR
@@ -6341,7 +5715,8 @@ fn try_compile_function_with_name<'a>(
 
     // Compute parameter destructuring (reactive codegen inlines these in body).
     let mut temp_counter = 0;
-    let params_result = params_to_result(&func.params, source, &mut temp_counter);
+    let mut params_result =
+        params_to_result(&func.params, source, semantic, options, &mut temp_counter);
 
     // Run the shared HIR pipeline
     let pipeline_output = match run_hir_pipeline_with_optional_retry(hir_func, name, options) {
@@ -6371,91 +5746,114 @@ fn try_compile_function_with_name<'a>(
     }
 
     let codegen_result = pipeline_output.codegen_result;
-    let mut generated_body = codegen_result.body.clone();
-    let mut synthesized_param_default_cache = false;
-    let mut synthesized_outlined_functions: Vec<(String, String, String)> = vec![];
-    if let Some((synthesized, synthesized_outlined)) =
-        synthesize_default_param_cache_body(&generated_body, &params_result.destructurings)
-    {
-        generated_body = synthesized;
-        synthesized_outlined_functions = synthesized_outlined;
-        synthesized_param_default_cache = true;
-    }
-    if pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite {
-        generated_body = normalize_use_fire_binding_temp_names(&generated_body);
-    }
+    align_params_result_with_codegen(&mut params_result, &codegen_result.param_names);
+    let PreparedGeneratedBody {
+        synthesized_default_param_cache,
+        synthesized_hir_outlined_functions,
+        cache_prologue,
+    } = prepare_generated_body(&codegen_result, &params_result.prefix_statements);
+    let normalize_use_fire_binding_temps =
+        pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite;
 
-    let mut outlined = codegen_result.outlined_functions;
-    outlined.extend(params_result.outlined_functions);
-    outlined.extend(synthesized_outlined_functions);
+    let ParamsResult {
+        compiled_params,
+        prefix_statements,
+        hir_outlined_functions: param_hir_outlined_functions,
+    } = params_result;
+
+    let pipeline_hir_outlined_functions: Vec<(String, HIRFunction)> = pipeline_output
+        .hir_outlined
+        .iter()
+        .map(|of| {
+            let mut hir_function = of.func.clone();
+            hir_function.id = Some(of.name.clone());
+            (of.name.clone(), hir_function)
+        })
+        .collect();
+    let mut outlined = Vec::new();
     for of in &pipeline_output.hir_outlined {
-        if let Err(e) = validate_outlined_function_codegen(
+        let Some(outlined_function) = codegen_outlined_function(
             &of.func,
             options.environment.enable_change_variable_codegen,
             &pipeline_output.reserved_removed_names,
-        ) {
+        ) else {
             if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
                 eprintln!(
-                    "[PIPELINE_FAIL] {}: outlined {} failed reactive codegen: {:?}",
-                    name, of.name, e
+                    "[PIPELINE_FAIL] {}: outlined {} emitted no rendered body",
+                    name, of.name
                 );
             }
             FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
             return Ok(None);
+        };
+        if outlined_function_needs_backend_render(&outlined_function, &of.func) {
+            outlined.push(outlined_function);
         }
-        let (params_str, body_str) = codegen_outlined_function(
-            &of.func,
-            options.environment.enable_change_variable_codegen,
-            &pipeline_output.reserved_removed_names,
-        );
-        outlined.push((of.name.clone(), params_str, body_str));
     }
-    disambiguate_outlined_params(&generated_body, &mut outlined);
     dedupe_outlined_functions(&mut outlined);
-    let directives = extract_preserved_directives(body);
-    let preserved_body_statements = collect_leading_preserved_body_statements(body);
+    let mut hir_outlined_functions = param_hir_outlined_functions;
+    hir_outlined_functions.extend(synthesized_hir_outlined_functions);
+    hir_outlined_functions.extend(pipeline_hir_outlined_functions.clone());
+    dedupe_hir_outlined_functions(&mut hir_outlined_functions);
     let needs_instrument_forget = options.environment.enable_emit_instrument_forget
         && codegen_result.needs_cache_import
         && !name.is_empty();
     let needs_emit_freeze =
         options.environment.enable_emit_freeze && codegen_result.needs_cache_import;
-    let param_destructurings = if synthesized_param_default_cache {
+    let param_prefix_statements = if synthesized_default_param_cache.is_some() {
         vec![]
-    } else if params_result
-        .destructurings
-        .iter()
-        .any(|line| line.contains("=== undefined ?"))
-    {
-        params_result.destructurings.clone()
+    } else if prefix_statements.iter().any(|statement| {
+        matches!(
+            &statement.init,
+            CompiledInitializer::UndefinedFallback { .. }
+        )
+    }) {
+        prefix_statements.clone()
     } else {
         vec![]
     };
+
+    let needs_cache_import =
+        codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
         start: func.span.start,
         end: func.span.end,
-        generated_body,
-        needs_cache_import: codegen_result.needs_cache_import || synthesized_param_default_cache,
-        params_str: params_result.params_str,
-        original_params_str: func_params_to_string(&func.params, source),
-        param_destructurings,
-        is_async: func.r#async,
-        is_generator: func.generator,
-        is_arrow: false,
+        reactive_function: Some(pipeline_output.reactive_function),
+        needs_cache_import,
+        compiled_params,
+        param_prefix_statements,
+        synthesized_default_param_cache,
         is_function_declaration: false,
-        body_start: body.span.start,
-        body_end: body.span.end,
-        directives,
-        preserved_body_statements,
+        directives: extract_emitted_directives(body),
         hir_function: Some(pipeline_output.final_hir_snapshot),
+        cache_prologue,
+        needs_function_hook_guard_wrapper: codegen_result.needs_function_hook_guard_wrapper,
+        normalize_use_fire_binding_temps,
         needs_instrument_forget,
         needs_emit_freeze,
         outlined_functions: outlined,
+        hir_outlined_functions,
         has_fire_rewrite: pipeline_output.has_fire_rewrite,
         needs_hook_guards: codegen_result.needs_hook_guards,
         needs_structural_check_import: codegen_result.needs_structural_check_import,
         needs_lower_context_access: pipeline_output.has_lower_context_access,
+        enable_change_variable_codegen: options.environment.enable_change_variable_codegen,
+        enable_emit_hook_guards: options.environment.enable_emit_hook_guards,
+        enable_change_detection_for_debugging: options
+            .environment
+            .enable_change_detection_for_debugging,
+        enable_reset_cache_on_source_file_changes: options
+            .environment
+            .enable_reset_cache_on_source_file_changes
+            .unwrap_or(false),
+        fast_refresh_source_hash: get_fast_refresh_source_hash(),
+        disable_memoization_features: pipeline_output.retry_no_memo_mode,
+        disable_memoization_for_debugging: options.environment.disable_memoization_for_debugging,
+        fbt_operands: pipeline_output.fbt_operands,
+        unique_identifiers: pipeline_output.unique_identifiers,
+        enable_name_anonymous_functions: options.environment.enable_name_anonymous_functions,
     }))
 }
 
@@ -6491,7 +5889,6 @@ fn try_compile_arrow<'a>(
     }
 
     // TODO: implement validate_no_dynamic_components_or_hooks
-
     let env = crate::environment::Environment::new(options.environment.clone());
 
     let lowering_cx = build::LoweringContext::new(semantic, source, env);
@@ -6524,7 +5921,8 @@ fn try_compile_arrow<'a>(
 
     // Compute parameter destructuring (reactive codegen inlines these in body).
     let mut temp_counter = 0;
-    let params_result = params_to_result(&arrow.params, source, &mut temp_counter);
+    let mut params_result =
+        params_to_result(&arrow.params, source, semantic, options, &mut temp_counter);
 
     // Run the shared HIR pipeline
     let pipeline_output = match run_hir_pipeline_with_optional_retry(hir_func, name, options) {
@@ -6554,317 +5952,280 @@ fn try_compile_arrow<'a>(
     }
 
     let codegen_result = pipeline_output.codegen_result;
-    let mut generated_body = codegen_result.body.clone();
-    let mut synthesized_param_default_cache = false;
-    let mut synthesized_outlined_functions: Vec<(String, String, String)> = vec![];
-    if let Some((synthesized, synthesized_outlined)) =
-        synthesize_default_param_cache_body(&generated_body, &params_result.destructurings)
-    {
-        generated_body = synthesized;
-        synthesized_outlined_functions = synthesized_outlined;
-        synthesized_param_default_cache = true;
-    }
-    if pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite {
-        generated_body = normalize_use_fire_binding_temp_names(&generated_body);
-    }
+    align_params_result_with_codegen(&mut params_result, &codegen_result.param_names);
+    let PreparedGeneratedBody {
+        synthesized_default_param_cache,
+        synthesized_hir_outlined_functions,
+        cache_prologue,
+    } = prepare_generated_body(&codegen_result, &params_result.prefix_statements);
+    let normalize_use_fire_binding_temps =
+        pipeline_output.retry_no_memo_mode && pipeline_output.has_fire_rewrite;
 
-    let mut outlined = codegen_result.outlined_functions;
-    outlined.extend(params_result.outlined_functions);
-    outlined.extend(synthesized_outlined_functions);
+    let ParamsResult {
+        compiled_params,
+        prefix_statements,
+        hir_outlined_functions: param_hir_outlined_functions,
+    } = params_result;
+
+    let pipeline_hir_outlined_functions: Vec<(String, HIRFunction)> = pipeline_output
+        .hir_outlined
+        .iter()
+        .map(|of| {
+            let mut hir_function = of.func.clone();
+            hir_function.id = Some(of.name.clone());
+            (of.name.clone(), hir_function)
+        })
+        .collect();
+    let mut outlined = Vec::new();
     for of in &pipeline_output.hir_outlined {
-        if let Err(e) = validate_outlined_function_codegen(
+        let Some(outlined_function) = codegen_outlined_function(
             &of.func,
             options.environment.enable_change_variable_codegen,
             &pipeline_output.reserved_removed_names,
-        ) {
+        ) else {
             if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
                 eprintln!(
-                    "[PIPELINE_FAIL] {}: outlined {} failed reactive codegen: {:?}",
-                    name, of.name, e
+                    "[PIPELINE_FAIL] {}: outlined {} emitted no rendered body",
+                    name, of.name
                 );
             }
             FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
             return Ok(None);
+        };
+        if outlined_function_needs_backend_render(&outlined_function, &of.func) {
+            outlined.push(outlined_function);
         }
-        let (params_str, body_str) = codegen_outlined_function(
-            &of.func,
-            options.environment.enable_change_variable_codegen,
-            &pipeline_output.reserved_removed_names,
-        );
-        outlined.push((of.name.clone(), params_str, body_str));
     }
-    disambiguate_outlined_params(&generated_body, &mut outlined);
     dedupe_outlined_functions(&mut outlined);
-    let directives = extract_preserved_directives(&arrow.body);
-    let preserved_body_statements = collect_leading_preserved_body_statements(&arrow.body);
+    let mut hir_outlined_functions = param_hir_outlined_functions;
+    hir_outlined_functions.extend(synthesized_hir_outlined_functions);
+    hir_outlined_functions.extend(pipeline_hir_outlined_functions.clone());
+    dedupe_hir_outlined_functions(&mut hir_outlined_functions);
     let needs_instrument_forget = options.environment.enable_emit_instrument_forget
         && codegen_result.needs_cache_import
         && !name.is_empty();
     let needs_emit_freeze =
         options.environment.enable_emit_freeze && codegen_result.needs_cache_import;
-    let param_destructurings = if synthesized_param_default_cache {
+    let param_prefix_statements = if synthesized_default_param_cache.is_some() {
         vec![]
-    } else if params_result
-        .destructurings
-        .iter()
-        .any(|line| line.contains("=== undefined ?"))
-    {
-        params_result.destructurings.clone()
+    } else if prefix_statements.iter().any(|statement| {
+        matches!(
+            &statement.init,
+            CompiledInitializer::UndefinedFallback { .. }
+        )
+    }) {
+        prefix_statements.clone()
     } else {
         vec![]
     };
+
+    let needs_cache_import =
+        codegen_result.needs_cache_import || synthesized_default_param_cache.is_some();
 
     Ok(Some(CompiledFunction {
         name: name.to_string(),
         start: arrow.span.start,
         end: arrow.span.end,
-        generated_body,
-        needs_cache_import: codegen_result.needs_cache_import || synthesized_param_default_cache,
-        params_str: params_result.params_str,
-        original_params_str: arrow_params_to_string(&arrow.params, source),
-        param_destructurings,
-        is_async: arrow.r#async,
-        is_generator: false,
-        is_arrow: true,
+        reactive_function: Some(pipeline_output.reactive_function),
+        needs_cache_import,
+        compiled_params,
+        param_prefix_statements,
+        synthesized_default_param_cache,
         is_function_declaration: false,
-        body_start: arrow.span.start,
-        body_end: arrow.span.end,
-        directives,
-        preserved_body_statements,
+        directives: extract_emitted_directives(&arrow.body),
         hir_function: Some(pipeline_output.final_hir_snapshot),
+        cache_prologue,
+        needs_function_hook_guard_wrapper: codegen_result.needs_function_hook_guard_wrapper,
+        normalize_use_fire_binding_temps,
         needs_instrument_forget,
         needs_emit_freeze,
         outlined_functions: outlined,
+        hir_outlined_functions,
         has_fire_rewrite: pipeline_output.has_fire_rewrite,
         needs_hook_guards: codegen_result.needs_hook_guards,
         needs_structural_check_import: codegen_result.needs_structural_check_import,
         needs_lower_context_access: pipeline_output.has_lower_context_access,
+        enable_change_variable_codegen: options.environment.enable_change_variable_codegen,
+        enable_emit_hook_guards: options.environment.enable_emit_hook_guards,
+        enable_change_detection_for_debugging: options
+            .environment
+            .enable_change_detection_for_debugging,
+        enable_reset_cache_on_source_file_changes: options
+            .environment
+            .enable_reset_cache_on_source_file_changes
+            .unwrap_or(false),
+        fast_refresh_source_hash: get_fast_refresh_source_hash(),
+        disable_memoization_features: pipeline_output.retry_no_memo_mode,
+        disable_memoization_for_debugging: options.environment.disable_memoization_for_debugging,
+        fbt_operands: pipeline_output.fbt_operands,
+        unique_identifiers: pipeline_output.unique_identifiers,
+        enable_name_anonymous_functions: options.environment.enable_name_anonymous_functions,
     }))
 }
 
 /// Result of parameter string generation.
 struct ParamsResult {
-    /// The parameter string for the function signature.
-    params_str: String,
-    /// Destructuring statements to emit at the top of the function body.
-    destructurings: Vec<String>,
-    /// Outlined functions from default parameter values.
-    outlined_functions: Vec<(String, String, String)>,
+    /// Structured rewritten params when they are plain identifiers/rest identifiers.
+    compiled_params: Option<Vec<CompiledParam>>,
+    /// Structured prefix statements to emit at the top of the function body.
+    prefix_statements: Vec<CompiledParamPrefixStatement>,
+    /// HIR-lowered outlined functions from source default parameter values.
+    hir_outlined_functions: Vec<(String, HIRFunction)>,
 }
 
-fn parse_simple_default_binding_line(line: &str) -> Option<(String, String, String)> {
-    let line = line.trim();
-    let after_const = line.strip_prefix("const ")?;
-    let (name, after_name) = after_const.split_once(" = ")?;
-    if name.is_empty()
-        || !name
-            .chars()
-            .next()
-            .is_some_and(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphabetic())
-        || !name
-            .chars()
-            .all(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphanumeric())
-    {
-        return None;
-    }
-
-    let (temp, after_temp) = after_name.split_once(" === undefined ? ")?;
-    if temp.is_empty()
-        || !temp
-            .chars()
-            .next()
-            .is_some_and(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphabetic())
-        || !temp
-            .chars()
-            .all(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphanumeric())
-    {
-        return None;
-    }
-
-    let suffix = format!(" : {};", temp);
-    let expr = after_temp.strip_suffix(&suffix)?.trim();
-    if expr.is_empty() {
-        return None;
-    }
-
-    Some((name.to_string(), temp.to_string(), expr.to_string()))
+fn is_identifier_token_char(ch: char) -> bool {
+    ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()
 }
 
-fn is_outlined_temp_expr(expr: &str) -> bool {
-    let trimmed = expr.trim();
-    if !trimmed.starts_with("_temp") {
-        return false;
+fn replace_identifier_tokens_for_params(input: &str, from: &str, to: &str) -> String {
+    if from.is_empty() || from == to {
+        return input.to_string();
     }
-    let suffix = &trimmed["_temp".len()..];
-    suffix.is_empty() || suffix.chars().all(|ch| ch.is_ascii_digit())
-}
-
-fn rewrite_inline_empty_arrow_callback(expr: &str) -> (String, Vec<(String, String, String)>) {
-    let trimmed = expr.trim();
-    let patterns = ["() =>{}", "() => {}"];
-    for pattern in patterns {
-        if trimmed.matches(pattern).count() == 1 {
-            return (
-                trimmed.replacen(pattern, "_temp", 1),
-                vec![("_temp".to_string(), String::new(), String::new())],
-            );
-        }
-    }
-    (trimmed.to_string(), vec![])
-}
-
-fn parse_single_slot_memoized_default_body(
-    generated_body: &str,
-    name: &str,
-    temp: &str,
-) -> Option<String> {
-    let lines: Vec<&str> = generated_body
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect();
-    if lines.len() != 10 {
-        return None;
-    }
-    if lines[0] != "const $ = _c(1);" {
-        return None;
-    }
-    if !lines[1].starts_with("let ") || !lines[1].ends_with(';') {
-        return None;
-    }
-    let memo_var = lines[1]
-        .strip_prefix("let ")?
-        .strip_suffix(';')?
-        .trim()
-        .to_string();
-    if memo_var.is_empty() {
-        return None;
-    }
-    if lines[2] != "if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) {" {
-        return None;
-    }
-    let assign_prefix = format!("{memo_var} = ");
-    if !lines[3].starts_with(&assign_prefix) || !lines[3].ends_with(';') {
-        return None;
-    }
-    let memoized_expr = lines[3]
-        .strip_prefix(&assign_prefix)?
-        .strip_suffix(';')?
-        .trim()
-        .to_string();
-    if memoized_expr.is_empty() {
-        return None;
-    }
-    if lines[4] != format!("$[0] = {};", memo_var) {
-        return None;
-    }
-    if lines[5] != "} else {" {
-        return None;
-    }
-    if lines[6] != format!("{memo_var} = $[0];") {
-        return None;
-    }
-    if lines[7] != "}" {
-        return None;
-    }
-    let let_prefix = format!("let {name} = {temp} === undefined ? ");
-    let const_prefix = format!("const {name} = {temp} === undefined ? ");
-    let value_prefix = if lines[8].starts_with(&let_prefix) {
-        let_prefix
-    } else if lines[8].starts_with(&const_prefix) {
-        const_prefix
-    } else {
-        return None;
-    };
-    let suffix = format!(" : {};", temp);
-    if !lines[8].ends_with(&suffix) {
-        return None;
-    }
-    let ternary_true_expr = lines[8]
-        .strip_prefix(&value_prefix)?
-        .strip_suffix(&suffix)?
-        .trim();
-    if ternary_true_expr != memo_var {
-        return None;
-    }
-    if lines[9] != format!("return {};", name) {
-        return None;
-    }
-    Some(memoized_expr)
-}
-
-type DefaultParamCacheBody = (String, Vec<(String, String, String)>);
-
-fn synthesize_default_param_cache_body(
-    generated_body: &str,
-    destructurings: &[String],
-) -> Option<DefaultParamCacheBody> {
-    let debug_default_param_cache = std::env::var("DEBUG_DEFAULT_PARAM_CACHE").is_ok();
-    let mut candidates = destructurings
-        .iter()
-        .filter_map(|line| parse_simple_default_binding_line(line));
-    let (name, temp, expr) = candidates.next()?;
-    if candidates.next().is_some() {
-        if debug_default_param_cache {
-            eprintln!("[DEFAULT_PARAM_CACHE] skip: multiple simple default candidates");
-        }
-        return None;
-    }
-    if is_outlined_temp_expr(&expr) {
-        if debug_default_param_cache {
-            eprintln!("[DEFAULT_PARAM_CACHE] skip: outlined-temp expr={}", expr);
-        }
-        return None;
-    }
-
-    let return_stmt = format!("return {};", name);
-    let (rewritten_expr, outlined_functions) = if generated_body.trim() == return_stmt {
-        if debug_default_param_cache {
-            eprintln!(
-                "[DEFAULT_PARAM_CACHE] synthesize simple-return name={} temp={} expr={}",
-                name, temp, expr
-            );
-        }
-        rewrite_inline_empty_arrow_callback(&expr)
-    } else {
-        let memoized_expr = parse_single_slot_memoized_default_body(generated_body, &name, &temp)?;
-        if is_outlined_temp_expr(&memoized_expr) {
-            if debug_default_param_cache {
-                eprintln!(
-                    "[DEFAULT_PARAM_CACHE] skip: memoized outlined-temp expr={}",
-                    memoized_expr
-                );
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0usize;
+    while i < input.len() {
+        let rest = &input[i..];
+        if let Some(found) = rest.find(from) {
+            let start = i + found;
+            let end = start + from.len();
+            let before_ok = if start == 0 {
+                true
+            } else {
+                !is_identifier_token_char(input.as_bytes()[start - 1] as char)
+            };
+            let after_ok = if end >= input.len() {
+                true
+            } else {
+                !is_identifier_token_char(input.as_bytes()[end] as char)
+            };
+            out.push_str(&input[i..start]);
+            if before_ok && after_ok {
+                out.push_str(to);
+            } else {
+                out.push_str(from);
             }
-            return None;
+            i = end;
+        } else {
+            out.push_str(rest);
+            break;
         }
-        if debug_default_param_cache {
-            eprintln!(
-                "[DEFAULT_PARAM_CACHE] synthesize memoized-single-slot name={} temp={} expr={}",
-                name, temp, memoized_expr
-            );
-        }
-        rewrite_inline_empty_arrow_callback(&memoized_expr)
-    };
+    }
+    out
+}
 
-    Some((
-        format!(
-            "const $ = _c(2);\nlet {name};\nif ($[0] !== {temp}) {{\n{name} = {temp} === undefined ? {rewritten_expr} : {temp};\n$[0] = {temp};\n$[1] = {name};\n}} else {{\n{name} = $[1];\n}}\n{return_stmt}"
-        ),
-        outlined_functions,
-    ))
+fn rename_compiled_binding_pattern(pattern: &mut CompiledBindingPattern, from: &str, to: &str) {
+    match pattern {
+        CompiledBindingPattern::Identifier(name) => {
+            if name == from {
+                *name = to.to_string();
+            }
+        }
+        CompiledBindingPattern::Object(object) => {
+            for property in &mut object.properties {
+                if let CompiledPropertyKey::Source(source) = &mut property.key {
+                    *source = replace_identifier_tokens_for_params(source, from, to);
+                }
+                rename_compiled_binding_pattern(&mut property.value, from, to);
+            }
+            if let Some(rest) = &mut object.rest {
+                rename_compiled_binding_pattern(rest, from, to);
+            }
+        }
+        CompiledBindingPattern::Array(array) => {
+            for element in array.elements.iter_mut().flatten() {
+                rename_compiled_binding_pattern(element, from, to);
+            }
+            if let Some(rest) = &mut array.rest {
+                rename_compiled_binding_pattern(rest, from, to);
+            }
+        }
+        CompiledBindingPattern::Assignment { left, default_expr } => {
+            rename_compiled_binding_pattern(left, from, to);
+            *default_expr = replace_identifier_tokens_for_params(default_expr, from, to);
+        }
+    }
+}
+
+fn rename_compiled_initializer(init: &mut CompiledInitializer, from: &str, to: &str) {
+    match init {
+        CompiledInitializer::Identifier(name) => {
+            if name == from {
+                *name = to.to_string();
+            }
+        }
+        CompiledInitializer::UndefinedFallback {
+            temp_name,
+            default_expr,
+        } => {
+            if temp_name == from {
+                *temp_name = to.to_string();
+            }
+            *default_expr = replace_identifier_tokens_for_params(default_expr, from, to);
+        }
+    }
+}
+
+fn rename_compiled_param_prefix_statement(
+    statement: &mut CompiledParamPrefixStatement,
+    from: &str,
+    to: &str,
+) {
+    rename_compiled_binding_pattern(&mut statement.pattern, from, to);
+    rename_compiled_initializer(&mut statement.init, from, to);
+}
+
+fn align_params_result_with_codegen(params_result: &mut ParamsResult, param_names: &[String]) {
+    let Some(compiled_params) = params_result.compiled_params.as_mut() else {
+        return;
+    };
+    if compiled_params.len() != param_names.len() {
+        return;
+    }
+
+    // The emitted parameter list must follow the final HIR/codegen names, which
+    // can differ from the source AST for lowered rest/default/destructured params.
+    for (compiled_param, emitted_name) in compiled_params.iter_mut().zip(param_names) {
+        if compiled_param.name == *emitted_name {
+            continue;
+        }
+        let original_name = compiled_param.name.clone();
+        for statement in &mut params_result.prefix_statements {
+            rename_compiled_param_prefix_statement(statement, &original_name, emitted_name);
+        }
+        compiled_param.name = emitted_name.clone();
+    }
+}
+
+struct PreparedGeneratedBody {
+    synthesized_default_param_cache: Option<SynthesizedDefaultParamCache>,
+    synthesized_hir_outlined_functions: Vec<(String, HIRFunction)>,
+    cache_prologue: Option<crate::codegen_backend::codegen_ast::CachePrologue>,
+}
+
+fn prepare_generated_body(
+    codegen_result: &crate::codegen_backend::codegen_ast::CodegenMetadata,
+    _prefix_statements: &[CompiledParamPrefixStatement],
+) -> PreparedGeneratedBody {
+    PreparedGeneratedBody {
+        synthesized_default_param_cache: None,
+        synthesized_hir_outlined_functions: vec![],
+        cache_prologue: codegen_result.cache_prologue.clone(),
+    }
 }
 
 /// Generate a comma-separated parameter string from the AST, stripping type annotations.
 /// Destructured parameters are replaced with temporaries (t0, t1, ...) and their
 /// destructuring is moved to the function body, matching upstream behavior.
-fn params_to_result(
-    params: &ast::FormalParameters,
-    source: &str,
+fn params_to_result<'a>(
+    params: &ast::FormalParameters<'a>,
+    source: &'a str,
+    semantic: &oxc_semantic::Semantic<'a>,
+    options: &PluginOptions,
     temp_counter: &mut usize,
 ) -> ParamsResult {
-    let mut param_strs: Vec<String> = Vec::new();
-    let mut destructurings: Vec<String> = Vec::new();
-    let mut outlined_functions: Vec<(String, String, String)> = Vec::new();
+    let mut compiled_params: Option<Vec<CompiledParam>> = Some(Vec::new());
+    let mut prefix_statements: Vec<CompiledParamPrefixStatement> = Vec::new();
+    let mut hir_outlined_functions: Vec<(String, HIRFunction)> = Vec::new();
     let mut outline_counter: usize = 0;
 
     for param in &params.items {
@@ -6872,7 +6233,12 @@ fn params_to_result(
         if let Some(initializer) = &param.initializer {
             let temp_name = format!("t{}", *temp_counter);
             *temp_counter += 1;
-            param_strs.push(temp_name.clone());
+            if let Some(params) = compiled_params.as_mut() {
+                params.push(CompiledParam {
+                    name: temp_name.clone(),
+                    is_rest: false,
+                });
+            }
 
             let default_start = initializer.span().start as usize;
             let default_end = initializer.span().end as usize;
@@ -6889,10 +6255,14 @@ fn params_to_result(
                         } else {
                             format!("_temp{}", outline_counter)
                         };
-                        let params_str = arrow_params_to_string(&arrow.params, source);
-                        let body_str = arrow_body_to_outlined_string(&arrow.body, source);
-                        outlined_functions.push((name.clone(), params_str, body_str));
-                        Some(name)
+                        if let Some(hir_function) = try_lower_default_outlined_arrow(
+                            &name, arrow, source, semantic, options,
+                        ) {
+                            hir_outlined_functions.push((name.clone(), hir_function));
+                            Some(name)
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
@@ -6905,26 +6275,14 @@ fn params_to_result(
                         } else {
                             format!("_temp{}", outline_counter)
                         };
-                        let params_str = func_params_to_string(&func.params, source);
-                        let body_str = func
-                            .body
-                            .as_ref()
-                            .map(|b| {
-                                let s = b.span.start as usize;
-                                let e = b.span.end as usize;
-                                let raw = &source[s..e];
-                                // Strip outer braces
-                                raw.trim()
-                                    .strip_prefix('{')
-                                    .unwrap_or(raw)
-                                    .strip_suffix('}')
-                                    .unwrap_or(raw)
-                                    .trim()
-                                    .to_string()
-                            })
-                            .unwrap_or_default();
-                        outlined_functions.push((name.clone(), params_str, body_str));
-                        Some(name)
+                        if let Some(hir_function) = try_lower_default_outlined_function(
+                            &name, func, source, semantic, options,
+                        ) {
+                            hir_outlined_functions.push((name.clone(), hir_function));
+                            Some(name)
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
@@ -6937,30 +6295,26 @@ fn params_to_result(
 
             match &param.pattern {
                 ast::BindingPattern::BindingIdentifier(ident) => {
-                    // `x = defaultExpr` → param `t0`, body `const x = t0 === undefined ? defaultExpr : t0;`
-                    destructurings.push(format!(
-                        "const {} = {} === undefined ? {} : {};",
-                        ident.name, temp_name, effective_default, temp_name
+                    prefix_statements.push(compiled_prefix_statement(
+                        ast::VariableDeclarationKind::Const,
+                        CompiledBindingPattern::Identifier(ident.name.to_string()),
+                        CompiledInitializer::UndefinedFallback {
+                            temp_name: temp_name.clone(),
+                            default_expr: effective_default.to_string(),
+                        },
                     ));
                 }
-                ast::BindingPattern::ObjectPattern(_) | ast::BindingPattern::ArrayPattern(_) => {
-                    // `{a, b} = defaultExpr` → param `t0`, body `const {a, b} = t0 === undefined ? defaultExpr : t0;`
-                    let pat_start = param.pattern.span().start as usize;
-                    let pat_end = param.pattern.span().end as usize;
-                    let pat_raw = &source[pat_start..pat_end];
-                    destructurings.push(format!(
-                        "const {} = {} === undefined ? {} : {};",
-                        pat_raw, temp_name, effective_default, temp_name
-                    ));
-                }
-                _ => {
-                    let start = param.pattern.span().start as usize;
-                    let end = param.pattern.span().end as usize;
-                    let raw = &source[start..end];
-                    destructurings.push(format!(
-                        "const {} = {} === undefined ? {} : {};",
-                        raw, temp_name, effective_default, temp_name
-                    ));
+                ast::BindingPattern::ObjectPattern(_)
+                | ast::BindingPattern::ArrayPattern(_)
+                | ast::BindingPattern::AssignmentPattern(_) => {
+                    prefix_statements.push(compiled_prefix_statement(
+                        ast::VariableDeclarationKind::Const,
+                        compiled_binding_pattern_from_ast(&param.pattern, source),
+                        CompiledInitializer::UndefinedFallback {
+                            temp_name: temp_name.clone(),
+                            default_expr: effective_default.to_string(),
+                        },
+                    ))
                 }
             }
             continue;
@@ -6968,12 +6322,22 @@ fn params_to_result(
 
         match &param.pattern {
             ast::BindingPattern::BindingIdentifier(ident) => {
-                param_strs.push(ident.name.to_string());
+                if let Some(params) = compiled_params.as_mut() {
+                    params.push(CompiledParam {
+                        name: ident.name.to_string(),
+                        is_rest: false,
+                    });
+                }
             }
             ast::BindingPattern::ObjectPattern(obj_pattern) => {
                 let temp_name = format!("t{}", *temp_counter);
                 *temp_counter += 1;
-                param_strs.push(temp_name.clone());
+                if let Some(params) = compiled_params.as_mut() {
+                    params.push(CompiledParam {
+                        name: temp_name.clone(),
+                        is_rest: false,
+                    });
+                }
 
                 // Build the destructuring pattern from the object pattern.
                 // Properties with defaults are extracted into separate conditional
@@ -6983,13 +6347,18 @@ fn params_to_result(
                     &temp_name,
                     source,
                     temp_counter,
-                    &mut destructurings,
+                    &mut prefix_statements,
                 );
             }
             ast::BindingPattern::ArrayPattern(arr_pattern) => {
                 let temp_name = format!("t{}", *temp_counter);
                 *temp_counter += 1;
-                param_strs.push(temp_name.clone());
+                if let Some(params) = compiled_params.as_mut() {
+                    params.push(CompiledParam {
+                        name: temp_name.clone(),
+                        is_rest: false,
+                    });
+                }
 
                 // Build the destructuring pattern from the array pattern.
                 // Elements with defaults are extracted into separate conditional
@@ -6999,38 +6368,49 @@ fn params_to_result(
                     &temp_name,
                     source,
                     temp_counter,
-                    &mut destructurings,
+                    &mut prefix_statements,
                 );
             }
             ast::BindingPattern::AssignmentPattern(assign_pattern) => {
                 // AssignmentPattern in BindingPattern is for destructuring defaults like `[a = 2]`
                 let temp_name = format!("t{}", *temp_counter);
                 *temp_counter += 1;
-                param_strs.push(temp_name.clone());
+                if let Some(params) = compiled_params.as_mut() {
+                    params.push(CompiledParam {
+                        name: temp_name.clone(),
+                        is_rest: false,
+                    });
+                }
 
                 match &assign_pattern.left {
                     ast::BindingPattern::ObjectPattern(_)
-                    | ast::BindingPattern::ArrayPattern(_) => {
-                        let start = param.pattern.span().start as usize;
-                        let end = param.pattern.span().end as usize;
-                        let raw = &source[start..end];
-                        destructurings.push(format!("const {} = {};", raw, temp_name));
+                    | ast::BindingPattern::ArrayPattern(_)
+                    | ast::BindingPattern::AssignmentPattern(_) => {
+                        prefix_statements.push(compiled_prefix_statement(
+                            ast::VariableDeclarationKind::Const,
+                            CompiledBindingPattern::Assignment {
+                                left: Box::new(compiled_binding_pattern_from_ast(
+                                    &assign_pattern.left,
+                                    source,
+                                )),
+                                default_expr: source[assign_pattern.right.span().start as usize
+                                    ..assign_pattern.right.span().end as usize]
+                                    .to_string(),
+                            },
+                            CompiledInitializer::Identifier(temp_name.clone()),
+                        ))
                     }
                     ast::BindingPattern::BindingIdentifier(ident) => {
-                        let name = ident.name.as_str();
                         let default_start = assign_pattern.right.span().start as usize;
                         let default_end = assign_pattern.right.span().end as usize;
-                        let default_expr = &source[default_start..default_end];
-                        destructurings.push(format!(
-                            "const {} = {} === undefined ? {} : {};",
-                            name, temp_name, default_expr, temp_name
+                        prefix_statements.push(compiled_prefix_statement(
+                            ast::VariableDeclarationKind::Const,
+                            CompiledBindingPattern::Identifier(ident.name.to_string()),
+                            CompiledInitializer::UndefinedFallback {
+                                temp_name: temp_name.clone(),
+                                default_expr: source[default_start..default_end].to_string(),
+                            },
                         ));
-                    }
-                    _ => {
-                        let start = param.pattern.span().start as usize;
-                        let end = param.pattern.span().end as usize;
-                        let raw = &source[start..end];
-                        destructurings.push(format!("const {} = {};", raw, temp_name));
                     }
                 }
             }
@@ -7041,45 +6421,101 @@ fn params_to_result(
     if let Some(rest) = &params.rest {
         match &rest.rest.argument {
             ast::BindingPattern::BindingIdentifier(ident) => {
-                param_strs.push(format!("...{}", ident.name));
+                if let Some(params) = compiled_params.as_mut() {
+                    params.push(CompiledParam {
+                        name: ident.name.to_string(),
+                        is_rest: true,
+                    });
+                }
             }
             ast::BindingPattern::ArrayPattern(arr_pattern) => {
                 let temp_name = format!("t{}", *temp_counter);
                 *temp_counter += 1;
-                param_strs.push(format!("...{}", temp_name));
+                if let Some(params) = compiled_params.as_mut() {
+                    params.push(CompiledParam {
+                        name: temp_name.clone(),
+                        is_rest: true,
+                    });
+                }
                 build_array_destructuring(
                     arr_pattern,
                     &temp_name,
                     source,
                     temp_counter,
-                    &mut destructurings,
+                    &mut prefix_statements,
                 );
             }
             ast::BindingPattern::ObjectPattern(obj_pattern) => {
                 let temp_name = format!("t{}", *temp_counter);
                 *temp_counter += 1;
-                param_strs.push(format!("...{}", temp_name));
+                if let Some(params) = compiled_params.as_mut() {
+                    params.push(CompiledParam {
+                        name: temp_name.clone(),
+                        is_rest: true,
+                    });
+                }
                 build_object_destructuring(
                     obj_pattern,
                     &temp_name,
                     source,
                     temp_counter,
-                    &mut destructurings,
+                    &mut prefix_statements,
                 );
             }
             _ => {
-                let rest_start = rest.span.start as usize;
-                let rest_end = rest.span.end as usize;
-                param_strs.push(source[rest_start..rest_end].to_string());
+                compiled_params = None;
             }
         }
     }
 
     ParamsResult {
-        params_str: param_strs.join(", "),
-        destructurings,
-        outlined_functions,
+        compiled_params,
+        prefix_statements,
+        hir_outlined_functions,
     }
+}
+
+fn try_lower_default_outlined_arrow<'a>(
+    name: &str,
+    arrow: &ast::ArrowFunctionExpression<'a>,
+    source: &'a str,
+    semantic: &oxc_semantic::Semantic<'a>,
+    options: &PluginOptions,
+) -> Option<HIRFunction> {
+    let env = crate::environment::Environment::new(options.environment.clone());
+    let lowering_cx = build::LoweringContext::new(semantic, source, env);
+    let mut hir_function = build::lower_arrow_expression(
+        &arrow.body,
+        &arrow.params,
+        lowering_cx,
+        build::LowerFunctionOptions::arrow(Some(name), arrow.span, arrow.r#async, arrow.expression),
+    )
+    .ok()?
+    .func;
+    hir_function.id = Some(name.to_string());
+    Some(hir_function)
+}
+
+fn try_lower_default_outlined_function<'a>(
+    name: &str,
+    func: &ast::Function<'a>,
+    source: &'a str,
+    semantic: &oxc_semantic::Semantic<'a>,
+    options: &PluginOptions,
+) -> Option<HIRFunction> {
+    let body = func.body.as_ref()?;
+    let env = crate::environment::Environment::new(options.environment.clone());
+    let lowering_cx = build::LoweringContext::new(semantic, source, env);
+    let mut hir_function = build::lower_function(
+        body,
+        &func.params,
+        lowering_cx,
+        build::LowerFunctionOptions::function(Some(name), func.span, func.generator, func.r#async),
+    )
+    .ok()?
+    .func;
+    hir_function.id = Some(name.to_string());
+    Some(hir_function)
 }
 
 /// Check if an arrow function expression used as a default parameter can be outlined.
@@ -7382,37 +6818,6 @@ fn is_known_global(name: &str) -> bool {
     )
 }
 
-/// Convert arrow function params to a string.
-fn arrow_params_to_string(params: &ast::FormalParameters, source: &str) -> String {
-    let mut parts = Vec::new();
-    for param in &params.items {
-        let s = param.span.start as usize;
-        let e = param.span.end as usize;
-        parts.push(source[s..e].to_string());
-    }
-    parts.join(", ")
-}
-
-/// Convert function params to a string.
-fn func_params_to_string(params: &ast::FormalParameters, source: &str) -> String {
-    arrow_params_to_string(params, source)
-}
-
-/// Convert an arrow function body to the body of an outlined function declaration.
-fn arrow_body_to_outlined_string(body: &ast::FunctionBody, source: &str) -> String {
-    let s = body.span.start as usize;
-    let e = body.span.end as usize;
-    let raw = &source[s..e];
-    let trimmed = raw.trim();
-    // If body is `{ ... }`, strip braces
-    if trimmed.starts_with('{') && trimmed.ends_with('}') {
-        trimmed[1..trimmed.len() - 1].trim().to_string()
-    } else {
-        // Expression body: wrap in `return expr;`
-        format!("return {};", trimmed)
-    }
-}
-
 /// Build a destructuring statement from an object pattern.
 /// e.g., `const { a, b, c: d } = t0;`
 /// Properties with defaults (e.g., `{a = 2}`) are extracted into separate
@@ -7422,82 +6827,82 @@ fn build_object_destructuring(
     temp_name: &str,
     source: &str,
     temp_counter: &mut usize,
-    destructurings: &mut Vec<String>,
+    prefix_statements: &mut Vec<CompiledParamPrefixStatement>,
 ) {
-    let mut parts: Vec<String> = Vec::new();
-    let mut defaults: Vec<(String, String, String)> = Vec::new(); // (temp, binding_name, default_expr)
+    let base_index = prefix_statements.len();
+    let mut properties = Vec::new();
     for prop in &pattern.properties {
         match &prop.value {
             ast::BindingPattern::BindingIdentifier(ident) => {
-                let key = match &prop.key {
-                    ast::PropertyKey::StaticIdentifier(id) => id.name.to_string(),
-                    ast::PropertyKey::StringLiteral(s) => format!("\"{}\"", s.value),
-                    _ => {
-                        // Fallback to source text for computed keys
-                        let start = prop.key.span().start as usize;
-                        let end = prop.key.span().end as usize;
-                        source[start..end].to_string()
-                    }
-                };
-                if key == ident.name.as_str() {
-                    parts.push(ident.name.to_string());
-                } else {
-                    parts.push(format!("{}: {}", key, ident.name));
-                }
+                properties.push(CompiledObjectPatternProperty {
+                    key: compiled_property_key_from_ast(&prop.key, source),
+                    value: CompiledBindingPattern::Identifier(ident.name.to_string()),
+                    shorthand: !prop.computed
+                        && matches!(
+                            &prop.key,
+                            ast::PropertyKey::StaticIdentifier(id) if id.name == ident.name
+                        ),
+                    computed: prop.computed,
+                });
             }
             ast::BindingPattern::AssignmentPattern(assign) => {
-                // Default value: extract into temp + separate conditional
                 if let ast::BindingPattern::BindingIdentifier(ident) = &assign.left {
-                    let key = match &prop.key {
-                        ast::PropertyKey::StaticIdentifier(id) => id.name.to_string(),
-                        _ => {
-                            let start = prop.key.span().start as usize;
-                            let end = prop.key.span().end as usize;
-                            source[start..end].to_string()
-                        }
-                    };
                     let elem_temp = format!("t{}", *temp_counter);
                     *temp_counter += 1;
                     let default_start = assign.right.span().start as usize;
                     let default_end = assign.right.span().end as usize;
-                    let default_val = source[default_start..default_end].to_string();
-                    // Use `key: temp` in the destructuring pattern
-                    parts.push(format!("{}: {}", key, elem_temp));
-                    defaults.push((elem_temp, ident.name.to_string(), default_val));
+                    properties.push(CompiledObjectPatternProperty {
+                        key: compiled_property_key_from_ast(&prop.key, source),
+                        value: CompiledBindingPattern::Identifier(elem_temp.clone()),
+                        shorthand: false,
+                        computed: prop.computed,
+                    });
+                    prefix_statements.push(compiled_prefix_statement(
+                        ast::VariableDeclarationKind::Let,
+                        CompiledBindingPattern::Identifier(ident.name.to_string()),
+                        CompiledInitializer::UndefinedFallback {
+                            temp_name: elem_temp,
+                            default_expr: source[default_start..default_end].to_string(),
+                        },
+                    ));
                 } else {
-                    // Nested complex pattern with default — use source
-                    let start = prop.span.start as usize;
-                    let end = prop.span.end as usize;
-                    parts.push(source[start..end].to_string());
+                    properties.push(CompiledObjectPatternProperty {
+                        key: compiled_property_key_from_ast(&prop.key, source),
+                        value: CompiledBindingPattern::Assignment {
+                            left: Box::new(compiled_binding_pattern_from_ast(&assign.left, source)),
+                            default_expr: source[assign.right.span().start as usize
+                                ..assign.right.span().end as usize]
+                                .to_string(),
+                        },
+                        shorthand: false,
+                        computed: prop.computed,
+                    });
                 }
             }
             _ => {
-                // Nested patterns — use source text
-                let start = prop.span.start as usize;
-                let end = prop.span.end as usize;
-                parts.push(source[start..end].to_string());
+                properties.push(CompiledObjectPatternProperty {
+                    key: compiled_property_key_from_ast(&prop.key, source),
+                    value: compiled_binding_pattern_from_ast(&prop.value, source),
+                    shorthand: false,
+                    computed: prop.computed,
+                });
             }
         }
     }
 
-    // Handle rest element
-    if let Some(rest) = &pattern.rest {
-        if let ast::BindingPattern::BindingIdentifier(ident) = &rest.argument {
-            parts.push(format!("...{}", ident.name));
-        } else {
-            let start = rest.span.start as usize;
-            let end = rest.span.end as usize;
-            parts.push(source[start..end].to_string());
-        }
-    }
-
-    destructurings.push(format!("let {{ {} }} = {};", parts.join(", "), temp_name));
-    for (elem_temp, binding_name, default_expr) in defaults {
-        destructurings.push(format!(
-            "let {} = {} === undefined ? {} : {};",
-            binding_name, elem_temp, default_expr, elem_temp
-        ));
-    }
+    prefix_statements.insert(
+        base_index,
+        compiled_prefix_statement(
+            ast::VariableDeclarationKind::Let,
+            CompiledBindingPattern::Object(CompiledObjectPattern {
+                properties,
+                rest: pattern.rest.as_ref().map(|rest| {
+                    Box::new(compiled_binding_pattern_from_ast(&rest.argument, source))
+                }),
+            }),
+            CompiledInitializer::Identifier(temp_name.to_string()),
+        ),
+    );
 }
 
 /// Build a destructuring statement from an array pattern.
@@ -7506,207 +6911,132 @@ fn build_array_destructuring(
     temp_name: &str,
     source: &str,
     temp_counter: &mut usize,
-    destructurings: &mut Vec<String>,
+    prefix_statements: &mut Vec<CompiledParamPrefixStatement>,
 ) {
-    let mut parts: Vec<String> = Vec::new();
-    // Track defaults: (temp_name, binding_name, default_expr)
-    let mut defaults: Vec<(String, String, String)> = Vec::new();
+    let base_index = prefix_statements.len();
+    let mut elements = Vec::new();
 
     for elem in &pattern.elements {
         match elem {
+            Some(ast::BindingPattern::BindingIdentifier(ident)) => {
+                elements.push(Some(CompiledBindingPattern::Identifier(
+                    ident.name.to_string(),
+                )));
+            }
+            Some(ast::BindingPattern::AssignmentPattern(assign)) => {
+                let elem_temp = format!("t{}", *temp_counter);
+                *temp_counter += 1;
+                elements.push(Some(CompiledBindingPattern::Identifier(elem_temp.clone())));
+                let default_start = assign.right.span().start as usize;
+                let default_end = assign.right.span().end as usize;
+                prefix_statements.push(compiled_prefix_statement(
+                    ast::VariableDeclarationKind::Let,
+                    compiled_binding_pattern_from_ast(&assign.left, source),
+                    CompiledInitializer::UndefinedFallback {
+                        temp_name: elem_temp,
+                        default_expr: source[default_start..default_end].to_string(),
+                    },
+                ));
+            }
             Some(binding) => {
-                match binding {
-                    ast::BindingPattern::BindingIdentifier(ident) => {
-                        parts.push(ident.name.to_string());
-                    }
-                    ast::BindingPattern::AssignmentPattern(assign) => {
-                        // Element with default: destructure into temp, apply default after
-                        let elem_temp = format!("t{}", *temp_counter);
-                        *temp_counter += 1;
-                        parts.push(elem_temp.clone());
-
-                        let binding_name = match &assign.left {
-                            ast::BindingPattern::BindingIdentifier(ident) => ident.name.to_string(),
-                            _ => {
-                                let start = assign.left.span().start as usize;
-                                let end = assign.left.span().end as usize;
-                                source[start..end].to_string()
-                            }
-                        };
-                        let default_start = assign.right.span().start as usize;
-                        let default_end = assign.right.span().end as usize;
-                        let default_expr = source[default_start..default_end].to_string();
-                        defaults.push((elem_temp, binding_name, default_expr));
-                    }
-                    _ => {
-                        let start = binding.span().start as usize;
-                        let end = binding.span().end as usize;
-                        parts.push(source[start..end].to_string());
-                    }
-                }
+                elements.push(Some(compiled_binding_pattern_from_ast(binding, source)));
             }
-            None => {
-                parts.push(String::new()); // elision
-            }
+            None => elements.push(None),
         }
     }
 
-    // Handle rest
-    if let Some(rest) = &pattern.rest {
-        if let ast::BindingPattern::BindingIdentifier(ident) = &rest.argument {
-            parts.push(format!("...{}", ident.name));
-        } else {
-            let start = rest.span.start as usize;
-            let end = rest.span.end as usize;
-            parts.push(source[start..end].to_string());
-        }
-    }
+    prefix_statements.insert(
+        base_index,
+        compiled_prefix_statement(
+            ast::VariableDeclarationKind::Let,
+            CompiledBindingPattern::Array(CompiledArrayPattern {
+                elements,
+                rest: pattern.rest.as_ref().map(|rest| {
+                    Box::new(compiled_binding_pattern_from_ast(&rest.argument, source))
+                }),
+            }),
+            CompiledInitializer::Identifier(temp_name.to_string()),
+        ),
+    );
+}
 
-    destructurings.push(format!("let [{}] = {};", parts.join(", "), temp_name));
-
-    // Emit conditional defaults
-    for (elem_temp, binding_name, default_expr) in defaults {
-        destructurings.push(format!(
-            "let {} = {} === undefined ? {} : {};",
-            binding_name, elem_temp, default_expr, elem_temp
-        ));
+fn compiled_prefix_statement(
+    kind: ast::VariableDeclarationKind,
+    pattern: CompiledBindingPattern,
+    init: CompiledInitializer,
+) -> CompiledParamPrefixStatement {
+    CompiledParamPrefixStatement {
+        kind,
+        pattern,
+        init,
     }
 }
 
-/// Convert a binding pattern to a parameter string, stripping type annotations.
-/// Insert parameter destructuring statements into the generated function body.
-/// They go right after the `const $ = _c(N);` line.
-pub(crate) fn insert_param_destructurings(body: &str, destructurings: &[String]) -> String {
-    // Find the first newline after "const $ = _c(" — insert after that line
-    let non_empty: Vec<&String> = destructurings.iter().filter(|d| !d.is_empty()).collect();
-    if non_empty.is_empty() {
-        return body.to_string();
-    }
-    if let Some(cache_line_end) = body
-        .find("_c(")
-        .and_then(|start| body[start..].find('\n').map(|nl| start + nl + 1))
-    {
-        let mut result = String::new();
-        result.push_str(&body[..cache_line_end]);
-        for destr in &non_empty {
-            result.push_str("  ");
-            result.push_str(destr);
-            result.push('\n');
+fn compiled_binding_pattern_from_ast(
+    pattern: &ast::BindingPattern<'_>,
+    source: &str,
+) -> CompiledBindingPattern {
+    match pattern {
+        ast::BindingPattern::BindingIdentifier(ident) => {
+            CompiledBindingPattern::Identifier(ident.name.to_string())
         }
-        result.push_str(&body[cache_line_end..]);
-        result
-    } else {
-        // No _c() found — just prepend destructurings
-        let mut result = String::new();
-        for destr in &non_empty {
-            result.push_str("  ");
-            result.push_str(destr);
-            result.push('\n');
+        ast::BindingPattern::ObjectPattern(object) => {
+            let properties = object
+                .properties
+                .iter()
+                .map(|prop| CompiledObjectPatternProperty {
+                    key: compiled_property_key_from_ast(&prop.key, source),
+                    value: compiled_binding_pattern_from_ast(&prop.value, source),
+                    shorthand: prop.shorthand,
+                    computed: prop.computed,
+                })
+                .collect();
+            CompiledBindingPattern::Object(CompiledObjectPattern {
+                properties,
+                rest: object.rest.as_ref().map(|rest| {
+                    Box::new(compiled_binding_pattern_from_ast(&rest.argument, source))
+                }),
+            })
         }
-        result.push_str(body);
-        result
+        ast::BindingPattern::ArrayPattern(array) => {
+            CompiledBindingPattern::Array(CompiledArrayPattern {
+                elements: array
+                    .elements
+                    .iter()
+                    .map(|element| {
+                        element
+                            .as_ref()
+                            .map(|pattern| compiled_binding_pattern_from_ast(pattern, source))
+                    })
+                    .collect(),
+                rest: array.rest.as_ref().map(|rest| {
+                    Box::new(compiled_binding_pattern_from_ast(&rest.argument, source))
+                }),
+            })
+        }
+        ast::BindingPattern::AssignmentPattern(assign) => CompiledBindingPattern::Assignment {
+            left: Box::new(compiled_binding_pattern_from_ast(&assign.left, source)),
+            default_expr: source
+                [assign.right.span().start as usize..assign.right.span().end as usize]
+                .to_string(),
+        },
     }
 }
 
-/// Prune unused properties from an object destructuring statement.
-/// Given `const { a, b, c: d } = t0;` and a body that only uses `a`,
-/// returns `const { a } = t0;`.
-pub(crate) fn prune_unused_destructuring(destr: &str, body: &str) -> String {
-    // Only handle object destructuring: `const { ... } = ...;`
-    let trimmed = destr.trim();
-    if !trimmed.starts_with("const {") && !trimmed.starts_with("let {") {
-        return destr.to_string();
-    }
-
-    // Extract the parts: "const { ... } = rhs;"
-    let open = match trimmed.find('{') {
-        Some(i) => i,
-        None => return destr.to_string(),
-    };
-    let close = match trimmed.find('}') {
-        Some(i) => i,
-        None => return destr.to_string(),
-    };
-    let prefix = &trimmed[..open + 1]; // "const {"
-    let inner = trimmed[open + 1..close].trim(); // "a, b, c: d"
-    let suffix = &trimmed[close..]; // "} = t0;"
-
-    // Parse properties and extract the binding names
-    let props: Vec<&str> = inner
-        .split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let mut kept: Vec<&str> = Vec::new();
-
-    for prop in &props {
-        // Extract the local binding name from each property
-        // Cases: "a", "c: d", "a = default", "c: d = default", "...rest"
-        let binding_name = if let Some(rest) = prop.strip_prefix("...") {
-            rest
-        } else if let Some(colon_idx) = prop.find(':') {
-            // "key: value" or "key: value = default"
-            let after_colon = prop[colon_idx + 1..].trim();
-            if let Some(eq_idx) = after_colon.find('=') {
-                after_colon[..eq_idx].trim()
-            } else {
-                after_colon
-            }
-        } else if let Some(eq_idx) = prop.find('=') {
-            // "name = default"
-            prop[..eq_idx].trim()
-        } else {
-            // Simple "name"
-            *prop
-        };
-
-        // Check if the binding name is a valid identifier and is used in the body
-        let binding_name = binding_name.trim();
-        if binding_name.is_empty() {
-            kept.push(prop);
-            continue;
+fn compiled_property_key_from_ast(key: &ast::PropertyKey<'_>, source: &str) -> CompiledPropertyKey {
+    match key {
+        ast::PropertyKey::StaticIdentifier(id) => {
+            CompiledPropertyKey::StaticIdentifier(id.name.to_string())
         }
-
-        // Check if the binding name appears as a word boundary in the body
-        // Simple heuristic: check if the name appears in the body
-        if is_identifier_used(binding_name, body) {
-            kept.push(prop);
+        ast::PropertyKey::StringLiteral(string) => {
+            CompiledPropertyKey::StringLiteral(string.value.to_string())
         }
-        // If not used, skip this property
-    }
-
-    if kept.is_empty() {
-        // All properties were pruned — drop the destructuring entirely.
-        return String::new();
-    }
-
-    if kept.len() == props.len() {
-        // Nothing was pruned
-        return destr.to_string();
-    }
-
-    format!("{} {} {}", prefix, kept.join(", "), suffix)
-}
-
-/// Check if an identifier name is used in the body as a standalone identifier
-/// (not as part of a longer identifier name).
-fn is_identifier_used(name: &str, body: &str) -> bool {
-    let mut start = 0;
-    while let Some(idx) = body[start..].find(name) {
-        let abs_idx = start + idx;
-        let before_ok = abs_idx == 0 || !is_ident_char(body.as_bytes()[abs_idx - 1]);
-        let after_idx = abs_idx + name.len();
-        let after_ok = after_idx >= body.len() || !is_ident_char(body.as_bytes()[after_idx]);
-        if before_ok && after_ok {
-            return true;
+        _ => {
+            let start = key.span().start as usize;
+            let end = key.span().end as usize;
+            CompiledPropertyKey::Source(source[start..end].to_string())
         }
-        start = abs_idx + 1;
     }
-    false
-}
-
-fn is_ident_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
 }
 
 // is_component_name and is_hook_name are defined at the top of the file.
@@ -8025,4 +7355,152 @@ fn check_var_init_for_dynamic_components(
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use oxc_allocator::Allocator;
+    use oxc_ast::ast;
+    use oxc_parser::Parser;
+    use oxc_semantic::SemanticBuilder;
+    use oxc_span::SourceType;
+
+    use crate::options::PluginOptions;
+
+    use super::{align_params_result_with_codegen, extract_emitted_directives, params_to_result};
+
+    #[test]
+    fn params_to_result_collects_hir_for_outlined_default_arrow() {
+        let allocator = Allocator::default();
+        let source = "function Component(callback = () => {}) { return callback; }";
+        let parser_ret = Parser::new(&allocator, source, SourceType::mjs()).parse();
+        assert!(
+            parser_ret.errors.is_empty(),
+            "parse errors: {:?}",
+            parser_ret.errors
+        );
+        let program = parser_ret.program;
+        let semantic_ret = SemanticBuilder::new().build(&program);
+        let semantic = semantic_ret.semantic;
+        let ast::Statement::FunctionDeclaration(function) = &program.body[0] else {
+            panic!("expected function declaration");
+        };
+
+        let mut temp_counter = 0;
+        let params_result = params_to_result(
+            &function.params,
+            source,
+            &semantic,
+            &PluginOptions::default(),
+            &mut temp_counter,
+        );
+
+        assert_eq!(params_result.hir_outlined_functions.len(), 1);
+        assert_eq!(params_result.hir_outlined_functions[0].0, "_temp");
+        assert_eq!(
+            params_result.hir_outlined_functions[0].1.id.as_deref(),
+            Some("_temp")
+        );
+    }
+
+    #[test]
+    fn align_params_result_with_codegen_renames_rest_identifier_params() {
+        let allocator = Allocator::default();
+        let source = "function Component(foo, ...bar) { return [foo, bar]; }";
+        let parser_ret = Parser::new(&allocator, source, SourceType::mjs()).parse();
+        assert!(
+            parser_ret.errors.is_empty(),
+            "parse errors: {:?}",
+            parser_ret.errors
+        );
+        let program = parser_ret.program;
+        let semantic_ret = SemanticBuilder::new().build(&program);
+        let semantic = semantic_ret.semantic;
+        let ast::Statement::FunctionDeclaration(function) = &program.body[0] else {
+            panic!("expected function declaration");
+        };
+
+        let mut temp_counter = 0;
+        let mut params_result = params_to_result(
+            &function.params,
+            source,
+            &semantic,
+            &PluginOptions::default(),
+            &mut temp_counter,
+        );
+        align_params_result_with_codegen(
+            &mut params_result,
+            &["foo".to_string(), "t0".to_string()],
+        );
+
+        let compiled_params = params_result
+            .compiled_params
+            .expect("expected compiled params");
+        assert_eq!(compiled_params[0].name, "foo");
+        assert_eq!(compiled_params[1].name, "t0");
+        assert!(compiled_params[1].is_rest);
+    }
+
+    #[test]
+    fn align_params_result_with_codegen_rewrites_prefix_statement_temps() {
+        let allocator = Allocator::default();
+        let source = "function Component({x}) { return x; }";
+        let parser_ret = Parser::new(&allocator, source, SourceType::mjs()).parse();
+        assert!(
+            parser_ret.errors.is_empty(),
+            "parse errors: {:?}",
+            parser_ret.errors
+        );
+        let program = parser_ret.program;
+        let semantic_ret = SemanticBuilder::new().build(&program);
+        let semantic = semantic_ret.semantic;
+        let ast::Statement::FunctionDeclaration(function) = &program.body[0] else {
+            panic!("expected function declaration");
+        };
+
+        let mut temp_counter = 0;
+        let mut params_result = params_to_result(
+            &function.params,
+            source,
+            &semantic,
+            &PluginOptions::default(),
+            &mut temp_counter,
+        );
+        align_params_result_with_codegen(&mut params_result, &["t1".to_string()]);
+
+        let compiled_params = params_result
+            .compiled_params
+            .as_ref()
+            .expect("expected compiled params");
+        assert_eq!(compiled_params[0].name, "t1");
+        assert_eq!(params_result.prefix_statements.len(), 1);
+        match &params_result.prefix_statements[0].init {
+            crate::codegen_backend::CompiledInitializer::Identifier(name) => {
+                assert_eq!(name, "t1");
+            }
+            other => panic!("expected identifier initializer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_emitted_directives_keeps_ignored_opt_outs() {
+        let allocator = Allocator::default();
+        let source = "function Component() { 'use no forget'; 'use memo'; return 1; }";
+        let parser_ret = Parser::new(&allocator, source, SourceType::mjs()).parse();
+        assert!(
+            parser_ret.errors.is_empty(),
+            "parse errors: {:?}",
+            parser_ret.errors
+        );
+        let program = parser_ret.program;
+        let ast::Statement::FunctionDeclaration(function) = &program.body[0] else {
+            panic!("expected function declaration");
+        };
+        let body = function.body.as_ref().expect("expected function body");
+
+        assert_eq!(
+            extract_emitted_directives(body),
+            vec!["\"use no forget\"", "\"use memo\""]
+        );
+    }
 }

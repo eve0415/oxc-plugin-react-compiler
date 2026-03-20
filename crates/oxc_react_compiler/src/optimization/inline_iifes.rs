@@ -805,7 +805,6 @@ fn terminal_loc(terminal: &Terminal) -> SourceLocation {
         | Terminal::Label { loc, .. }
         | Terminal::Sequence { loc, .. }
         | Terminal::Try { loc, .. }
-        | Terminal::MaybeThrow { loc, .. }
         | Terminal::Scope { loc, .. }
         | Terminal::PrunedScope { loc, .. } => loc.clone(),
     }

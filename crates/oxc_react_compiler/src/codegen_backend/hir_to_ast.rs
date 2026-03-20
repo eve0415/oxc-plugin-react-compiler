@@ -2,8 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use oxc_allocator::{Allocator, CloneIn};
 use oxc_ast::{AstBuilder, NONE, ast};
-use oxc_codegen::{Codegen, CodegenOptions, IndentChar};
-use oxc_span::{SPAN, SourceType};
+use oxc_span::SPAN;
 use oxc_syntax::{
     identifier::is_identifier_name,
     number::NumberBase,
@@ -19,7 +18,10 @@ use crate::hir::types::{
     PrimitiveValue, Terminal,
 };
 
-pub(crate) fn try_lower_function_body(hir_function: &HIRFunction) -> Option<String> {
+pub(crate) fn try_lower_function_body_ast<'a>(
+    builder: AstBuilder<'a>,
+    hir_function: &HIRFunction,
+) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
     let instruction_map = hir_function
         .body
         .blocks
@@ -43,33 +45,90 @@ pub(crate) fn try_lower_function_body(hir_function: &HIRFunction) -> Option<Stri
         return None;
     }
 
-    let allocator = Allocator::default();
-    let builder = AstBuilder::new(&allocator);
     let block_map = hir_function
         .body
         .blocks
         .iter()
         .map(|(id, block)| (*id, block))
         .collect::<HashMap<_, _>>();
-    let state = LoweringState::new(builder, &block_map, &instruction_map, used_temps);
+    let synthetic_param_names = synthetic_param_names(hir_function);
+    let state = LoweringState::new(
+        builder,
+        &block_map,
+        &instruction_map,
+        used_temps,
+        synthetic_param_names,
+    );
     let body =
         state.lower_block_sequence(hir_function.body.entry, None, &mut HashSet::new(), None)?;
-    let body = strip_trailing_empty_return(body);
-    let program = builder.program(
+    Some(strip_trailing_empty_return(body))
+}
+
+pub(crate) fn try_lower_function_declaration_ast<'a>(
+    builder: AstBuilder<'a>,
+    hir_function: &HIRFunction,
+) -> Option<ast::Statement<'a>> {
+    let name = hir_function.id.as_deref()?;
+    let synthetic_param_names = synthetic_param_names(hir_function);
+    let params = lower_function_params(builder, hir_function, &synthetic_param_names)?;
+    let body = try_lower_function_body_ast(builder, hir_function)?;
+    let mut directives = builder.vec();
+    for directive in &hir_function.directives {
+        directives.push(builder.directive(
+            SPAN,
+            builder.string_literal(SPAN, builder.atom(directive), None),
+            builder.atom(directive),
+        ));
+    }
+    let declaration = builder.declaration_function(
         SPAN,
-        SourceType::mjs(),
-        "",
-        builder.vec(),
-        None,
-        builder.vec(),
-        body,
+        ast::FunctionType::FunctionDeclaration,
+        Some(builder.binding_identifier(SPAN, builder.atom(name))),
+        hir_function.generator,
+        hir_function.async_,
+        false,
+        NONE,
+        NONE,
+        builder.alloc(params),
+        NONE,
+        Some(builder.alloc(builder.function_body(SPAN, directives, body))),
     );
-    let options = CodegenOptions {
-        indent_char: IndentChar::Space,
-        indent_width: 2,
-        ..CodegenOptions::default()
-    };
-    Some(Codegen::new().with_options(options).build(&program).code)
+    match declaration {
+        ast::Declaration::FunctionDeclaration(function) => {
+            Some(ast::Statement::FunctionDeclaration(function))
+        }
+        _ => None,
+    }
+}
+
+fn lower_function_params<'a>(
+    builder: AstBuilder<'a>,
+    hir_function: &HIRFunction,
+    synthetic_param_names: &HashMap<IdentifierId, String>,
+) -> Option<ast::FormalParameters<'a>> {
+    let mut items = builder.vec();
+    let mut rest = None;
+
+    for param in &hir_function.params {
+        let (place, is_spread) = match param {
+            types::Argument::Place(place) => (place, false),
+            types::Argument::Spread(place) => (place, true),
+        };
+        let name = lowered_place_name(place, synthetic_param_names)?;
+        let pattern = builder.binding_pattern_binding_identifier(SPAN, builder.ident(name));
+        if is_spread {
+            rest = Some(builder.alloc_formal_parameter_rest(
+                SPAN,
+                builder.vec(),
+                builder.binding_rest_element(SPAN, pattern),
+                NONE,
+            ));
+        } else {
+            items.push(builder.plain_formal_parameter(SPAN, pattern));
+        }
+    }
+
+    Some(builder.formal_parameters(SPAN, ast::FormalParameterKind::FormalParameter, items, rest))
 }
 
 struct LoweringState<'a, 'hir> {
@@ -77,6 +136,7 @@ struct LoweringState<'a, 'hir> {
     block_map: &'hir HashMap<types::BlockId, &'hir types::BasicBlock>,
     instruction_map: &'hir HashMap<IdentifierId, &'hir Instruction>,
     used_temps: HashSet<IdentifierId>,
+    synthetic_param_names: HashMap<IdentifierId, String>,
 }
 
 #[derive(Clone, Copy)]
@@ -91,13 +151,21 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         block_map: &'hir HashMap<types::BlockId, &'hir types::BasicBlock>,
         instruction_map: &'hir HashMap<IdentifierId, &'hir Instruction>,
         used_temps: HashSet<IdentifierId>,
+        synthetic_param_names: HashMap<IdentifierId, String>,
     ) -> Self {
         Self {
             builder,
             block_map,
             instruction_map,
             used_temps,
+            synthetic_param_names,
         }
+    }
+
+    fn is_jsx_text_place(&self, place: &Place) -> bool {
+        self.instruction_map
+            .get(&place.identifier.id)
+            .is_some_and(|instr| matches!(instr.value, InstructionValue::JSXText { .. }))
     }
 
     fn lower_terminal(
@@ -487,6 +555,32 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 }
                 Some(statements)
             }
+            Terminal::Logical {
+                test, fallthrough, ..
+            }
+            | Terminal::Optional {
+                test, fallthrough, ..
+            }
+            | Terminal::Ternary {
+                test, fallthrough, ..
+            } => {
+                let mut statements = self.lower_block_sequence(
+                    *test,
+                    Some(*fallthrough),
+                    visiting_blocks,
+                    control_context,
+                )?;
+                if Some(*fallthrough) != stop_at {
+                    statements.extend(self.lower_block_sequence(
+                        *fallthrough,
+                        stop_at,
+                        visiting_blocks,
+                        control_context,
+                    )?);
+                }
+                Some(statements)
+            }
+            Terminal::Unreachable { .. } => Some(self.builder.vec()),
             _ => None,
         }
     }
@@ -509,9 +603,13 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
             return None;
         }
 
+        let suppressed_declares =
+            collect_same_block_suppressed_declare_instruction_ids(&block.instructions);
         let mut statements = self.builder.vec();
         for instruction in &block.instructions {
-            if let Some(statement) = self.lower_instruction_to_statement(instruction)? {
+            if let Some(statement) =
+                self.lower_instruction_to_statement(instruction, &suppressed_declares)?
+            {
                 statements.push(statement);
             }
         }
@@ -528,11 +626,15 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
     fn lower_instruction_to_statement(
         &self,
         instruction: &Instruction,
+        suppressed_declares: &HashSet<types::InstructionId>,
     ) -> Option<Option<ast::Statement<'a>>> {
         match &instruction.value {
             InstructionValue::DeclareLocal { lvalue, .. }
             | InstructionValue::DeclareContext { lvalue, .. } => {
                 if lvalue.kind == InstructionKind::Catch {
+                    return Some(None);
+                }
+                if suppressed_declares.contains(&instruction.id) {
                     return Some(None);
                 }
                 let name = place_name(&lvalue.place)?;
@@ -689,7 +791,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
     }
 
     fn lower_catch_parameter(&self, place: &Place) -> Option<ast::CatchParameter<'a>> {
-        let name = place_name(place)?;
+        let name = lowered_place_name(place, &self.synthetic_param_names)?;
         Some(
             self.builder.catch_parameter(
                 SPAN,
@@ -818,7 +920,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         place: &Place,
         visiting: &mut HashSet<IdentifierId>,
     ) -> Option<ast::Expression<'a>> {
-        if let Some(name) = place_name(place) {
+        if let Some(name) = lowered_place_name(place, &self.synthetic_param_names) {
             return Some(
                 self.builder
                     .expression_identifier(SPAN, self.builder.ident(name)),
@@ -849,6 +951,47 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 self.builder
                     .expression_identifier(SPAN, self.builder.ident(binding.name())),
             ),
+            InstructionValue::FunctionExpression {
+                name,
+                lowered_func,
+                expr_type,
+                ..
+            } => lower_function_expression_ast(
+                self.builder,
+                name.as_deref(),
+                lowered_func,
+                *expr_type,
+            ),
+            InstructionValue::TemplateLiteral {
+                quasis, subexprs, ..
+            } => {
+                let mut expressions = self.builder.vec();
+                for expr in subexprs {
+                    expressions.push(self.lower_place(expr, visiting)?);
+                }
+                Some(
+                    self.builder.expression_template_literal(
+                        SPAN,
+                        self.builder.vec_from_iter(quasis.iter().enumerate().map(
+                            |(index, quasi)| {
+                                self.builder.template_element(
+                                    SPAN,
+                                    ast::TemplateElementValue {
+                                        raw: self.builder.atom(&quasi.raw),
+                                        cooked: quasi
+                                            .cooked
+                                            .as_deref()
+                                            .map(|cooked| self.builder.atom(cooked)),
+                                    },
+                                    index + 1 == quasis.len(),
+                                    false,
+                                )
+                            },
+                        )),
+                        expressions,
+                    ),
+                )
+            }
             InstructionValue::Primitive { value, .. } => Some(lower_primitive(self.builder, value)),
             InstructionValue::BinaryExpression {
                 operator,
@@ -940,6 +1083,32 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
             InstructionValue::ObjectExpression { properties, .. } => Some(
                 self.builder
                     .expression_object(SPAN, self.lower_object_properties(properties, visiting)?),
+            ),
+            InstructionValue::JsxExpression {
+                tag,
+                props,
+                children,
+                ..
+            } => lower_jsx_expression(
+                self.builder,
+                tag,
+                props,
+                children.as_deref(),
+                |place, visiting| self.lower_place(place, visiting),
+                |place| self.is_jsx_text_place(place),
+                &HashSet::new(),
+                visiting,
+            ),
+            InstructionValue::JsxFragment { children, .. } => lower_jsx_fragment_expression(
+                self.builder,
+                children,
+                |place, visiting| self.lower_place(place, visiting),
+                |place| self.is_jsx_text_place(place),
+                visiting,
+            ),
+            InstructionValue::JSXText { value, .. } => Some(
+                self.builder
+                    .expression_string_literal(SPAN, self.builder.atom(value), None),
             ),
             InstructionValue::PropertyLoad {
                 object,
@@ -1058,14 +1227,6 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 false,
                 self.lower_simple_assignment_target(lvalue, visiting)?,
             )),
-            InstructionValue::MetaProperty { meta, property, .. } => Some(
-                self.builder.expression_meta_property(
-                    SPAN,
-                    self.builder.identifier_name(SPAN, self.builder.ident(meta)),
-                    self.builder
-                        .identifier_name(SPAN, self.builder.ident(property)),
-                ),
-            ),
             _ => None,
         }
     }
@@ -1331,13 +1492,45 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
     ) -> Option<Option<ast::Expression<'a>>> {
         let statements =
             self.lower_block_sequence(update_block, Some(test_block), &mut HashSet::new(), None)?;
-        if statements.is_empty() {
-            return Some(None);
-        }
-        let expressions = statements
+        let mut expressions: Vec<ast::Expression<'a>> = statements
             .into_iter()
-            .map(|statement| statement_to_expression(statement, self.builder.allocator))
-            .collect::<Option<Vec<_>>>()?;
+            .filter_map(|statement| statement_to_expression(statement, self.builder.allocator))
+            .collect();
+
+        // Upstream includes the block's trailing value expression (e.g., LoadLocal)
+        // in the for-update sequence. Our lower_instruction_to_statement suppresses
+        // unnamed LoadLocal/LoadContext instructions, so we need to recover the
+        // trailing value from the last block before the test block.
+        // Traverse the block chain to find the terminal block of the update sequence.
+        let mut cur = update_block;
+        loop {
+            let Some(block) = self.block_map.get(&cur) else {
+                break;
+            };
+            match &block.terminal {
+                Terminal::Goto { block: next, .. } if *next == test_block => {
+                    // Found the last block before the test. Check for trailing LoadLocal.
+                    if let Some(last_instr) = block.instructions.last()
+                        && matches!(
+                            last_instr.value,
+                            InstructionValue::LoadLocal { .. }
+                                | InstructionValue::LoadContext { .. }
+                        )
+                        && last_instr.lvalue.identifier.name.is_none()
+                        && let Some(expr) =
+                            self.lower_instruction_value(&last_instr.value, &mut HashSet::new())
+                    {
+                        expressions.push(expr);
+                    }
+                    break;
+                }
+                Terminal::Goto { block: next, .. } => {
+                    cur = *next;
+                }
+                _ => break,
+            }
+        }
+
         match expressions.len() {
             0 => Some(None),
             1 => expressions.into_iter().next().map(Some),
@@ -1457,7 +1650,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
     }
 }
 
-fn lower_property_load<'a, F>(
+pub(crate) fn lower_property_load<'a, F>(
     builder: AstBuilder<'a>,
     object: &Place,
     property: &types::PropertyLiteral,
@@ -1497,7 +1690,7 @@ where
     }
 }
 
-fn lower_property_assignment_target<'a, F>(
+pub(crate) fn lower_property_assignment_target<'a, F>(
     builder: AstBuilder<'a>,
     object: &Place,
     property: &types::PropertyLiteral,
@@ -1509,6 +1702,474 @@ where
 {
     let expression = lower_property_load(builder, object, property, false, lower_place, visiting)?;
     expression_to_assignment_target(builder, expression)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lower_jsx_expression<'a, F, G>(
+    builder: AstBuilder<'a>,
+    tag: &types::JsxTag,
+    props: &[types::JsxAttribute],
+    children: Option<&[Place]>,
+    lower_place: F,
+    is_jsx_text: G,
+    fbt_operands: &HashSet<IdentifierId>,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<ast::Expression<'a>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+    G: Fn(&Place) -> bool + Copy,
+{
+    let opening_name = lower_jsx_element_name(builder, tag, lower_place, visiting)?;
+    let attributes = lower_jsx_attributes(builder, props, lower_place, fbt_operands, visiting)?;
+    let is_single_child_fbt_tag = matches!(tag, types::JsxTag::BuiltinTag(name) if name == "fbt:param" || name == "fbs:param");
+    let jsx_children = if is_single_child_fbt_tag {
+        lower_jsx_fbt_children(
+            builder,
+            children.unwrap_or(&[]),
+            lower_place,
+            is_jsx_text,
+            visiting,
+        )?
+    } else {
+        lower_jsx_children(
+            builder,
+            children.unwrap_or(&[]),
+            lower_place,
+            is_jsx_text,
+            visiting,
+        )?
+    };
+    let closing_element = if jsx_children.is_empty() {
+        None
+    } else {
+        // Clone the opening name for the closing element to avoid
+        // double-consuming the tag Place's temp expression.
+        let closing_name = opening_name.clone_in(builder.allocator);
+        Some(builder.alloc_jsx_closing_element(SPAN, closing_name))
+    };
+
+    Some(builder.expression_jsx_element(
+        SPAN,
+        builder.alloc_jsx_opening_element(SPAN, opening_name, NONE, attributes),
+        jsx_children,
+        closing_element,
+    ))
+}
+
+pub(crate) fn lower_jsx_fragment_expression<'a, F, G>(
+    builder: AstBuilder<'a>,
+    children: &[Place],
+    lower_place: F,
+    is_jsx_text: G,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<ast::Expression<'a>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+    G: Fn(&Place) -> bool + Copy,
+{
+    Some(builder.expression_jsx_fragment(
+        SPAN,
+        builder.jsx_opening_fragment(SPAN),
+        lower_jsx_children(builder, children, lower_place, is_jsx_text, visiting)?,
+        builder.jsx_closing_fragment(SPAN),
+    ))
+}
+
+fn lower_jsx_element_name<'a, F>(
+    builder: AstBuilder<'a>,
+    tag: &types::JsxTag,
+    lower_place: F,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<ast::JSXElementName<'a>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+{
+    match tag {
+        types::JsxTag::BuiltinTag(name) => {
+            if let Some((namespace, local)) = name.split_once(':') {
+                Some(builder.jsx_element_name_namespaced_name(
+                    SPAN,
+                    builder.jsx_identifier(SPAN, builder.atom(namespace)),
+                    builder.jsx_identifier(SPAN, builder.atom(local)),
+                ))
+            } else {
+                Some(builder.jsx_element_name_identifier(SPAN, builder.atom(name)))
+            }
+        }
+        types::JsxTag::Component(place) => {
+            expression_to_jsx_element_name(builder, lower_place(place, visiting)?)
+        }
+    }
+}
+
+fn expression_to_jsx_element_name<'a>(
+    builder: AstBuilder<'a>,
+    expression: ast::Expression<'a>,
+) -> Option<ast::JSXElementName<'a>> {
+    match expression {
+        ast::Expression::Identifier(identifier) => {
+            Some(builder.jsx_element_name_identifier_reference(SPAN, identifier.name))
+        }
+        ast::Expression::StaticMemberExpression(member) => {
+            Some(builder.jsx_element_name_member_expression(
+                SPAN,
+                expression_to_jsx_member_expression_object(
+                    builder,
+                    member.object.clone_in(builder.allocator),
+                )?,
+                builder.jsx_identifier(SPAN, member.property.name),
+            ))
+        }
+        ast::Expression::ThisExpression(_) => Some(builder.jsx_element_name_this_expression(SPAN)),
+        _ => None,
+    }
+}
+
+fn expression_to_jsx_member_expression_object<'a>(
+    builder: AstBuilder<'a>,
+    expression: ast::Expression<'a>,
+) -> Option<ast::JSXMemberExpressionObject<'a>> {
+    match expression {
+        ast::Expression::Identifier(identifier) => {
+            Some(builder.jsx_member_expression_object_identifier_reference(SPAN, identifier.name))
+        }
+        ast::Expression::StaticMemberExpression(member) => {
+            Some(builder.jsx_member_expression_object_member_expression(
+                SPAN,
+                expression_to_jsx_member_expression_object(
+                    builder,
+                    member.object.clone_in(builder.allocator),
+                )?,
+                builder.jsx_identifier(SPAN, member.property.name),
+            ))
+        }
+        ast::Expression::ThisExpression(_) => {
+            Some(builder.jsx_member_expression_object_this_expression(SPAN))
+        }
+        _ => None,
+    }
+}
+
+fn lower_jsx_attributes<'a, F>(
+    builder: AstBuilder<'a>,
+    props: &[types::JsxAttribute],
+    lower_place: F,
+    fbt_operands: &HashSet<IdentifierId>,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<oxc_allocator::Vec<'a, ast::JSXAttributeItem<'a>>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+{
+    let mut attributes = builder.vec();
+    for prop in props {
+        match prop {
+            types::JsxAttribute::Attribute { name, place } => {
+                let value =
+                    lower_jsx_attribute_value(builder, place, lower_place, fbt_operands, visiting)?;
+                attributes.push(builder.jsx_attribute_item_attribute(
+                    SPAN,
+                    builder.jsx_attribute_name_identifier(SPAN, builder.atom(name)),
+                    value,
+                ));
+            }
+            types::JsxAttribute::SpreadAttribute { argument } => {
+                attributes.push(
+                    builder.jsx_attribute_item_spread_attribute(
+                        SPAN,
+                        lower_place(argument, visiting)?,
+                    ),
+                );
+            }
+        }
+    }
+    Some(attributes)
+}
+
+fn lower_jsx_attribute_value<'a, F>(
+    builder: AstBuilder<'a>,
+    place: &Place,
+    lower_place: F,
+    fbt_operands: &HashSet<IdentifierId>,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<Option<ast::JSXAttributeValue<'a>>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+{
+    let expression = lower_place(place, visiting)?;
+    match expression {
+        ast::Expression::BooleanLiteral(boolean) => {
+            let expr = ast::Expression::BooleanLiteral(boolean);
+            Some(Some(ast::JSXAttributeValue::ExpressionContainer(
+                builder
+                    .alloc(builder.jsx_expression_container(SPAN, ast::JSXExpression::from(expr))),
+            )))
+        }
+        ast::Expression::StringLiteral(literal) => {
+            // Upstream STRING_REQUIRES_EXPR_CONTAINER_PATTERN:
+            // /[\u{0000}-\u{001F}\u{007F}\u{0080}-\u{FFFF}\u{010000}-\u{10FFFF}]|"|\\/
+            // Wraps in expression container when the value contains control chars,
+            // non-ASCII chars, double quotes, or backslashes — unless it's an fbt operand.
+            let is_fbt_operand = fbt_operands.contains(&place.identifier.id);
+            let needs_expr_container = !is_fbt_operand
+                && literal.value.chars().any(|c| {
+                    matches!(c, '\u{0000}'..='\u{001F}' | '\u{007F}'..='\u{FFFF}'
+                        | '\u{10000}'..='\u{10FFFF}' | '"' | '\\')
+                });
+            if needs_expr_container {
+                let expr = ast::Expression::StringLiteral(literal);
+                Some(Some(ast::JSXAttributeValue::ExpressionContainer(
+                    builder.alloc(
+                        builder.jsx_expression_container(SPAN, ast::JSXExpression::from(expr)),
+                    ),
+                )))
+            } else {
+                Some(Some(ast::JSXAttributeValue::StringLiteral(literal)))
+            }
+        }
+        ast::Expression::JSXElement(element) => {
+            // Wrap JSX elements in expression containers: value={<Foo/>}
+            Some(Some(ast::JSXAttributeValue::ExpressionContainer(
+                builder.alloc_jsx_expression_container(
+                    SPAN,
+                    ast::JSXExpression::from(ast::Expression::JSXElement(element)),
+                ),
+            )))
+        }
+        ast::Expression::JSXFragment(fragment) => {
+            // Wrap JSX fragments in expression containers: value={<>...</>}
+            Some(Some(ast::JSXAttributeValue::ExpressionContainer(
+                builder.alloc_jsx_expression_container(
+                    SPAN,
+                    ast::JSXExpression::from(ast::Expression::JSXFragment(fragment)),
+                ),
+            )))
+        }
+        expression => Some(Some(ast::JSXAttributeValue::ExpressionContainer(
+            builder.alloc_jsx_expression_container(SPAN, ast::JSXExpression::from(expression)),
+        ))),
+    }
+}
+
+/// Pattern matching upstream's `JSX_TEXT_CHILD_REQUIRES_EXPR_CONTAINER_PATTERN`.
+/// When a JSXText value contains any of these characters, it must be wrapped
+/// in an expression container to preserve the value through JSX parsing.
+fn jsx_text_needs_expr_container(value: &str) -> bool {
+    value
+        .chars()
+        .any(|c| matches!(c, '<' | '>' | '&' | '{' | '}'))
+}
+
+fn lower_jsx_children<'a, F, G>(
+    builder: AstBuilder<'a>,
+    children: &[Place],
+    lower_place: F,
+    is_jsx_text: G,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<oxc_allocator::Vec<'a, ast::JSXChild<'a>>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+    G: Fn(&Place) -> bool + Copy,
+{
+    let mut lowered = builder.vec();
+    for child in children {
+        lowered.push(lower_jsx_child(
+            builder,
+            child,
+            lower_place,
+            is_jsx_text,
+            visiting,
+        )?);
+    }
+    Some(lowered)
+}
+
+fn lower_jsx_child<'a, F, G>(
+    builder: AstBuilder<'a>,
+    place: &Place,
+    lower_place: F,
+    is_jsx_text: G,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<ast::JSXChild<'a>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+    G: Fn(&Place) -> bool + Copy,
+{
+    let expression = lower_place(place, visiting)?;
+    // Upstream codegenJsxElement distinguishes JSXText from other expressions:
+    // - JSXText with <>&{} chars → ExpressionContainer(StringLiteral)
+    // - JSXText without those chars → raw JSXText
+    // - JSXElement/JSXFragment → passthrough
+    // - Everything else → ExpressionContainer(expression)
+    if is_jsx_text(place) {
+        match expression {
+            ast::Expression::StringLiteral(literal) => {
+                if jsx_text_needs_expr_container(&literal.value) {
+                    Some(builder.jsx_child_expression_container(
+                        SPAN,
+                        ast::JSXExpression::from(ast::Expression::StringLiteral(literal)),
+                    ))
+                } else {
+                    let value = literal.unbox().value;
+                    Some(ast::JSXChild::Text(
+                        builder.alloc_jsx_text(SPAN, value, None),
+                    ))
+                }
+            }
+            expression => Some(
+                builder.jsx_child_expression_container(SPAN, ast::JSXExpression::from(expression)),
+            ),
+        }
+    } else {
+        match expression {
+            ast::Expression::JSXElement(element) => Some(ast::JSXChild::Element(element)),
+            ast::Expression::JSXFragment(fragment) => Some(ast::JSXChild::Fragment(fragment)),
+            expression => Some(
+                builder.jsx_child_expression_container(SPAN, ast::JSXExpression::from(expression)),
+            ),
+        }
+    }
+}
+
+/// Lower JSX children for `fbt:param` / `fbs:param` tags.
+///
+/// `babel-plugin-fbt` only accepts JSX elements or expression containers as
+/// children of `<fbt:param>`. A bare `JSXFragment` child is rejected, so we
+/// wrap fragments in a `JSXExpressionContainer` (`{<>...</>}`).
+///
+/// Upstream `codegenJsxFbtChildElement` keeps JSXText and JSXElement as-is.
+fn lower_jsx_fbt_children<'a, F, G>(
+    builder: AstBuilder<'a>,
+    children: &[Place],
+    lower_place: F,
+    is_jsx_text: G,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<oxc_allocator::Vec<'a, ast::JSXChild<'a>>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+    G: Fn(&Place) -> bool + Copy,
+{
+    let mut lowered = builder.vec();
+    for child in children {
+        lowered.push(lower_jsx_fbt_child(
+            builder,
+            child,
+            lower_place,
+            is_jsx_text,
+            visiting,
+        )?);
+    }
+    Some(lowered)
+}
+
+fn lower_jsx_fbt_child<'a, F, G>(
+    builder: AstBuilder<'a>,
+    place: &Place,
+    lower_place: F,
+    is_jsx_text: G,
+    visiting: &mut HashSet<IdentifierId>,
+) -> Option<ast::JSXChild<'a>>
+where
+    F: Fn(&Place, &mut HashSet<IdentifierId>) -> Option<ast::Expression<'a>> + Copy,
+    G: Fn(&Place) -> bool + Copy,
+{
+    let expression = lower_place(place, visiting)?;
+    // Upstream codegenJsxFbtChildElement: JSXText and JSXElement pass through.
+    if is_jsx_text(place) {
+        match expression {
+            ast::Expression::StringLiteral(literal) => {
+                let value = literal.unbox().value;
+                Some(ast::JSXChild::Text(
+                    builder.alloc_jsx_text(SPAN, value, None),
+                ))
+            }
+            expression => Some(
+                builder.jsx_child_expression_container(SPAN, ast::JSXExpression::from(expression)),
+            ),
+        }
+    } else {
+        match expression {
+            // fbt:param only allows JSX element or expression container as children.
+            // JSXElement is passed through directly.
+            ast::Expression::JSXElement(element) => Some(ast::JSXChild::Element(element)),
+            // JSXFragment must be wrapped in an expression container so that
+            // babel-plugin-fbt can process it: {<>...</>} rather than bare <>...</>.
+            ast::Expression::JSXFragment(fragment) => Some(builder.jsx_child_expression_container(
+                SPAN,
+                ast::JSXExpression::from(ast::Expression::JSXFragment(fragment)),
+            )),
+            expression => Some(
+                builder.jsx_child_expression_container(SPAN, ast::JSXExpression::from(expression)),
+            ),
+        }
+    }
+}
+
+pub(crate) fn lower_function_expression_ast<'a>(
+    builder: AstBuilder<'a>,
+    name: Option<&str>,
+    lowered_func: &types::LoweredFunction,
+    expr_type: types::FunctionExpressionType,
+) -> Option<ast::Expression<'a>> {
+    let hir_function = &lowered_func.func;
+    let synthetic_param_names = synthetic_param_names(hir_function);
+    let params = lower_function_params(builder, hir_function, &synthetic_param_names)?;
+    let statements = try_lower_function_body_ast(builder, hir_function)?;
+    let mut directives = builder.vec();
+    for directive in &hir_function.directives {
+        directives.push(builder.directive(
+            SPAN,
+            builder.string_literal(SPAN, builder.atom(directive), None),
+            builder.atom(directive),
+        ));
+    }
+
+    if expr_type == types::FunctionExpressionType::ArrowFunctionExpression
+        && directives.is_empty()
+        && let Some(expression) = single_return_expression(&statements, builder.allocator)
+    {
+        return Some(builder.expression_arrow_function(
+            SPAN,
+            true,
+            hir_function.async_,
+            NONE,
+            builder.alloc(params),
+            NONE,
+            builder.alloc(builder.function_body(
+                SPAN,
+                builder.vec(),
+                builder.vec1(builder.statement_expression(SPAN, expression)),
+            )),
+        ));
+    }
+
+    let body = builder.alloc(builder.function_body(SPAN, directives, statements));
+    match expr_type {
+        types::FunctionExpressionType::ArrowFunctionExpression => {
+            Some(builder.expression_arrow_function(
+                SPAN,
+                false,
+                hir_function.async_,
+                NONE,
+                builder.alloc(params),
+                NONE,
+                body,
+            ))
+        }
+        types::FunctionExpressionType::FunctionExpression
+        | types::FunctionExpressionType::FunctionDeclaration => Some(builder.expression_function(
+            SPAN,
+            ast::FunctionType::FunctionExpression,
+            name.map(|name| builder.binding_identifier(SPAN, builder.atom(name))),
+            hir_function.generator,
+            hir_function.async_,
+            false,
+            NONE,
+            NONE,
+            builder.alloc(params),
+            NONE,
+            Some(body),
+        )),
+    }
 }
 
 fn collect_used_temps(hir_function: &HIRFunction) -> HashSet<IdentifierId> {
@@ -1751,7 +2412,25 @@ fn statement_to_expression<'a>(
     }
 }
 
-fn lower_primitive<'a>(builder: AstBuilder<'a>, value: &PrimitiveValue) -> ast::Expression<'a> {
+fn single_return_expression<'a>(
+    statements: &oxc_allocator::Vec<'a, ast::Statement<'a>>,
+    allocator: &'a Allocator,
+) -> Option<ast::Expression<'a>> {
+    if statements.len() != 1 {
+        return None;
+    }
+    match statements.first()? {
+        ast::Statement::ReturnStatement(return_stmt) => {
+            Some(return_stmt.argument.as_ref()?.clone_in(allocator))
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn lower_primitive<'a>(
+    builder: AstBuilder<'a>,
+    value: &PrimitiveValue,
+) -> ast::Expression<'a> {
     match value {
         PrimitiveValue::Null => builder.expression_null_literal(SPAN),
         PrimitiveValue::Undefined => builder.expression_identifier(SPAN, "undefined"),
@@ -1765,7 +2444,7 @@ fn lower_primitive<'a>(builder: AstBuilder<'a>, value: &PrimitiveValue) -> ast::
     }
 }
 
-fn lower_binary_operator(operator: types::BinaryOperator) -> AstBinaryOperator {
+pub(crate) fn lower_binary_operator(operator: types::BinaryOperator) -> AstBinaryOperator {
     match operator {
         types::BinaryOperator::Eq => AstBinaryOperator::Equality,
         types::BinaryOperator::NotEq => AstBinaryOperator::Inequality,
@@ -1792,7 +2471,7 @@ fn lower_binary_operator(operator: types::BinaryOperator) -> AstBinaryOperator {
     }
 }
 
-fn lower_unary_operator(operator: types::UnaryOperator) -> AstUnaryOperator {
+pub(crate) fn lower_unary_operator(operator: types::UnaryOperator) -> AstUnaryOperator {
     match operator {
         types::UnaryOperator::Minus => AstUnaryOperator::UnaryNegation,
         types::UnaryOperator::Plus => AstUnaryOperator::UnaryPlus,
@@ -1803,7 +2482,7 @@ fn lower_unary_operator(operator: types::UnaryOperator) -> AstUnaryOperator {
     }
 }
 
-fn lower_logical_operator(operator: types::LogicalOperator) -> AstLogicalOperator {
+pub(crate) fn lower_logical_operator(operator: types::LogicalOperator) -> AstLogicalOperator {
     match operator {
         types::LogicalOperator::And => AstLogicalOperator::And,
         types::LogicalOperator::Or => AstLogicalOperator::Or,
@@ -1811,14 +2490,14 @@ fn lower_logical_operator(operator: types::LogicalOperator) -> AstLogicalOperato
     }
 }
 
-fn lower_update_operator(operator: types::UpdateOperator) -> AstUpdateOperator {
+pub(crate) fn lower_update_operator(operator: types::UpdateOperator) -> AstUpdateOperator {
     match operator {
         types::UpdateOperator::Increment => AstUpdateOperator::Increment,
         types::UpdateOperator::Decrement => AstUpdateOperator::Decrement,
     }
 }
 
-fn expression_to_simple_assignment_target<'a>(
+pub(crate) fn expression_to_simple_assignment_target<'a>(
     builder: AstBuilder<'a>,
     expression: ast::Expression<'a>,
 ) -> Option<ast::SimpleAssignmentTarget<'a>> {
@@ -1862,9 +2541,56 @@ fn same_place(left: &Place, right: &Place) -> bool {
 }
 
 fn place_name(place: &Place) -> Option<&str> {
-    match place.identifier.name.as_ref()? {
-        types::IdentifierName::Named(name) | types::IdentifierName::Promoted(name) => Some(name),
+    let name = match place.identifier.name.as_ref()? {
+        types::IdentifierName::Named(name) | types::IdentifierName::Promoted(name) => name,
+    };
+    is_identifier_name(name).then_some(name)
+}
+
+fn lowered_place_name<'a>(
+    place: &'a Place,
+    synthetic_param_names: &'a HashMap<IdentifierId, String>,
+) -> Option<&'a str> {
+    place_name(place).or_else(|| {
+        synthetic_param_names
+            .get(&place.identifier.id)
+            .map(String::as_str)
+    })
+}
+
+fn synthetic_param_names(hir_function: &HIRFunction) -> HashMap<IdentifierId, String> {
+    let mut names = HashMap::new();
+    let mut next_temp = 0usize;
+    for param in &hir_function.params {
+        let identifier = match param {
+            types::Argument::Place(place) | types::Argument::Spread(place) => &place.identifier,
+        };
+        if !identifier
+            .name
+            .as_ref()
+            .is_some_and(|name| is_identifier_name(name.value()))
+        {
+            names.insert(identifier.id, format!("t{next_temp}"));
+            next_temp += 1;
+        }
     }
+    for (_, block) in &hir_function.body.blocks {
+        if let Terminal::Try {
+            handler_binding, ..
+        } = &block.terminal
+            && let Some(binding) = handler_binding
+            && !binding
+                .identifier
+                .name
+                .as_ref()
+                .is_some_and(|name| is_identifier_name(name.value()))
+            && !names.contains_key(&binding.identifier.id)
+        {
+            names.insert(binding.identifier.id, format!("t{next_temp}"));
+            next_temp += 1;
+        }
+    }
+    names
 }
 
 fn variable_declaration_kind(kind: InstructionKind) -> Option<ast::VariableDeclarationKind> {
@@ -1881,9 +2607,43 @@ fn variable_declaration_kind(kind: InstructionKind) -> Option<ast::VariableDecla
     }
 }
 
+fn collect_same_block_suppressed_declare_instruction_ids(
+    instructions: &[Instruction],
+) -> HashSet<types::InstructionId> {
+    let mut materialized = HashSet::new();
+    let mut suppressed = HashSet::new();
+    for instruction in instructions.iter().rev() {
+        match &instruction.value {
+            InstructionValue::StoreLocal { lvalue, .. }
+            | InstructionValue::StoreContext { lvalue, .. } => {
+                if lvalue.place.identifier.name.is_some()
+                    && variable_declaration_kind(lvalue.kind).is_some()
+                {
+                    materialized.insert(lvalue.place.identifier.declaration_id);
+                }
+            }
+            InstructionValue::DeclareLocal { lvalue, .. }
+            | InstructionValue::DeclareContext { lvalue, .. } => {
+                if materialized.contains(&lvalue.place.identifier.declaration_id) {
+                    suppressed.insert(instruction.id);
+                } else {
+                    materialized.insert(lvalue.place.identifier.declaration_id);
+                }
+            }
+            _ => {}
+        }
+    }
+    suppressed
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+
+    use oxc_allocator::Allocator;
+    use oxc_ast::AstBuilder;
+    use oxc_codegen::{Codegen, CodegenOptions, IndentChar};
+    use oxc_span::{SPAN, SourceType};
 
     use crate::{
         environment::Environment,
@@ -1896,7 +2656,28 @@ mod tests {
         options::EnvironmentConfig,
     };
 
-    use super::try_lower_function_body;
+    use super::{try_lower_function_body_ast, try_lower_function_declaration_ast};
+
+    fn try_lower_function_body(hir_function: &HIRFunction) -> Option<String> {
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        let body = try_lower_function_body_ast(builder, hir_function)?;
+        let program = builder.program(
+            SPAN,
+            SourceType::mjs(),
+            "",
+            builder.vec(),
+            None,
+            builder.vec(),
+            body,
+        );
+        let options = CodegenOptions {
+            indent_char: IndentChar::Space,
+            indent_width: 2,
+            ..CodegenOptions::default()
+        };
+        Some(Codegen::new().with_options(options).build(&program).code)
+    }
 
     #[test]
     fn lowers_straight_line_temp_return() {
@@ -1936,8 +2717,8 @@ mod tests {
             Terminal::Return {
                 value: temp_sum.clone(),
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(3),
                 loc: SourceLocation::Generated,
+                id: InstructionId(3),
             },
             temp_sum,
         );
@@ -1964,8 +2745,8 @@ mod tests {
             Terminal::Return {
                 value: temp_undefined.clone(),
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(5),
                 loc: SourceLocation::Generated,
+                id: InstructionId(5),
             },
             temp_undefined,
         );
@@ -2003,8 +2784,8 @@ mod tests {
             Terminal::Return {
                 value: temp_call.clone(),
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(13),
                 loc: SourceLocation::Generated,
+                id: InstructionId(13),
             },
             temp_call,
         );
@@ -2030,8 +2811,8 @@ mod tests {
             Terminal::Return {
                 value: named.clone(),
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(21),
                 loc: SourceLocation::Generated,
+                id: InstructionId(21),
             },
             named,
         );
@@ -2070,8 +2851,8 @@ mod tests {
             Terminal::Return {
                 value: named,
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(33),
                 loc: SourceLocation::Generated,
+                id: InstructionId(33),
             },
             temporary_place(34),
         );
@@ -2130,8 +2911,8 @@ mod tests {
             Terminal::Return {
                 value: object,
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(44),
                 loc: SourceLocation::Generated,
+                id: InstructionId(44),
             },
             temporary_place(45),
         );
@@ -2151,20 +2932,19 @@ mod tests {
 
         let hir = HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns: value_place.clone(),
             context: vec![],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![
                     (
-                        BlockId::new(0),
+                        BlockId(0),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(0),
+                            id: BlockId(0),
                             instructions: vec![instruction(
                                 61,
                                 temporary_place(62),
@@ -2178,21 +2958,21 @@ mod tests {
                             )],
                             terminal: Terminal::If {
                                 test,
-                                consequent: BlockId::new(1),
-                                alternate: BlockId::new(2),
-                                fallthrough: BlockId::new(3),
-                                id: InstructionId::new(50),
                                 loc: SourceLocation::Generated,
+                                consequent: BlockId(1),
+                                alternate: BlockId(2),
+                                fallthrough: BlockId(3),
+                                id: InstructionId(50),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(1),
+                        BlockId(1),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(1),
+                            id: BlockId(1),
                             instructions: vec![
                                 instruction(
                                     51,
@@ -2216,20 +2996,20 @@ mod tests {
                                 ),
                             ],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(3),
-                                variant: types::GotoVariant::Try,
-                                id: InstructionId::new(57),
                                 loc: SourceLocation::Generated,
+                                block: BlockId(3),
+                                variant: types::GotoVariant::Break,
+                                id: InstructionId(57),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(2),
+                        BlockId(2),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(2),
+                            id: BlockId(2),
                             instructions: vec![
                                 instruction(
                                     52,
@@ -2253,26 +3033,26 @@ mod tests {
                                 ),
                             ],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(3),
-                                variant: types::GotoVariant::Try,
-                                id: InstructionId::new(59),
                                 loc: SourceLocation::Generated,
+                                block: BlockId(3),
+                                variant: types::GotoVariant::Break,
+                                id: InstructionId(59),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(3),
+                        BlockId(3),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(3),
+                            id: BlockId(3),
                             instructions: vec![],
                             terminal: Terminal::Return {
                                 value: value_place,
                                 return_variant: types::ReturnVariant::Explicit,
-                                id: InstructionId::new(60),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(60),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
@@ -2303,20 +3083,19 @@ mod tests {
 
         let hir = HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns: value_place.clone(),
             context: vec![],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![
                     (
-                        BlockId::new(0),
+                        BlockId(0),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(0),
+                            id: BlockId(0),
                             instructions: vec![instruction(
                                 74,
                                 temporary_place(75),
@@ -2329,21 +3108,21 @@ mod tests {
                                 },
                             )],
                             terminal: Terminal::While {
-                                test: BlockId::new(1),
-                                loop_block: BlockId::new(2),
-                                fallthrough: BlockId::new(3),
-                                id: InstructionId::new(76),
                                 loc: SourceLocation::Generated,
+                                test: BlockId(1),
+                                loop_block: BlockId(2),
+                                fallthrough: BlockId(3),
+                                id: InstructionId(76),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(1),
+                        BlockId(1),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(1),
+                            id: BlockId(1),
                             instructions: vec![instruction(
                                 77,
                                 test_temp.clone(),
@@ -2353,20 +3132,20 @@ mod tests {
                                 },
                             )],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(2),
+                                block: BlockId(2),
                                 variant: types::GotoVariant::Continue,
-                                id: InstructionId::new(78),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(78),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(2),
+                        BlockId(2),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(2),
+                            id: BlockId(2),
                             instructions: vec![
                                 instruction(
                                     79,
@@ -2390,26 +3169,26 @@ mod tests {
                                 ),
                             ],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(1),
+                                block: BlockId(1),
                                 variant: types::GotoVariant::Continue,
-                                id: InstructionId::new(82),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(82),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(3),
+                        BlockId(3),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(3),
+                            id: BlockId(3),
                             instructions: vec![],
                             terminal: Terminal::Return {
                                 value: value_place,
                                 return_variant: types::ReturnVariant::Explicit,
-                                id: InstructionId::new(83),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(83),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
@@ -2442,20 +3221,19 @@ mod tests {
 
         let hir = HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns: sum_place.clone(),
             context: vec![],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![
                     (
-                        BlockId::new(0),
+                        BlockId(0),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(0),
+                            id: BlockId(0),
                             instructions: vec![instruction(
                                 98,
                                 temporary_place(99),
@@ -2468,23 +3246,23 @@ mod tests {
                                 },
                             )],
                             terminal: Terminal::For {
-                                init: BlockId::new(1),
-                                test: BlockId::new(2),
-                                update: Some(BlockId::new(3)),
-                                loop_block: BlockId::new(4),
-                                fallthrough: BlockId::new(5),
-                                id: InstructionId::new(100),
                                 loc: SourceLocation::Generated,
+                                init: BlockId(1),
+                                test: BlockId(2),
+                                update: Some(BlockId(3)),
+                                loop_block: BlockId(4),
+                                fallthrough: BlockId(5),
+                                id: InstructionId(100),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(1),
+                        BlockId(1),
                         BasicBlock {
                             kind: types::BlockKind::Loop,
-                            id: BlockId::new(1),
+                            id: BlockId(1),
                             instructions: vec![
                                 instruction(
                                     101,
@@ -2508,20 +3286,20 @@ mod tests {
                                 ),
                             ],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(2),
+                                block: BlockId(2),
                                 variant: types::GotoVariant::Break,
-                                id: InstructionId::new(104),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(104),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(2),
+                        BlockId(2),
                         BasicBlock {
                             kind: types::BlockKind::Value,
-                            id: BlockId::new(2),
+                            id: BlockId(2),
                             instructions: vec![
                                 instruction(
                                     105,
@@ -2544,21 +3322,21 @@ mod tests {
                             ],
                             terminal: Terminal::Branch {
                                 test: test_expr,
-                                consequent: BlockId::new(4),
-                                alternate: BlockId::new(5),
-                                fallthrough: BlockId::new(5),
-                                id: InstructionId::new(107),
                                 loc: SourceLocation::Generated,
+                                consequent: BlockId(4),
+                                alternate: BlockId(5),
+                                fallthrough: BlockId(5),
+                                id: InstructionId(107),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(3),
+                        BlockId(3),
                         BasicBlock {
                             kind: types::BlockKind::Loop,
-                            id: BlockId::new(3),
+                            id: BlockId(3),
                             instructions: vec![
                                 instruction(
                                     108,
@@ -2592,20 +3370,20 @@ mod tests {
                                 ),
                             ],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(2),
+                                block: BlockId(2),
                                 variant: types::GotoVariant::Break,
-                                id: InstructionId::new(112),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(112),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(4),
+                        BlockId(4),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(4),
+                            id: BlockId(4),
                             instructions: vec![
                                 instruction(
                                     113,
@@ -2631,26 +3409,26 @@ mod tests {
                                 ),
                             ],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(3),
+                                block: BlockId(3),
                                 variant: types::GotoVariant::Continue,
-                                id: InstructionId::new(116),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(116),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(5),
+                        BlockId(5),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(5),
+                            id: BlockId(5),
                             instructions: vec![],
                             terminal: Terminal::Return {
                                 value: sum_place,
                                 return_variant: types::ReturnVariant::Explicit,
-                                id: InstructionId::new(117),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(117),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
@@ -2681,20 +3459,19 @@ mod tests {
 
         let hir = HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns: value_place.clone(),
             context: vec![],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![
                     (
-                        BlockId::new(0),
+                        BlockId(0),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(0),
+                            id: BlockId(0),
                             instructions: vec![instruction(
                                 124,
                                 temporary_place(125),
@@ -2707,22 +3484,22 @@ mod tests {
                                 },
                             )],
                             terminal: Terminal::Try {
-                                block: BlockId::new(1),
+                                block: BlockId(1),
                                 handler_binding: Some(catch_place),
-                                handler: BlockId::new(2),
-                                fallthrough: BlockId::new(3),
-                                id: InstructionId::new(126),
                                 loc: SourceLocation::Generated,
+                                handler: BlockId(2),
+                                fallthrough: BlockId(3),
+                                id: InstructionId(126),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(1),
+                        BlockId(1),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(1),
+                            id: BlockId(1),
                             instructions: vec![instruction(
                                 127,
                                 one.clone(),
@@ -2733,18 +3510,18 @@ mod tests {
                             )],
                             terminal: Terminal::Throw {
                                 value: one,
-                                id: InstructionId::new(128),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(128),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(2),
+                        BlockId(2),
                         BasicBlock {
                             kind: types::BlockKind::Catch,
-                            id: BlockId::new(2),
+                            id: BlockId(2),
                             instructions: vec![
                                 instruction(
                                     129,
@@ -2768,26 +3545,26 @@ mod tests {
                                 ),
                             ],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(3),
-                                variant: types::GotoVariant::Try,
-                                id: InstructionId::new(132),
                                 loc: SourceLocation::Generated,
+                                block: BlockId(3),
+                                variant: types::GotoVariant::Break,
+                                id: InstructionId(132),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(3),
+                        BlockId(3),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(3),
+                            id: BlockId(3),
                             instructions: vec![],
                             terminal: Terminal::Return {
                                 value: value_place,
                                 return_variant: types::ReturnVariant::Explicit,
-                                id: InstructionId::new(133),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(133),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
@@ -2819,20 +3596,19 @@ mod tests {
 
         let hir = HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns: value_place.clone(),
             context: vec![],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![
                     (
-                        BlockId::new(0),
+                        BlockId(0),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(0),
+                            id: BlockId(0),
                             instructions: vec![
                                 instruction(
                                     145,
@@ -2859,26 +3635,26 @@ mod tests {
                                 cases: vec![
                                     types::SwitchCase {
                                         test: Some(one),
-                                        block: BlockId::new(1),
+                                        block: BlockId(1),
                                     },
                                     types::SwitchCase {
                                         test: None,
-                                        block: BlockId::new(2),
+                                        block: BlockId(2),
                                     },
                                 ],
-                                fallthrough: BlockId::new(3),
-                                id: InstructionId::new(148),
                                 loc: SourceLocation::Generated,
+                                fallthrough: BlockId(3),
+                                id: InstructionId(148),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(1),
+                        BlockId(1),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(1),
+                            id: BlockId(1),
                             instructions: vec![
                                 instruction(
                                     149,
@@ -2902,20 +3678,20 @@ mod tests {
                                 ),
                             ],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(3),
+                                block: BlockId(3),
                                 variant: types::GotoVariant::Break,
-                                id: InstructionId::new(152),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(152),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(2),
+                        BlockId(2),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(2),
+                            id: BlockId(2),
                             instructions: vec![
                                 instruction(
                                     153,
@@ -2939,26 +3715,26 @@ mod tests {
                                 ),
                             ],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(3),
+                                block: BlockId(3),
                                 variant: types::GotoVariant::Break,
-                                id: InstructionId::new(156),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(156),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(3),
+                        BlockId(3),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(3),
+                            id: BlockId(3),
                             instructions: vec![],
                             terminal: Terminal::Return {
                                 value: value_place,
                                 return_variant: types::ReturnVariant::Explicit,
-                                id: InstructionId::new(157),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(157),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
@@ -3026,8 +3802,8 @@ mod tests {
             Terminal::Return {
                 value: ternary,
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(170),
                 loc: SourceLocation::Generated,
+                id: InstructionId(170),
             },
             temporary_place(171),
         );
@@ -3086,8 +3862,8 @@ mod tests {
             Terminal::Return {
                 value: index_place,
                 return_variant: types::ReturnVariant::Explicit,
-                id: InstructionId::new(191),
                 loc: SourceLocation::Generated,
+                id: InstructionId(191),
             },
             temporary_place(192),
         );
@@ -3109,20 +3885,19 @@ mod tests {
 
         let hir = HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns: value_place.clone(),
             context: vec![],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![
                     (
-                        BlockId::new(0),
+                        BlockId(0),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(0),
+                            id: BlockId(0),
                             instructions: vec![instruction(
                                 206,
                                 temporary_place(207),
@@ -3135,22 +3910,22 @@ mod tests {
                                 },
                             )],
                             terminal: Terminal::ForOf {
-                                init: BlockId::new(1),
-                                test: BlockId::new(2),
-                                loop_block: BlockId::new(3),
-                                fallthrough: BlockId::new(4),
-                                id: InstructionId::new(208),
                                 loc: SourceLocation::Generated,
+                                init: BlockId(1),
+                                test: BlockId(2),
+                                loop_block: BlockId(3),
+                                fallthrough: BlockId(4),
+                                id: InstructionId(208),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(1),
+                        BlockId(1),
                         BasicBlock {
                             kind: types::BlockKind::Loop,
-                            id: BlockId::new(1),
+                            id: BlockId(1),
                             instructions: vec![instruction(
                                 209,
                                 iterator_place.clone(),
@@ -3160,20 +3935,20 @@ mod tests {
                                 },
                             )],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(2),
+                                block: BlockId(2),
                                 variant: types::GotoVariant::Break,
-                                id: InstructionId::new(210),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(210),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(2),
+                        BlockId(2),
                         BasicBlock {
                             kind: types::BlockKind::Loop,
-                            id: BlockId::new(2),
+                            id: BlockId(2),
                             instructions: vec![
                                 instruction(
                                     211,
@@ -3207,21 +3982,21 @@ mod tests {
                             ],
                             terminal: Terminal::Branch {
                                 test: test_place,
-                                consequent: BlockId::new(3),
-                                alternate: BlockId::new(4),
-                                fallthrough: BlockId::new(4),
-                                id: InstructionId::new(215),
                                 loc: SourceLocation::Generated,
+                                consequent: BlockId(3),
+                                alternate: BlockId(4),
+                                fallthrough: BlockId(4),
+                                id: InstructionId(215),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(3),
+                        BlockId(3),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(3),
+                            id: BlockId(3),
                             instructions: vec![instruction(
                                 216,
                                 temporary_place(217),
@@ -3235,26 +4010,26 @@ mod tests {
                                 },
                             )],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(1),
+                                block: BlockId(1),
                                 variant: types::GotoVariant::Continue,
-                                id: InstructionId::new(218),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(218),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(4),
+                        BlockId(4),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(4),
+                            id: BlockId(4),
                             instructions: vec![],
                             terminal: Terminal::Return {
                                 value: value_place,
                                 return_variant: types::ReturnVariant::Explicit,
-                                id: InstructionId::new(219),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(219),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
@@ -3284,20 +4059,19 @@ mod tests {
 
         let hir = HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns: value_place.clone(),
             context: vec![],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![
                     (
-                        BlockId::new(0),
+                        BlockId(0),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(0),
+                            id: BlockId(0),
                             instructions: vec![instruction(
                                 225,
                                 temporary_place(226),
@@ -3310,21 +4084,21 @@ mod tests {
                                 },
                             )],
                             terminal: Terminal::ForIn {
-                                init: BlockId::new(1),
-                                loop_block: BlockId::new(2),
-                                fallthrough: BlockId::new(3),
-                                id: InstructionId::new(227),
                                 loc: SourceLocation::Generated,
+                                init: BlockId(1),
+                                loop_block: BlockId(2),
+                                fallthrough: BlockId(3),
+                                id: InstructionId(227),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(1),
+                        BlockId(1),
                         BasicBlock {
                             kind: types::BlockKind::Loop,
-                            id: BlockId::new(1),
+                            id: BlockId(1),
                             instructions: vec![
                                 instruction(
                                     228,
@@ -3357,21 +4131,21 @@ mod tests {
                             ],
                             terminal: Terminal::Branch {
                                 test: test_place,
-                                consequent: BlockId::new(2),
-                                alternate: BlockId::new(3),
-                                fallthrough: BlockId::new(3),
-                                id: InstructionId::new(232),
                                 loc: SourceLocation::Generated,
+                                consequent: BlockId(2),
+                                alternate: BlockId(3),
+                                fallthrough: BlockId(3),
+                                id: InstructionId(232),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(2),
+                        BlockId(2),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(2),
+                            id: BlockId(2),
                             instructions: vec![instruction(
                                 233,
                                 temporary_place(234),
@@ -3385,26 +4159,26 @@ mod tests {
                                 },
                             )],
                             terminal: Terminal::Goto {
-                                block: BlockId::new(1),
+                                block: BlockId(1),
                                 variant: types::GotoVariant::Continue,
-                                id: InstructionId::new(235),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(235),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
                         },
                     ),
                     (
-                        BlockId::new(3),
+                        BlockId(3),
                         BasicBlock {
                             kind: types::BlockKind::Block,
-                            id: BlockId::new(3),
+                            id: BlockId(3),
                             instructions: vec![],
                             terminal: Terminal::Return {
                                 value: value_place,
                                 return_variant: types::ReturnVariant::Explicit,
-                                id: InstructionId::new(236),
                                 loc: SourceLocation::Generated,
+                                id: InstructionId(236),
                             },
                             preds: HashSet::new(),
                             phis: vec![],
@@ -3424,6 +4198,595 @@ mod tests {
         );
     }
 
+    #[test]
+    fn lowers_function_declaration_with_named_params() {
+        let arg = named_place(230, 230, "arg");
+        let rest = named_place(231, 231, "rest");
+
+        let mut hir = hir_function(
+            vec![],
+            Terminal::Return {
+                value: arg.clone(),
+                return_variant: types::ReturnVariant::Explicit,
+                loc: SourceLocation::Generated,
+                id: InstructionId(232),
+            },
+            arg,
+        );
+        hir.id = Some("outlined".to_string());
+        hir.params = vec![types::Argument::Place(named_place(233, 233, "arg"))];
+        hir.params.push(types::Argument::Spread(rest));
+
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        let statement =
+            try_lower_function_declaration_ast(builder, &hir).expect("should lower declaration");
+        let program = builder.program(
+            SPAN,
+            SourceType::mjs(),
+            "",
+            builder.vec(),
+            None,
+            builder.vec(),
+            builder.vec1(statement),
+        );
+        let code = Codegen::new()
+            .with_options(CodegenOptions {
+                indent_char: IndentChar::Space,
+                indent_width: 2,
+                ..CodegenOptions::default()
+            })
+            .build(&program)
+            .code;
+
+        assert_eq!(
+            code,
+            "function outlined(arg, ...rest) {\n  return arg;\n}\n"
+        );
+    }
+
+    #[test]
+    fn lowers_function_declaration_with_directives() {
+        let value = named_place(234, 234, "value");
+
+        let mut hir = hir_function(
+            vec![],
+            Terminal::Return {
+                value: value.clone(),
+                return_variant: types::ReturnVariant::Explicit,
+                loc: SourceLocation::Generated,
+                id: InstructionId(235),
+            },
+            value,
+        );
+        hir.id = Some("outlined".to_string());
+        hir.directives = vec!["worklet".to_string()];
+
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        let statement =
+            try_lower_function_declaration_ast(builder, &hir).expect("should lower declaration");
+        let program = builder.program(
+            SPAN,
+            SourceType::mjs(),
+            "",
+            builder.vec(),
+            None,
+            builder.vec(),
+            builder.vec1(statement),
+        );
+        let code = Codegen::new()
+            .with_options(CodegenOptions {
+                indent_char: IndentChar::Space,
+                indent_width: 2,
+                ..CodegenOptions::default()
+            })
+            .build(&program)
+            .code;
+
+        assert_eq!(
+            code,
+            "function outlined() {\n  \"worklet\";\n  return value;\n}\n"
+        );
+    }
+
+    #[test]
+    fn lowers_function_declaration_with_unnamed_params() {
+        let temp = temporary_place(240);
+        let rest = temporary_place(242);
+
+        let mut hir = hir_function(
+            vec![],
+            Terminal::Return {
+                value: temp.clone(),
+                return_variant: types::ReturnVariant::Explicit,
+                loc: SourceLocation::Generated,
+                id: InstructionId(241),
+            },
+            temp.clone(),
+        );
+        hir.id = Some("outlined".to_string());
+        hir.params = vec![
+            types::Argument::Place(temp.clone()),
+            types::Argument::Spread(rest),
+        ];
+
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        let statement =
+            try_lower_function_declaration_ast(builder, &hir).expect("should lower declaration");
+        let program = builder.program(
+            SPAN,
+            SourceType::mjs(),
+            "",
+            builder.vec(),
+            None,
+            builder.vec(),
+            builder.vec1(statement),
+        );
+        let code = Codegen::new()
+            .with_options(CodegenOptions {
+                indent_char: IndentChar::Space,
+                indent_width: 2,
+                ..CodegenOptions::default()
+            })
+            .build(&program)
+            .code;
+
+        assert_eq!(code, "function outlined(t0, ...t1) {\n  return t0;\n}\n");
+    }
+
+    #[test]
+    fn lowers_function_declaration_returning_jsx() {
+        let component = named_place(250, 250, "Item");
+        let item = named_place(251, 251, "item");
+        let jsx = temporary_place(252);
+
+        let mut hir = hir_function(
+            vec![instruction(
+                252,
+                jsx.clone(),
+                types::InstructionValue::JsxExpression {
+                    tag: types::JsxTag::Component(component),
+                    props: vec![types::JsxAttribute::Attribute {
+                        name: "item".to_string(),
+                        place: item.clone(),
+                    }],
+                    children: None,
+                    loc: SourceLocation::Generated,
+                },
+            )],
+            Terminal::Return {
+                value: jsx.clone(),
+                return_variant: types::ReturnVariant::Explicit,
+                loc: SourceLocation::Generated,
+                id: InstructionId(253),
+            },
+            jsx,
+        );
+        hir.id = Some("outlined".to_string());
+        hir.params = vec![types::Argument::Place(item)];
+
+        let allocator = Allocator::default();
+        let builder = AstBuilder::new(&allocator);
+        let statement =
+            try_lower_function_declaration_ast(builder, &hir).expect("should lower declaration");
+        let program = builder.program(
+            SPAN,
+            SourceType::mjs().with_jsx(true),
+            "",
+            builder.vec(),
+            None,
+            builder.vec(),
+            builder.vec1(statement),
+        );
+        let code = Codegen::new()
+            .with_options(CodegenOptions {
+                indent_char: IndentChar::Space,
+                indent_width: 2,
+                ..CodegenOptions::default()
+            })
+            .build(&program)
+            .code;
+
+        assert_eq!(
+            code,
+            "function outlined(item) {\n  return <Item item={item} />;\n}\n"
+        );
+    }
+
+    #[test]
+    fn lowers_nested_arrow_function_expression() {
+        let captured = named_place(260, 260, "x");
+        let inner_value = temporary_place(261);
+        let inner_hir = HIRFunction {
+            env: Environment::new(EnvironmentConfig::default()),
+            id: None,
+            fn_type: ReactFunctionType::Other,
+            params: vec![],
+            returns: captured.clone(),
+            context: vec![captured.clone()],
+            body: HIR {
+                entry: BlockId(0),
+                blocks: vec![(
+                    BlockId(0),
+                    BasicBlock {
+                        kind: types::BlockKind::Block,
+                        id: BlockId(0),
+                        instructions: vec![],
+                        terminal: Terminal::Return {
+                            value: captured.clone(),
+                            return_variant: types::ReturnVariant::Explicit,
+                            loc: SourceLocation::Generated,
+                            id: InstructionId(262),
+                        },
+                        preds: HashSet::new(),
+                        phis: vec![],
+                    },
+                )],
+            },
+            generator: false,
+            async_: false,
+            directives: vec![],
+            aliasing_effects: None,
+        };
+        let hir = hir_function(
+            vec![instruction(
+                261,
+                inner_value.clone(),
+                types::InstructionValue::FunctionExpression {
+                    name: None,
+                    lowered_func: types::LoweredFunction { func: inner_hir },
+                    expr_type: types::FunctionExpressionType::ArrowFunctionExpression,
+                    loc: SourceLocation::Generated,
+                },
+            )],
+            Terminal::Return {
+                value: inner_value.clone(),
+                return_variant: types::ReturnVariant::Explicit,
+                loc: SourceLocation::Generated,
+                id: InstructionId(263),
+            },
+            inner_value,
+        );
+
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("return () => x;\n")
+        );
+    }
+
+    #[test]
+    fn lowers_template_literal_expression() {
+        let item = named_place(285, 285, "i");
+        let template = temporary_place(286);
+        let hir = hir_function(
+            vec![instruction(
+                287,
+                template.clone(),
+                types::InstructionValue::TemplateLiteral {
+                    subexprs: vec![item.clone()],
+                    quasis: vec![
+                        types::TemplateQuasi {
+                            raw: "button-".to_string(),
+                            cooked: Some("button-".to_string()),
+                        },
+                        types::TemplateQuasi {
+                            raw: String::new(),
+                            cooked: Some(String::new()),
+                        },
+                    ],
+                    loc: SourceLocation::Generated,
+                },
+            )],
+            Terminal::Return {
+                value: template.clone(),
+                return_variant: types::ReturnVariant::Explicit,
+                loc: SourceLocation::Generated,
+                id: InstructionId(288),
+            },
+            template,
+        );
+        let mut hir = hir;
+        hir.params = vec![types::Argument::Place(item)];
+
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("return `button-${i}`;\n")
+        );
+    }
+
+    #[test]
+    fn lowers_try_catch_with_synthetic_catch_binding() {
+        let array_value = temporary_place(290);
+        let undefined_value = temporary_place(291);
+        let catch_binding = Place {
+            identifier: Identifier {
+                id: IdentifierId(292),
+                declaration_id: DeclarationId(292),
+                name: Some(IdentifierName::Promoted("#t3".to_string())),
+                mutable_range: MutableRange::default(),
+                scope: None,
+                type_: Type::Poly,
+                loc: SourceLocation::Generated,
+            },
+            effect: Effect::Read,
+            reactive: false,
+            loc: SourceLocation::Generated,
+        };
+        let hir = HIRFunction {
+            env: Environment::new(EnvironmentConfig::default()),
+            id: None,
+            fn_type: ReactFunctionType::Other,
+            params: vec![],
+            returns: undefined_value.clone(),
+            context: vec![],
+            body: HIR {
+                entry: BlockId(0),
+                blocks: vec![
+                    (
+                        BlockId(0),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId(0),
+                            instructions: vec![],
+                            terminal: Terminal::Try {
+                                block: BlockId(1),
+                                handler_binding: Some(catch_binding),
+                                loc: SourceLocation::Generated,
+                                handler: BlockId(2),
+                                fallthrough: BlockId(3),
+                                id: InstructionId(293),
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId(1),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId(1),
+                            instructions: vec![instruction(
+                                294,
+                                array_value.clone(),
+                                types::InstructionValue::ArrayExpression {
+                                    elements: vec![],
+                                    loc: SourceLocation::Generated,
+                                },
+                            )],
+                            terminal: Terminal::Return {
+                                value: array_value,
+                                return_variant: types::ReturnVariant::Explicit,
+                                loc: SourceLocation::Generated,
+                                id: InstructionId(295),
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId(2),
+                        BasicBlock {
+                            kind: types::BlockKind::Catch,
+                            id: BlockId(2),
+                            instructions: vec![instruction(
+                                296,
+                                undefined_value.clone(),
+                                types::InstructionValue::Primitive {
+                                    value: types::PrimitiveValue::Undefined,
+                                    loc: SourceLocation::Generated,
+                                },
+                            )],
+                            terminal: Terminal::Return {
+                                value: undefined_value.clone(),
+                                return_variant: types::ReturnVariant::Explicit,
+                                loc: SourceLocation::Generated,
+                                id: InstructionId(297),
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                    (
+                        BlockId(3),
+                        BasicBlock {
+                            kind: types::BlockKind::Block,
+                            id: BlockId(3),
+                            instructions: vec![],
+                            terminal: Terminal::Unreachable {
+                                loc: SourceLocation::Generated,
+                                id: InstructionId(299),
+                            },
+                            preds: HashSet::new(),
+                            phis: vec![],
+                        },
+                    ),
+                ],
+            },
+            generator: false,
+            async_: false,
+            directives: vec![],
+            aliasing_effects: None,
+        };
+
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("try {\n  return [];\n} catch (t0) {\n  return;\n}\n")
+        );
+    }
+
+    #[test]
+    fn suppresses_same_block_declare_before_materialized_const_store() {
+        let x = named_place(270, 270, "x");
+        let inner = named_place(271, 271, "inner");
+        let inner_value = temporary_place(272);
+        let three_value = temporary_place(273);
+        let call_value = temporary_place(274);
+        let inner_hir = HIRFunction {
+            env: Environment::new(EnvironmentConfig::default()),
+            id: None,
+            fn_type: ReactFunctionType::Other,
+            params: vec![],
+            returns: x.clone(),
+            context: vec![x.clone()],
+            body: HIR {
+                entry: BlockId(0),
+                blocks: vec![(
+                    BlockId(0),
+                    BasicBlock {
+                        kind: types::BlockKind::Block,
+                        id: BlockId(0),
+                        instructions: vec![],
+                        terminal: Terminal::Return {
+                            value: x.clone(),
+                            return_variant: types::ReturnVariant::Explicit,
+                            loc: SourceLocation::Generated,
+                            id: InstructionId(275),
+                        },
+                        preds: HashSet::new(),
+                        phis: vec![],
+                    },
+                )],
+            },
+            generator: false,
+            async_: false,
+            directives: vec![],
+            aliasing_effects: None,
+        };
+        let hir = hir_function(
+            vec![
+                instruction(
+                    276,
+                    temporary_place(276),
+                    types::InstructionValue::DeclareLocal {
+                        lvalue: types::LValue {
+                            place: x.clone(),
+                            kind: InstructionKind::Let,
+                        },
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    277,
+                    inner_value.clone(),
+                    types::InstructionValue::FunctionExpression {
+                        name: None,
+                        lowered_func: types::LoweredFunction { func: inner_hir },
+                        expr_type: types::FunctionExpressionType::ArrowFunctionExpression,
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    278,
+                    temporary_place(278),
+                    types::InstructionValue::StoreLocal {
+                        lvalue: types::LValue {
+                            place: inner.clone(),
+                            kind: InstructionKind::Const,
+                        },
+                        value: inner_value,
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    279,
+                    three_value.clone(),
+                    types::InstructionValue::Primitive {
+                        value: types::PrimitiveValue::Number(3.0),
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    280,
+                    temporary_place(280),
+                    types::InstructionValue::StoreLocal {
+                        lvalue: types::LValue {
+                            place: x.clone(),
+                            kind: InstructionKind::Const,
+                        },
+                        value: three_value,
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    281,
+                    call_value.clone(),
+                    types::InstructionValue::CallExpression {
+                        callee: inner,
+                        args: vec![],
+                        optional: false,
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+            ],
+            Terminal::Return {
+                value: call_value.clone(),
+                return_variant: types::ReturnVariant::Explicit,
+                loc: SourceLocation::Generated,
+                id: InstructionId(282),
+            },
+            call_value,
+        );
+
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("const inner = () => x;\nconst x = 3;\nreturn inner();\n")
+        );
+    }
+
+    #[test]
+    fn suppresses_earlier_duplicate_context_declare() {
+        let interval_id = named_place(320, 320, "intervalId");
+        let undefined_value = temporary_place(321);
+        let hir = hir_function(
+            vec![
+                instruction(
+                    322,
+                    temporary_place(322),
+                    types::InstructionValue::DeclareContext {
+                        lvalue: types::LValue {
+                            place: interval_id.clone(),
+                            kind: InstructionKind::HoistedLet,
+                        },
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    323,
+                    temporary_place(323),
+                    types::InstructionValue::DeclareContext {
+                        lvalue: types::LValue {
+                            place: interval_id,
+                            kind: InstructionKind::Let,
+                        },
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+                instruction(
+                    324,
+                    undefined_value.clone(),
+                    types::InstructionValue::Primitive {
+                        value: types::PrimitiveValue::Undefined,
+                        loc: SourceLocation::Generated,
+                    },
+                ),
+            ],
+            Terminal::Return {
+                value: undefined_value.clone(),
+                return_variant: types::ReturnVariant::Explicit,
+                loc: SourceLocation::Generated,
+                id: InstructionId(325),
+            },
+            undefined_value,
+        );
+
+        assert_eq!(
+            try_lower_function_body(&hir).as_deref(),
+            Some("let intervalId;\n")
+        );
+    }
+
     fn hir_function(
         instructions: Vec<Instruction>,
         terminal: Terminal,
@@ -3431,19 +4794,18 @@ mod tests {
     ) -> HIRFunction {
         HIRFunction {
             env: Environment::new(EnvironmentConfig::default()),
-            loc: SourceLocation::Generated,
             id: None,
             fn_type: ReactFunctionType::Other,
             params: vec![],
             returns,
             context: vec![],
             body: HIR {
-                entry: BlockId::new(0),
+                entry: BlockId(0),
                 blocks: vec![(
-                    BlockId::new(0),
+                    BlockId(0),
                     BasicBlock {
                         kind: types::BlockKind::Block,
-                        id: BlockId::new(0),
+                        id: BlockId(0),
                         instructions,
                         terminal,
                         preds: HashSet::new(),
@@ -3460,7 +4822,7 @@ mod tests {
 
     fn instruction(id: u32, lvalue: Place, value: types::InstructionValue) -> Instruction {
         Instruction {
-            id: InstructionId::new(id),
+            id: InstructionId(id),
             lvalue,
             value,
             loc: SourceLocation::Generated,
@@ -3470,7 +4832,7 @@ mod tests {
 
     fn temporary_place(id: u32) -> Place {
         Place {
-            identifier: make_temporary_identifier(IdentifierId::new(id), SourceLocation::Generated),
+            identifier: make_temporary_identifier(IdentifierId(id), SourceLocation::Generated),
             effect: Effect::Read,
             reactive: false,
             loc: SourceLocation::Generated,
@@ -3480,8 +4842,8 @@ mod tests {
     fn named_place(id: u32, declaration_id: u32, name: &str) -> Place {
         Place {
             identifier: Identifier {
-                id: IdentifierId::new(id),
-                declaration_id: DeclarationId::new(declaration_id),
+                id: IdentifierId(id),
+                declaration_id: DeclarationId(declaration_id),
                 name: Some(IdentifierName::Named(name.to_string())),
                 mutable_range: MutableRange::default(),
                 scope: None,

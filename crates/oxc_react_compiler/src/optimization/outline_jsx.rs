@@ -373,8 +373,6 @@ fn emit_outlined_jsx(
             props,
             children: None,
             loc: SourceLocation::Generated,
-            opening_loc: SourceLocation::Generated,
-            closing_loc: SourceLocation::Generated,
         },
         effects: None,
     };
@@ -420,7 +418,6 @@ fn emit_outlined_fn(
 
     Some(HIRFunction {
         env: env.clone(),
-        loc: SourceLocation::Generated,
         id: Some(outlined_name.to_string()),
         fn_type: ReactFunctionType::Component,
         params: vec![Argument::Place(props_obj)],

@@ -106,8 +106,6 @@ type FireCalleesToFireFunctionBinding = IndexMap<IdentifierId, FireCalleeInfo>;
 struct FireCalleeInfo {
     fire_function_binding: Place,
     captured_callee_identifier: Identifier,
-    #[allow(dead_code)]
-    fire_loc: SourceLocation,
 }
 
 #[derive(Clone)]
@@ -259,10 +257,7 @@ fn replace_fire_functions(func: &mut HIRFunction, context: &mut FireContext) {
                                 fire_wrapped_call_expr_ids.insert(arg_place.identifier.id);
                                 fire_callee_source_ids.insert(load_local_place.identifier.id);
                                 let fire_function_binding = context
-                                    .get_or_generate_fire_function_binding(
-                                        &load_local_place,
-                                        loc.clone(),
-                                    );
+                                    .get_or_generate_fire_function_binding(&load_local_place);
 
                                 // If the callee came from a direct `LoadGlobal(name)`, rewriting
                                 // the load itself mutates the source binding in our HIR shape.
@@ -1088,11 +1083,7 @@ impl FireContext {
         self.global_load_ids.contains(&id)
     }
 
-    fn get_or_generate_fire_function_binding(
-        &mut self,
-        callee: &Place,
-        fire_loc: SourceLocation,
-    ) -> Place {
+    fn get_or_generate_fire_function_binding(&mut self, callee: &Place) -> Place {
         let fire_function_binding = self
             .fire_callees_to_fire_functions
             .entry(callee.identifier.id)
@@ -1118,7 +1109,6 @@ impl FireContext {
             FireCalleeInfo {
                 fire_function_binding: binding.clone(),
                 captured_callee_identifier: callee.identifier.clone(),
-                fire_loc,
             },
         );
 

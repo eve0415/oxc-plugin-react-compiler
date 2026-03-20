@@ -25,9 +25,6 @@ fn debug_scope_prune(scope_id: ScopeId) {
 /// - It has no reassignments
 /// - It has no declarations, OR all its declarations came from inner scopes
 pub fn prune_unused_scopes(func: &mut ReactiveFunction) {
-    if std::env::var("DISABLE_PRUNE_UNUSED_SCOPES").is_ok() {
-        return;
-    }
     transform_block(&mut func.body);
 }
 
@@ -377,12 +374,9 @@ mod tests {
     fn test_prune_empty_scope() {
         // A scope with no declarations and no reassignments should be pruned
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Scope(ReactiveScopeBlock {
                 scope: make_scope(1),
                 instructions: vec![ReactiveStatement::Instruction(Box::new(
@@ -397,7 +391,6 @@ mod tests {
                     },
                 ))],
             })],
-            directives: vec![],
         };
 
         prune_unused_scopes(&mut func);
@@ -415,17 +408,13 @@ mod tests {
         scope.reassignments.push(make_identifier(10));
 
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Scope(ReactiveScopeBlock {
                 scope,
                 instructions: vec![],
             })],
-            directives: vec![],
         };
 
         prune_unused_scopes(&mut func);
@@ -448,17 +437,13 @@ mod tests {
         );
 
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Scope(ReactiveScopeBlock {
                 scope,
                 instructions: vec![],
             })],
-            directives: vec![],
         };
 
         prune_unused_scopes(&mut func);
@@ -470,24 +455,19 @@ mod tests {
     fn test_keep_scope_with_return() {
         // A scope containing a return statement should be kept
         let mut func = ReactiveFunction {
-            loc: SourceLocation::Generated,
             id: None,
             name_hint: None,
             params: vec![],
-            generator: false,
-            async_: false,
             body: vec![ReactiveStatement::Scope(ReactiveScopeBlock {
                 scope: make_scope(1),
                 instructions: vec![ReactiveStatement::Terminal(ReactiveTerminalStatement {
                     terminal: ReactiveTerminal::Return {
                         value: make_place(1),
                         id: InstructionId(0),
-                        loc: SourceLocation::Generated,
                     },
                     label: None,
                 })],
             })],
-            directives: vec![],
         };
 
         prune_unused_scopes(&mut func);

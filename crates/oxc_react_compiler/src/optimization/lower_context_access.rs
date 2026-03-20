@@ -177,7 +177,7 @@ impl TempPlaceAllocator {
     }
 
     fn create_temporary_place(&mut self) -> Place {
-        let identifier_id = IdentifierId::new(self.next_identifier_id);
+        let identifier_id = IdentifierId(self.next_identifier_id);
         self.next_identifier_id = self.next_identifier_id.saturating_add(1);
         Place {
             identifier: make_temporary_identifier(identifier_id, SourceLocation::Generated),
@@ -346,7 +346,8 @@ fn emit_selector_fn(
     temp_alloc: &mut TempPlaceAllocator,
     keys: &[String],
 ) -> Option<Instruction> {
-    let obj = create_temporary_place(temp_alloc);
+    let mut obj = create_temporary_place(temp_alloc);
+    promote_temporary(&mut obj.identifier);
 
     let mut instructions: Vec<Instruction> = Vec::new();
     let mut elements: Vec<Place> = Vec::new();
@@ -377,7 +378,6 @@ fn emit_selector_fn(
 
     let mut selector_fn = HIRFunction {
         env: env.clone(),
-        loc: SourceLocation::Generated,
         id: None,
         fn_type: ReactFunctionType::Other,
         params: vec![Argument::Place(obj)],
@@ -416,4 +416,15 @@ fn emit_selector_fn(
         effects: None,
         loc: SourceLocation::Generated,
     })
+}
+
+/// Promote a temporary identifier to a named identifier.
+/// Mirrors upstream `promoteTemporary` which sets name to `#t{declarationId}`.
+fn promote_temporary(identifier: &mut Identifier) {
+    if identifier.name.is_none() {
+        identifier.name = Some(IdentifierName::Promoted(format!(
+            "#t{}",
+            identifier.declaration_id.0
+        )));
+    }
 }

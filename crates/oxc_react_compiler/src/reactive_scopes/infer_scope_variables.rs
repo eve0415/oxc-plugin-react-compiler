@@ -32,14 +32,14 @@ use crate::hir::visitors;
 /// Assign sequential InstructionIds to all instructions in the function.
 /// This establishes the ordering needed for mutable range tracking.
 pub fn number_instructions(func: &mut HIRFunction) -> InstructionId {
-    let mut next_id = InstructionId::new(1); // Start at 1, 0 means "unset"
+    let mut next_id = InstructionId(1); // Start at 1, 0 means "unset"
     for (_bid, block) in &mut func.body.blocks {
         for instr in &mut block.instructions {
             instr.id = next_id;
-            next_id = InstructionId::new(next_id.0 + 1);
+            next_id = InstructionId(next_id.0 + 1);
         }
         set_terminal_id(&mut block.terminal, next_id);
-        next_id = InstructionId::new(next_id.0 + 1);
+        next_id = InstructionId(next_id.0 + 1);
     }
     next_id
 }
@@ -66,8 +66,7 @@ fn set_terminal_id(terminal: &mut Terminal, id: InstructionId) {
         | Terminal::Sequence { id: tid, .. }
         | Terminal::Logical { id: tid, .. }
         | Terminal::Ternary { id: tid, .. }
-        | Terminal::Optional { id: tid, .. }
-        | Terminal::MaybeThrow { id: tid, .. } => {
+        | Terminal::Optional { id: tid, .. } => {
             *tid = id;
         }
     }
@@ -159,7 +158,7 @@ pub fn infer_mutable_ranges(func: &mut HIRFunction) {
             .instructions
             .first()
             .map(|i| i.id)
-            .unwrap_or(InstructionId::new(1));
+            .unwrap_or(InstructionId(1));
         for phi in &block.phis {
             record_first(&mut first_seen, phi.place.identifier.id, phi_id);
             for operand in phi.operands.values() {
@@ -669,12 +668,12 @@ fn apply_range(
     let start = first_seen
         .get(&ident.id)
         .copied()
-        .unwrap_or(InstructionId::new(0));
+        .unwrap_or(InstructionId(0));
     let end = last_mutated
         .get(&ident.id)
         .copied()
-        .map(|e| InstructionId::new(e.0 + 1))
-        .unwrap_or(InstructionId::new(start.0 + 1));
+        .map(|e| InstructionId(e.0 + 1))
+        .unwrap_or(InstructionId(start.0 + 1));
     ident.mutable_range = MutableRange { start, end };
 }
 
@@ -753,7 +752,6 @@ fn may_allocate(value: &InstructionValue, lvalue_type: &Type) -> bool {
         | InstructionValue::DeclareContext { .. }
         | InstructionValue::StoreLocal { .. }
         | InstructionValue::LoadGlobal { .. }
-        | InstructionValue::MetaProperty { .. }
         | InstructionValue::TypeCastExpression { .. }
         | InstructionValue::LoadLocal { .. }
         | InstructionValue::LoadContext { .. }
@@ -797,8 +795,7 @@ fn may_allocate(value: &InstructionValue, lvalue_type: &Type) -> bool {
         | InstructionValue::LogicalExpression { .. }
         | InstructionValue::ReactiveSequenceExpression { .. }
         | InstructionValue::ReactiveOptionalExpression { .. }
-        | InstructionValue::ReactiveLogicalExpression { .. }
-        | InstructionValue::ReactiveConditionalExpression { .. } => false,
+        | InstructionValue::ReactiveLogicalExpression { .. } => false,
     }
 }
 
@@ -1439,6 +1436,33 @@ fn find_disjoint_mutable_values(func: &HIRFunction) -> DisjointSet {
         }
     }
 
+    // Post-pass: union allocation temps from StoreLocal initialisations into
+    // the scope of the variable they initialise.  When a phi union caused a
+    // variable declaration to be in the disjoint set, the ObjectExpression
+    // temp that was stored into it at declaration time should share the same
+    // scope.  Without this, the temp gets its own sentinel scope which is
+    // redundant because the variable is subsequently mutated through the phi.
+    for (_bid, block) in &func.body.blocks {
+        for instr in &block.instructions {
+            if let InstructionValue::StoreLocal { lvalue, value, .. } = &instr.value
+                && let Some(&decl_ident_id) =
+                    declarations.get(&lvalue.place.identifier.declaration_id)
+                && scope_identifiers.parent.contains_key(&decl_ident_id)
+                && value.identifier.mutable_range.start.0 > 0
+                && value.identifier.mutable_range.end.0
+                    == value.identifier.mutable_range.start.0 + 1
+                && matches!(
+                    &value.identifier.type_,
+                    Type::Object { shape_id: Some(id) }
+                        if id == crate::hir::object_shape::BUILT_IN_OBJECT_ID
+                )
+            {
+                scope_identifiers.make_set(value.identifier.id);
+                scope_identifiers.union(decl_ident_id, value.identifier.id);
+            }
+        }
+    }
+
     scope_identifiers
 }
 
@@ -1593,12 +1617,6 @@ fn apply_identifier_ranges(func: &mut HIRFunction, ranges: &HashMap<IdentifierId
 // Main entry points
 // ---------------------------------------------------------------------------
 
-/// Infer reactive scope variables for a function (non-aliasing pipeline).
-/// Used by analyse_functions for function expression analysis.
-pub fn infer_reactive_scope_variables(func: &mut HIRFunction) -> u32 {
-    infer_reactive_scope_variables_impl(func, false)
-}
-
 /// Infer reactive scope variables using pre-computed aliasing ranges.
 /// This is the main pipeline entry point.
 pub fn infer_reactive_scope_variables_with_aliasing(func: &mut HIRFunction) -> u32 {
@@ -1635,7 +1653,7 @@ fn infer_reactive_scope_variables_impl(func: &mut HIRFunction, use_aliasing_rang
     // - Merges mutable ranges across all identifiers in a group
     // - Sets identifier.scope and identifier.mutableRange for each identifier
     let mut scopes: HashMap<IdentifierId, ReactiveScope> = HashMap::new();
-    let mut next_scope_id = ScopeId::new(0);
+    let mut next_scope_id = ScopeId(0);
 
     // Since we can't look up Identifier objects by IdentifierId during iteration
     // (Rust ownership), we need a two-pass approach:
@@ -1714,10 +1732,9 @@ fn infer_reactive_scope_variables_impl(func: &mut HIRFunction, use_aliasing_rang
             if scope.range.start.0 == 0 {
                 scope.range.start = ident_range.start;
             } else if ident_range.start.0 != 0 {
-                scope.range.start =
-                    InstructionId::new(scope.range.start.0.min(ident_range.start.0));
+                scope.range.start = InstructionId(scope.range.start.0.min(ident_range.start.0));
             }
-            scope.range.end = InstructionId::new(scope.range.end.0.max(ident_range.end.0));
+            scope.range.end = InstructionId(scope.range.end.0.max(ident_range.end.0));
         } else {
             // Create new scope for this group
             let scope = ReactiveScope {
@@ -1730,7 +1747,7 @@ fn infer_reactive_scope_variables_impl(func: &mut HIRFunction, use_aliasing_rang
                 early_return_value: None,
             };
             scopes.insert(group_id, scope);
-            next_scope_id = ScopeId::new(next_scope_id.0 + 1);
+            next_scope_id = ScopeId(next_scope_id.0 + 1);
         }
     }
 
@@ -1778,8 +1795,8 @@ fn infer_reactive_scope_variables_impl(func: &mut HIRFunction, use_aliasing_rang
 
         for (id, scope) in &id_to_scope {
             let ident_range = id_ranges.get(id).cloned().unwrap_or(MutableRange {
-                start: InstructionId::new(0),
-                end: InstructionId::new(0),
+                start: InstructionId(0),
+                end: InstructionId(0),
             });
             let name = id_to_name
                 .get(id)
