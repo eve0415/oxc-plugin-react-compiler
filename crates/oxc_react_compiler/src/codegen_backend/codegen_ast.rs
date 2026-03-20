@@ -672,8 +672,7 @@ fn codegen_block_no_reset<'a>(
                         && matches!(
                             &terminal_stmts[0],
                             ast::Statement::BlockStatement(b) if b.body.len() == 1
-                        )
-                    {
+                        ) {
                         // Unwrap single-element BlockStatement (upstream line 565-568)
                         match terminal_stmts.remove(0) {
                             ast::Statement::BlockStatement(block) => {
