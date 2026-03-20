@@ -246,15 +246,6 @@ fn compare_deps(
             is_subpath = false;
             break;
         } else if inferred.path[i].optional != source.path[i].optional {
-            // Allow inferred-optional vs source-non-optional: the compiler
-            // tracks optional chains more precisely than upstream's scope
-            // dependency propagation. When the user writes `propB?.x.y` in
-            // the useMemo body but `propB.x.y` in the deps array, the
-            // compiler infers optional=true while the source has optional=false.
-            // This is safe — the compiler is more cautious than the user.
-            if inferred.path[i].optional && !source.path[i].optional {
-                continue;
-            }
             return CompareDependencyResult::PathDifference;
         }
     }
