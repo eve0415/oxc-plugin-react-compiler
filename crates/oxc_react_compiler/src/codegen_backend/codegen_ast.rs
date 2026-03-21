@@ -1749,6 +1749,15 @@ fn codegen_instruction_value<'a>(
             lower_logical_operator(*operator),
             codegen_instruction_value(cx, right)?,
         )),
+        InstructionValue::MetaProperty { meta, property, .. } => Some(
+            cx.builder.expression_meta_property(
+                SPAN,
+                cx.builder
+                    .identifier_name(SPAN, cx.builder.ident(meta.as_str())),
+                cx.builder
+                    .identifier_name(SPAN, cx.builder.ident(property.as_str())),
+            ),
+        ),
         // Statement-level variants handled in codegen_instruction before reaching here.
         InstructionValue::Debugger { .. }
         | InstructionValue::DeclareLocal { .. }

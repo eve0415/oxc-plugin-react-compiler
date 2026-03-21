@@ -359,6 +359,7 @@ fn visit_instruction_value(value: &mut InstructionValue, scopes: &mut Scopes) {
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
         | InstructionValue::LoadGlobal { .. }
+        | InstructionValue::MetaProperty { .. }
         | InstructionValue::StartMemoize { .. }
         | InstructionValue::Debugger { .. } => {}
     }
@@ -658,6 +659,7 @@ fn visit_hir_instruction_value(value: &mut InstructionValue, scopes: &mut Scopes
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
         | InstructionValue::LoadGlobal { .. }
+        | InstructionValue::MetaProperty { .. }
         | InstructionValue::StartMemoize { .. }
         | InstructionValue::Debugger { .. } => {}
     }

@@ -340,6 +340,7 @@ pub(crate) fn for_each_value_operand(value: &InstructionValue, f: &mut impl FnMu
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::DeclareLocal { .. }
         | InstructionValue::DeclareContext { .. }
+        | InstructionValue::MetaProperty { .. }
         | InstructionValue::Debugger { .. } => {}
     }
 }
@@ -554,6 +555,7 @@ fn map_value_operands(value: &mut InstructionValue, f: &mut impl FnMut(&mut Plac
         | InstructionValue::LoadGlobal { .. }
         | InstructionValue::DeclareLocal { .. }
         | InstructionValue::DeclareContext { .. }
+        | InstructionValue::MetaProperty { .. }
         | InstructionValue::Debugger { .. } => {}
     }
 }

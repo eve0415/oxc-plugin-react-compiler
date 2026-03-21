@@ -1326,6 +1326,7 @@ fn each_instruction_value_operands(value: &InstructionValue) -> Vec<&Place> {
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
         | InstructionValue::LoadGlobal { .. }
+        | InstructionValue::MetaProperty { .. }
         | InstructionValue::StartMemoize { .. }
         | InstructionValue::Debugger { .. } => {}
     }
@@ -1564,6 +1565,7 @@ fn visit_instruction_value_places_mut(value: &mut InstructionValue, state: &Prom
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
         | InstructionValue::LoadGlobal { .. }
+        | InstructionValue::MetaProperty { .. }
         | InstructionValue::StartMemoize { .. }
         | InstructionValue::Debugger { .. } => {}
     }

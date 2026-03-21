@@ -147,6 +147,7 @@ fn is_pruneable(
         // Read-only operations: safe to prune
         InstructionValue::RegExpLiteral { .. }
         | InstructionValue::LoadGlobal { .. }
+        | InstructionValue::MetaProperty { .. }
         | InstructionValue::ArrayExpression { .. }
         | InstructionValue::BinaryExpression { .. }
         | InstructionValue::ComputedLoad { .. }

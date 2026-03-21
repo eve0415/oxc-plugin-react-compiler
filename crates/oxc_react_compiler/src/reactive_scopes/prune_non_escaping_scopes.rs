@@ -754,6 +754,7 @@ fn collect_operands(value: &InstructionValue) -> Vec<&Place> {
         InstructionValue::Primitive { .. }
         | InstructionValue::JSXText { .. }
         | InstructionValue::LoadGlobal { .. }
+        | InstructionValue::MetaProperty { .. }
         | InstructionValue::DeclareLocal { .. }
         | InstructionValue::DeclareContext { .. }
         | InstructionValue::StartMemoize { .. }
@@ -942,6 +943,7 @@ fn compute_memoization_inputs<'a>(
         | InstructionValue::StartMemoize { .. }
         | InstructionValue::FinishMemoize { .. }
         | InstructionValue::Debugger { .. }
+        | InstructionValue::MetaProperty { .. }
         | InstructionValue::ComputedDelete { .. }
         | InstructionValue::PropertyDelete { .. }
         | InstructionValue::LoadGlobal { .. }

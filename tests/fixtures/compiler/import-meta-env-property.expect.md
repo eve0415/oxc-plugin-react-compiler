@@ -15,9 +15,7 @@ function Component(t0) {
   const isDev = import.meta.env.DEV;
   let t1;
   if ($[0] !== title) {
-    t1 = _jsx("h1", {
-      children: title
-    });
+    t1 = <h1>{title}</h1>;
     $[0] = title;
     $[1] = t1;
   } else {
@@ -25,9 +23,7 @@ function Component(t0) {
   }
   let t2;
   if ($[2] !== count) {
-    t2 = _jsx("span", {
-      children: count
-    });
+    t2 = <span>{count}</span>;
     $[2] = count;
     $[3] = t2;
   } else {
@@ -36,13 +32,8 @@ function Component(t0) {
   let t3;
   let t4;
   if ($[4] === Symbol.for("react.memo_cache_sentinel")) {
-    t3 = isDev && _jsx("span", {
-      children: "dev mode"
-    });
-    t4 = _jsx("button", {
-      onClick: () => setCount(_temp),
-      children: "+"
-    });
+    t3 = isDev && <span>dev mode</span>;
+    t4 = <button onClick={() => setCount(_temp)}>+</button>;
     $[4] = t3;
     $[5] = t4;
   } else {
@@ -51,9 +42,7 @@ function Component(t0) {
   }
   let t5;
   if ($[6] !== t1 || $[7] !== t2) {
-    t5 = _jsxs("div", {
-      children: [t1, t2, t3, t4]
-    });
+    t5 = <div>{t1}{t2}{t3}{t4}</div>;
     $[6] = t1;
     $[7] = t2;
     $[8] = t5;

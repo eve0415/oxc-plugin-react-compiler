@@ -1352,6 +1352,9 @@ fn infer_instruction_type(
         // Debugger: no meaningful result
         InstructionValue::Debugger { .. } => Type::Poly,
 
+        // MetaProperty (e.g. import.meta): opaque object
+        InstructionValue::MetaProperty { .. } => Type::Poly,
+
         // StartMemoize/FinishMemoize: no meaningful type
         InstructionValue::StartMemoize { .. } | InstructionValue::FinishMemoize { .. } => {
             Type::Poly
@@ -1707,6 +1710,7 @@ fn instruction_value_kind(value: &InstructionValue) -> &'static str {
         InstructionValue::LogicalExpression { .. } => "LogicalExpression",
         InstructionValue::ReactiveSequenceExpression { .. } => "ReactiveSequenceExpression",
         InstructionValue::ReactiveOptionalExpression { .. } => "ReactiveOptionalExpression",
+        InstructionValue::MetaProperty { .. } => "MetaProperty",
         InstructionValue::ReactiveLogicalExpression { .. } => "ReactiveLogicalExpression",
     }
 }

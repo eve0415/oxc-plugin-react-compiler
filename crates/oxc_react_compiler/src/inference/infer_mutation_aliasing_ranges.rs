@@ -1835,6 +1835,7 @@ fn set_value_operand_effects(value: &mut InstructionValue, effect: Effect) {
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
         | InstructionValue::LoadGlobal { .. }
+        | InstructionValue::MetaProperty { .. }
         | InstructionValue::DeclareLocal { .. }
         | InstructionValue::DeclareContext { .. }
         | InstructionValue::StartMemoize { .. }
@@ -2068,6 +2069,7 @@ fn apply_operand_effects_to_value(
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
         | InstructionValue::LoadGlobal { .. }
+        | InstructionValue::MetaProperty { .. }
         | InstructionValue::DeclareLocal { .. }
         | InstructionValue::DeclareContext { .. }
         | InstructionValue::StartMemoize { .. }

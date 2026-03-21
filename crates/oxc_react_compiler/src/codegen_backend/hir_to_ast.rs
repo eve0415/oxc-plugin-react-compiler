@@ -951,6 +951,15 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 self.builder
                     .expression_identifier(SPAN, self.builder.ident(binding.name())),
             ),
+            InstructionValue::MetaProperty { meta, property, .. } => Some(
+                self.builder.expression_meta_property(
+                    SPAN,
+                    self.builder
+                        .identifier_name(SPAN, self.builder.ident(meta.as_str())),
+                    self.builder
+                        .identifier_name(SPAN, self.builder.ident(property.as_str())),
+                ),
+            ),
             InstructionValue::FunctionExpression {
                 name,
                 lowered_func,

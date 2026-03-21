@@ -752,6 +752,7 @@ fn may_allocate(value: &InstructionValue, lvalue_type: &Type) -> bool {
         | InstructionValue::DeclareContext { .. }
         | InstructionValue::StoreLocal { .. }
         | InstructionValue::LoadGlobal { .. }
+        | InstructionValue::MetaProperty { .. }
         | InstructionValue::TypeCastExpression { .. }
         | InstructionValue::LoadLocal { .. }
         | InstructionValue::LoadContext { .. }

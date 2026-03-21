@@ -3693,6 +3693,24 @@ fn lower_expr<'a>(
                 loc,
             }
         }
+        js::Expression::MetaProperty(mp) => {
+            if mp.meta.name == "import" && mp.property.name == "meta" {
+                hir::InstructionValue::MetaProperty {
+                    meta: mp.meta.name.to_string(),
+                    property: mp.property.name.to_string(),
+                    loc,
+                }
+            } else {
+                builder.push_todo(format!(
+                    "(BuildHIR::lowerExpression) Handle {}.{} MetaProperty expressions",
+                    mp.meta.name, mp.property.name
+                ));
+                hir::InstructionValue::Primitive {
+                    value: hir::PrimitiveValue::Undefined,
+                    loc,
+                }
+            }
+        }
         // Fallback for unhandled expressions — emit Todo diagnostic
         _ => {
             let expr_type = expr_type_name(expr).to_string();

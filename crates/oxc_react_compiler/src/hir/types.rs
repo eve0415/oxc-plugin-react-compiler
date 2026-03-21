@@ -487,6 +487,11 @@ pub enum InstructionValue {
         loc: SourceLocation,
     },
     // Other
+    MetaProperty {
+        meta: String,
+        property: String,
+        loc: SourceLocation,
+    },
     Debugger {
         loc: SourceLocation,
     },
@@ -540,6 +545,7 @@ impl InstructionValue {
             | Self::ReactiveSequenceExpression { loc, .. }
             | Self::ReactiveOptionalExpression { loc, .. }
             | Self::ReactiveLogicalExpression { loc, .. }
+            | Self::MetaProperty { loc, .. }
             | Self::Debugger { loc, .. } => loc,
         }
     }

@@ -354,6 +354,7 @@ fn visit_instruction_value_places(
         InstructionValue::Primitive { .. }
         | InstructionValue::JSXText { .. }
         | InstructionValue::LoadGlobal { .. }
+        | InstructionValue::MetaProperty { .. }
         | InstructionValue::RegExpLiteral { .. }
         | InstructionValue::Debugger { .. } => {}
     }
@@ -1531,6 +1532,7 @@ fn instruction_value_kind_name(value: &InstructionValue) -> &'static str {
         InstructionValue::NextPropertyOf { .. } => "NextPropertyOf",
         InstructionValue::StartMemoize { .. } => "StartMemoize",
         InstructionValue::FinishMemoize { .. } => "FinishMemoize",
+        InstructionValue::MetaProperty { .. } => "MetaProperty",
         InstructionValue::ReactiveSequenceExpression { .. } => "ReactiveSequenceExpression",
         InstructionValue::ReactiveOptionalExpression { .. } => "ReactiveOptionalExpression",
         InstructionValue::ReactiveLogicalExpression { .. } => "ReactiveLogicalExpression",
