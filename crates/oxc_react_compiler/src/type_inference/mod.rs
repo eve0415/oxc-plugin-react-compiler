@@ -469,6 +469,9 @@ pub fn infer_types(func: &mut HIRFunction) {
 
                 // Upstream InferTypes constrains JSX `ref` attributes to BuiltInUseRefId
                 // when `enableTreatRefLikeIdentifiersAsRefs` is enabled.
+                // Only apply when the identifier doesn't already have a concrete type —
+                // upstream's unifier would fail to unify Function with Object{UseRefId}
+                // and leave the existing type unchanged.
                 if func.env.config().enable_treat_ref_like_identifiers_as_refs
                     && let InstructionValue::JsxExpression { props, .. } = &instr.value
                 {
@@ -476,14 +479,17 @@ pub fn infer_types(func: &mut HIRFunction) {
                         if let JsxAttribute::Attribute { name, place } = prop
                             && name == "ref"
                         {
-                            assign_type_to_declaration(
-                                place.identifier.declaration_id,
-                                Type::Object {
-                                    shape_id: Some(BUILT_IN_USE_REF_ID.to_string()),
-                                },
-                                &declaration_ids,
-                                &mut id_types,
-                            );
+                            let existing = get_type(place.identifier.id, &id_types);
+                            if matches!(existing, Type::Poly | Type::TypeVar { .. }) {
+                                assign_type_to_declaration(
+                                    place.identifier.declaration_id,
+                                    Type::Object {
+                                        shape_id: Some(BUILT_IN_USE_REF_ID.to_string()),
+                                    },
+                                    &declaration_ids,
+                                    &mut id_types,
+                                );
+                            }
                         }
                     }
                 }

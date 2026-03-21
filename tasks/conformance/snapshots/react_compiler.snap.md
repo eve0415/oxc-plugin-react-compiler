@@ -1,10 +1,9 @@
-# React Compiler Conformance -- 99.9% parity rate
+# React Compiler Conformance -- 100.0% parity rate
 
-**1764** parity_success, **1** parity_failure, **0** skipped
+**1765** parity_success, **0** parity_failure, **0** skipped
 
 ## Failed
 
-- `custom/closure-multiple-calls-scope-leak`: Output mismatch
 
 ## Passed
 
@@ -252,6 +251,7 @@
 - `createElement-freeze`
 - `custom-opt-out-directive`
 - `custom/catch-forloop-same-name-variable`
+- `custom/closure-multiple-calls-scope-leak`
 - `custom/import-meta-env-property`
 - `custom/labeled-block-scoping`
 - `custom/local-function-call-extra-memo`
