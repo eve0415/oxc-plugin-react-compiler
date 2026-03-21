@@ -1,11 +1,10 @@
 # React Compiler Conformance -- 99.9% parity rate
 
-**1763** parity_success, **2** parity_failure, **0** skipped
+**1764** parity_success, **1** parity_failure, **0** skipped
 
 ## Failed
 
 - `custom/closure-multiple-calls-scope-leak`: Output mismatch
-- `custom/usememo-filter-sort-bail`: Output mismatch
 
 ## Passed
 
@@ -260,6 +259,7 @@
 - `custom/nested-math-method-calls`
 - `custom/object-literal-sentinel-memoize`
 - `custom/switch-break-inner-function`
+- `custom/usememo-filter-sort-bail`
 - `custom/usememo-preserve-retry`
 - `custom/usememo-property-dep`
 - `custom/useref-initial-value-sentinel`
