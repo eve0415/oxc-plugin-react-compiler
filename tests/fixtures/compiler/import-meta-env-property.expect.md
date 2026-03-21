@@ -2,6 +2,7 @@
 
 ```javascript
 import { c as _c } from "react/compiler-runtime";
+// @compilationMode(infer)
 // import.meta.env.DEV should be handled by the HIR builder.
 // Babel: _c(9) — compiles successfully
 // OXC:   SKIP — fails with "Handle MetaProperty expressions"

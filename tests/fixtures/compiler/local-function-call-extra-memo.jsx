@@ -1,3 +1,4 @@
+// @compilationMode(infer)
 // Calls to locally-defined functions after an early return should NOT be
 // separately memoized by keying on the function reference.
 // Babel calls getColor()/getLabel() directly in the JSX scope block.

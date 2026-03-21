@@ -1,3 +1,4 @@
+// @compilationMode(infer)
 // Side-effectful expression passed to useRef() should be sentinel-memoized.
 // Babel: _c(9) — wraps the useRef argument in a sentinel guard
 // OXC:   _c(8) — passes the expression directly to useRef

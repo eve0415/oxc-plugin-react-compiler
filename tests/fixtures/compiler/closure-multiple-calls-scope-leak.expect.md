@@ -2,6 +2,7 @@
 
 ```javascript
 import { c as _c } from "react/compiler-runtime";
+// @compilationMode(infer)
 // A closure defined inside a scope block (with useEffect/useRef) and called
 // multiple times should not leak extra memoization blocks.
 // Babel inlines calls inside the scope block.
@@ -89,11 +90,7 @@ function Component(t0) {
     } else {
       t18 = $[20];
     }
-    t10 = _jsx("path", {
-      ref: t17,
-      style: t18,
-      d: "M10,10"
-    });
+    t10 = <path ref={t17} style={t18} d="M10,10" />;
     const t19 = setRef(1);
     let t20;
     if ($[21] !== pathStyle) {
@@ -103,11 +100,7 @@ function Component(t0) {
     } else {
       t20 = $[22];
     }
-    t11 = _jsx("path", {
-      ref: t19,
-      style: t20,
-      d: "M20,20"
-    });
+    t11 = <path ref={t19} style={t20} d="M20,20" />;
     const t21 = setRef(2);
     let t22;
     if ($[23] !== pathStyle) {
@@ -117,11 +110,7 @@ function Component(t0) {
     } else {
       t22 = $[24];
     }
-    t12 = _jsx("path", {
-      ref: t21,
-      style: t22,
-      d: "M30,30"
-    });
+    t12 = <path ref={t21} style={t22} d="M30,30" />;
     const t23 = setRef(3);
     let t24;
     if ($[25] !== pathStyle) {
@@ -131,11 +120,7 @@ function Component(t0) {
     } else {
       t24 = $[26];
     }
-    t13 = _jsx("path", {
-      ref: t23,
-      style: t24,
-      d: "M40,40"
-    });
+    t13 = <path ref={t23} style={t24} d="M40,40" />;
     const t25 = setRef(4);
     let t26;
     if ($[27] !== pathStyle) {
@@ -145,17 +130,9 @@ function Component(t0) {
     } else {
       t26 = $[28];
     }
-    t14 = _jsx("path", {
-      ref: t25,
-      style: t26,
-      d: "M50,50"
-    });
+    t14 = <path ref={t25} style={t26} d="M50,50" />;
     t6 = anim;
-    t15 = _jsx("path", {
-      ref: setRef(5),
-      style: pathStyle(5),
-      d: "M60,60"
-    });
+    t15 = <path ref={setRef(5)} style={pathStyle(5)} d="M60,60" />;
     $[4] = animate;
     $[5] = className;
     $[6] = isAnimating;
@@ -183,10 +160,7 @@ function Component(t0) {
   }
   let t16;
   if ($[29] !== t15 || $[30] !== t6) {
-    t16 = _jsx("g", {
-      className: t6,
-      children: t15
-    });
+    t16 = <g className={t6}>{t15}</g>;
     $[29] = t15;
     $[30] = t6;
     $[31] = t16;
@@ -195,12 +169,7 @@ function Component(t0) {
   }
   let t17;
   if ($[32] !== t10 || $[33] !== t11 || $[34] !== t12 || $[35] !== t13 || $[36] !== t14 || $[37] !== t16 || $[38] !== t7 || $[39] !== t8 || $[40] !== t9) {
-    t17 = _jsxs("svg", {
-      viewBox: t7,
-      className: t8,
-      role: t9,
-      children: [t10, t11, t12, t13, t14, t16]
-    });
+    t17 = <svg viewBox={t7} className={t8} role={t9}>{t10}{t11}{t12}{t13}{t14}{t16}</svg>;
     $[32] = t10;
     $[33] = t11;
     $[34] = t12;

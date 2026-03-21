@@ -2,6 +2,7 @@
 
 ```javascript
 import { c as _c } from "react/compiler-runtime";
+// @compilationMode(infer)
 // Calls to locally-defined functions after an early return should NOT be
 // separately memoized by keying on the function reference.
 // Babel calls getColor()/getLabel() directly in the JSX scope block.
@@ -79,9 +80,7 @@ function Component(t0) {
   const getLabel = t4;
   let t5;
   if ($[7] !== title) {
-    t5 = _jsx("h1", {
-      children: title
-    });
+    t5 = <h1>{title}</h1>;
     $[7] = title;
     $[8] = t5;
   } else {
@@ -89,9 +88,7 @@ function Component(t0) {
   }
   let t6;
   if ($[9] !== count) {
-    t6 = _jsxs("span", {
-      children: [count, " items"]
-    });
+    t6 = <span>{count} items</span>;
     $[9] = count;
     $[10] = t6;
   } else {
@@ -111,10 +108,7 @@ function Component(t0) {
   const t9 = getLabel();
   let t10;
   if ($[13] !== t8 || $[14] !== t9) {
-    t10 = _jsx("span", {
-      style: t8,
-      children: t9
-    });
+    t10 = <span style={t8}>{t9}</span>;
     $[13] = t8;
     $[14] = t9;
     $[15] = t10;
@@ -123,9 +117,7 @@ function Component(t0) {
   }
   let t11;
   if ($[16] !== t10 || $[17] !== t6) {
-    t11 = _jsxs("div", {
-      children: [t6, t10]
-    });
+    t11 = <div>{t6}{t10}</div>;
     $[16] = t10;
     $[17] = t6;
     $[18] = t11;
@@ -142,9 +134,7 @@ function Component(t0) {
   }
   let t13;
   if ($[21] !== t12) {
-    t13 = _jsx("ul", {
-      children: t12
-    });
+    t13 = <ul>{t12}</ul>;
     $[21] = t12;
     $[22] = t13;
   } else {
@@ -152,9 +142,7 @@ function Component(t0) {
   }
   let t14;
   if ($[23] !== t11 || $[24] !== t13 || $[25] !== t5) {
-    t14 = _jsxs("div", {
-      children: [t5, t11, t13]
-    });
+    t14 = <div>{t5}{t11}{t13}</div>;
     $[23] = t11;
     $[24] = t13;
     $[25] = t5;
@@ -165,9 +153,7 @@ function Component(t0) {
   return t14;
 }
 function _temp2(item, i) {
-  return _jsx("li", {
-    children: item
-  }, i);
+  return <li key={i}>{item}</li>;
 }
 function _temp(c) {
   return c + 1;

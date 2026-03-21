@@ -1,3 +1,4 @@
+// @compilationMode(infer)
 // @validatePreserveExistingMemoizationGuarantees
 // useMemo with filter+sort chain should compile successfully.
 // Babel: _c(16) — compiles, replaces useMemo with cache slots

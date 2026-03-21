@@ -1,15 +1,12 @@
-# React Compiler Conformance -- 99.7% parity rate
+# React Compiler Conformance -- 99.8% parity rate
 
-**1759** parity_success, **6** parity_failure, **0** skipped
+**1762** parity_success, **3** parity_failure, **0** skipped
 
 ## Failed
 
 - `custom/closure-multiple-calls-scope-leak`: Output mismatch
 - `custom/local-function-call-extra-memo`: Output mismatch
-- `custom/method-chain-sub-expression-memo`: Output mismatch
-- `custom/object-literal-sentinel-memoize`: Output mismatch
-- `custom/usememo-filter-sort-bail`: Expected transformed output, but compiler bailed out/skipped
-- `custom/useref-initial-value-sentinel`: Output mismatch
+- `custom/usememo-filter-sort-bail`: Output mismatch
 
 ## Passed
 
@@ -259,10 +256,13 @@
 - `custom/catch-forloop-same-name-variable`
 - `custom/import-meta-env-property`
 - `custom/labeled-block-scoping`
+- `custom/method-chain-sub-expression-memo`
 - `custom/nested-math-method-calls`
+- `custom/object-literal-sentinel-memoize`
 - `custom/switch-break-inner-function`
 - `custom/usememo-preserve-retry`
 - `custom/usememo-property-dep`
+- `custom/useref-initial-value-sentinel`
 - `dce-loop`
 - `dce-unused-const`
 - `dce-unused-postfix-update`

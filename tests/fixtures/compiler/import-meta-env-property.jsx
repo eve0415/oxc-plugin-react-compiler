@@ -1,3 +1,4 @@
+// @compilationMode(infer)
 // import.meta.env.DEV should be handled by the HIR builder.
 // Babel: _c(9) — compiles successfully
 // OXC:   SKIP — fails with "Handle MetaProperty expressions"

@@ -1,3 +1,4 @@
+// @compilationMode(infer)
 // Object literal with all-primitive values should be sentinel-memoized
 // even when the result is indexed by a reactive prop.
 // Babel memoizes {primary:'cls-a',...} with a sentinel guard.

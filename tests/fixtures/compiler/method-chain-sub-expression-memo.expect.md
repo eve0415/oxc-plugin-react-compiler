@@ -2,6 +2,7 @@
 
 ```javascript
 import { c as _c } from "react/compiler-runtime";
+// @compilationMode(infer)
 // Method chain on reactive value should be memoized as a sub-expression.
 // Babel extracts Math.floor(...).toString(16).toUpperCase().padStart(2,"0")
 // into a separately memoized intermediate, then interpolates it.
@@ -11,7 +12,7 @@ function generateBar(pct, total) {
   return 'x'.repeat(Math.floor(pct * total / 100));
 }
 function Component(t0) {
-  const $ = _c(40);
+  const $ = _c(38);
   const {
     percentage,
     index,
@@ -87,118 +88,91 @@ function Component(t0) {
     t5 = $[12];
   }
   const bar20 = t5;
+  const hexValue = `0x${Math.floor(progress).toString(16).toUpperCase().padStart(2, "0")}`;
+  const cls = `row ${visible ? "show" : "hide"}`;
+  const transDelay = `${index * 50}ms`;
   let t6;
-  if ($[13] !== progress) {
-    t6 = Math.floor(progress).toString(16).toUpperCase().padStart(2, "0");
-    $[13] = progress;
+  if ($[13] !== transDelay) {
+    t6 = {
+      transitionDelay: transDelay
+    };
+    $[13] = transDelay;
     $[14] = t6;
   } else {
     t6 = $[14];
   }
-  const hexValue = `0x${t6}`;
-  const cls = `row ${visible ? "show" : "hide"}`;
-  const transDelay = `${index * 50}ms`;
   let t7;
-  if ($[15] !== transDelay) {
-    t7 = {
-      transitionDelay: transDelay
-    };
-    $[15] = transDelay;
+  if ($[15] !== bar10) {
+    t7 = <span className="sm-hide">{bar10}</span>;
+    $[15] = bar10;
     $[16] = t7;
   } else {
     t7 = $[16];
   }
   let t8;
-  if ($[17] !== bar10) {
-    t8 = _jsx("span", {
-      className: "sm-hide",
-      children: bar10
-    });
-    $[17] = bar10;
+  if ($[17] !== bar15) {
+    t8 = <span className="md-only">{bar15}</span>;
+    $[17] = bar15;
     $[18] = t8;
   } else {
     t8 = $[18];
   }
   let t9;
-  if ($[19] !== bar15) {
-    t9 = _jsx("span", {
-      className: "md-only",
-      children: bar15
-    });
-    $[19] = bar15;
+  if ($[19] !== bar20) {
+    t9 = <span className="lg-only">{bar20}</span>;
+    $[19] = bar20;
     $[20] = t9;
   } else {
     t9 = $[20];
   }
   let t10;
-  if ($[21] !== bar20) {
-    t10 = _jsx("span", {
-      className: "lg-only",
-      children: bar20
-    });
-    $[21] = bar20;
+  if ($[21] !== hexValue) {
+    t10 = <span>{hexValue}</span>;
+    $[21] = hexValue;
     $[22] = t10;
   } else {
     t10 = $[22];
   }
   let t11;
-  if ($[23] !== hexValue) {
-    t11 = _jsx("span", {
-      children: hexValue
-    });
-    $[23] = hexValue;
+  if ($[23] !== progress) {
+    t11 = progress.toFixed(1);
+    $[23] = progress;
     $[24] = t11;
   } else {
     t11 = $[24];
   }
   let t12;
-  if ($[25] !== progress) {
-    t12 = progress.toFixed(1);
-    $[25] = progress;
+  if ($[25] !== t11) {
+    t12 = <span>{t11}%</span>;
+    $[25] = t11;
     $[26] = t12;
   } else {
     t12 = $[26];
   }
   let t13;
-  if ($[27] !== t12) {
-    t13 = _jsxs("span", {
-      children: [t12, "%"]
-    });
-    $[27] = t12;
+  if ($[27] !== isLast) {
+    t13 = isLast && <div className="border" />;
+    $[27] = isLast;
     $[28] = t13;
   } else {
     t13 = $[28];
   }
   let t14;
-  if ($[29] !== isLast) {
-    t14 = isLast && _jsx("div", {
-      className: "border"
-    });
-    $[29] = isLast;
-    $[30] = t14;
+  if ($[29] !== cls || $[30] !== t10 || $[31] !== t12 || $[32] !== t13 || $[33] !== t6 || $[34] !== t7 || $[35] !== t8 || $[36] !== t9) {
+    t14 = <div className={cls} style={t6}>{t7}{t8}{t9}{t10}{t12}{t13}</div>;
+    $[29] = cls;
+    $[30] = t10;
+    $[31] = t12;
+    $[32] = t13;
+    $[33] = t6;
+    $[34] = t7;
+    $[35] = t8;
+    $[36] = t9;
+    $[37] = t14;
   } else {
-    t14 = $[30];
+    t14 = $[37];
   }
-  let t15;
-  if ($[31] !== cls || $[32] !== t10 || $[33] !== t11 || $[34] !== t13 || $[35] !== t14 || $[36] !== t7 || $[37] !== t8 || $[38] !== t9) {
-    t15 = _jsxs("div", {
-      className: cls,
-      style: t7,
-      children: [t8, t9, t10, t11, t13, t14]
-    });
-    $[31] = cls;
-    $[32] = t10;
-    $[33] = t11;
-    $[34] = t13;
-    $[35] = t14;
-    $[36] = t7;
-    $[37] = t8;
-    $[38] = t9;
-    $[39] = t15;
-  } else {
-    t15 = $[39];
-  }
-  return t15;
+  return t14;
 }
 export const FIXTURE_ENTRYPOINT = {
   fn: Component,

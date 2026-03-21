@@ -1,3 +1,4 @@
+// @compilationMode(infer)
 // A closure defined inside a scope block (with useEffect/useRef) and called
 // multiple times should not leak extra memoization blocks.
 // Babel inlines calls inside the scope block.

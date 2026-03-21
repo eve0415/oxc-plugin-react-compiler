@@ -1,3 +1,4 @@
+// @compilationMode(infer)
 // Method chain on reactive value should be memoized as a sub-expression.
 // Babel extracts Math.floor(...).toString(16).toUpperCase().padStart(2,"0")
 // into a separately memoized intermediate, then interpolates it.
