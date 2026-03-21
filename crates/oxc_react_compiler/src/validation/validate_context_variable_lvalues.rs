@@ -20,6 +20,9 @@ enum RefKind {
 /// Tracks the observed reference kind for each identifier.
 struct IdentifierKinds {
     map: HashMap<IdentifierId, (RefKind, IdentifierId)>,
+    /// Catch parameter bindings by name, used to detect the upstream-matching
+    /// inconsistency where catch params get StoreLocal but LoadContext when
+    /// captured by closures. Scoped per-function via save/restore in recursion.
     catch_like_by_name: HashMap<String, Place>,
 }
 
@@ -105,12 +108,17 @@ fn validate_impl(
                         && matches!(&value.identifier.name, Some(IdentifierName::Promoted(_)))
                         && let Some(name) = lvalue.place.identifier.name.as_ref()
                     {
-                        identifiers_insert_catch_name(
-                            identifier_kinds,
-                            name.value(),
-                            &lvalue.place,
-                            debug,
-                        );
+                        identifier_kinds
+                            .catch_like_by_name
+                            .insert(name.value().to_string(), lvalue.place.clone());
+                        if debug {
+                            eprintln!(
+                                "[DEBUG_CONTEXT_LVALUES] register-catch-name name={} id={} decl={}",
+                                name.value(),
+                                lvalue.place.identifier.id.0,
+                                lvalue.place.identifier.declaration_id.0
+                            );
+                        }
                     }
                     visit(identifier_kinds, &lvalue.place, RefKind::Local)?;
                 }
@@ -129,8 +137,10 @@ fn validate_impl(
                     binding: NonLocalBinding::Global { name },
                     loc,
                 } => {
-                    if let Some(captured_place) = identifier_kinds.catch_like_by_name.get(name) {
-                        let mut synthetic_place = captured_place.clone();
+                    if let Some(captured_place) =
+                        identifier_kinds.catch_like_by_name.get(name).cloned()
+                    {
+                        let mut synthetic_place = captured_place;
                         synthetic_place.loc = loc.clone();
                         if debug {
                             eprintln!(
@@ -144,8 +154,10 @@ fn validate_impl(
                     }
                 }
                 InstructionValue::StoreGlobal { name, loc, .. } => {
-                    if let Some(captured_place) = identifier_kinds.catch_like_by_name.get(name) {
-                        let mut synthetic_place = captured_place.clone();
+                    if let Some(captured_place) =
+                        identifier_kinds.catch_like_by_name.get(name).cloned()
+                    {
+                        let mut synthetic_place = captured_place;
                         synthetic_place.loc = loc.clone();
                         if debug {
                             eprintln!(
@@ -192,7 +204,13 @@ fn validate_impl(
                             lowered_func.func.body.blocks.len()
                         );
                     }
+                    // Save catch_like_by_name so that catch names registered in a
+                    // sibling function don't leak across function boundaries. This
+                    // prevents false positives when an unrelated scope has a local
+                    // variable with the same name as a catch parameter.
+                    let saved_catch_names = identifier_kinds.catch_like_by_name.clone();
                     validate_impl(&lowered_func.func, identifier_kinds)?;
+                    identifier_kinds.catch_like_by_name = saved_catch_names;
                 }
                 _ => {
                     // For any other instruction that has lvalues, the upstream
@@ -216,23 +234,6 @@ fn validate_impl(
         }
     }
     Ok(())
-}
-
-fn identifiers_insert_catch_name(
-    identifiers: &mut IdentifierKinds,
-    name: &str,
-    place: &Place,
-    debug: bool,
-) {
-    identifiers
-        .catch_like_by_name
-        .insert(name.to_string(), place.clone());
-    if debug {
-        eprintln!(
-            "[DEBUG_CONTEXT_LVALUES] register-catch-name name={} id={} decl={}",
-            name, place.identifier.id.0, place.identifier.declaration_id.0
-        );
-    }
 }
 
 /// Visit a place and check that its reference kind is consistent with

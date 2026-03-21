@@ -664,23 +664,27 @@ fn codegen_block_no_reset<'a>(
                     && !label.implicit
                     && !terminal_stmts.is_empty()
                 {
-                    let first = &terminal_stmts[0];
-                    // If the first statement is a declaration (const/let/var),
-                    // wrap all statements in a block to avoid invalid labeled
-                    // declarations (e.g., `bb0: const x = ...` is a syntax error).
-                    let needs_block = matches!(
-                        first,
-                        ast::Statement::VariableDeclaration(_)
-                            | ast::Statement::FunctionDeclaration(_)
-                            | ast::Statement::ClassDeclaration(_)
-                    );
-                    let body = if needs_block {
+                    // Upstream's codegenBlock always returns a BlockStatement,
+                    // then unwraps single-element blocks for the label body.
+                    // Our codegen_terminal returns Vec<Statement>, so we wrap
+                    // in a block to create proper lexical scope, matching upstream.
+                    let body = if terminal_stmts.len() == 1
+                        && matches!(
+                            &terminal_stmts[0],
+                            ast::Statement::BlockStatement(b) if b.body.len() == 1
+                        ) {
+                        // Unwrap single-element BlockStatement (upstream line 565-568)
+                        match terminal_stmts.remove(0) {
+                            ast::Statement::BlockStatement(block) => {
+                                block.unbox().body.into_iter().next().unwrap()
+                            }
+                            _ => unreachable!(),
+                        }
+                    } else {
                         cx.builder.statement_block(
                             SPAN,
                             cx.builder.vec_from_iter(terminal_stmts.drain(..)),
                         )
-                    } else {
-                        terminal_stmts.remove(0)
                     };
                     let labeled = cx.builder.statement_labeled(
                         SPAN,
@@ -2389,9 +2393,7 @@ fn emit_var_decl_stmt_inner<'a>(
     init: Option<ast::Expression<'a>>,
     decl_id: Option<DeclarationId>,
 ) -> ast::Statement<'a> {
-    // Prevent duplicate `let`/`const` for the same logical variable.
-    // When a DIFFERENT DeclarationId uses the same name (block-scoped shadowing),
-    // allow the new declaration — this is valid JS.
+    // Prevent duplicate `let`/`const` for the same name at the same scope level.
     if cx.declared_names.contains(name) {
         let is_same_variable = decl_id.is_some_and(|did| cx.declared_decl_ids.contains(&did));
         if is_same_variable {
@@ -2400,7 +2402,7 @@ fn emit_var_decl_stmt_inner<'a>(
             }
             return cx.builder.statement_empty(SPAN);
         }
-        // Different DeclarationId — allow new declaration (block-scoped shadowing).
+        // Non-temp: allow new declaration (block-scoped shadowing is valid JS).
     }
     cx.declared_names.insert(name.to_string());
     cx.register_scoped_name(name);
@@ -4056,15 +4058,16 @@ fn codegen_method_call_callee<'a>(
         ));
     }
 
-    // Default: computed member expression.
-    Some(ast::Expression::from(
-        cx.builder.member_expression_computed(
-            SPAN,
-            codegen_place(cx, receiver)?,
-            prop_expr,
-            receiver_optional,
-        ),
-    ))
+    // Upstream invariant: MethodCall::property must resolve to a
+    // MemberExpression. If the property temp was promoted (memoized into a
+    // reactive scope), it can't be inlined as a member expression, and we'd
+    // emit `t0[t1](t2)` which is semantically incorrect. Bail out matching
+    // upstream's CodegenReactiveFunction.ts invariant.
+    cx.codegen_error = Some(crate::error::CompilerError::invariant(
+        "[Codegen] Internal error: MethodCall::property must be an unpromoted + unmemoized MemberExpression",
+        None,
+    ));
+    None
 }
 
 fn codegen_array_elements<'a>(
@@ -4274,68 +4277,6 @@ fn extract_for_of_left<'a>(
         }
     }
     None
-}
-
-/// Mark all terminal labels in a reactive block as implicit, preventing
-/// them from being emitted as JavaScript labels. Used for inner function
-/// expressions where CFG block IDs should not become visible labels.
-fn suppress_labels_recursive(block: &mut ReactiveBlock) {
-    for stmt in block.iter_mut() {
-        match stmt {
-            ReactiveStatement::Terminal(term_stmt) => {
-                if let Some(label) = &mut term_stmt.label {
-                    label.implicit = true;
-                }
-                match &mut term_stmt.terminal {
-                    ReactiveTerminal::If {
-                        consequent,
-                        alternate,
-                        ..
-                    } => {
-                        suppress_labels_recursive(consequent);
-                        if let Some(alt) = alternate {
-                            suppress_labels_recursive(alt);
-                        }
-                    }
-                    ReactiveTerminal::Switch { cases, .. } => {
-                        for case in cases {
-                            if let Some(block) = &mut case.block {
-                                suppress_labels_recursive(block);
-                            }
-                        }
-                    }
-                    ReactiveTerminal::For {
-                        init, loop_block, ..
-                    } => {
-                        suppress_labels_recursive(init);
-                        suppress_labels_recursive(loop_block);
-                    }
-                    ReactiveTerminal::While { loop_block, .. }
-                    | ReactiveTerminal::DoWhile { loop_block, .. }
-                    | ReactiveTerminal::ForOf { loop_block, .. }
-                    | ReactiveTerminal::ForIn { loop_block, .. } => {
-                        suppress_labels_recursive(loop_block);
-                    }
-                    ReactiveTerminal::Try {
-                        block: try_block,
-                        handler,
-                        ..
-                    } => {
-                        suppress_labels_recursive(try_block);
-                        suppress_labels_recursive(handler);
-                    }
-                    _ => {}
-                }
-            }
-            ReactiveStatement::Scope(scope_block) => {
-                suppress_labels_recursive(&mut scope_block.instructions);
-            }
-            ReactiveStatement::PrunedScope(pruned) => {
-                suppress_labels_recursive(&mut pruned.instructions);
-            }
-            _ => {}
-        }
-    }
 }
 
 fn crate_label_name(block_id: BlockId) -> &'static str {
@@ -4867,10 +4808,6 @@ fn lower_function_expression_via_reactive<'a>(
     crate::reactive_scopes::prune_unused_lvalues::prune_unused_lvalues(&mut reactive_fn);
     let _ =
         crate::reactive_scopes::prune_hoisted_contexts::prune_hoisted_contexts(&mut reactive_fn);
-
-    // Mark all terminal labels as implicit for inner functions — these are
-    // CFG block IDs that shouldn't be emitted as visible JavaScript labels.
-    suppress_labels_recursive(&mut reactive_fn.body);
 
     let options = CodegenOptions {
         enable_change_variable_codegen: false,

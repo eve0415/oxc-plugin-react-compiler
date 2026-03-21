@@ -81,15 +81,24 @@ pub(crate) fn find_fixture_dir() -> PathBuf {
     workspace_root.join("third_party/react/compiler/packages/babel-plugin-react-compiler/src/__tests__/fixtures/compiler")
 }
 
-pub(crate) fn collect_fixtures(dir: &Path, filter: Option<&str>) -> Vec<Fixture> {
+pub(crate) fn find_custom_fixture_dir() -> PathBuf {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir.parent().unwrap().parent().unwrap();
+    workspace_root.join("tests/fixtures/compiler")
+}
+
+pub(crate) fn collect_fixtures(
+    dir: &Path,
+    filter: Option<&str>,
+    name_prefix: Option<&str>,
+) -> Vec<Fixture> {
     let mut fixtures = Vec::new();
 
     if !dir.exists() {
-        eprintln!("Fixture directory not found: {}", dir.display());
         return fixtures;
     }
 
-    collect_fixtures_recursive(dir, None, filter, &mut fixtures);
+    collect_fixtures_recursive(dir, None, filter, name_prefix, &mut fixtures);
 
     fixtures.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -100,6 +109,7 @@ fn collect_fixtures_recursive(
     dir: &Path,
     prefix: Option<&str>,
     filter: Option<&str>,
+    name_prefix: Option<&str>,
     fixtures: &mut Vec<Fixture>,
 ) {
     let mut entries: Vec<_> = std::fs::read_dir(dir)
@@ -113,7 +123,7 @@ fn collect_fixtures_recursive(
 
         if path.is_dir() {
             let subdir_name = path.file_name().unwrap().to_string_lossy().to_string();
-            collect_fixtures_recursive(&path, Some(&subdir_name), filter, fixtures);
+            collect_fixtures_recursive(&path, Some(&subdir_name), filter, name_prefix, fixtures);
             continue;
         }
 
@@ -125,9 +135,13 @@ fn collect_fixtures_recursive(
         }
 
         let stem = path.file_stem().unwrap().to_string_lossy().to_string();
-        let name = match prefix {
+        let local_name = match prefix {
             Some(p) => format!("{p}/{stem}"),
             None => stem.clone(),
+        };
+        let name = match name_prefix {
+            Some(np) => format!("{np}{local_name}"),
+            None => local_name,
         };
 
         if let Some(filter) = filter
