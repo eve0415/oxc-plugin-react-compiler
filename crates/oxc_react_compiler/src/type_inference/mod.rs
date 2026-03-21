@@ -193,6 +193,16 @@ pub fn infer_types(func: &mut HIRFunction) {
     let mut id_string_values: HashMap<IdentifierId, String> = HashMap::new();
     let mut store_local_decl_writes: HashMap<DeclarationId, usize> = HashMap::new();
     for (_bid, block) in &func.body.blocks {
+        // Count phi nodes as additional "writes" for declarations.
+        // This prevents declaration-level type propagation for conditionally
+        // assigned variables (e.g., `let y; if(a) y = [b];`). In upstream's
+        // unifier, such variables get a Phi type; our forward pass would
+        // otherwise smear one branch's concrete type across all uses.
+        for phi in &block.phis {
+            *store_local_decl_writes
+                .entry(phi.place.identifier.declaration_id)
+                .or_insert(0) += 1;
+        }
         for instr in &block.instructions {
             if let InstructionValue::StoreLocal { lvalue, .. } = &instr.value {
                 *store_local_decl_writes

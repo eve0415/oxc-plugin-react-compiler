@@ -1090,6 +1090,7 @@ fn classify_statement(stmt: &ReactiveStatement) -> StmtKind {
 
 /// Extracted data from a ReactiveScopeBlock needed for merge comparisons.
 /// This avoids holding a borrow on the block array.
+#[allow(dead_code)]
 struct ScopeData {
     dependencies: Vec<ReactiveScopeDependency>,
     declarations: Vec<(IdentifierId, ScopeDeclaration)>,
@@ -1151,14 +1152,12 @@ fn can_merge_scope_data(
         && next.dependencies.iter().all(|dep| {
             let path_ok = dep.path.is_empty();
             let type_ok = is_always_invalidating_type(&dep.identifier.type_);
+            // Upstream: check if dependency's declarationId matches any
+            // declaration in current scope, or is reachable via temporaries.
             let decl_match = current.declarations.iter().any(|(_, decl)| {
-                if decl.identifier.declaration_id == dep.identifier.declaration_id {
-                    decl.identifier.mutable_range.start.0 >= current.range_start
-                        && decl.identifier.mutable_range.end.0 <= current.range_end
-                } else {
-                    temporaries.get(&dep.identifier.declaration_id)
+                decl.identifier.declaration_id == dep.identifier.declaration_id
+                    || temporaries.get(&dep.identifier.declaration_id)
                         == Some(&decl.identifier.declaration_id)
-                }
             });
             path_ok && type_ok && decl_match
         })
