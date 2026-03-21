@@ -3064,35 +3064,6 @@ fn codegen_reactive_scope<'a>(
         return codegen_block(cx, instructions);
     }
 
-    // Inline zero-dep scopes whose declarations are all truly unnamed.
-    if scope.dependencies.is_empty()
-        && scope.reassignments.is_empty()
-        && scope
-            .declarations
-            .values()
-            .all(|d| d.identifier.name.is_none())
-    {
-        return codegen_block(cx, instructions);
-    }
-
-    // Inline zero-dep single-declaration scopes with strictly trivial body
-    // (no calls, no JSX, no allocations). AND primitive-typed scopes with
-    // trivial+calls body. Both are safe to inline since they can't produce
-    // objects/arrays that need referential stability.
-    if scope.dependencies.is_empty()
-        && scope.reassignments.is_empty()
-        && scope.declarations.len() == 1
-    {
-        let decl = scope.declarations.values().next().unwrap();
-        let is_prim = matches!(decl.identifier.type_, Type::Primitive);
-        if is_prim && scope_body_is_trivial_or_calls(instructions) {
-            return codegen_block(cx, instructions);
-        }
-        if scope_body_is_strictly_trivial(instructions) {
-            return codegen_block(cx, instructions);
-        }
-    }
-
     let mut stmts = Vec::new();
 
     // Collect catch binding declaration_ids from Try terminals in this scope.
@@ -5108,53 +5079,6 @@ fn wrap_hook_guard_iife<'a>(
 
     cx.builder
         .expression_call(SPAN, function_expr, NONE, cx.builder.vec(), false)
-}
-
-/// Check if a scope body is trivial (no calls, no allocations, no JSX).
-/// Bodies with only loads, stores, declarations, operators, casts, and calls (no JSX/objects/arrays).
-fn scope_body_is_trivial_or_calls(instructions: &ReactiveBlock) -> bool {
-    instructions.iter().all(|s| match s {
-        ReactiveStatement::Instruction(instr) => matches!(
-            &instr.value,
-            InstructionValue::Primitive { .. }
-                | InstructionValue::LoadLocal { .. }
-                | InstructionValue::LoadContext { .. }
-                | InstructionValue::StoreLocal { .. }
-                | InstructionValue::StoreContext { .. }
-                | InstructionValue::DeclareLocal { .. }
-                | InstructionValue::DeclareContext { .. }
-                | InstructionValue::BinaryExpression { .. }
-                | InstructionValue::UnaryExpression { .. }
-                | InstructionValue::TypeCastExpression { .. }
-                | InstructionValue::LoadGlobal { .. }
-                | InstructionValue::CallExpression { .. }
-                | InstructionValue::MethodCall { .. }
-                | InstructionValue::PropertyLoad { .. }
-                | InstructionValue::Destructure { .. }
-        ),
-        _ => false,
-    })
-}
-
-/// Strictly trivial body: no calls at all, only loads/stores/operators.
-fn scope_body_is_strictly_trivial(instructions: &ReactiveBlock) -> bool {
-    instructions.iter().all(|s| match s {
-        ReactiveStatement::Instruction(instr) => matches!(
-            &instr.value,
-            InstructionValue::Primitive { .. }
-                | InstructionValue::LoadLocal { .. }
-                | InstructionValue::LoadContext { .. }
-                | InstructionValue::StoreLocal { .. }
-                | InstructionValue::StoreContext { .. }
-                | InstructionValue::DeclareLocal { .. }
-                | InstructionValue::DeclareContext { .. }
-                | InstructionValue::BinaryExpression { .. }
-                | InstructionValue::UnaryExpression { .. }
-                | InstructionValue::TypeCastExpression { .. }
-                | InstructionValue::LoadGlobal { .. }
-        ),
-        _ => false,
-    })
 }
 
 /// Check whether a HIR function body has a side-effecting unnamed temp whose
