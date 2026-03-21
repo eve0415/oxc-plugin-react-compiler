@@ -1,11 +1,10 @@
-# React Compiler Conformance -- 99.8% parity rate
+# React Compiler Conformance -- 99.9% parity rate
 
-**1762** parity_success, **3** parity_failure, **0** skipped
+**1763** parity_success, **2** parity_failure, **0** skipped
 
 ## Failed
 
 - `custom/closure-multiple-calls-scope-leak`: Output mismatch
-- `custom/local-function-call-extra-memo`: Output mismatch
 - `custom/usememo-filter-sort-bail`: Output mismatch
 
 ## Passed
@@ -256,6 +255,7 @@
 - `custom/catch-forloop-same-name-variable`
 - `custom/import-meta-env-property`
 - `custom/labeled-block-scoping`
+- `custom/local-function-call-extra-memo`
 - `custom/method-chain-sub-expression-memo`
 - `custom/nested-math-method-calls`
 - `custom/object-literal-sentinel-memoize`

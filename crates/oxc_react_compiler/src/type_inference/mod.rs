@@ -757,13 +757,15 @@ pub fn infer_types(func: &mut HIRFunction) {
             }
         }
 
-        // Mirror upstream InferTypes return equations for the most stable case:
-        // single return: returns = value type.
-        //
-        // Multi-return functions in this simplified inference can over-constrain
-        // recursive / exceptional control-flow compared to upstream unification,
-        // so we keep those unconstrained here.
+        // Mirror upstream InferTypes return equations. Single-return:
+        // directly propagate. Multi-return: only propagate Primitive when ALL
+        // return values come directly from Primitive literal instructions.
+        // This avoids over-constraining functions where returns derive from
+        // calls (e.g., `return x * fact(x-1)` — our forward pass resolves
+        // BinaryExpression to Primitive, but the call operand means upstream's
+        // equation-based unifier may not fully resolve the return type).
         let mut return_types: Vec<Type> = Vec::new();
+        let mut all_returns_from_primitive_literal = true;
         for (_bid, block) in &func.body.blocks {
             if let Terminal::Return { value, .. } = &block.terminal {
                 let ty = get_type(value.identifier.id, &id_types);
@@ -772,24 +774,36 @@ pub fn infer_types(func: &mut HIRFunction) {
                 } else {
                     return_types.push(ty);
                 }
+                let is_direct_primitive = block.instructions.iter().any(|instr| {
+                    instr.lvalue.identifier.id == value.identifier.id
+                        && matches!(instr.value, InstructionValue::Primitive { .. })
+                });
+                if !is_direct_primitive {
+                    all_returns_from_primitive_literal = false;
+                }
             }
         }
-        if return_types.len() == 1
-            && let Some(ty) = return_types.pop()
-            && !matches!(ty, Type::Poly | Type::TypeVar { .. })
-        {
+        let should_assign = if return_types.len() == 1 {
+            !matches!(return_types[0], Type::Poly | Type::TypeVar { .. })
+        } else {
+            return_types.len() > 1
+                && all_returns_from_primitive_literal
+                && return_types.iter().all(|ty| matches!(ty, Type::Primitive))
+        };
+        if should_assign {
             assign_type_to_declaration(
                 func.returns.identifier.declaration_id,
-                ty.clone(),
+                return_types[0].clone(),
                 &declaration_ids,
                 &mut id_types,
             );
             if debug_types {
                 eprintln!(
-                    "[TYPE_INFER_RET] fn={} pass={} single_return={:?}",
+                    "[TYPE_INFER_RET] fn={} pass={} return={:?} (from {} returns)",
                     func.id.as_deref().unwrap_or("<anonymous>"),
                     _pass,
-                    ty
+                    return_types[0],
+                    return_types.len()
                 );
             }
         }
