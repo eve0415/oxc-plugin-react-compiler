@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vite-plus'
 import { reactCompilerOxc } from '../../../napi/src/vite.js'
 
 export default defineConfig({

@@ -8,27 +8,23 @@
     ]
   },
   "scripts": {
-    "build:plugin": "tsdown",
-    "test": "vitest",
-    "lint": "oxlint --type-aware --type-check --fix --fix-suggestions --fix-dangerously && oxfmt"
+    "fix": "vp lint --type-aware --type-check --fix --fix-suggestions --fix-dangerously && vp fmt",
+    "prepare": "vp config"
   },
   "devDependencies": {
-    "@babel/core": "^7.29.0",
-    "@rolldown/plugin-babel": "^0.2.2",
+    "@babel/core": "7.29.0",
+    "@rolldown/plugin-babel": "0.2.2",
     "@types/node": "25.5.0",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
-    "acorn": "^8.16.0",
-    "babel-plugin-react-compiler": "^1.0.0",
-    "oxfmt": "0.40.0",
-    "oxlint": "1.55.0",
-    "oxlint-tsgolint": "0.16.0",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "tsdown": "^0.21.4",
-    "typescript": "^5.9.3",
-    "vite": "8.0.0",
-    "vitest": "^4.1.0"
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@typescript/native-preview": "7.0.0-dev.20260322.1",
+    "acorn": "8.16.0",
+    "babel-plugin-react-compiler": "1.0.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.1.13",
+    "vite-plus": "0.1.13",
+    "vitest": "npm:@voidzero-dev/vite-plus-test@0.1.13"
   },
   "devEngines": {
     "packageManager": {
@@ -37,8 +33,14 @@
     },
     "runtime": {
       "name": "node",
-      "version": "24.13.x"
+      "version": "24.14.x"
     }
   },
-  "packageManager": "pnpm@10.32.1"
+  "packageManager": "pnpm@10.32.1",
+  "pnpm": {
+    "overrides": {
+      "vite": "npm:@voidzero-dev/vite-plus-core@0.1.13",
+      "vitest": "npm:@voidzero-dev/vite-plus-test@0.1.13"
+    }
+  }
 }

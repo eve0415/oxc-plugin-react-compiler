@@ -1,8 +1,8 @@
 import { readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { build } from 'vite';
-import { describe, expect, it } from 'vitest';
+import { build } from 'vite-plus';
+import { describe, expect, it } from 'vite-plus/test';
 
 import { compareAST, parseJS } from './utils/ast-compare.js';
 

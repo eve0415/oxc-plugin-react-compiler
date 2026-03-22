@@ -1,6 +1,6 @@
 import type { ReactCompilerOxcOptions } from '../napi/src/vite.js';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 
 import { reactCompilerOxc } from '../napi/src/vite.js';
 

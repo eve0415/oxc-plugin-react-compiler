@@ -1,5 +1,5 @@
 import babel from '@rolldown/plugin-babel';
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vite-plus';
 
 export default defineConfig({
   root: import.meta.dirname,

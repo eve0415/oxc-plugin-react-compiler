@@ -158,3 +158,6 @@ docs/superpowers/
 .claude/worktrees/
 
 tmp/
+
+# pnmpm
+.pnpm-store/
