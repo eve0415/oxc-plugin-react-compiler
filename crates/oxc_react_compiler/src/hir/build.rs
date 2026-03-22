@@ -5460,11 +5460,10 @@ fn lower_jsx_expr_to_temp<'a>(
                 loc: hir::SourceLocation::Generated,
             },
         ),
-        // JSXExpression inherits all Expression variants via @inherit.
-        // We can safely transmute to &Expression since non-EmptyExpression
-        // variants are identical to Expression variants.
         _ => {
-            let expr: &js::Expression<'a> = unsafe { std::mem::transmute(jsx_expr) };
+            let expr = jsx_expr.as_expression().expect(
+                "JSXExpression should be an Expression variant (EmptyExpression handled above)",
+            );
             lower_expr_to_temp(builder, expr, semantic, source)
         }
     }
