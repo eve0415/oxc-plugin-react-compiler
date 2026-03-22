@@ -1,5 +1,5 @@
 import type { TransformOptions } from '../oxc-react-compiler.js';
-import type { Plugin } from 'vite-plus';
+import type { Plugin } from 'vite';
 
 /**
  * Options for the OXC React Compiler Vite plugin.

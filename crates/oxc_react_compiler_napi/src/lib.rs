@@ -4,7 +4,9 @@ use napi_derive::napi;
 
 #[napi(object)]
 pub struct TransformOptions {
+    #[napi(ts_type = "'infer' | 'annotation' | 'all'")]
     pub compilation_mode: Option<String>,
+    #[napi(ts_type = "'none' | 'all'")]
     pub panic_threshold: Option<String>,
     pub target: Option<String>,
 }
