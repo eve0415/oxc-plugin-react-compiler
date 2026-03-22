@@ -20,6 +20,27 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+/// Methods that are specific to collection types (Array/String) and always
+/// return primitives. Unlike toString/valueOf/toFixed which exist on all
+/// types and may need memoization when the receiver is complex, these
+/// methods unambiguously return primitives regardless of the receiver's
+/// runtime type.
+fn is_collection_primitive_method(name: &str) -> bool {
+    matches!(
+        name,
+        "indexOf"
+            | "lastIndexOf"
+            | "includes"
+            | "startsWith"
+            | "endsWith"
+            | "charCodeAt"
+            | "codePointAt"
+            | "localeCompare"
+            | "every"
+            | "some"
+    )
+}
+
 use indexmap::IndexMap;
 
 use crate::hir::types::*;
@@ -857,6 +878,21 @@ fn find_disjoint_mutable_values(func: &HIRFunction) -> DisjointSet {
     let mut value_block_store_targets: HashMap<DeclarationId, Vec<IdentifierId>> = HashMap::new();
     let mut value_block_store_sources: HashMap<DeclarationId, Vec<IdentifierId>> = HashMap::new();
 
+    // Build PropertyLoad name lookup: maps PropertyLoad lvalue ID to property name.
+    // Used to determine if a MethodCall returns a primitive (e.g. .includes() → boolean).
+    let mut property_load_names: HashMap<IdentifierId, String> = HashMap::new();
+    for (_, block) in &func.body.blocks {
+        for instr in &block.instructions {
+            if let InstructionValue::PropertyLoad {
+                property: crate::hir::types::PropertyLiteral::String(name),
+                ..
+            } = &instr.value
+            {
+                property_load_names.insert(instr.lvalue.identifier.id, name.clone());
+            }
+        }
+    }
+
     // Collect direct optional-call argument declarations.
     for (bid, block) in &func.body.blocks {
         for instr in &block.instructions {
@@ -1036,10 +1072,34 @@ fn find_disjoint_mutable_values(func: &HIRFunction) -> DisjointSet {
         for (instr_index, instr) in block.instructions.iter().enumerate() {
             let mut operands: Vec<IdentifierId> = Vec::new();
 
-            // Include lvalue if its mutable range is wide or the instruction allocates
+            // Include lvalue if its mutable range is wide or the instruction allocates.
+            // For MethodCalls on receivers with Poly type whose property is a
+            // collection-specific primitive-returning method (e.g. .includes(),
+            // .indexOf(), .startsWith()), treat the lvalue as non-allocating.
+            // This compensates for receivers from hook results (e.g. useState
+            // values typed as Poly) where upstream's PropertyLoad → Function type
+            // chain correctly infers Primitive but our simplified type inference
+            // cannot. Methods like toString/valueOf/toFixed are excluded because
+            // they exist on all types and upstream also keeps them as Poly when
+            // the receiver type is unknown.
             let lv_range = &instr.lvalue.identifier.mutable_range;
-            if lv_range.end.0 > lv_range.start.0 + 1
-                || may_allocate(&instr.value, &instr.lvalue.identifier.type_)
+            let is_primitive_method_result =
+                if let InstructionValue::MethodCall {
+                    property, receiver, ..
+                } = &instr.value
+                {
+                    let receiver_type_unresolved =
+                        matches!(receiver.identifier.type_, Type::Poly | Type::TypeVar { .. });
+                    receiver_type_unresolved
+                        && property_load_names
+                            .get(&property.identifier.id)
+                            .is_some_and(|name| is_collection_primitive_method(name))
+                } else {
+                    false
+                };
+            if !is_primitive_method_result
+                && (lv_range.end.0 > lv_range.start.0 + 1
+                    || may_allocate(&instr.value, &instr.lvalue.identifier.type_))
             {
                 scope_identifiers.make_set(instr.lvalue.identifier.id);
                 operands.push(instr.lvalue.identifier.id);
