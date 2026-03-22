@@ -193,6 +193,16 @@ pub fn infer_types(func: &mut HIRFunction) {
     let mut id_string_values: HashMap<IdentifierId, String> = HashMap::new();
     let mut store_local_decl_writes: HashMap<DeclarationId, usize> = HashMap::new();
     for (_bid, block) in &func.body.blocks {
+        // Count phi nodes as additional "writes" for declarations.
+        // This prevents declaration-level type propagation for conditionally
+        // assigned variables (e.g., `let y; if(a) y = [b];`). In upstream's
+        // unifier, such variables get a Phi type; our forward pass would
+        // otherwise smear one branch's concrete type across all uses.
+        for phi in &block.phis {
+            *store_local_decl_writes
+                .entry(phi.place.identifier.declaration_id)
+                .or_insert(0) += 1;
+        }
         for instr in &block.instructions {
             if let InstructionValue::StoreLocal { lvalue, .. } = &instr.value {
                 *store_local_decl_writes
@@ -459,6 +469,9 @@ pub fn infer_types(func: &mut HIRFunction) {
 
                 // Upstream InferTypes constrains JSX `ref` attributes to BuiltInUseRefId
                 // when `enableTreatRefLikeIdentifiersAsRefs` is enabled.
+                // Only apply when the identifier doesn't already have a concrete type —
+                // upstream's unifier would fail to unify Function with Object{UseRefId}
+                // and leave the existing type unchanged.
                 if func.env.config().enable_treat_ref_like_identifiers_as_refs
                     && let InstructionValue::JsxExpression { props, .. } = &instr.value
                 {
@@ -466,14 +479,17 @@ pub fn infer_types(func: &mut HIRFunction) {
                         if let JsxAttribute::Attribute { name, place } = prop
                             && name == "ref"
                         {
-                            assign_type_to_declaration(
-                                place.identifier.declaration_id,
-                                Type::Object {
-                                    shape_id: Some(BUILT_IN_USE_REF_ID.to_string()),
-                                },
-                                &declaration_ids,
-                                &mut id_types,
-                            );
+                            let existing = get_type(place.identifier.id, &id_types);
+                            if matches!(existing, Type::Poly | Type::TypeVar { .. }) {
+                                assign_type_to_declaration(
+                                    place.identifier.declaration_id,
+                                    Type::Object {
+                                        shape_id: Some(BUILT_IN_USE_REF_ID.to_string()),
+                                    },
+                                    &declaration_ids,
+                                    &mut id_types,
+                                );
+                            }
                         }
                     }
                 }
@@ -757,13 +773,15 @@ pub fn infer_types(func: &mut HIRFunction) {
             }
         }
 
-        // Mirror upstream InferTypes return equations for the most stable case:
-        // single return: returns = value type.
-        //
-        // Multi-return functions in this simplified inference can over-constrain
-        // recursive / exceptional control-flow compared to upstream unification,
-        // so we keep those unconstrained here.
+        // Mirror upstream InferTypes return equations. Single-return:
+        // directly propagate. Multi-return: only propagate Primitive when ALL
+        // return values come directly from Primitive literal instructions.
+        // This avoids over-constraining functions where returns derive from
+        // calls (e.g., `return x * fact(x-1)` — our forward pass resolves
+        // BinaryExpression to Primitive, but the call operand means upstream's
+        // equation-based unifier may not fully resolve the return type).
         let mut return_types: Vec<Type> = Vec::new();
+        let mut all_returns_from_primitive_literal = true;
         for (_bid, block) in &func.body.blocks {
             if let Terminal::Return { value, .. } = &block.terminal {
                 let ty = get_type(value.identifier.id, &id_types);
@@ -772,24 +790,36 @@ pub fn infer_types(func: &mut HIRFunction) {
                 } else {
                     return_types.push(ty);
                 }
+                let is_direct_primitive = block.instructions.iter().any(|instr| {
+                    instr.lvalue.identifier.id == value.identifier.id
+                        && matches!(instr.value, InstructionValue::Primitive { .. })
+                });
+                if !is_direct_primitive {
+                    all_returns_from_primitive_literal = false;
+                }
             }
         }
-        if return_types.len() == 1
-            && let Some(ty) = return_types.pop()
-            && !matches!(ty, Type::Poly | Type::TypeVar { .. })
-        {
+        let should_assign = if return_types.len() == 1 {
+            !matches!(return_types[0], Type::Poly | Type::TypeVar { .. })
+        } else {
+            return_types.len() > 1
+                && all_returns_from_primitive_literal
+                && return_types.iter().all(|ty| matches!(ty, Type::Primitive))
+        };
+        if should_assign {
             assign_type_to_declaration(
                 func.returns.identifier.declaration_id,
-                ty.clone(),
+                return_types[0].clone(),
                 &declaration_ids,
                 &mut id_types,
             );
             if debug_types {
                 eprintln!(
-                    "[TYPE_INFER_RET] fn={} pass={} single_return={:?}",
+                    "[TYPE_INFER_RET] fn={} pass={} return={:?} (from {} returns)",
                     func.id.as_deref().unwrap_or("<anonymous>"),
                     _pass,
-                    ty
+                    return_types[0],
+                    return_types.len()
                 );
             }
         }
@@ -1352,6 +1382,9 @@ fn infer_instruction_type(
         // Debugger: no meaningful result
         InstructionValue::Debugger { .. } => Type::Poly,
 
+        // MetaProperty (e.g. import.meta): opaque object
+        InstructionValue::MetaProperty { .. } => Type::Poly,
+
         // StartMemoize/FinishMemoize: no meaningful type
         InstructionValue::StartMemoize { .. } | InstructionValue::FinishMemoize { .. } => {
             Type::Poly
@@ -1707,6 +1740,7 @@ fn instruction_value_kind(value: &InstructionValue) -> &'static str {
         InstructionValue::LogicalExpression { .. } => "LogicalExpression",
         InstructionValue::ReactiveSequenceExpression { .. } => "ReactiveSequenceExpression",
         InstructionValue::ReactiveOptionalExpression { .. } => "ReactiveOptionalExpression",
+        InstructionValue::MetaProperty { .. } => "MetaProperty",
         InstructionValue::ReactiveLogicalExpression { .. } => "ReactiveLogicalExpression",
     }
 }

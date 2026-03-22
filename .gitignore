@@ -140,6 +140,10 @@ target/
 
 # napi
 *.node
+napi/binding/npm/**/*.node
+
+# Test fixture build outputs
+tests/fixtures/*/dist-*/
 
 # AI
 .claude/*.local.*
@@ -155,3 +159,6 @@ docs/superpowers/
 .claude/worktrees/
 
 tmp/
+
+# pnmpm
+.pnpm-store/

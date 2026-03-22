@@ -75,7 +75,7 @@ impl Default for PluginOptions {
         Self {
             compilation_mode: CompilationMode::default(),
             panic_threshold: PanicThreshold::default(),
-            target: String::new(),
+            target: "19".to_string(),
             environment: EnvironmentConfig::default(),
             custom_opt_out_directives: Vec::new(),
             ignore_use_no_forget: false,

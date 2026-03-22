@@ -951,6 +951,15 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 self.builder
                     .expression_identifier(SPAN, self.builder.ident(binding.name())),
             ),
+            InstructionValue::MetaProperty { meta, property, .. } => Some(
+                self.builder.expression_meta_property(
+                    SPAN,
+                    self.builder
+                        .identifier_name(SPAN, self.builder.ident(meta.as_str())),
+                    self.builder
+                        .identifier_name(SPAN, self.builder.ident(property.as_str())),
+                ),
+            ),
             InstructionValue::FunctionExpression {
                 name,
                 lowered_func,
@@ -1274,14 +1283,13 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
             }
         }
 
-        Some(ast::Expression::from(
-            self.builder.member_expression_computed(
-                SPAN,
-                self.lower_place(receiver, visiting)?,
-                self.lower_place(property, visiting)?,
-                receiver_optional,
-            ),
-        ))
+        // Upstream invariant: MethodCall::property must be an unpromoted +
+        // unmemoized MemberExpression. If the property temp was promoted
+        // (memoized into a reactive scope), the PropertyLoad instruction is
+        // no longer available for inlining, and we'd emit a computed member
+        // access (e.g. `t0[t1](t2)`) which is semantically incorrect.
+        // Bail out matching upstream's CodegenReactiveFunction.ts invariant.
+        None
     }
 
     fn lower_arguments(

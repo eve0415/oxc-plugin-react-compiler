@@ -103,12 +103,18 @@ const OPT_OUT_DIRECTIVES: &[&str] = &["use no forget", "use no memo"];
 thread_local! {
     static RETRY_NO_MEMO_MODE: Cell<bool> = const { Cell::new(false) };
     static FILE_HAD_PIPELINE_ERROR: Cell<bool> = const { Cell::new(false) };
+    static FILE_LAST_PIPELINE_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
     static CURRENT_FILENAME: RefCell<String> = const { RefCell::new(String::new()) };
     static FLOW_COMPONENT_NAMES: RefCell<std::collections::HashSet<String>> =
         RefCell::new(std::collections::HashSet::new());
     static FLOW_HOOK_NAMES: RefCell<std::collections::HashSet<String>> =
         RefCell::new(std::collections::HashSet::new());
     static FAST_REFRESH_SOURCE_HASH: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+fn mark_pipeline_error(error: &impl std::fmt::Display) {
+    FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
+    FILE_LAST_PIPELINE_ERROR.with(|cell| *cell.borrow_mut() = error.to_string());
 }
 
 fn set_fast_refresh_source_hash(hash: Option<String>) {
@@ -3435,6 +3441,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
     let retry_no_memo_mode = false;
     RETRY_NO_MEMO_MODE.with(|flag| flag.set(retry_no_memo_mode));
     FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(false));
+    FILE_LAST_PIPELINE_ERROR.with(|cell| cell.borrow_mut().clear());
     CURRENT_FILENAME.with(|cell| *cell.borrow_mut() = filename.to_string());
     FLOW_COMPONENT_NAMES.with(|set| {
         *set.borrow_mut() = collect_flow_component_names(source);
@@ -3655,9 +3662,15 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
 
     if FILE_HAD_PIPELINE_ERROR.with(|flag| flag.get()) {
         if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
+            let last_error = FILE_LAST_PIPELINE_ERROR.with(|cell| cell.borrow().clone());
             eprintln!(
-                "[PIPELINE_FILE_BAILOUT] file={} reason=function_error",
-                filename
+                "[PIPELINE_FILE_BAILOUT] file={} reason=function_error error={}",
+                filename,
+                if last_error.is_empty() {
+                    "<unknown>"
+                } else {
+                    &last_error
+                }
             );
         }
         untransformed_result!(source.to_string());
@@ -5527,7 +5540,7 @@ fn try_compile_function<'a>(
             if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
                 eprintln!("[PIPELINE_FAIL] {}: {:?}", name, e);
             }
-            FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
+            mark_pipeline_error(&e);
             return Ok(None); // Validation error → skip this function
         }
     };
@@ -5725,7 +5738,7 @@ fn try_compile_function_with_name<'a>(
             if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
                 eprintln!("[PIPELINE_FAIL] {}: {:?}", name, e);
             }
-            FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
+            mark_pipeline_error(&e);
             return Ok(None); // Validation error → skip this function
         }
     };
@@ -5931,7 +5944,7 @@ fn try_compile_arrow<'a>(
             if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
                 eprintln!("[PIPELINE_FAIL] {}: {:?}", name, e);
             }
-            FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(true));
+            mark_pipeline_error(&e);
             return Ok(None); // Validation error → skip this function
         }
     };

@@ -1,6 +1,6 @@
 # React Compiler Conformance -- 100.0% parity rate
 
-**1752** parity_success, **0** parity_failure, **0** skipped
+**1768** parity_success, **0** parity_failure, **0** skipped
 
 ## Failed
 
@@ -250,6 +250,22 @@
 - `controlled-input`
 - `createElement-freeze`
 - `custom-opt-out-directive`
+- `custom/catch-forloop-same-name-variable`
+- `custom/closure-multiple-calls-scope-leak`
+- `custom/import-meta-env-property`
+- `custom/labeled-block-scoping`
+- `custom/local-function-call-extra-memo`
+- `custom/method-chain-sub-expression-memo`
+- `custom/nested-math-method-calls`
+- `custom/object-literal-sentinel-memoize`
+- `custom/switch-break-inner-function`
+- `custom/usememo-filter-nested-map-jsx`
+- `custom/usememo-filter-result-map`
+- `custom/usememo-filter-sort-bail`
+- `custom/usememo-preserve-retry`
+- `custom/usememo-property-dep`
+- `custom/usememo-slice-result-map`
+- `custom/useref-initial-value-sentinel`
 - `dce-loop`
 - `dce-unused-const`
 - `dce-unused-postfix-update`

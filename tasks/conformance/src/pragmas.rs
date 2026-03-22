@@ -174,7 +174,18 @@ fn parse_string_array(val: &str) -> Vec<String> {
 
 /// Parse the first line of a fixture for pragma directives.
 pub(crate) fn parse_pragma(source: &str) -> Pragma {
+    // Pragmas can appear on the first line (even after code, e.g. `import ... // @flag`)
+    // and on subsequent leading comment-only lines (e.g. `// @flag` on line 2+).
     let first_line = source.lines().next().unwrap_or("");
+    let additional_pragma_lines: Vec<&str> = source
+        .lines()
+        .skip(1)
+        .take_while(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with("//") || trimmed.is_empty()
+        })
+        .filter(|line| line.trim().starts_with("//") && line.contains('@'))
+        .collect();
 
     // Start with defaults
     let mut pragma = Pragma {
@@ -258,7 +269,11 @@ pub(crate) fn parse_pragma(source: &str) -> Pragma {
     }
 
     // Parse all pragmas using the split_pragma approach
-    let entries = split_pragma(first_line);
+    // Parse pragmas from first line + additional leading comment lines
+    let mut entries = split_pragma(first_line);
+    for pragma_line in &additional_pragma_lines {
+        entries.extend(split_pragma(pragma_line));
+    }
     for (key, val) in &entries {
         match key.as_str() {
             // --- Skip/meta pragmas ---

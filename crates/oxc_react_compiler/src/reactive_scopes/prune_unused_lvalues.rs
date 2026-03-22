@@ -343,6 +343,7 @@ fn collect_refs_from_value(
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
         | InstructionValue::LoadGlobal { .. }
+        | InstructionValue::MetaProperty { .. }
         | InstructionValue::StartMemoize { .. }
         | InstructionValue::Debugger { .. } => {}
     }

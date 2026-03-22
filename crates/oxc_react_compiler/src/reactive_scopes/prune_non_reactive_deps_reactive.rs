@@ -521,6 +521,7 @@ fn visit_each_place_in_value<F: FnMut(&Place)>(value: &InstructionValue, visit: 
         | InstructionValue::JSXText { .. }
         | InstructionValue::RegExpLiteral { .. }
         | InstructionValue::LoadGlobal { .. }
+        | InstructionValue::MetaProperty { .. }
         | InstructionValue::StartMemoize { .. }
         | InstructionValue::Debugger { .. } => {}
     }

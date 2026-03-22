@@ -3502,6 +3502,7 @@ fn compute_signature_for_instruction(
         InstructionValue::TaggedTemplateExpression { .. }
         | InstructionValue::BinaryExpression { .. }
         | InstructionValue::Debugger { .. }
+        | InstructionValue::MetaProperty { .. }
         | InstructionValue::JSXText { .. }
         | InstructionValue::Primitive { .. }
         | InstructionValue::RegExpLiteral { .. }
