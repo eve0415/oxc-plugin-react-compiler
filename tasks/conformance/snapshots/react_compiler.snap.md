@@ -1,10 +1,9 @@
-# React Compiler Conformance -- 99.7% parity rate
+# React Compiler Conformance -- 99.8% parity rate
 
-**1763** parity_success, **5** parity_failure, **0** skipped
+**1764** parity_success, **4** parity_failure, **0** skipped
 
 ## Failed
 
-- `custom/object-literal-sentinel-memoize`: Output mismatch
 - `custom/usememo-filter-nested-map-jsx`: Output mismatch
 - `custom/usememo-filter-result-map`: Output mismatch
 - `custom/usememo-filter-sort-bail`: Expected transformed output, but compiler bailed out/skipped
@@ -262,6 +261,7 @@
 - `custom/local-function-call-extra-memo`
 - `custom/method-chain-sub-expression-memo`
 - `custom/nested-math-method-calls`
+- `custom/object-literal-sentinel-memoize`
 - `custom/switch-break-inner-function`
 - `custom/usememo-preserve-retry`
 - `custom/usememo-property-dep`

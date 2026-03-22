@@ -1,11 +1,12 @@
 ## Code
 
 ```javascript
-import { c as _c } from "react/compiler-runtime"; // @compilationMode(infer)
+import { c as _c } from "react/compiler-runtime"; // @compilationMode(infer) @enablePreserveExistingMemoizationGuarantees
 // Object literal with all-primitive values should be sentinel-memoized
 // even when the result is indexed by a reactive prop.
 // Babel memoizes {primary:'cls-a',...} with a sentinel guard.
 // OXC leaves the object literal inline, recreating it every render.
+import { useState } from 'react';
 function useCustom(val, opts) {
   return val;
 }

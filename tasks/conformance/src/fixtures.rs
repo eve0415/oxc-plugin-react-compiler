@@ -454,11 +454,13 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
         .validate_preserve_existing_memoization_guarantees = pragma
         .validate_preserve_existing_memoization_guarantees
         .unwrap_or(false);
-    options
-        .environment
-        .enable_preserve_existing_memoization_guarantees = pragma
-        .enable_preserve_existing_memoization_guarantees
-        .unwrap_or(false);
+    // Match upstream 1.0.0 default: enablePreserveExistingMemoizationGuarantees is
+    // true by default. Only override if the fixture pragma explicitly sets it.
+    if let Some(val) = pragma.enable_preserve_existing_memoization_guarantees {
+        options
+            .environment
+            .enable_preserve_existing_memoization_guarantees = val;
+    }
     if pragma.enable_reset_cache_on_source_file_changes.is_none() {
         options
             .environment
