@@ -1,4 +1,4 @@
-// @compilationMode(infer)
+// @compilationMode(infer) @enablePreserveExistingMemoizationGuarantees
 // useMemo with .filter() in callback, then .map() on the result in JSX.
 // Babel: _c(9) — compiles, memoizes filtered result and mapped JSX
 // OXC:   SKIP — bails during compilation (transformed=false)

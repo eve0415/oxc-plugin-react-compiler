@@ -1,4 +1,4 @@
-// @compilationMode(infer)
+// @compilationMode(infer) @enablePreserveExistingMemoizationGuarantees
 // useMemo with .filter() followed by nested .map() calls in JSX.
 // Babel: _c(9) — compiles with nested memoization and hoisted _temp functions
 // OXC:   SKIP — bails during compilation

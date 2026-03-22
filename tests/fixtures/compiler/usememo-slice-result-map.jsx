@@ -1,4 +1,4 @@
-// @compilationMode(infer)
+// @compilationMode(infer) @enablePreserveExistingMemoizationGuarantees
 // useMemo with .slice() in callback, then .map() on the result.
 // Same root cause as filter — any array method returning new array from useMemo.
 // Babel: _c(7) — compiles successfully
