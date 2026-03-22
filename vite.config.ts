@@ -10,7 +10,7 @@ export default defineConfig({
     format: "esm",
     outDir: "napi/dist",
     inputOptions: {
-      external: [/index\.js/, "vite"],
+      external: [/oxc-react-compiler\.js/, "vite"],
     },
   },
   test: {
@@ -38,7 +38,7 @@ export default defineConfig({
     },
   },
   lint: {
-    ignorePatterns: ["third_party/**", "tests/fixtures/**", "napi/oxc_react_compiler_napi.js"],
+    ignorePatterns: ["third_party/**", "tests/fixtures/**"],
     plugins: [
       "eslint",
       "typescript",

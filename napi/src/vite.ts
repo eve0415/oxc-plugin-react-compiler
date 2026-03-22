@@ -1,4 +1,4 @@
-import type { TransformOptions } from '../index.js';
+import type { TransformOptions } from '../oxc-react-compiler.js';
 import type { Plugin } from 'vite-plus';
 
 /**
@@ -100,7 +100,7 @@ export const reactCompilerOxc = (options: ReactCompilerOxcOptions = {}): Plugin 
 
       if (!codeFilter.test(code)) return null;
 
-      const { transform } = await import('../index.js');
+      const { transform } = await import('../oxc-react-compiler.js');
       const result = transform(id, code, {
         compilationMode: options.compilationMode ?? 'infer',
         panicThreshold: options.panicThreshold ?? 'none',

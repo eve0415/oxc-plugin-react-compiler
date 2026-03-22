@@ -140,6 +140,9 @@ target/
 
 # napi
 *.node
+napi/oxc-react-compiler.js
+napi/oxc-react-compiler.d.ts
+napi/npm/**/*.node
 
 # Test fixture build outputs
 tests/fixtures/*/dist-*/

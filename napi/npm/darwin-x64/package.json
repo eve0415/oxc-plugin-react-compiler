@@ -1,0 +1,16 @@
+{
+  "name": "@oxc-plugin-react-compiler/binding-darwin-x64",
+  "version": "0.1.0",
+  "cpu": [
+    "x64"
+  ],
+  "main": "oxc-react-compiler.darwin-x64.node",
+  "files": [
+    "oxc-react-compiler.darwin-x64.node"
+  ],
+  "description": "Rust port of babel-plugin-react-compiler for OXC/Vite v8",
+  "license": "MIT",
+  "os": [
+    "darwin"
+  ]
+}
