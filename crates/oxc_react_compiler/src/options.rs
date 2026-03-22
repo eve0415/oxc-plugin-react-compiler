@@ -285,7 +285,7 @@ impl Default for EnvironmentConfig {
             enable_memoization_comments: false,
             enable_fire: false,
             enable_name_anonymous_functions: false,
-            enable_preserve_existing_memoization_guarantees: false,
+            enable_preserve_existing_memoization_guarantees: true,
             enable_preserve_existing_manual_use_memo: false,
             enable_use_type_annotations: false,
             enable_optional_dependencies: true,
