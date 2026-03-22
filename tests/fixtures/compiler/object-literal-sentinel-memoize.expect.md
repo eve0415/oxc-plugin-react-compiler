@@ -1,18 +1,16 @@
 ## Code
 
 ```javascript
-import { c as _c } from "react/compiler-runtime";
-// @compilationMode(infer)
+import { c as _c } from "react/compiler-runtime"; // @compilationMode(infer)
 // Object literal with all-primitive values should be sentinel-memoized
 // even when the result is indexed by a reactive prop.
 // Babel memoizes {primary:'cls-a',...} with a sentinel guard.
 // OXC leaves the object literal inline, recreating it every render.
-import { useState } from 'react';
 function useCustom(val, opts) {
   return val;
 }
 function Component(t0) {
-  const $ = _c(14);
+  const $ = _c(15);
   const {
     label,
     value,
@@ -37,48 +35,55 @@ function Component(t0) {
     t3 = $[2];
   }
   const displayValue = useCustom(value, t3);
-  const colorClass = {
-    primary: "cls-a",
-    secondary: "cls-b",
-    tertiary: "cls-c"
-  }[color];
   let t4;
-  if ($[3] !== label) {
-    t4 = <span>{label}</span>;
-    $[3] = label;
-    $[4] = t4;
+  if ($[3] === Symbol.for("react.memo_cache_sentinel")) {
+    t4 = {
+      primary: "cls-a",
+      secondary: "cls-b",
+      tertiary: "cls-c"
+    };
+    $[3] = t4;
   } else {
-    t4 = $[4];
+    t4 = $[3];
   }
-  const t5 = `text ${colorClass}`;
-  let t6;
-  if ($[5] !== suffix) {
-    t6 = suffix && <span>{suffix}</span>;
-    $[5] = suffix;
-    $[6] = t6;
+  const colorClass = t4[color];
+  let t5;
+  if ($[4] !== label) {
+    t5 = <span>{label}</span>;
+    $[4] = label;
+    $[5] = t5;
   } else {
-    t6 = $[6];
+    t5 = $[5];
   }
+  const t6 = `text ${colorClass}`;
   let t7;
-  if ($[7] !== displayValue || $[8] !== t5 || $[9] !== t6) {
-    t7 = <span className={t5}>{displayValue}{t6}</span>;
-    $[7] = displayValue;
-    $[8] = t5;
-    $[9] = t6;
-    $[10] = t7;
+  if ($[6] !== suffix) {
+    t7 = suffix && <span>{suffix}</span>;
+    $[6] = suffix;
+    $[7] = t7;
   } else {
-    t7 = $[10];
+    t7 = $[7];
   }
   let t8;
-  if ($[11] !== t4 || $[12] !== t7) {
-    t8 = <div>{t4}{t7}</div>;
-    $[11] = t4;
-    $[12] = t7;
-    $[13] = t8;
+  if ($[8] !== displayValue || $[9] !== t6 || $[10] !== t7) {
+    t8 = <span className={t6}>{displayValue}{t7}</span>;
+    $[8] = displayValue;
+    $[9] = t6;
+    $[10] = t7;
+    $[11] = t8;
   } else {
-    t8 = $[13];
+    t8 = $[11];
   }
-  return t8;
+  let t9;
+  if ($[12] !== t5 || $[13] !== t8) {
+    t9 = <div>{t5}{t8}</div>;
+    $[12] = t5;
+    $[13] = t8;
+    $[14] = t9;
+  } else {
+    t9 = $[14];
+  }
+  return t9;
 }
 export const FIXTURE_ENTRYPOINT = {
   fn: Component,
