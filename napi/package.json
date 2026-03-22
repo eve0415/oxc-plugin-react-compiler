@@ -4,46 +4,16 @@
   "description": "Rust port of babel-plugin-react-compiler for OXC/Vite v8",
   "license": "MIT",
   "type": "module",
-  "main": "./oxc-react-compiler.js",
-  "types": "./oxc-react-compiler.d.ts",
   "exports": {
     ".": {
-      "import": "./oxc-react-compiler.js",
-      "types": "./oxc-react-compiler.d.ts"
-    },
-    "./vite": {
       "import": "./dist/vite.mjs",
       "types": "./dist/vite.d.mts"
     }
   },
   "files": [
-    "oxc-react-compiler.js",
-    "oxc-react-compiler.d.ts",
-    "dist/",
-    "*.node"
+    "dist/"
   ],
-  "napi": {
-    "binaryName": "oxc-react-compiler",
-    "packageName": "@oxc-plugin-react-compiler/binding",
-    "targets": [
-      "x86_64-apple-darwin",
-      "aarch64-apple-darwin",
-      "x86_64-unknown-linux-gnu",
-      "aarch64-unknown-linux-gnu",
-      "x86_64-pc-windows-msvc",
-      "aarch64-pc-windows-msvc"
-    ]
-  },
-  "scripts": {
-    "build:napi": "napi build --release --platform --esm --manifest-path ../crates/oxc_react_compiler_napi/Cargo.toml --output-dir .",
-    "prepublishOnly": "napi prepublish -t npm"
-  },
-  "optionalDependencies": {
-    "@oxc-plugin-react-compiler/binding-darwin-x64": "0.1.0",
-    "@oxc-plugin-react-compiler/binding-darwin-arm64": "0.1.0",
-    "@oxc-plugin-react-compiler/binding-linux-x64-gnu": "0.1.0",
-    "@oxc-plugin-react-compiler/binding-linux-arm64-gnu": "0.1.0",
-    "@oxc-plugin-react-compiler/binding-win32-x64-msvc": "0.1.0",
-    "@oxc-plugin-react-compiler/binding-win32-arm64-msvc": "0.1.0"
+  "dependencies": {
+    "@oxc-plugin-react-compiler/binding": "workspace:*"
   }
 }
