@@ -1,21 +1,18 @@
-# React Compiler Conformance -- 96.0% parity rate
+# React Compiler Conformance -- 96.7% parity rate
 
-**1701** parity_success, **70** parity_failure, **0** skipped
+**1713** parity_success, **58** parity_failure, **0** skipped
 
 ## Failed
 
 - `array-from-arg1-captures-arg0`: Output mismatch
 - `array-from-captures-arg0`: Output mismatch
 - `array-from-maybemutates-arg0`: Output mismatch
-- `assume-invoked/function-with-conditional-callsite-in-another-function`: Output mismatch
 - `bug-ref-prefix-postfix-operator`: Output mismatch
 - `conflict-codegen-instrument-forget`: Output mismatch
-- `custom/catch-forloop-same-name-variable`: Output mismatch
 - `custom/closure-multiple-calls-scope-leak`: Output mismatch
 - `custom/import-meta-env-property`: Output mismatch
 - `custom/local-function-call-extra-memo`: Output mismatch
 - `custom/method-chain-sub-expression-memo`: Output mismatch
-- `custom/switch-break-inner-function`: Output mismatch
 - `custom/usememo-filter-nested-map-jsx`: Output mismatch
 - `custom/usememo-filter-result-map`: Output mismatch
 - `custom/usememo-filter-sort-bail`: Output mismatch
@@ -36,12 +33,7 @@
 - `global-types/repro-array-filter-known-nonmutate-Boolean`: Output mismatch
 - `global-types/repro-array-map-capture-mutate-bug`: Output mismatch
 - `inline-jsx-transform`: Output mismatch
-- `jsx-bracket-in-text`: Output mismatch
 - `jsx-fragment`: Output mismatch
-- `jsx-outlining-child-stored-in-id`: Output mismatch
-- `jsx-outlining-jsx-stored-in-id`: Output mismatch
-- `jsx-outlining-simple`: Output mismatch
-- `jsx-outlining-with-non-jsx-children`: Output mismatch
 - `jsx-preserve-whitespace`: Output mismatch
 - `jsx-tag-evaluation-order-non-global`: Output mismatch
 - `log-pruned-memoization`: Output mismatch
@@ -50,17 +42,14 @@
 - `merge-consecutive-scopes`: Output mismatch
 - `merge-consecutive-scopes-objects`: Output mismatch
 - `merge-consecutive-scopes-reordering`: Output mismatch
-- `merge-scopes-callback`: Output mismatch
 - `multiple-calls-to-hoisted-callback-from-other-callback`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
 - `nested-optional-chains`: Output mismatch
 - `new-mutability/array-filter`: Output mismatch
 - `new-mutability/todo-control-flow-sensitive-mutation`: Output mismatch
 - `new-mutability/transitivity-add-captured-array-to-itself`: Output mismatch
-- `object-keys`: Output mismatch
 - `optional-call-with-independently-memoizable-arg`: Output mismatch
 - `preserve-memo-validation/useCallback-reordering-depslist-assignment`: Output mismatch
-- `propagate-scope-deps-hir-fork/switch-non-final-default`: Output mismatch
 - `reduce-reactive-deps/edge-case-merge-uncond-optional-chain-and-cond`: Output mismatch
 - `repro-dispatch-spread-event-marks-event-frozen`: Output mismatch
 - `repro-propagate-type-of-ternary-jsx`: Output mismatch
@@ -69,7 +58,6 @@
 - `repro-separate-scopes-for-divs`: Output mismatch
 - `resolve-react-hooks-based-on-import-name`: Output mismatch
 - `reverse-postorder`: Output mismatch
-- `switch-non-final-default`: Output mismatch
 - `timers`: Output mismatch
 - `todo-granular-iterator-semantics`: Output mismatch
 - `transform-fire/hook-guard`: Output mismatch
@@ -155,6 +143,7 @@
 - `assume-invoked/conditional-call-chain`
 - `assume-invoked/conditionally-return-fn`
 - `assume-invoked/direct-call`
+- `assume-invoked/function-with-conditional-callsite-in-another-function`
 - `assume-invoked/hook-call`
 - `assume-invoked/jsx-and-passed`
 - `assume-invoked/jsx-function`
@@ -315,11 +304,13 @@
 - `createElement-freeze`
 - `custom-opt-out-directive`
 - `custom/array-find-ternary-between-hooks`
+- `custom/catch-forloop-same-name-variable`
 - `custom/conditional-expr-extra-scope`
 - `custom/labeled-block-scoping`
 - `custom/nested-math-method-calls`
 - `custom/object-literal-sentinel-memoize`
 - `custom/setstate-arg-extra-scope-in-if`
+- `custom/switch-break-inner-function`
 - `custom/usememo-property-dep`
 - `dce-loop`
 - `dce-unused-const`
@@ -845,6 +836,7 @@
 - `jsx-attribute-default-to-true`
 - `jsx-attribute-with-jsx-element-value`
 - `jsx-attribute-with-jsx-fragment-value.flow`
+- `jsx-bracket-in-text`
 - `jsx-empty-expression`
 - `jsx-freeze`
 - `jsx-html-entity`
@@ -858,11 +850,15 @@
 - `jsx-member-expression-tag-grouping`
 - `jsx-memberexpr-tag-in-lambda`
 - `jsx-namespaced-name`
+- `jsx-outlining-child-stored-in-id`
 - `jsx-outlining-dup-key-diff-value`
 - `jsx-outlining-dupe-attr-after-rename`
 - `jsx-outlining-dupe-key-dupe-component`
 - `jsx-outlining-duplicate-prop`
+- `jsx-outlining-jsx-stored-in-id`
 - `jsx-outlining-separate-nested`
+- `jsx-outlining-simple`
+- `jsx-outlining-with-non-jsx-children`
 - `jsx-preserve-escape-character`
 - `jsx-reactive-local-variable-member-expr`
 - `jsx-spread`
@@ -913,6 +909,7 @@
 - `merge-consecutive-scopes-deps-subset-of-decls`
 - `merge-consecutive-scopes-no-deps`
 - `merge-nested-scopes-with-same-inputs`
+- `merge-scopes-callback`
 - `merged-scopes-are-valid-effect-deps`
 - `meta-isms/repro-cx-assigned-to-temporary`
 - `meta-isms/repro-cx-namespace-assigned-to-temporary`
@@ -1032,6 +1029,7 @@
 - `object-expression-computed-key-object-mutated-later`
 - `object-expression-computed-member`
 - `object-expression-string-literal-key`
+- `object-keys`
 - `object-literal-method-call-in-ternary-test`
 - `object-literal-method-derived-in-ternary-consequent`
 - `object-literal-method-in-ternary-consequent`
@@ -1191,6 +1189,7 @@
 - `propagate-scope-deps-hir-fork/ssa-renaming-via-destructuring-with-mutation`
 - `propagate-scope-deps-hir-fork/ssa-renaming-with-mutation`
 - `propagate-scope-deps-hir-fork/switch`
+- `propagate-scope-deps-hir-fork/switch-non-final-default`
 - `propagate-scope-deps-hir-fork/try-catch-maybe-null-dependency`
 - `propagate-scope-deps-hir-fork/try-catch-mutate-outer-value`
 - `propagate-scope-deps-hir-fork/try-catch-try-value-modified-in-catch`
@@ -1576,6 +1575,7 @@
 - `store-via-new`
 - `switch`
 - `switch-global-propertyload-case-test`
+- `switch-non-final-default`
 - `switch-with-fallthrough`
 - `switch-with-only-default`
 - `tagged-template-in-hook`

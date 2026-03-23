@@ -472,10 +472,39 @@ fn normalize_jsx_expression_container_spacing(code: &str) -> String {
 /// collapsing. After other normalizations collapse multi-line `( <...> )`
 /// to single line, the `)` may remain: `</>);` → `</>;`.
 fn normalize_jsx_residual_close_paren(code: &str) -> String {
-    code.replace("/>);", "/>;")
-        .replace("</>);", "</>;")
-        .replace("/>)", "/>")
-        .replace("</>)", "</>")
+    // Strip `)` after JSX closing patterns: `/>)`, `</>)`, `</Tag>)`
+    let mut result = String::with_capacity(code.len());
+    let bytes = code.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        // Check for `>)` preceded by `/` somewhere (self-closing or closing tag)
+        if bytes[i] == b')' && i >= 1 && bytes[i - 1] == b'>' {
+            // Check if this `>` is part of a JSX close: `/>`  or `</...>`
+            let mut j = i - 2; // skip the `>`
+            // Walk back to find if this is `/>` or `</Tag>`
+            let is_jsx_close = if j < len && bytes[j] == b'/' {
+                true // `/>)`
+            } else {
+                // Check for `</Tag>)` — walk back past tag name to find `</`
+                while j < len && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                    if j == 0 {
+                        break;
+                    }
+                    j -= 1;
+                }
+                j >= 1 && bytes[j] == b'/' && bytes[j - 1] == b'<'
+            };
+            if is_jsx_close {
+                // Skip the `)`
+                i += 1;
+                continue;
+            }
+        }
+        result.push(bytes[i] as char);
+        i += 1;
+    }
+    result
 }
 
 /// Normalize optional parentheses around expressions in various contexts.
@@ -518,7 +547,21 @@ fn normalize_optional_parens(code: &str) -> String {
             let normalized = line.replace("? ( <", "? <").replace("/> ) :", "/> :");
             output.push_str(&normalized);
         }
-        // Arrow body parens: `=> (<...>)` → `=> <...>`
+        // Arrow body ternary parens: `=> (cond ? x : y)` → `=> cond ? x : y`
+        else if trimmed.contains("=> (") && trimmed.contains(" ? ") && !trimmed.contains("=> ()")
+        {
+            let normalized = line.replacen("=> (", "=> ", 1);
+            if let Some(pos) = normalized.rfind(");") {
+                output.push_str(&normalized[..pos]);
+                output.push(';');
+            } else if normalized.trim_end().ends_with(')') {
+                let pos = normalized.rfind(')').unwrap();
+                output.push_str(&normalized[..pos]);
+            } else {
+                output.push_str(&normalized);
+            }
+        }
+        // Arrow body JSX parens: `=> (<...>)` → `=> <...>`
         else if trimmed.contains("=> ( <") {
             let normalized = line.replace("=> ( <", "=> <");
             // Also strip matching closing ` )` or ` ))`
