@@ -1,20 +1,13 @@
-# React Compiler Conformance -- 97.9% parity rate
+# React Compiler Conformance -- 98.2% parity rate
 
-**1733** parity_success, **38** parity_failure, **0** skipped
+**1740** parity_success, **31** parity_failure, **0** skipped
 
 ## Failed
 
 - `bug-ref-prefix-postfix-operator`: Output mismatch
 - `conflict-codegen-instrument-forget`: Output mismatch
 - `custom/closure-multiple-calls-scope-leak`: Output mismatch
-- `custom/import-meta-env-property`: Output mismatch
-- `custom/local-function-call-extra-memo`: Output mismatch
-- `custom/method-chain-sub-expression-memo`: Output mismatch
-- `custom/usememo-filter-nested-map-jsx`: Output mismatch
-- `custom/usememo-filter-result-map`: Output mismatch
-- `custom/usememo-filter-sort-bail`: Output mismatch
 - `custom/usememo-preserve-retry`: Output mismatch
-- `custom/usememo-slice-result-map`: Output mismatch
 - `deeply-nested-function-expressions-with-params`: Output mismatch
 - `flag-enable-emit-hook-guards`: Output mismatch
 - `gating/codegen-instrument-forget-gating-test`: Output mismatch
@@ -289,12 +282,19 @@
 - `custom/array-find-ternary-between-hooks`
 - `custom/catch-forloop-same-name-variable`
 - `custom/conditional-expr-extra-scope`
+- `custom/import-meta-env-property`
 - `custom/labeled-block-scoping`
+- `custom/local-function-call-extra-memo`
+- `custom/method-chain-sub-expression-memo`
 - `custom/nested-math-method-calls`
 - `custom/object-literal-sentinel-memoize`
 - `custom/setstate-arg-extra-scope-in-if`
 - `custom/switch-break-inner-function`
+- `custom/usememo-filter-nested-map-jsx`
+- `custom/usememo-filter-result-map`
+- `custom/usememo-filter-sort-bail`
 - `custom/usememo-property-dep`
+- `custom/usememo-slice-result-map`
 - `custom/useref-initial-value-sentinel`
 - `dce-loop`
 - `dce-unused-const`

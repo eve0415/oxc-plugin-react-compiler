@@ -46,6 +46,8 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_object_in_array_spacing,
         normalize_const_string_quotes,
         normalize_empty_block_inner_space,
+        normalize_destructuring_brace_spacing,
+        normalize_single_arrow_param_parens,
         // Strict output normalizations (cosmetic OXC printer differences)
         normalize_trailing_comma_in_calls,
         normalize_multiline_call_invocations,
@@ -813,31 +815,72 @@ fn normalize_object_in_array_spacing(code: &str) -> String {
         .replace(" },", "},")
 }
 
-/// Normalize const string quotes: `const X = 'y'` → `const X = "y"`.
+/// Normalize all single-quoted strings to double-quoted.
+/// OXC uses double quotes, Babel preserves original single quotes.
 fn normalize_const_string_quotes(code: &str) -> String {
+    let mut result = String::with_capacity(code.len());
+    let bytes = code.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == b'\'' {
+            i += 1;
+            let mut value = String::new();
+            let mut valid = true;
+            while i < len && bytes[i] != b'\'' {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    value.push(bytes[i] as char);
+                    value.push(bytes[i + 1] as char);
+                    i += 2;
+                } else if bytes[i] == b'\n' {
+                    valid = false;
+                    break;
+                } else {
+                    value.push(bytes[i] as char);
+                    i += 1;
+                }
+            }
+            if valid && i < len {
+                result.push('"');
+                result.push_str(&value.replace('"', "\\\""));
+                result.push('"');
+                i += 1;
+            } else {
+                result.push('\'');
+                result.push_str(&value);
+            }
+        } else {
+            result.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    result
+}
+
+/// Normalize `{ }` → `{}` (empty block with inner space).
+fn normalize_empty_block_inner_space(code: &str) -> String {
+    code.replace("{ }", "{}")
+}
+
+/// Normalize destructuring brace spacing: `const { x, y } = z` → `const {x, y} = z`.
+/// OXC adds spaces inside destructuring braces, Babel doesn't.
+fn normalize_destructuring_brace_spacing(code: &str) -> String {
     let mut result = String::with_capacity(code.len());
     for line in code.lines() {
         let trimmed = line.trim();
-        if (trimmed.starts_with("const ")
-            || trimmed.starts_with("let ")
-            || trimmed.starts_with("var "))
-            && trimmed.contains("= '")
-            && trimmed.ends_with("';")
+        // Only normalize `const/let/var { ... } = ` patterns
+        if (trimmed.starts_with("const {")
+            || trimmed.starts_with("let {")
+            || trimmed.starts_with("var {"))
+            && trimmed.contains("} =")
         {
-            if let Some(eq_pos) = line.find("= '") {
-                result.push_str(&line[..eq_pos + 2]);
-                let rest = &line[eq_pos + 3..];
-                if let Some(end_pos) = rest.rfind("';") {
-                    result.push('"');
-                    result.push_str(&rest[..end_pos]);
-                    result.push_str("\";");
-                } else {
-                    result.push('\'');
-                    result.push_str(rest);
-                }
-            } else {
-                result.push_str(line);
-            }
+            // Strip spaces inside the destructuring braces
+            let normalized = line
+                .replace("const { ", "const {")
+                .replace("let { ", "let {")
+                .replace("var { ", "var {")
+                .replace(" } =", "} =");
+            result.push_str(&normalized);
         } else {
             result.push_str(line);
         }
@@ -849,9 +892,15 @@ fn normalize_const_string_quotes(code: &str) -> String {
     result
 }
 
-/// Normalize `{ }` → `{}` (empty block with inner space).
-fn normalize_empty_block_inner_space(code: &str) -> String {
-    code.replace("{ }", "{}")
+/// Normalize single arrow param parens: `(x) =>` → `x =>`.
+/// OXC wraps single arrow params, Babel doesn't.
+fn normalize_single_arrow_param_parens(code: &str) -> String {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        // Match `(identifier) =>` where identifier is a simple name
+        regex::Regex::new(r"\(([a-zA-Z_$][a-zA-Z0-9_$]*)\) =>").unwrap()
+    });
+    re.replace_all(code, "$1 =>").to_string()
 }
 
 /// Normalize optional whitespace before closing braces: ` }` -> `}` when it
