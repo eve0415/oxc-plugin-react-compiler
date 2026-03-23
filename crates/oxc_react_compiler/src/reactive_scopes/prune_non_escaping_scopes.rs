@@ -146,6 +146,8 @@ struct State {
     identifiers: HashMap<DeclarationId, IdentifierNode>,
     scopes: HashMap<ScopeId, ScopeNode>,
     escaping_values: HashSet<DeclarationId>,
+    /// Subset of escaping_values that escape specifically as hook call arguments.
+    hook_escaping_values: HashSet<DeclarationId>,
 }
 
 impl State {
@@ -155,6 +157,7 @@ impl State {
             identifiers: HashMap::new(),
             scopes: HashMap::new(),
             escaping_values: HashSet::new(),
+            hook_escaping_values: HashSet::new(),
         }
     }
 
@@ -1935,6 +1938,7 @@ fn visit_value_for_memoization(
     value: &InstructionValue,
     lvalue: Option<&Place>,
     ctx: &MemoizationVisitContext<'_>,
+    active_scopes: &[ScopeId],
 ) {
     let aliasing = compute_memoization_inputs(
         value,
@@ -1994,6 +1998,15 @@ fn visit_value_for_memoization(
 
         // Visit lvalue operand to associate with scope
         state.visit_operand(instr_id, lv.place, lvalue_id);
+
+        // Upstream visitor framework propagates the active scope chain to all
+        // instructions inside a scope. Mirror that by associating the lvalue
+        // with every enclosing scope from active_scopes.
+        if let Some(node) = state.identifiers.get_mut(&lvalue_id) {
+            for &scope_id in active_scopes {
+                node.scopes.insert(scope_id);
+            }
+        }
     }
 
     // Handle LoadLocal definitions.
@@ -2042,6 +2055,9 @@ fn visit_value_for_memoization(
                     state
                         .escaping_values
                         .insert(place.identifier.declaration_id);
+                    state
+                        .hook_escaping_values
+                        .insert(place.identifier.declaration_id);
                 }
             }
         }
@@ -2070,6 +2086,9 @@ fn visit_value_for_memoization(
                     state
                         .escaping_values
                         .insert(place.identifier.declaration_id);
+                    state
+                        .hook_escaping_values
+                        .insert(place.identifier.declaration_id);
                 }
             }
         }
@@ -2093,6 +2112,7 @@ fn collect_dependencies_block(
                     &instr.value,
                     instr.lvalue.as_ref(),
                     ctx,
+                    active_scopes,
                 );
             }
             ReactiveStatement::Terminal(term_stmt) => {
@@ -2210,6 +2230,40 @@ fn compute_memoized_identifiers(state: &mut State) -> HashSet<DeclarationId> {
 
     for id in escaping {
         visit_identifier(state, &mut memoized, id, false);
+    }
+
+    // Second pass: for hook-argument escaping Conditional identifiers that
+    // weren't memoized but live in a scope containing a Memoized sibling,
+    // force-memoize them. This handles value-block expressions (e.g. `a && b`)
+    // where the phi result has Conditional level and no direct dependency edge
+    // to the allocating sub-expression, but they share the same reactive scope
+    // because align_scopes extended the scope to cover the entire value block.
+    // Only applies to hook arguments (not return values) to avoid over-memoizing.
+    let escaping_again: Vec<DeclarationId> = state.hook_escaping_values.iter().copied().collect();
+    for id in escaping_again {
+        if memoized.contains(&id) {
+            continue;
+        }
+        let (level, scope_ids) = match state.identifiers.get(&id) {
+            Some(node) => (node.level, node.scopes.iter().copied().collect::<Vec<_>>()),
+            None => continue,
+        };
+        if level != MemoizationLevel::Conditional || scope_ids.is_empty() {
+            continue;
+        }
+        // Check if any Memoized sibling shares a scope
+        let has_memoized_sibling = state.identifiers.iter().any(|(other_id, other_node)| {
+            *other_id != id
+                && other_node.level == MemoizationLevel::Memoized
+                && other_node.scopes.iter().any(|s| scope_ids.contains(s))
+        });
+        if has_memoized_sibling {
+            // Reset seen flag and force-memoize
+            if let Some(node) = state.identifiers.get_mut(&id) {
+                node.seen = false;
+            }
+            visit_identifier(state, &mut memoized, id, true);
+        }
     }
 
     memoized
