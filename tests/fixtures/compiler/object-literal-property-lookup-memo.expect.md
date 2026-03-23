@@ -1,9 +1,11 @@
 ## Input
 
 ```javascript
+// @enablePreserveExistingMemoizationGuarantees
 // Babel memoizes static object literals used as property lookup maps
-// with a sentinel check (_c slot). OXC computes them inline without
-// caching, using 1 fewer cache slot.
+// with a sentinel check (_c slot). With enablePreserve=false, OXC
+// computes them inline without caching (1 fewer slot). With enablePreserve=true
+// (the Babel runtime default), both match.
 // Pattern: { key: value }[dynamicProp] for enum-like mappings.
 // From: eve0415/website stat-row.tsx, skill-card.tsx, language-bar.tsx
 import { useState } from 'react';
@@ -45,9 +47,11 @@ export const FIXTURE_ENTRYPOINT = {
 
 ```javascript
 import { c as _c } from "react/compiler-runtime";
+// @enablePreserveExistingMemoizationGuarantees
 // Babel memoizes static object literals used as property lookup maps
-// with a sentinel check (_c slot). OXC computes them inline without
-// caching, using 1 fewer cache slot.
+// with a sentinel check (_c slot). With enablePreserve=false, OXC
+// computes them inline without caching (1 fewer slot). With enablePreserve=true
+// (the Babel runtime default), both match.
 // Pattern: { key: value }[dynamicProp] for enum-like mappings.
 // From: eve0415/website stat-row.tsx, skill-card.tsx, language-bar.tsx
 import { useState } from 'react';

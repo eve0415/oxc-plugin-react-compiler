@@ -1,10 +1,9 @@
 # React Compiler Conformance -- 99.9% parity rate
 
-**1771** parity_success, **2** parity_failure, **0** skipped
+**1772** parity_success, **1** parity_failure, **0** skipped
 
 ## Failed
 
-- `custom/object-literal-property-lookup-memo`: Output mismatch
 - `custom/usememo-nested-map-conditional-style`: Output mismatch
 
 ## Passed
@@ -261,6 +260,7 @@
 - `custom/local-function-call-extra-memo`
 - `custom/method-chain-sub-expression-memo`
 - `custom/nested-math-method-calls`
+- `custom/object-literal-property-lookup-memo`
 - `custom/object-literal-sentinel-memoize`
 - `custom/setstate-arg-extra-scope-in-if`
 - `custom/switch-break-inner-function`
