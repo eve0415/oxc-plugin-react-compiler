@@ -1,11 +1,10 @@
-# React Compiler Conformance -- 98.6% parity rate
+# React Compiler Conformance -- 98.8% parity rate
 
-**1746** parity_success, **25** parity_failure, **0** skipped
+**1749** parity_success, **22** parity_failure, **0** skipped
 
 ## Failed
 
 - `conflict-codegen-instrument-forget`: Output mismatch
-- `custom/closure-multiple-calls-scope-leak`: Output mismatch
 - `custom/usememo-preserve-retry`: Output mismatch
 - `deeply-nested-function-expressions-with-params`: Output mismatch
 - `flag-enable-emit-hook-guards`: Output mismatch
@@ -21,11 +20,9 @@
 - `lower-context-access-hook-guard`: Output mismatch
 - `multiple-calls-to-hoisted-callback-from-other-callback`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
-- `optional-call-with-independently-memoizable-arg`: Output mismatch
 - `reduce-reactive-deps/edge-case-merge-uncond-optional-chain-and-cond`: Output mismatch
 - `repro-dispatch-spread-event-marks-event-frozen`: Output mismatch
 - `repro-propagate-type-of-ternary-nested`: Output mismatch
-- `repro-renaming-conflicting-decls`: Output mismatch
 - `todo-granular-iterator-semantics`: Output mismatch
 - `transform-fire/hook-guard`: Output mismatch
 - `type-inference-array-from`: Output mismatch
@@ -276,6 +273,7 @@
 - `custom-opt-out-directive`
 - `custom/array-find-ternary-between-hooks`
 - `custom/catch-forloop-same-name-variable`
+- `custom/closure-multiple-calls-scope-leak`
 - `custom/conditional-expr-extra-scope`
 - `custom/import-meta-env-property`
 - `custom/labeled-block-scoping`
@@ -1049,6 +1047,7 @@
 - `optional-call-chained`
 - `optional-call-logical`
 - `optional-call-simple`
+- `optional-call-with-independently-memoizable-arg`
 - `optional-call-with-optional-property-load`
 - `optional-computed-load-static`
 - `optional-computed-member-expression`
@@ -1382,6 +1381,7 @@
 - `repro-reassign-props`
 - `repro-reassign-to-variable-without-mutable-range`
 - `repro-ref-mutable-range`
+- `repro-renaming-conflicting-decls`
 - `repro-retain-source-when-bailout`
 - `repro-returned-inner-fn-mutates-context`
 - `repro-returned-inner-fn-reassigns-context`

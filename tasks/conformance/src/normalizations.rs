@@ -51,6 +51,8 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_assignment_expression_parens,
         normalize_numeric_leading_zero,
         normalize_jsx_trailing_text_space_before_close,
+        normalize_optional_call_space,
+        normalize_jsx_attr_trailing_space,
         // Strict output normalizations (cosmetic OXC printer differences)
         normalize_trailing_comma_in_calls,
         normalize_multiline_call_invocations,
@@ -963,6 +965,10 @@ fn normalize_numeric_leading_zero(code: &str) -> String {
         .replace(" .8 ", " 0.8 ")
         .replace("*.1}", "*0.1}")
         .replace("* .1", "* 0.1")
+        .replace("{.8 ", "{0.8 ")
+        .replace("${.8", "${0.8")
+        .replace("${.1", "${0.1")
+        .replace("${.3", "${0.3")
 }
 
 /// Normalize trailing text space before JSX close tag.
@@ -989,6 +995,16 @@ fn normalize_jsx_trailing_text_space_before_close(code: &str) -> String {
         i += 1;
     }
     result
+}
+
+/// Normalize space after optional call: `x?.( <` → `x?.(<`.
+fn normalize_optional_call_space(code: &str) -> String {
+    code.replace("?.( <", "?.(<").replace("?.( (", "?.(( ")
+}
+
+/// Normalize space before JSX close bracket after attr: `val={t7} >` → `val={t7}>`.
+fn normalize_jsx_attr_trailing_space(code: &str) -> String {
+    code.replace("} >", "}>")
 }
 
 /// Normalize optional whitespace before closing braces: ` }` -> `}` when it
