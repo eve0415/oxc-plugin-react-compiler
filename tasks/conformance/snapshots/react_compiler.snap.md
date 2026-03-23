@@ -1,21 +1,15 @@
-# React Compiler Conformance -- 94.4% parity rate
+# React Compiler Conformance -- 95.9% parity rate
 
-**1671** parity_success, **100** parity_failure, **0** skipped
+**1699** parity_success, **72** parity_failure, **0** skipped
 
 ## Failed
 
 - `align-scopes-within-nested-valueblock-in-array`: Output mismatch
-- `allow-mutating-ref-in-callback-passed-to-jsx`: Output mismatch
-- `allow-mutating-ref-in-callback-passed-to-jsx-indirect`: Output mismatch
-- `allow-mutating-ref-property-in-callback-passed-to-jsx`: Output mismatch
-- `allow-mutating-ref-property-in-callback-passed-to-jsx-indirect`: Output mismatch
 - `array-from-arg1-captures-arg0`: Output mismatch
 - `array-from-captures-arg0`: Output mismatch
 - `array-from-maybemutates-arg0`: Output mismatch
-- `array-pattern-spread-creates-array`: Output mismatch
 - `assume-invoked/function-with-conditional-callsite-in-another-function`: Output mismatch
 - `bug-ref-prefix-postfix-operator`: Output mismatch
-- `bug-separate-memoization-due-to-callback-capturing`: Output mismatch
 - `conflict-codegen-instrument-forget`: Output mismatch
 - `custom/catch-forloop-same-name-variable`: Output mismatch
 - `custom/closure-multiple-calls-scope-leak`: Output mismatch
@@ -33,7 +27,6 @@
 - `dominator`: Output mismatch
 - `dont-merge-if-dep-is-inner-declaration-of-previous-scope`: Output mismatch
 - `flag-enable-emit-hook-guards`: Output mismatch
-- `for-of-nonmutating-loop-local-collection`: Output mismatch
 - `gating/codegen-instrument-forget-gating-test`: Output mismatch
 - `gating/gating-test-export-function-and-default`: Output mismatch
 - `gating/invalid-fnexpr-reference`: Output mismatch
@@ -47,16 +40,10 @@
 - `jsx-bracket-in-text`: Output mismatch
 - `jsx-fragment`: Output mismatch
 - `jsx-outlining-child-stored-in-id`: Output mismatch
-- `jsx-outlining-dup-key-diff-value`: Output mismatch
-- `jsx-outlining-dupe-attr-after-rename`: Output mismatch
-- `jsx-outlining-dupe-key-dupe-component`: Output mismatch
-- `jsx-outlining-duplicate-prop`: Output mismatch
 - `jsx-outlining-jsx-stored-in-id`: Output mismatch
-- `jsx-outlining-separate-nested`: Output mismatch
 - `jsx-outlining-simple`: Output mismatch
 - `jsx-outlining-with-non-jsx-children`: Output mismatch
 - `jsx-preserve-whitespace`: Output mismatch
-- `jsx-string-attribute-non-ascii`: Output mismatch
 - `jsx-tag-evaluation-order-non-global`: Output mismatch
 - `log-pruned-memoization`: Output mismatch
 - `lower-context-access-hook-guard`: Output mismatch
@@ -65,45 +52,30 @@
 - `merge-consecutive-scopes-objects`: Output mismatch
 - `merge-consecutive-scopes-reordering`: Output mismatch
 - `merge-scopes-callback`: Output mismatch
-- `mixedreadonly-mutating-map`: Output mismatch
 - `multiple-calls-to-hoisted-callback-from-other-callback`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
 - `nested-optional-chains`: Output mismatch
 - `new-mutability/array-filter`: Output mismatch
 - `new-mutability/todo-control-flow-sensitive-mutation`: Output mismatch
 - `new-mutability/transitivity-add-captured-array-to-itself`: Output mismatch
-- `nullable-objects/array-map-named-callback-cross-context`: Output mismatch
 - `object-keys`: Output mismatch
 - `optional-call-with-independently-memoizable-arg`: Output mismatch
 - `preserve-memo-validation/useCallback-reordering-depslist-assignment`: Output mismatch
 - `propagate-scope-deps-hir-fork/switch-non-final-default`: Output mismatch
 - `reassign-in-while-loop-condition`: Output mismatch
-- `reduce-reactive-deps/context-var-granular-dep`: Output mismatch
 - `reduce-reactive-deps/edge-case-merge-uncond-optional-chain-and-cond`: Output mismatch
-- `renaming-jsx-tag-lowercase`: Output mismatch
 - `repro-dispatch-spread-event-marks-event-frozen`: Output mismatch
-- `repro-duplicate-instruction-from-merge-consecutive-scopes`: Output mismatch
-- `repro-independently-memoized-property-load-for-method-call`: Output mismatch
 - `repro-propagate-type-of-ternary-jsx`: Output mismatch
 - `repro-propagate-type-of-ternary-nested`: Output mismatch
 - `repro-renaming-conflicting-decls`: Output mismatch
-- `repro-separate-memoization-due-to-callback-capturing`: Output mismatch
 - `repro-separate-scopes-for-divs`: Output mismatch
 - `resolve-react-hooks-based-on-import-name`: Output mismatch
 - `reverse-postorder`: Output mismatch
-- `same-variable-as-dep-and-redeclare`: Output mismatch
-- `same-variable-as-dep-and-redeclare-maybe-frozen`: Output mismatch
 - `switch-non-final-default`: Output mismatch
 - `timers`: Output mismatch
 - `todo-granular-iterator-semantics`: Output mismatch
 - `transform-fire/hook-guard`: Output mismatch
 - `type-inference-array-from`: Output mismatch
-- `type-provider-log`: Output mismatch
-- `type-provider-log-default-import`: Output mismatch
-- `type-provider-store-capture`: Output mismatch
-- `type-provider-store-capture-namespace-import`: Output mismatch
-- `weakmap-constructor`: Output mismatch
-- `weakset-constructor`: Output mismatch
 
 ## Passed
 
@@ -135,6 +107,10 @@
 - `allow-merge-refs-pattern`
 - `allow-modify-global-in-callback-jsx`
 - `allow-mutate-global-in-effect-fixpoint`
+- `allow-mutating-ref-in-callback-passed-to-jsx`
+- `allow-mutating-ref-in-callback-passed-to-jsx-indirect`
+- `allow-mutating-ref-property-in-callback-passed-to-jsx`
+- `allow-mutating-ref-property-in-callback-passed-to-jsx-indirect`
 - `allow-passing-ref-to-render-helper`
 - `allow-passing-ref-to-render-helper-props-object`
 - `allow-passing-refs-as-props`
@@ -161,6 +137,7 @@
 - `array-map-mutable-array-non-mutating-lambda-mutated-result`
 - `array-map-noAlias-escaping-function`
 - `array-pattern-params`
+- `array-pattern-spread-creates-array`
 - `array-properties`
 - `array-property-call`
 - `array-push-effect`
@@ -216,6 +193,7 @@
 - `block-scoping-switch-dead-code`
 - `block-scoping-switch-variable-scoping`
 - `bug-capturing-func-maybealias-captured-mutate`
+- `bug-separate-memoization-due-to-callback-capturing`
 - `bug-type-inference-control-flow`
 - `builtin-jsx-tag-lowered-between-mutations`
 - `call`
@@ -698,6 +676,7 @@
 - `for-of-iterator-of-immutable-collection`
 - `for-of-mutate`
 - `for-of-mutate-item-of-local-collection`
+- `for-of-nonmutating-loop-local-collection`
 - `for-of-simple`
 - `for-return`
 - `for-with-assignment-as-update`
@@ -880,10 +859,16 @@
 - `jsx-member-expression-tag-grouping`
 - `jsx-memberexpr-tag-in-lambda`
 - `jsx-namespaced-name`
+- `jsx-outlining-dup-key-diff-value`
+- `jsx-outlining-dupe-attr-after-rename`
+- `jsx-outlining-dupe-key-dupe-component`
+- `jsx-outlining-duplicate-prop`
+- `jsx-outlining-separate-nested`
 - `jsx-preserve-escape-character`
 - `jsx-reactive-local-variable-member-expr`
 - `jsx-spread`
 - `jsx-string-attribute-expression-container`
+- `jsx-string-attribute-non-ascii`
 - `jsx-tag-evaluation-order`
 - `jsx-ternary-local-variable`
 - `jump-poisoned/break-in-scope`
@@ -936,6 +921,7 @@
 - `method-call`
 - `method-call-computed`
 - `method-call-fn-call`
+- `mixedreadonly-mutating-map`
 - `module-scoped-bindings`
 - `multi-directive`
 - `multiple-components-first-is-invalid`
@@ -1025,6 +1011,7 @@
 - `nonoptional-load-from-optional-memberexpr`
 - `nonreactive-noescaping-dependency-can-inline-into-consuming-scope`
 - `nullable-objects/array-map-named-callback`
+- `nullable-objects/array-map-named-callback-cross-context`
 - `nullable-objects/array-map-named-chained-callbacks`
 - `nullable-objects/array-map-simple`
 - `nullable-objects/bug-invalid-array-map-manual`
@@ -1291,6 +1278,7 @@
 - `reduce-reactive-deps/cond-scope`
 - `reduce-reactive-deps/conditional-member-expr`
 - `reduce-reactive-deps/conditional-member-expr`
+- `reduce-reactive-deps/context-var-granular-dep`
 - `reduce-reactive-deps/hoist-deps-diff-ssa-instance`
 - `reduce-reactive-deps/hoist-deps-diff-ssa-instance1`
 - `reduce-reactive-deps/infer-function-cond-access-local-var`
@@ -1348,6 +1336,7 @@
 - `rename-source-variables`
 - `rename-source-variables-nested-function`
 - `rename-source-variables-nested-object-method`
+- `renaming-jsx-tag-lowercase`
 - `reordering-across-blocks`
 - `repro`
 - `repro-aliased-capture-aliased-mutate`
@@ -1362,10 +1351,12 @@
 - `repro-dont-memoize-array-with-capturing-map-after-hook`
 - `repro-dont-memoize-array-with-mutable-map-after-hook`
 - `repro-duplicate-import-specifier`
+- `repro-duplicate-instruction-from-merge-consecutive-scopes`
 - `repro-duplicate-type-import`
 - `repro-false-positive-ref-validation-in-use-effect`
 - `repro-hoisting`
 - `repro-hoisting-variable-collision`
+- `repro-independently-memoized-property-load-for-method-call`
 - `repro-instruction-part-of-already-closed-scope`
 - `repro-invalid-phi-as-dependency`
 - `repro-invalid-pruned-scope-leaks-value`
@@ -1400,6 +1391,7 @@
 - `repro-returned-inner-fn-mutates-context`
 - `repro-returned-inner-fn-reassigns-context`
 - `repro-scope-missing-mutable-range`
+- `repro-separate-memoization-due-to-callback-capturing`
 - `repro-slow-validate-preserve-memo`
 - `repro-undefined-expression-of-jsxexpressioncontainer`
 - `repro-unmerged-fbt-call-merge-overlapping-reactive-scopes`
@@ -1508,6 +1500,8 @@
 - `rules-of-hooks/todo.invalid.invalid-rules-of-hooks-ddeca9708b63`
 - `rules-of-hooks/todo.invalid.invalid-rules-of-hooks-e675f0a672d8`
 - `rules-of-hooks/todo.invalid.invalid-rules-of-hooks-e69ffce323c3`
+- `same-variable-as-dep-and-redeclare`
+- `same-variable-as-dep-and-redeclare-maybe-frozen`
 - `script-source-type`
 - `sequence-expression`
 - `sequential-destructuring-assignment-to-scope-declarations`
@@ -1668,6 +1662,10 @@
 - `type-binary-operator`
 - `type-cast-expression.flow`
 - `type-field-load`
+- `type-provider-log`
+- `type-provider-log-default-import`
+- `type-provider-store-capture`
+- `type-provider-store-capture-namespace-import`
 - `type-provider-tagged-template-expression`
 - `type-test-field-load-binary-op`
 - `type-test-field-store`
@@ -1773,6 +1771,8 @@
 - `validate-no-set-state-in-render-uncalled-function-with-mutable-range-is-valid`
 - `validate-no-set-state-in-render-unconditional-lambda-which-conditionally-sets-state-ok`
 - `value-block-mutates-outer-value`
+- `weakmap-constructor`
+- `weakset-constructor`
 - `while-break`
 - `while-conditional-continue`
 - `while-logical`

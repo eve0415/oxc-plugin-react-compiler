@@ -36,6 +36,7 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_jsx_child_whitespace,
         normalize_jsx_assignment_parens,
         normalize_jsx_expression_container_spacing,
+        normalize_jsx_residual_close_paren,
         // Strict output normalizations (cosmetic OXC printer differences)
         normalize_trailing_comma_in_calls,
         normalize_multiline_call_invocations,
@@ -367,19 +368,21 @@ fn normalize_jsx_child_whitespace(code: &str) -> String {
 /// Normalize optional parentheses around JSX in assignments and returns.
 /// Babel wraps JSX: `t1 = ( <div>...</div> )` and `return ( <div /> )`
 /// OXC omits them: `t1 = <div>...</div>` and `return <div />`
-/// Strip `( ` before `<` and ` )` after JSX close on the same line.
+/// Handles both single-line and multi-line JSX parens.
 fn normalize_jsx_assignment_parens(code: &str) -> String {
     let mut result = String::with_capacity(code.len());
-    for line in code.lines() {
-        let trimmed = line.trim();
-        // Single-line pattern: `... = ( <...> )` or `return ( <...> )`
+    let lines: Vec<&str> = code.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+
+        // Single-line: `... = ( <...> )` or `return ( <...> )`
         if (trimmed.contains("= ( <") || trimmed.starts_with("return ( <"))
             && (trimmed.ends_with(" )") || trimmed.ends_with(" );"))
         {
-            let normalized = line
+            let normalized = lines[i]
                 .replace("= ( <", "= <")
                 .replace("return ( <", "return <");
-            // Strip trailing ` )` or ` );`
             let normalized = if normalized.trim_end().ends_with(" );") {
                 let pos = normalized.rfind(" );").unwrap();
                 format!("{});", &normalized[..pos])
@@ -390,10 +393,66 @@ fn normalize_jsx_assignment_parens(code: &str) -> String {
                 normalized
             };
             result.push_str(&normalized);
-        } else {
-            result.push_str(line);
+            result.push('\n');
+            i += 1;
+            continue;
         }
+
+        // Multi-line: line ends with `( <` and a later line ends with `)`
+        if (trimmed.ends_with("= ( <")
+            || trimmed.ends_with("return ( <")
+            || (trimmed.contains("= ( <") && !trimmed.ends_with(")"))
+            || trimmed.ends_with("=> ( <"))
+            && trimmed.matches('(').count() > trimmed.matches(')').count()
+        {
+            // Strip `( <` → `<` on this line
+            let open_line = lines[i]
+                .replace("= ( <", "= <")
+                .replace("return ( <", "return <")
+                .replace("=> ( <", "=> <");
+            result.push_str(&open_line);
+            result.push('\n');
+            i += 1;
+            // Find matching `)` on a line that ends with ` )` or ` );`
+            let mut depth = 1i32;
+            while i < lines.len() {
+                let t = lines[i].trim();
+                for ch in t.chars() {
+                    match ch {
+                        '(' => depth += 1,
+                        ')' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                if depth <= 0 {
+                    // Strip trailing ` )` or ` );`
+                    let line_str = lines[i].to_string();
+                    let stripped = line_str
+                        .trim_end()
+                        .strip_suffix(");")
+                        .map(|s| format!("{};", s.trim_end()))
+                        .or_else(|| {
+                            line_str
+                                .trim_end()
+                                .strip_suffix(')')
+                                .map(|s| s.trim_end().to_string())
+                        })
+                        .unwrap_or(line_str);
+                    result.push_str(&stripped);
+                    result.push('\n');
+                    i += 1;
+                    break;
+                }
+                result.push_str(lines[i]);
+                result.push('\n');
+                i += 1;
+            }
+            continue;
+        }
+
+        result.push_str(lines[i]);
         result.push('\n');
+        i += 1;
     }
     if result.ends_with('\n') {
         result.pop();
@@ -406,6 +465,16 @@ fn normalize_jsx_assignment_parens(code: &str) -> String {
 fn normalize_jsx_expression_container_spacing(code: &str) -> String {
     // Replace `{ "` with `{"` and `" }` with `"}`
     code.replace("{ \"", "{\"").replace("\" }", "\"}")
+}
+
+/// Strip residual `)` after JSX close tags left by multi-line paren
+/// collapsing. After other normalizations collapse multi-line `( <...> )`
+/// to single line, the `)` may remain: `</>);` → `</>;`.
+fn normalize_jsx_residual_close_paren(code: &str) -> String {
+    code.replace("/>);", "/>;")
+        .replace("</>);", "</>;")
+        .replace("/>)", "/>")
+        .replace("</>)", "</>")
 }
 
 /// Normalize optional whitespace before closing braces: ` }` -> `}` when it
