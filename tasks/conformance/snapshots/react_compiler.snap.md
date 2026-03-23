@@ -1,11 +1,10 @@
 # React Compiler Conformance -- 98.8% parity rate
 
-**1749** parity_success, **22** parity_failure, **0** skipped
+**1750** parity_success, **21** parity_failure, **0** skipped
 
 ## Failed
 
 - `conflict-codegen-instrument-forget`: Output mismatch
-- `custom/usememo-preserve-retry`: Output mismatch
 - `deeply-nested-function-expressions-with-params`: Output mismatch
 - `flag-enable-emit-hook-guards`: Output mismatch
 - `gating/codegen-instrument-forget-gating-test`: Output mismatch
@@ -286,6 +285,7 @@
 - `custom/usememo-filter-nested-map-jsx`
 - `custom/usememo-filter-result-map`
 - `custom/usememo-filter-sort-bail`
+- `custom/usememo-preserve-retry`
 - `custom/usememo-property-dep`
 - `custom/usememo-slice-result-map`
 - `custom/useref-initial-value-sentinel`

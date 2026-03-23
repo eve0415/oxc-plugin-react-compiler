@@ -743,14 +743,16 @@ fn normalize_multiline_short_arrays(code: &str) -> String {
         let is_array_start = trimmed.ends_with(" [")
             || trimmed.ends_with("= [")
             || trimmed.ends_with("([")
-            || trimmed.ends_with(", [");
+            || trimmed.ends_with(", [")
+            || trimmed.ends_with("= [{");
         let is_obj_start = (trimmed.ends_with(" {")
             || trimmed.ends_with("= {")
             || trimmed.ends_with("([{")
             || trimmed.ends_with(", {"))
             && !trimmed.ends_with("=> {")
             && !trimmed.ends_with("else {")
-            && !trimmed.ends_with(") {");
+            && !trimmed.ends_with(") {")
+            && !trimmed.ends_with("=>{");
         if is_array_start || is_obj_start {
             let bracket = if is_array_start {
                 (b'[', b']')
@@ -763,8 +765,8 @@ fn normalize_multiline_short_arrays(code: &str) -> String {
             let start = i;
             let mut found_close = false;
             let mut j = i;
-            while j < lines.len() && j - start < 10 {
-                // Max 10 lines for "short" arrays
+            while j < lines.len() && j - start < 30 {
+                // Max 30 lines for "short" arrays/objects
                 let t = lines[j].trim();
                 for ch in t.bytes() {
                     if ch == bracket.0 {
@@ -781,7 +783,7 @@ fn normalize_multiline_short_arrays(code: &str) -> String {
                 }
                 j += 1;
             }
-            if found_close && collected.len() > 1 && collected.len() <= 8 {
+            if found_close && collected.len() > 1 && collected.len() <= 25 {
                 // Collapse to single line
                 let collapsed = collected.join(" ");
                 // Clean up extra spaces
