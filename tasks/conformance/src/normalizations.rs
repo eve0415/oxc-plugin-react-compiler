@@ -33,6 +33,7 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_scope_body_blank_lines,
         normalize_top_level_statement_blank_lines,
         normalize_space_before_closing_brace,
+        normalize_jsx_space_expression_container,
         normalize_jsx_child_whitespace,
         normalize_jsx_assignment_parens,
         normalize_jsx_expression_container_spacing,
@@ -348,14 +349,20 @@ fn normalize_jsx_child_whitespace(code: &str) -> String {
                 (b'>', b'{') => true,
                 // `} {` — between expression containers
                 (b'}', b'{') => true,
-                // `} <` — after expression, before JSX child element
-                // Only when followed by a tag name char (uppercase or lowercase)
+                // `} <` — after expression, before JSX child element or fragment
+                // Only when followed by a tag name char, `/`, or `>` (fragment `<>`)
                 (b'}', b'<') => {
-                    i + 3 < len && (bytes[i + 3].is_ascii_alphabetic() || bytes[i + 3] == b'/')
+                    i + 3 < len
+                        && (bytes[i + 3].is_ascii_alphabetic()
+                            || bytes[i + 3] == b'/'
+                            || bytes[i + 3] == b'>')
                 }
-                // `> <` — between JSX child elements (but NOT `> <=`)
+                // `> <` — between JSX child elements or fragments (but NOT `> <=`)
                 (b'>', b'<') => {
-                    i + 3 < len && (bytes[i + 3].is_ascii_alphabetic() || bytes[i + 3] == b'/')
+                    i + 3 < len
+                        && (bytes[i + 3].is_ascii_alphabetic()
+                            || bytes[i + 3] == b'/'
+                            || bytes[i + 3] == b'>')
                 }
                 // `/> {` — after self-closing tag, before expression
                 _ if i >= 1 && bytes[i - 1] == b'/' && prev == b'>' && next == b'{' => {
@@ -505,6 +512,14 @@ fn normalize_jsx_text_boundary_space(code: &str) -> String {
 fn normalize_jsx_expression_container_spacing(code: &str) -> String {
     // Replace `{ "` with `{"` and `" }` with `"}`
     code.replace("{ \"", "{\"").replace("\" }", "\"}")
+}
+
+/// Normalize JSX expression container containing a single-space string to a
+/// bare space.  Prettier rewrites `{" "}` / `{' '}` to a plain JSX text space
+/// when formatting the upstream expected output, while OXC codegen emits the
+/// expression container literally.  Both are semantically identical in React.
+fn normalize_jsx_space_expression_container(code: &str) -> String {
+    code.replace("{\" \"}", " ").replace("{' '}", " ")
 }
 
 /// Strip residual `)` after JSX close tags left by multi-line paren

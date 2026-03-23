@@ -1,6 +1,6 @@
-# React Compiler Conformance -- 99.2% parity rate
+# React Compiler Conformance -- 99.3% parity rate
 
-**1757** parity_success, **14** parity_failure, **0** skipped
+**1758** parity_success, **13** parity_failure, **0** skipped
 
 ## Failed
 
@@ -10,7 +10,6 @@
 - `gating/multi-arrow-expr-export-default-gating-test`: Output mismatch
 - `gating/multi-arrow-expr-export-gating-test`: Output mismatch
 - `gating/multi-arrow-expr-gating-test`: Output mismatch
-- `jsx-fragment`: Output mismatch
 - `jsx-preserve-whitespace`: Output mismatch
 - `log-pruned-memoization`: Output mismatch
 - `lower-context-access-hook-guard`: Output mismatch
@@ -817,6 +816,7 @@
 - `jsx-attribute-with-jsx-fragment-value.flow`
 - `jsx-bracket-in-text`
 - `jsx-empty-expression`
+- `jsx-fragment`
 - `jsx-freeze`
 - `jsx-html-entity`
 - `jsx-local-memberexpr-tag`
