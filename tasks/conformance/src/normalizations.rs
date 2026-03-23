@@ -54,6 +54,7 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_jsx_trailing_text_space_before_close,
         normalize_optional_call_space,
         normalize_jsx_attr_trailing_space,
+        normalize_empty_statement_semicolons,
         // Strict output normalizations (cosmetic OXC printer differences)
         normalize_trailing_comma_in_calls,
         normalize_multiline_call_invocations,
@@ -1105,6 +1106,12 @@ fn normalize_optional_call_space(code: &str) -> String {
 /// Normalize space before JSX close bracket after attr: `val={t7} >` → `val={t7}>`.
 fn normalize_jsx_attr_trailing_space(code: &str) -> String {
     code.replace("} >", "}>")
+}
+
+/// Normalize empty statement semicolons: `; ;` → `;`.
+/// Babel sometimes emits standalone `;` (empty statements) that OXC omits.
+fn normalize_empty_statement_semicolons(code: &str) -> String {
+    code.replace("; ;", ";")
 }
 
 /// Normalize optional whitespace before closing braces: ` }` -> `}` when it
