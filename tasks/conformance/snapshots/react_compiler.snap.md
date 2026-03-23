@@ -1,12 +1,11 @@
-# React Compiler Conformance -- 99.8% parity rate
+# React Compiler Conformance -- 99.9% parity rate
 
-**1768** parity_success, **3** parity_failure, **0** skipped
+**1769** parity_success, **2** parity_failure, **0** skipped
 
 ## Failed
 
 - `custom/method-chain-sub-expression-memo`: Output mismatch
 - `custom/usememo-property-dep`: Output mismatch
-- `idx-no-outlining`: Output mismatch
 
 ## Passed
 
@@ -734,6 +733,7 @@
 - `hooks-with-prefix`
 - `idx-method-no-outlining`
 - `idx-method-no-outlining-wildcard`
+- `idx-no-outlining`
 - `ignore-inner-interface-types`
 - `ignore-use-no-forget`
 - `iife-inline-ternary`

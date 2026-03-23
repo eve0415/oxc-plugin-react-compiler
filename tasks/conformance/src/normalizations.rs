@@ -64,8 +64,10 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_bracket_string_literal_spacing,
         // DISABLED: compiler now emits memoization comments natively
         // normalize_generated_memoization_comments,
-        // DISABLED: Babel hoists unused _ref vars from idx macro expansion; OXC doesn't emit dead code
-        // normalize_dead_bare_var_refs,
+        // Re-enabled: Babel's idx macro post-processing hoists dead `var _ref;`
+        // declarations that our compiler correctly omits. This is a post-processing
+        // artifact, not a compiler bug.
+        normalize_dead_bare_var_refs,
         normalize_multiline_iife_collapsing,
         normalize_inline_iife_parenthesization,
         normalize_if_consequent_newline,
