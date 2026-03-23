@@ -406,32 +406,6 @@ impl Context {
         false
     }
 
-    /// Follow synthetic empty `goto(Break)` chains and return the terminal
-    /// destination block to use as a switch label.
-    fn resolve_switch_label_block(&self, block: BlockId) -> BlockId {
-        let mut current = block;
-        let mut hops = 0usize;
-        while hops < 8 {
-            let Some(cur_block) = self.blocks.get(&current) else {
-                break;
-            };
-            if !cur_block.instructions.is_empty() {
-                break;
-            }
-            let Terminal::Goto {
-                block: next,
-                variant: GotoVariant::Break,
-                ..
-            } = cur_block.terminal
-            else {
-                break;
-            };
-            current = next;
-            hops += 1;
-        }
-        current
-    }
-
     /// Determine how a `continue` to the given block must be emitted.
     fn get_continue_target(&self, block: BlockId) -> Option<(BlockId, ReactiveTerminalTargetKind)> {
         let mut has_preceding_loop = false;
@@ -683,8 +657,6 @@ impl Driver {
                     } else {
                         None
                     };
-                let outer_switch_label_id =
-                    fallthrough_id.map(|ft| self.cx.resolve_switch_label_block(ft));
                 if let Some(ft) = fallthrough_id {
                     let sid = self.cx.schedule(ft, "switch");
                     schedule_ids.push(sid);
@@ -714,7 +686,7 @@ impl Driver {
                 reactive_cases.reverse();
 
                 self.cx.unschedule_all(&schedule_ids);
-                let inner_switch_stmt = ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                block_value.push(ReactiveStatement::Terminal(ReactiveTerminalStatement {
                     terminal: ReactiveTerminal::Switch {
                         test,
                         cases: reactive_cases,
@@ -724,24 +696,7 @@ impl Driver {
                         id: ft,
                         implicit: false,
                     }),
-                });
-                if let (Some(outer_label), Some(inner_label)) =
-                    (outer_switch_label_id, fallthrough_id)
-                    && outer_label != inner_label
-                {
-                    block_value.push(ReactiveStatement::Terminal(ReactiveTerminalStatement {
-                        terminal: ReactiveTerminal::Label {
-                            block: vec![inner_switch_stmt],
-                            id,
-                        },
-                        label: Some(ReactiveLabel {
-                            id: outer_label,
-                            implicit: false,
-                        }),
-                    }));
-                } else {
-                    block_value.push(inner_switch_stmt);
-                }
+                }));
                 if let Some(ft) = fallthrough_id {
                     self.visit_block(ft, block_value);
                 }

@@ -1,12 +1,11 @@
-# React Compiler Conformance -- 99.8% parity rate
+# React Compiler Conformance -- 99.9% parity rate
 
-**1768** parity_success, **3** parity_failure, **0** skipped
+**1769** parity_success, **2** parity_failure, **0** skipped
 
 ## Failed
 
 - `custom/method-chain-sub-expression-memo`: Output mismatch
 - `custom/usememo-property-dep`: Output mismatch
-- `dominator`: Output mismatch
 
 ## Passed
 
@@ -323,6 +322,7 @@
 - `do-while-continue`
 - `do-while-early-unconditional-break`
 - `do-while-simple`
+- `dominator`
 - `dont-memoize-primitive-function-call-non-escaping`
 - `dont-memoize-primitive-function-call-non-escaping-useMemo`
 - `dont-merge-if-dep-is-inner-declaration-of-previous-scope`
