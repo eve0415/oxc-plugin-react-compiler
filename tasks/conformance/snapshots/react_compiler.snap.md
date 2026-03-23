@@ -1,10 +1,9 @@
-# React Compiler Conformance -- 99.9% parity rate
+# React Compiler Conformance -- 100.0% parity rate
 
-**1770** parity_success, **1** parity_failure, **0** skipped
+**1771** parity_success, **0** parity_failure, **0** skipped
 
 ## Failed
 
-- `custom/usememo-property-dep`: Output mismatch
 
 ## Passed
 
@@ -267,6 +266,7 @@
 - `custom/usememo-filter-result-map`
 - `custom/usememo-filter-sort-bail`
 - `custom/usememo-preserve-retry`
+- `custom/usememo-property-dep`
 - `custom/usememo-slice-result-map`
 - `custom/useref-initial-value-sentinel`
 - `dce-loop`
