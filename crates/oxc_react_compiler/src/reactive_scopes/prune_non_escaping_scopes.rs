@@ -1353,9 +1353,22 @@ fn compute_memoization_inputs<'a>(
                     return false;
                 }
                 match value {
-                    InstructionValue::ArrayExpression { .. } => true,
+                    InstructionValue::ArrayExpression { .. } => {
+                        // Suppress lvalue for conditional-only arrays. Empty
+                        // arrays ([]) are trivial and don't need memoization.
+                        // Non-empty arrays used only as ternary branches also
+                        // get suppressed since upstream processes them with
+                        // lvalue=null inside ConditionalExpression.
+                        true
+                    }
                     InstructionValue::ObjectExpression { properties, .. } => {
-                        !properties.iter().any(|property| {
+                        // Only suppress EMPTY ObjectExpressions ({}) and those
+                        // without methods. ObjectExpressions WITH properties
+                        // (e.g. {stage: currentStage, value: ...}) should keep
+                        // their lvalue so the memoization graph connects the
+                        // ternary result to its branch properties, matching
+                        // upstream's recursive ConditionalExpression processing.
+                        let has_method = properties.iter().any(|property| {
                             matches!(
                                 property,
                                 ObjectPropertyOrSpread::Property(ObjectProperty {
@@ -1363,7 +1376,8 @@ fn compute_memoization_inputs<'a>(
                                     ..
                                 })
                             )
-                        })
+                        });
+                        !has_method && properties.is_empty()
                     }
                     _ => false,
                 }

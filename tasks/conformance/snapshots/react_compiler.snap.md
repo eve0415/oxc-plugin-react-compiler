@@ -1,6 +1,6 @@
-# React Compiler Conformance -- 92.6% parity rate
+# React Compiler Conformance -- 92.7% parity rate
 
-**1640** parity_success, **131** parity_failure, **0** skipped
+**1641** parity_success, **130** parity_failure, **0** skipped
 
 ## Failed
 
@@ -20,7 +20,6 @@
 - `call-with-independently-memoizable-arg`: Output mismatch
 - `component`: Output mismatch
 - `conflict-codegen-instrument-forget`: Output mismatch
-- `custom/array-find-ternary-between-hooks`: Output mismatch
 - `custom/catch-forloop-same-name-variable`: Output mismatch
 - `custom/closure-multiple-calls-scope-leak`: Output mismatch
 - `custom/import-meta-env-property`: Output mismatch
@@ -365,6 +364,7 @@
 - `controlled-input`
 - `createElement-freeze`
 - `custom-opt-out-directive`
+- `custom/array-find-ternary-between-hooks`
 - `custom/conditional-expr-extra-scope`
 - `custom/labeled-block-scoping`
 - `custom/nested-math-method-calls`
