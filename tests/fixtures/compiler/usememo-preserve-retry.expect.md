@@ -1,15 +1,69 @@
+## Input
+
+```javascript
+// @validatePreserveExistingMemoizationGuarantees
+// useMemo/useCallback preserve: compiler should still compile on retry
+// when existing memoization cannot be preserved.
+// OXC bails: "Existing memoization could not be preserved" then skips emit.
+import { useCallback, useEffect, useMemo, useState } from 'react';
+function Component() {
+  const [highlighted, setHighlighted] = useState(null);
+  const [showPath, setShowPath] = useState(false);
+  const grid = useMemo(() => [
+    { address: '0x0000', value: '42', isPointer: false },
+    { address: '0x0008', value: 'ref', isPointer: true },
+  ], []);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setHighlighted(1);
+      setTimeout(() => setShowPath(true), 500);
+    }, 800);
+    return () => clearTimeout(timer);
+  }, []);
+  const handleHover = useCallback((index) => setHighlighted(index), []);
+  const handleLeave = useCallback(() => setHighlighted(1), []);
+  return (
+    <div>
+      {grid.map((cell, i) => (
+        <div key={cell.address} onMouseEnter={() => handleHover(i)} onMouseLeave={handleLeave}>
+          {cell.value}
+          {showPath && cell.isPointer && <span>null</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export const FIXTURE_ENTRYPOINT = {
+  fn: Component,
+  params: [{}],
+};
+```
+
 ## Code
 
 ```javascript
 import { c as _c } from "react/compiler-runtime";
-import { useCallback, useEffect, useMemo, useState } from "react";
+// @validatePreserveExistingMemoizationGuarantees
+// useMemo/useCallback preserve: compiler should still compile on retry
+// when existing memoization cannot be preserved.
+// OXC bails: "Existing memoization could not be preserved" then skips emit.
+import { useCallback, useEffect, useMemo, useState } from 'react';
 function Component() {
   const $ = _c(7);
   const [, setHighlighted] = useState(null);
   const [showPath, setShowPath] = useState(false);
   let t0;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-    t0 = [{ address: "0x0000", value: "42", isPointer: false }, { address: "0x0008", value: "ref", isPointer: true }];
+    t0 = [{
+      address: "0x0000",
+      value: "42",
+      isPointer: false
+    }, {
+      address: "0x0008",
+      value: "ref",
+      isPointer: true
+    }];
     $[0] = t0;
   } else {
     t0 = $[0];
@@ -59,5 +113,8 @@ function Component() {
   }
   return t5;
 }
-export const FIXTURE_ENTRYPOINT = { fn: Component, params: [{}] };
+export const FIXTURE_ENTRYPOINT = {
+  fn: Component,
+  params: [{}]
+};
 ```

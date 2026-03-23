@@ -1,3 +1,45 @@
+## Input
+
+```javascript
+// @compilationMode(infer)
+// Side-effectful expression passed to useRef() should be sentinel-memoized.
+// Babel: _c(9) — wraps the useRef argument in a sentinel guard
+// OXC:   _c(8) — passes the expression directly to useRef
+import { useCallback, useEffect, useRef, useState } from 'react';
+const STORAGE_KEY = 'debug-mode';
+function useDebugMode() {
+  const [state, setState] = useState({ enabled: false, index: 0 });
+  const needsSyncRef = useRef(
+    globalThis.window !== undefined && localStorage.getItem(STORAGE_KEY) === 'true'
+  );
+  const enable = useCallback(() => {
+    setState(prev => ({ ...prev, enabled: true }));
+    localStorage.setItem(STORAGE_KEY, 'true');
+    needsSyncRef.current = false;
+  }, []);
+  const disable = useCallback(() => {
+    setState(prev => ({ ...prev, enabled: false }));
+    localStorage.removeItem(STORAGE_KEY);
+  }, []);
+  const toggle = useCallback(() => {
+    setState(prev => {
+      const next = !prev.enabled;
+      if (next) localStorage.setItem(STORAGE_KEY, 'true');
+      else localStorage.removeItem(STORAGE_KEY);
+      return { ...prev, enabled: next };
+    });
+  }, []);
+  useEffect(() => {
+    if (needsSyncRef.current) {
+      setState(prev => ({ ...prev, enabled: true }));
+      needsSyncRef.current = false;
+    }
+  }, []);
+  return { state, enable, disable, toggle };
+}
+export const FIXTURE_ENTRYPOINT = { fn: useDebugMode, params: [] };
+```
+
 ## Code
 
 ```javascript
@@ -9,7 +51,7 @@ import { c as _c } from "react/compiler-runtime";
 import { useCallback, useEffect, useRef, useState } from 'react';
 const STORAGE_KEY = 'debug-mode';
 function useDebugMode() {
-  const $ = _c(8);
+  const $ = _c(9);
   let t0;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t0 = {
@@ -21,71 +63,78 @@ function useDebugMode() {
     t0 = $[0];
   }
   const [state, setState] = useState(t0);
-  const needsSyncRef = useRef(globalThis.window !== undefined && localStorage.getItem(STORAGE_KEY) === "true");
   let t1;
   if ($[1] === Symbol.for("react.memo_cache_sentinel")) {
-    t1 = () => {
-      setState(_temp);
-      localStorage.setItem(STORAGE_KEY, "true");
-      needsSyncRef.current = false;
-    };
+    t1 = globalThis.window !== undefined && localStorage.getItem(STORAGE_KEY) === "true";
     $[1] = t1;
   } else {
     t1 = $[1];
   }
-  const enable = t1;
+  const needsSyncRef = useRef(t1);
   let t2;
   if ($[2] === Symbol.for("react.memo_cache_sentinel")) {
     t2 = () => {
-      setState(_temp2);
-      localStorage.removeItem(STORAGE_KEY);
+      setState(_temp);
+      localStorage.setItem(STORAGE_KEY, "true");
+      needsSyncRef.current = false;
     };
     $[2] = t2;
   } else {
     t2 = $[2];
   }
-  const disable = t2;
+  const enable = t2;
   let t3;
   if ($[3] === Symbol.for("react.memo_cache_sentinel")) {
     t3 = () => {
-      setState(_temp3);
+      setState(_temp2);
+      localStorage.removeItem(STORAGE_KEY);
     };
     $[3] = t3;
   } else {
     t3 = $[3];
   }
-  const toggle = t3;
+  const disable = t3;
   let t4;
-  let t5;
   if ($[4] === Symbol.for("react.memo_cache_sentinel")) {
     t4 = () => {
+      setState(_temp3);
+    };
+    $[4] = t4;
+  } else {
+    t4 = $[4];
+  }
+  const toggle = t4;
+  let t5;
+  let t6;
+  if ($[5] === Symbol.for("react.memo_cache_sentinel")) {
+    t5 = () => {
       if (needsSyncRef.current) {
         setState(_temp4);
         needsSyncRef.current = false;
       }
     };
-    t5 = [];
-    $[4] = t4;
+    t6 = [];
     $[5] = t5;
+    $[6] = t6;
   } else {
-    t4 = $[4];
     t5 = $[5];
+    t6 = $[6];
   }
-  useEffect(t4, t5);
-  let t6;
-  if ($[6] !== state) {
-    t6 = {
+  useEffect(t5, t6);
+  let t7;
+  if ($[7] !== state) {
+    t7 = {
       state,
       enable,
       disable,
       toggle
     };
-    $[6] = state;
-    $[7] = t6;
+    $[7] = state;
+    $[8] = t7;
   } else {
-    t6 = $[7];
+    t7 = $[8];
   }
-  return t6;
+  return t7;
 }
 function _temp4(prev_2) {
   return {
