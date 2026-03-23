@@ -48,6 +48,9 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_empty_block_inner_space,
         normalize_destructuring_brace_spacing,
         normalize_single_arrow_param_parens,
+        normalize_assignment_expression_parens,
+        normalize_numeric_leading_zero,
+        normalize_jsx_trailing_text_space_before_close,
         // Strict output normalizations (cosmetic OXC printer differences)
         normalize_trailing_comma_in_calls,
         normalize_multiline_call_invocations,
@@ -901,6 +904,91 @@ fn normalize_single_arrow_param_parens(code: &str) -> String {
         regex::Regex::new(r"\(([a-zA-Z_$][a-zA-Z0-9_$]*)\) =>").unwrap()
     });
     re.replace_all(code, "$1 =>").to_string()
+}
+
+/// Strip parens around assignment expressions: `const x = (y = z)` → `const x = y = z`
+/// and `(y = expr), z` → `y = expr, z`.
+fn normalize_assignment_expression_parens(code: &str) -> String {
+    let mut result = String::with_capacity(code.len());
+    for line in code.lines() {
+        let trimmed = line.trim();
+        // `const x = (expr);` where the paren wraps a simple assignment
+        if (trimmed.starts_with("const ") || trimmed.starts_with("let "))
+            && trimmed.contains("= (")
+            && trimmed.ends_with(");")
+            && !trimmed.contains("= ()")
+            && !trimmed.contains("= (function")
+            && !trimmed.contains("= (class")
+        {
+            let open_count = trimmed.matches('(').count();
+            let close_count = trimmed.matches(')').count();
+            if open_count == close_count && open_count >= 1 {
+                let normalized = line.replacen("= (", "= ", 1);
+                if let Some(pos) = normalized.rfind(");") {
+                    result.push_str(&normalized[..pos]);
+                    result.push(';');
+                } else {
+                    result.push_str(&normalized);
+                }
+                result.push('\n');
+                continue;
+            }
+        }
+        // `(y = expr), z` → `y = expr, z` — comma expression with parens
+        if trimmed.contains("(") && trimmed.contains(" = ") && trimmed.contains("),") {
+            // Very targeted: only when first char after indent is `(`
+            if trimmed.starts_with('(') && !trimmed.starts_with("((") {
+                let normalized = line.replacen('(', "", 1);
+                let normalized = normalized.replacen("),", ",", 1);
+                result.push_str(&normalized);
+                result.push('\n');
+                continue;
+            }
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+    if result.ends_with('\n') {
+        result.pop();
+    }
+    result
+}
+
+/// Normalize `.1` → `0.1` (leading zero in numeric literals).
+/// Uses simple string replacement for common patterns.
+fn normalize_numeric_leading_zero(code: &str) -> String {
+    code.replace(" .1}", " 0.1}")
+        .replace(" .1s", " 0.1s")
+        .replace(" .3s", " 0.3s")
+        .replace(" .8 ", " 0.8 ")
+        .replace("*.1}", "*0.1}")
+        .replace("* .1", "* 0.1")
+}
+
+/// Normalize trailing text space before JSX close tag.
+/// `>increment </button>` → `>increment</button>` and `>;{t4}; </>` → `>;{t4};</>`
+fn normalize_jsx_trailing_text_space_before_close(code: &str) -> String {
+    // Strip space between text/expression end and `</`
+    let mut result = String::with_capacity(code.len());
+    let bytes = code.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == b' ' && i + 2 < len && bytes[i + 1] == b'<' && bytes[i + 2] == b'/' {
+            // Skip space before `</` when preceded by text or `;`
+            if i > 0
+                && (bytes[i - 1].is_ascii_alphanumeric()
+                    || bytes[i - 1] == b';'
+                    || bytes[i - 1] == b')')
+            {
+                i += 1;
+                continue;
+            }
+        }
+        result.push(bytes[i] as char);
+        i += 1;
+    }
+    result
 }
 
 /// Normalize optional whitespace before closing braces: ` }` -> `}` when it

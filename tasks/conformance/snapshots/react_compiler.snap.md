@@ -1,10 +1,9 @@
-# React Compiler Conformance -- 98.2% parity rate
+# React Compiler Conformance -- 98.6% parity rate
 
-**1740** parity_success, **31** parity_failure, **0** skipped
+**1746** parity_success, **25** parity_failure, **0** skipped
 
 ## Failed
 
-- `bug-ref-prefix-postfix-operator`: Output mismatch
 - `conflict-codegen-instrument-forget`: Output mismatch
 - `custom/closure-multiple-calls-scope-leak`: Output mismatch
 - `custom/usememo-preserve-retry`: Output mismatch
@@ -20,14 +19,9 @@
 - `jsx-preserve-whitespace`: Output mismatch
 - `log-pruned-memoization`: Output mismatch
 - `lower-context-access-hook-guard`: Output mismatch
-- `merge-consecutive-scopes`: Output mismatch
-- `merge-consecutive-scopes-reordering`: Output mismatch
 - `multiple-calls-to-hoisted-callback-from-other-callback`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
-- `new-mutability/todo-control-flow-sensitive-mutation`: Output mismatch
-- `new-mutability/transitivity-add-captured-array-to-itself`: Output mismatch
 - `optional-call-with-independently-memoizable-arg`: Output mismatch
-- `preserve-memo-validation/useCallback-reordering-depslist-assignment`: Output mismatch
 - `reduce-reactive-deps/edge-case-merge-uncond-optional-chain-and-cond`: Output mismatch
 - `repro-dispatch-spread-event-marks-event-frozen`: Output mismatch
 - `repro-propagate-type-of-ternary-nested`: Output mismatch
@@ -157,6 +151,7 @@
 - `block-scoping-switch-dead-code`
 - `block-scoping-switch-variable-scoping`
 - `bug-capturing-func-maybealias-captured-mutate`
+- `bug-ref-prefix-postfix-operator`
 - `bug-separate-memoization-due-to-callback-capturing`
 - `bug-type-inference-control-flow`
 - `builtin-jsx-tag-lowered-between-mutations`
@@ -898,9 +893,11 @@
 - `memoize-value-block-value-logical-no-sequence`
 - `memoize-value-block-value-sequence`
 - `merge-consecutive-nested-scopes`
+- `merge-consecutive-scopes`
 - `merge-consecutive-scopes-deps-subset-of-decls`
 - `merge-consecutive-scopes-no-deps`
 - `merge-consecutive-scopes-objects`
+- `merge-consecutive-scopes-reordering`
 - `merge-nested-scopes-with-same-inputs`
 - `merge-scopes-callback`
 - `merged-scopes-are-valid-effect-deps`
@@ -980,8 +977,10 @@
 - `new-mutability/set-add-mutate`
 - `new-mutability/shared-hook-calls`
 - `new-mutability/ssa-renaming-ternary-destruction`
+- `new-mutability/todo-control-flow-sensitive-mutation`
 - `new-mutability/todo-transitivity-createfrom-capture-lambda`
 - `new-mutability/transitive-mutation-before-capturing-value-created-earlier`
+- `new-mutability/transitivity-add-captured-array-to-itself`
 - `new-mutability/transitivity-capture-createfrom`
 - `new-mutability/transitivity-capture-createfrom-lambda`
 - `new-mutability/transitivity-createfrom-capture`
@@ -1125,6 +1124,7 @@
 - `preserve-memo-validation/useCallback-nonescaping`
 - `preserve-memo-validation/useCallback-nonescaping-invoked-callback-escaping-return`
 - `preserve-memo-validation/useCallback-reordering-deplist-controlflow`
+- `preserve-memo-validation/useCallback-reordering-depslist-assignment`
 - `preserve-memo-validation/useCallback-with-no-depslist`
 - `preserve-memo-validation/useMemo-alias-property-load-dep`
 - `preserve-memo-validation/useMemo-conditional-access-alloc`
