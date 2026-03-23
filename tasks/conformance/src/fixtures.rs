@@ -454,9 +454,14 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
         .validate_preserve_existing_memoization_guarantees = pragma
         .validate_preserve_existing_memoization_guarantees
         .unwrap_or(false);
-    // Upstream fixtures at v19.2.4 expect enablePreserveExistingMemoizationGuarantees=false
-    // (the opt-out pragmas from the 1.0.0 default change haven't been ported).
-    // Custom fixtures can opt-in via @enablePreserveExistingMemoizationGuarantees pragma.
+    // Upstream fixture runner uses `{}` Babel defaults, where
+    // enablePreserveExistingMemoizationGuarantees effectively behaves as true
+    // (useMemo/useCallback are preserved in expect.md outputs). Despite the zod
+    // schema declaring `.default(false)`, the runtime behavior with `{}` keeps
+    // existing memoization.
+    // TODO: switch to unwrap_or(true) once preserve-memo codepath bugs are fixed
+    // (currently 72 regressions when enabled). For now, keep false to avoid
+    // masking other bugs in the conformance suite.
     options
         .environment
         .enable_preserve_existing_memoization_guarantees = pragma
