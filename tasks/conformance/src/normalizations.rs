@@ -22,9 +22,6 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_top_level_comment_trivia,
         normalize_compare_multiline_brace_literals,
         normalize_multiline_trailing_commas_before_closers,
-        // DISABLED: semantic normalizations masking compiler bugs
-        // normalize_labeled_switch_breaks,
-        // normalize_labeled_block_braces,
         normalize_switch_case_braces,
         normalize_multiline_switch_cases,
         normalize_ts_object_type_semicolons,
@@ -50,8 +47,6 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_empty_block_inner_space,
         normalize_destructuring_brace_spacing,
         normalize_single_arrow_param_parens,
-        // DISABLED: semantic normalization (no fixtures affected)
-        // normalize_assignment_expression_parens,
         normalize_numeric_leading_zero,
         normalize_jsx_trailing_text_space_before_close,
         normalize_optional_call_space,
@@ -62,8 +57,6 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_multiline_call_invocations,
         normalize_small_array_bracket_spacing,
         normalize_bracket_string_literal_spacing,
-        // DISABLED: compiler now emits memoization comments natively
-        // normalize_generated_memoization_comments,
         // Re-enabled: Babel's idx macro post-processing hoists dead `var _ref;`
         // declarations that our compiler correctly omits. This is a post-processing
         // artifact, not a compiler bug.
@@ -1015,55 +1008,6 @@ fn normalize_single_arrow_param_parens(code: &str) -> String {
     re.replace_all(code, "$1 =>").to_string()
 }
 
-#[allow(dead_code)]
-/// Strip parens around assignment expressions: `const x = (y = z)` → `const x = y = z`
-/// and `(y = expr), z` → `y = expr, z`.
-fn normalize_assignment_expression_parens(code: &str) -> String {
-    let mut result = String::with_capacity(code.len());
-    for line in code.lines() {
-        let trimmed = line.trim();
-        // `const x = (expr);` where the paren wraps a simple assignment
-        if (trimmed.starts_with("const ") || trimmed.starts_with("let "))
-            && trimmed.contains("= (")
-            && trimmed.ends_with(");")
-            && !trimmed.contains("= ()")
-            && !trimmed.contains("= (function")
-            && !trimmed.contains("= (class")
-        {
-            let open_count = trimmed.matches('(').count();
-            let close_count = trimmed.matches(')').count();
-            if open_count == close_count && open_count >= 1 {
-                let normalized = line.replacen("= (", "= ", 1);
-                if let Some(pos) = normalized.rfind(");") {
-                    result.push_str(&normalized[..pos]);
-                    result.push(';');
-                } else {
-                    result.push_str(&normalized);
-                }
-                result.push('\n');
-                continue;
-            }
-        }
-        // `(y = expr), z` → `y = expr, z` — comma expression with parens
-        if trimmed.contains("(") && trimmed.contains(" = ") && trimmed.contains("),") {
-            // Very targeted: only when first char after indent is `(`
-            if trimmed.starts_with('(') && !trimmed.starts_with("((") {
-                let normalized = line.replacen('(', "", 1);
-                let normalized = normalized.replacen("),", ",", 1);
-                result.push_str(&normalized);
-                result.push('\n');
-                continue;
-            }
-        }
-        result.push_str(line);
-        result.push('\n');
-    }
-    if result.ends_with('\n') {
-        result.pop();
-    }
-    result
-}
-
 /// Normalize `.1` → `0.1` (leading zero in numeric literals).
 /// Uses simple string replacement for common patterns.
 fn normalize_numeric_leading_zero(code: &str) -> String {
@@ -1385,25 +1329,6 @@ fn normalize_import_region_comments(code: &str) -> String {
     result.join("\n")
 }
 
-#[allow(dead_code)]
-fn normalize_generated_memoization_comments(code: &str) -> String {
-    let inline_re = regex::Regex::new(r#"\s*// "(?:useMemo|useMemoCache)".*$"#).unwrap();
-    code.lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with("// check if ")
-                || trimmed == "// Inputs changed, recompute"
-                || trimmed == "// Inputs did not change, use cached value"
-            {
-                return None;
-            }
-
-            Some(inline_re.replace(trimmed, "").to_string())
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// Find the position of a trailing `//` or `/*` comment on an import line,
 /// skipping occurrences inside string literals.
 fn find_trailing_comment_on_import(line: &str) -> Option<usize> {
@@ -1653,14 +1578,6 @@ fn is_comment_only_import_line(trimmed: &str) -> bool {
         || trimmed.starts_with("*/")
 }
 
-#[allow(dead_code)]
-fn normalize_labeled_switch_breaks(code: &str) -> String {
-    let labeled_switch = regex::Regex::new(r"\bbb\d+:\s*(switch\s*\()").unwrap();
-    let code = labeled_switch.replace_all(code, "$1").to_string();
-    let labeled_break = regex::Regex::new(r"\bbreak\s+bb\d+;").unwrap();
-    labeled_break.replace_all(&code, "break;").to_string()
-}
-
 fn normalize_switch_case_braces(code: &str) -> String {
     let mut result = Vec::new();
     let mut in_case_brace = false;
@@ -1731,87 +1648,6 @@ fn normalize_numeric_exponent_literals(code: &str) -> String {
         }
     })
     .to_string()
-}
-
-/// Normalize labeled block braces: strip the `{ }` wrapper from labeled blocks.
-#[allow(dead_code)]
-fn normalize_labeled_block_braces(code: &str) -> String {
-    let mut result = code.to_string();
-    loop {
-        let next = strip_labeled_block_braces_pass(&result);
-        if next == result {
-            break;
-        }
-        result = next;
-    }
-    result
-}
-
-/// One pass of labeled-block brace stripping, operating on the full code string.
-#[allow(dead_code)]
-fn strip_labeled_block_braces_pass(code: &str) -> String {
-    let chars: Vec<char> = code.chars().collect();
-    let len = chars.len();
-    let mut result = String::with_capacity(len);
-    let mut i = 0;
-
-    while i < len {
-        if i + 4 < len && chars[i] == 'b' && chars[i + 1] == 'b' {
-            let mut j = i + 2;
-            while j < len && chars[j].is_ascii_digit() {
-                j += 1;
-            }
-            if j > i + 2
-                && j + 2 < len
-                && chars[j] == ':'
-                && chars[j + 1] == ' '
-                && chars[j + 2] == '{'
-            {
-                let brace_pos = j + 2;
-                let after_brace = if brace_pos + 1 < len {
-                    chars[brace_pos + 1]
-                } else {
-                    '\0'
-                };
-                if after_brace == ' ' || after_brace == '\n' {
-                    let content_start = brace_pos + 1;
-                    let mut depth: i32 = 1;
-                    let mut k = content_start;
-                    if after_brace == ' ' {
-                        k += 1;
-                    }
-                    let scan_start = k;
-                    while k < len && depth > 0 {
-                        match chars[k] {
-                            '{' => depth += 1,
-                            '}' => {
-                                depth -= 1;
-                                if depth == 0 {
-                                    break;
-                                }
-                            }
-                            _ => {}
-                        }
-                        k += 1;
-                    }
-                    if depth == 0 {
-                        for c in &chars[i..j + 1] {
-                            result.push(*c);
-                        }
-                        result.push(' ');
-                        let inner: String = chars[scan_start..k].iter().collect();
-                        let inner_trimmed = inner.trim();
-                        result.push_str(inner_trimmed);
-                        i = k + 1;
-                        continue;
-                    }
-                }
-            }
-        }
-        result.push(chars[i]);
-        i += 1;
-    }
-    result
 }
 
 fn normalize_small_array_bracket_spacing(code: &str) -> String {
@@ -2063,7 +1899,6 @@ fn normalize_multiline_call_invocations(code: &str) -> String {
     out.join("\n")
 }
 
-#[allow(dead_code)]
 fn normalize_dead_bare_var_refs(code: &str) -> String {
     let bare_var_ref_re = regex::Regex::new(r"^var\s+(_ref\d*)\s*;$").unwrap();
     let lines: Vec<&str> = code.lines().collect();
