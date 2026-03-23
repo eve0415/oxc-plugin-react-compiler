@@ -736,43 +736,49 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
         let reprinted_actual = oxc_reprint(&postprocessed, st);
         let reprinted_expected = oxc_reprint(&expected_code, st);
 
-        let (actual, expected) = if let (Some(a), Some(e)) =
-            (&reprinted_actual, &reprinted_expected)
-        {
-            if a == e {
-                // Fast path: reprinted outputs match exactly
-                (a.clone(), e.clone())
-            } else {
-                // Both reprintable but differ — normalize reprinted expected
-                // against our raw output (which is already in OXC format).
-                // This catches multiline formatting differences since OXC
-                // reprint canonicalizes Babel's formatting to match ours.
-                let actual_source = format_code_for_compare(&fixture.input_path, &postprocessed);
-                let expected_source = format_code_for_compare(&fixture.input_path, e);
-                let norm_a = prepare_code_for_compare(&actual_source);
-                let norm_e = prepare_code_for_compare(&expected_source);
-                if norm_a == norm_e {
-                    (norm_a, norm_e)
+        let (actual, expected) =
+            if let (Some(a), Some(e)) = (&reprinted_actual, &reprinted_expected) {
+                if a == e {
+                    // Fast path: reprinted outputs match exactly
+                    (a.clone(), e.clone())
                 } else {
-                    // Fall back to normalizing both raw outputs
-                    let actual_source =
-                        format_code_for_compare(&fixture.input_path, &postprocessed);
-                    let expected_source =
-                        format_code_for_compare(&fixture.input_path, &expected_code);
-                    (
-                        prepare_code_for_compare(&actual_source),
-                        prepare_code_for_compare(&expected_source),
-                    )
+                    // Both reprintable but differ — try normalizing reprinted versions
+                    let actual_source = format_code_for_compare(&fixture.input_path, a);
+                    let expected_source = format_code_for_compare(&fixture.input_path, e);
+                    let norm_a = prepare_code_for_compare(&actual_source);
+                    let norm_e = prepare_code_for_compare(&expected_source);
+                    if norm_a == norm_e {
+                        (norm_a, norm_e)
+                    } else {
+                        // Try normalizing raw actual vs reprinted expected
+                        let actual_source =
+                            format_code_for_compare(&fixture.input_path, &postprocessed);
+                        let expected_source = format_code_for_compare(&fixture.input_path, e);
+                        let norm_a2 = prepare_code_for_compare(&actual_source);
+                        let norm_e2 = prepare_code_for_compare(&expected_source);
+                        if norm_a2 == norm_e2 {
+                            (norm_a2, norm_e2)
+                        } else {
+                            // Fall back to normalizing both raw outputs
+                            let actual_source =
+                                format_code_for_compare(&fixture.input_path, &postprocessed);
+                            let expected_source =
+                                format_code_for_compare(&fixture.input_path, &expected_code);
+                            (
+                                prepare_code_for_compare(&actual_source),
+                                prepare_code_for_compare(&expected_source),
+                            )
+                        }
+                    }
                 }
-            }
-        } else {
-            let actual_source = format_code_for_compare(&fixture.input_path, &postprocessed);
-            let expected_source = format_code_for_compare(&fixture.input_path, &expected_code);
-            (
-                prepare_code_for_compare(&actual_source),
-                prepare_code_for_compare(&expected_source),
-            )
-        };
+            } else {
+                let actual_source = format_code_for_compare(&fixture.input_path, &postprocessed);
+                let expected_source = format_code_for_compare(&fixture.input_path, &expected_code);
+                (
+                    prepare_code_for_compare(&actual_source),
+                    prepare_code_for_compare(&expected_source),
+                )
+            };
 
         match expected_state.unwrap_or(ExpectedState::Transform) {
             ExpectedState::Transform => {

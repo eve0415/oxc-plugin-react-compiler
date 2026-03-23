@@ -1,14 +1,12 @@
-# React Compiler Conformance -- 99.1% parity rate
+# React Compiler Conformance -- 99.2% parity rate
 
-**1755** parity_success, **16** parity_failure, **0** skipped
+**1757** parity_success, **14** parity_failure, **0** skipped
 
 ## Failed
 
 - `conflict-codegen-instrument-forget`: Output mismatch
 - `deeply-nested-function-expressions-with-params`: Output mismatch
 - `flag-enable-emit-hook-guards`: Output mismatch
-- `gating/codegen-instrument-forget-gating-test`: Output mismatch
-- `gating/gating-test-export-function-and-default`: Output mismatch
 - `gating/multi-arrow-expr-export-default-gating-test`: Output mismatch
 - `gating/multi-arrow-expr-export-gating-test`: Output mismatch
 - `gating/multi-arrow-expr-gating-test`: Output mismatch
@@ -658,6 +656,7 @@
 - `functionexpr-conditional-access-2`
 - `functionexpr–conditional-access`
 - `gating/arrow-function-expr-gating-test`
+- `gating/codegen-instrument-forget-gating-test`
 - `gating/component-syntax-ref-gating.flow`
 - `gating/conflicting-gating-fn`
 - `gating/dynamic-gating-annotation`
@@ -675,6 +674,7 @@
 - `gating/gating-test`
 - `gating/gating-test-export-default-function`
 - `gating/gating-test-export-function`
+- `gating/gating-test-export-function-and-default`
 - `gating/gating-use-before-decl`
 - `gating/gating-use-before-decl-ref`
 - `gating/gating-with-hoisted-type-reference.flow`
