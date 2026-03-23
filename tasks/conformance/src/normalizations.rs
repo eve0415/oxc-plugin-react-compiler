@@ -22,8 +22,9 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_top_level_comment_trivia,
         normalize_compare_multiline_brace_literals,
         normalize_multiline_trailing_commas_before_closers,
-        normalize_labeled_switch_breaks,
-        normalize_labeled_block_braces,
+        // DISABLED: semantic normalizations masking compiler bugs
+        // normalize_labeled_switch_breaks,
+        // normalize_labeled_block_braces,
         normalize_switch_case_braces,
         normalize_multiline_switch_cases,
         normalize_ts_object_type_semicolons,
@@ -1645,6 +1646,7 @@ fn is_comment_only_import_line(trimmed: &str) -> bool {
         || trimmed.starts_with("*/")
 }
 
+#[allow(dead_code)]
 fn normalize_labeled_switch_breaks(code: &str) -> String {
     let labeled_switch = regex::Regex::new(r"\bbb\d+:\s*(switch\s*\()").unwrap();
     let code = labeled_switch.replace_all(code, "$1").to_string();
@@ -1725,6 +1727,7 @@ fn normalize_numeric_exponent_literals(code: &str) -> String {
 }
 
 /// Normalize labeled block braces: strip the `{ }` wrapper from labeled blocks.
+#[allow(dead_code)]
 fn normalize_labeled_block_braces(code: &str) -> String {
     let mut result = code.to_string();
     loop {
@@ -1738,6 +1741,7 @@ fn normalize_labeled_block_braces(code: &str) -> String {
 }
 
 /// One pass of labeled-block brace stripping, operating on the full code string.
+#[allow(dead_code)]
 fn strip_labeled_block_braces_pass(code: &str) -> String {
     let chars: Vec<char> = code.chars().collect();
     let len = chars.len();

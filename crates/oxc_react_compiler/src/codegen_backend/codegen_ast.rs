@@ -667,18 +667,38 @@ fn codegen_block_no_reset<'a>(
                     // Upstream's codegenBlock always returns a BlockStatement,
                     // then unwraps single-element blocks for the label body.
                     // Our codegen_terminal returns Vec<Statement>, so we wrap
-                    // in a block to create proper lexical scope, matching upstream.
-                    let body = if terminal_stmts.len() == 1
-                        && matches!(
-                            &terminal_stmts[0],
-                            ast::Statement::BlockStatement(b) if b.body.len() == 1
-                        ) {
-                        // Unwrap single-element BlockStatement (upstream line 565-568)
-                        match terminal_stmts.remove(0) {
-                            ast::Statement::BlockStatement(block) => {
-                                block.unbox().body.into_iter().next().unwrap()
+                    // Matching upstream (CodegenReactiveFunction.ts line 565-568):
+                    // If codegenTerminal returned a BlockStatement with a single
+                    // child, unwrap it. Otherwise use the statement directly.
+                    // Only wrap in a new block when there are multiple statements.
+                    let body = if terminal_stmts.len() == 1 {
+                        let stmt = terminal_stmts.remove(0);
+                        match &stmt {
+                            // Upstream line 565-568: unwrap single-element
+                            // BlockStatement, UNLESS the inner stmt is a
+                            // TryStatement (upstream keeps the block for
+                            // catch binding lexical scope).
+                            ast::Statement::BlockStatement(b) if b.body.len() == 1 => {
+                                let keep_block =
+                                    matches!(b.body.first(), Some(ast::Statement::TryStatement(_)));
+                                if keep_block {
+                                    stmt
+                                } else {
+                                    match stmt {
+                                        ast::Statement::BlockStatement(block) => {
+                                            block.unbox().body.into_iter().next().unwrap()
+                                        }
+                                        _ => unreachable!(),
+                                    }
+                                }
                             }
-                            _ => unreachable!(),
+                            // TryStatement: wrap in block to preserve
+                            // catch binding lexical scope
+                            ast::Statement::TryStatement(_) => {
+                                cx.builder.statement_block(SPAN, cx.builder.vec1(stmt))
+                            }
+                            // Other single statement: use directly
+                            _ => stmt,
                         }
                     } else {
                         cx.builder.statement_block(
