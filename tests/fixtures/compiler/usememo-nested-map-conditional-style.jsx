@@ -1,43 +1,35 @@
-// Nested .map() with conditional style objects inside a component
-// that also uses useMemo. With enablePreserveExistingMemoizationGuarantees=false
-// (Babel v1.0.0 default), OXC bails out while Babel compiles successfully.
-// From: eve0415/website error-cascade.tsx
+// useMemo + nested .map() causes bail when
+// enablePreserveExistingMemoizationGuarantees=false (Babel v1.0.0 default).
+// Without useMemo OR without nested map, it compiles fine.
+// Babel compiles this successfully.
+// From: eve0415/website error-cascade.tsx, division-by-zero.tsx, type-error.tsx,
+// file-not-found.tsx, useBootAnimation.ts, code-radar.tsx (6 files affected)
 import { useMemo } from 'react';
 
-const ITEMS = [
-  { id: 1, message: 'Error 1', stack: ['line1', 'line2'], threshold: 0.1 },
-  { id: 2, message: 'Error 2', stack: ['line1'], threshold: 0.5 },
-];
+const ITEMS = [{ id: 1, lines: ['a', 'b'] }];
 
-function ErrorCascade({ progress, enabled }) {
-  const reducedMotion = false;
+function Component({ enabled }) {
+  const visible = useMemo(
+    () => (enabled ? ITEMS : []),
+    [enabled]
+  );
 
-  const visibleErrors = useMemo(() => {
-    if (!enabled || progress < 0.05) return [];
-    const effectiveProgress = progress ** 0.7;
-    return ITEMS.filter(item => effectiveProgress >= item.threshold);
-  }, [enabled, progress]);
-
-  if (!enabled || visibleErrors.length === 0) return null;
+  if (!visible.length) return null;
 
   return (
     <div>
-      {visibleErrors.map((error, errorIndex) => (
-        <div key={error.id}
-          style={reducedMotion ? { opacity: 1 } : { animation: 'fade 200ms', animationDelay: `${errorIndex * 30}ms`, opacity: 0 }}>
-          <div>{error.message}</div>
-          <div>
-            {error.stack.map((line, lineIndex) => (
-              <div key={lineIndex}
-                style={reducedMotion ? { opacity: 1 } : { animation: 'fade 150ms', animationDelay: `${errorIndex * 30 + (lineIndex + 1) * 20}ms`, opacity: 0 }}>
-                {line}
-              </div>
-            ))}
-          </div>
+      {visible.map(item => (
+        <div key={item.id}>
+          {item.lines.map((line, i) => (
+            <span key={i}>{line}</span>
+          ))}
         </div>
       ))}
     </div>
   );
 }
 
-export const FIXTURE_ENTRYPOINT = { fn: ErrorCascade, params: [{ progress: 0.5, enabled: true }] };
+export const FIXTURE_ENTRYPOINT = {
+  fn: Component,
+  params: [{ enabled: true }],
+};

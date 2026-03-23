@@ -1,9 +1,10 @@
 # React Compiler Conformance -- 99.9% parity rate
 
-**1774** parity_success, **1** parity_failure, **0** skipped
+**1771** parity_success, **2** parity_failure, **0** skipped
 
 ## Failed
 
+- `custom/object-literal-property-lookup-memo`: Output mismatch
 - `custom/usememo-nested-map-conditional-style`: Output mismatch
 
 ## Passed
@@ -261,9 +262,6 @@
 - `custom/method-chain-sub-expression-memo`
 - `custom/nested-math-method-calls`
 - `custom/object-literal-sentinel-memoize`
-- `custom/scope-memoization-array-find-ternary`
-- `custom/scope-memoization-array-from-map-split`
-- `custom/scope-memoization-setstate-ternary-in-conditional`
 - `custom/setstate-arg-extra-scope-in-if`
 - `custom/switch-break-inner-function`
 - `custom/usememo-filter-nested-map-jsx`
