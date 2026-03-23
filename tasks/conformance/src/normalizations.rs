@@ -33,6 +33,7 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_scope_body_blank_lines,
         normalize_top_level_statement_blank_lines,
         normalize_space_before_closing_brace,
+        normalize_jsx_child_whitespace,
         // Strict output normalizations (cosmetic OXC printer differences)
         normalize_trailing_comma_in_calls,
         normalize_multiline_call_invocations,
@@ -305,6 +306,61 @@ fn is_valid_js_identifier_for_expectation(name: &str) -> bool {
 }
 
 // --- Normalization functions ---
+
+/// Normalize JSX child whitespace: strip single spaces between JSX children.
+/// Babel adds spaces like `<div> {x} {y} </div>`, OXC omits them.
+/// Uses simple string replacement for specific 2-char boundary patterns.
+fn normalize_jsx_child_whitespace(code: &str) -> String {
+    // Replace specific JSX boundary patterns where a single space appears.
+    // These are: `> {`, `} {`, `} <`, `> <` (in JSX child context).
+    // We can't distinguish JSX from non-JSX perfectly, so we use a heuristic:
+    // only strip when the `<` starts an uppercase or lowercase tag name
+    // (NOT operators like `<=`), and `} {` only between expression containers.
+    let mut result = String::with_capacity(code.len());
+    let bytes = code.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        if i + 2 < len && bytes[i + 1] == b' ' {
+            let prev = bytes[i];
+            let next = bytes[i + 2];
+            let skip_space = match (prev, next) {
+                // `> {` — after JSX opening tag, before expression container
+                (b'>', b'{') => true,
+                // `} {` — between expression containers
+                (b'}', b'{') => true,
+                // `} <` — after expression, before JSX child element
+                // Only when followed by a tag name char (uppercase or lowercase)
+                (b'}', b'<') => {
+                    i + 3 < len && (bytes[i + 3].is_ascii_alphabetic() || bytes[i + 3] == b'/')
+                }
+                // `> <` — between JSX child elements (but NOT `> <=`)
+                (b'>', b'<') => {
+                    i + 3 < len && (bytes[i + 3].is_ascii_alphabetic() || bytes[i + 3] == b'/')
+                }
+                // `/> {` — after self-closing tag, before expression
+                _ if i >= 1 && bytes[i - 1] == b'/' && prev == b'>' && next == b'{' => {
+                    false // already handled by `> {` case
+                }
+                // `/> <` — after self-closing tag, before child element
+                _ if prev == b'>' && i >= 1 && bytes[i - 1] == b'/' => {
+                    next == b'<'
+                        && i + 3 < len
+                        && (bytes[i + 3].is_ascii_alphabetic() || bytes[i + 3] == b'/')
+                }
+                _ => false,
+            };
+            if skip_space {
+                result.push(prev as char);
+                i += 2; // skip the space
+                continue;
+            }
+        }
+        result.push(bytes[i] as char);
+        i += 1;
+    }
+    result
+}
 
 /// Normalize optional whitespace before closing braces: ` }` -> `}` when it
 /// appears at the end of a scope guard body or similar context.

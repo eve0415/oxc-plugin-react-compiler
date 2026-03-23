@@ -1,6 +1,6 @@
-# React Compiler Conformance -- 92.7% parity rate
+# React Compiler Conformance -- 94.3% parity rate
 
-**1642** parity_success, **129** parity_failure, **0** skipped
+**1670** parity_success, **101** parity_failure, **0** skipped
 
 ## Failed
 
@@ -14,11 +14,8 @@
 - `array-from-maybemutates-arg0`: Output mismatch
 - `array-pattern-spread-creates-array`: Output mismatch
 - `assume-invoked/function-with-conditional-callsite-in-another-function`: Output mismatch
-- `babel-existing-react-runtime-import`: Output mismatch
 - `bug-ref-prefix-postfix-operator`: Output mismatch
 - `bug-separate-memoization-due-to-callback-capturing`: Output mismatch
-- `call-with-independently-memoizable-arg`: Output mismatch
-- `component`: Output mismatch
 - `conflict-codegen-instrument-forget`: Output mismatch
 - `custom/catch-forloop-same-name-variable`: Output mismatch
 - `custom/closure-multiple-calls-scope-leak`: Output mismatch
@@ -35,7 +32,6 @@
 - `deeply-nested-function-expressions-with-params`: Output mismatch
 - `dominator`: Output mismatch
 - `dont-merge-if-dep-is-inner-declaration-of-previous-scope`: Output mismatch
-- `dont-merge-overlapping-scopes-with-intermediate-reassignment`: Output mismatch
 - `flag-enable-emit-hook-guards`: Output mismatch
 - `for-of-nonmutating-loop-local-collection`: Output mismatch
 - `gating/codegen-instrument-forget-gating-test`: Output mismatch
@@ -47,16 +43,10 @@
 - `global-types/repro-array-filter-capture-mutate-bug`: Output mismatch
 - `global-types/repro-array-filter-known-nonmutate-Boolean`: Output mismatch
 - `global-types/repro-array-map-capture-mutate-bug`: Output mismatch
-- `global-types/repro-array-map-known-mutate-shape`: Output mismatch
 - `hoist-destruct`: Output mismatch
-- `hook-call`: Output mismatch
-- `hooks-with-prefix`: Output mismatch
 - `inline-jsx-transform`: Output mismatch
-- `inner-memo-value-not-promoted-to-outer-scope-dynamic`: Output mismatch
-- `inner-memo-value-not-promoted-to-outer-scope-static`: Output mismatch
 - `jsx-bracket-in-text`: Output mismatch
 - `jsx-fragment`: Output mismatch
-- `jsx-member-expression`: Output mismatch
 - `jsx-outlining-child-stored-in-id`: Output mismatch
 - `jsx-outlining-dup-key-diff-value`: Output mismatch
 - `jsx-outlining-dupe-attr-after-rename`: Output mismatch
@@ -67,15 +57,12 @@
 - `jsx-outlining-simple`: Output mismatch
 - `jsx-outlining-with-non-jsx-children`: Output mismatch
 - `jsx-preserve-whitespace`: Output mismatch
-- `jsx-string-attribute-expression-container`: Output mismatch
 - `jsx-string-attribute-non-ascii`: Output mismatch
-- `jsx-tag-evaluation-order`: Output mismatch
 - `jsx-tag-evaluation-order-non-global`: Output mismatch
 - `log-pruned-memoization`: Output mismatch
 - `lower-context-access-hook-guard`: Output mismatch
 - `memoization-comments`: Output mismatch
 - `merge-consecutive-scopes`: Output mismatch
-- `merge-consecutive-scopes-deps-subset-of-decls`: Output mismatch
 - `merge-consecutive-scopes-objects`: Output mismatch
 - `merge-consecutive-scopes-reordering`: Output mismatch
 - `merge-scopes-callback`: Output mismatch
@@ -87,28 +74,17 @@
 - `new-mutability/todo-control-flow-sensitive-mutation`: Output mismatch
 - `new-mutability/transitivity-add-captured-array-to-itself`: Output mismatch
 - `nullable-objects/array-map-named-callback-cross-context`: Output mismatch
-- `numeric-literal-as-object-property-key`: Output mismatch
 - `object-keys`: Output mismatch
 - `optional-call-with-independently-memoizable-arg`: Output mismatch
-- `preserve-memo-validation/useCallback-nonescaping-invoked-callback-escaping-return`: Output mismatch
 - `preserve-memo-validation/useCallback-reordering-depslist-assignment`: Output mismatch
-- `propagate-scope-deps-hir-fork/ssa-leave-case`: Output mismatch
 - `propagate-scope-deps-hir-fork/switch-non-final-default`: Output mismatch
-- `reanimated-no-memo-arg`: Output mismatch
 - `reassign-in-while-loop-condition`: Output mismatch
-- `reassignment-separate-scopes`: Output mismatch
 - `reduce-reactive-deps/context-var-granular-dep`: Output mismatch
 - `reduce-reactive-deps/edge-case-merge-uncond-optional-chain-and-cond`: Output mismatch
 - `renaming-jsx-tag-lowercase`: Output mismatch
 - `repro-dispatch-spread-event-marks-event-frozen`: Output mismatch
-- `repro-dont-memoize-array-with-capturing-map-after-hook`: Output mismatch
-- `repro-dont-memoize-array-with-mutable-map-after-hook`: Output mismatch
 - `repro-duplicate-instruction-from-merge-consecutive-scopes`: Output mismatch
 - `repro-independently-memoized-property-load-for-method-call`: Output mismatch
-- `repro-instruction-part-of-already-closed-scope`: Output mismatch
-- `repro-missing-memoization-lack-of-phi-types`: Output mismatch
-- `repro-missing-memoization-lack-of-phi-types-explicit-types`: Output mismatch
-- `repro-no-declarations-in-reactive-scope-with-early-return`: Output mismatch
 - `repro-propagate-type-of-ternary-jsx`: Output mismatch
 - `repro-propagate-type-of-ternary-nested`: Output mismatch
 - `repro-renaming-conflicting-decls`: Output mismatch
@@ -116,11 +92,8 @@
 - `repro-separate-scopes-for-divs`: Output mismatch
 - `resolve-react-hooks-based-on-import-name`: Output mismatch
 - `reverse-postorder`: Output mismatch
-- `rules-of-hooks/allow-locals-named-like-hooks`: Output mismatch
-- `rules-of-hooks/allow-props-named-like-hooks`: Output mismatch
 - `same-variable-as-dep-and-redeclare`: Output mismatch
 - `same-variable-as-dep-and-redeclare-maybe-frozen`: Output mismatch
-- `ssa-leave-case`: Output mismatch
 - `switch-non-final-default`: Output mismatch
 - `timers`: Output mismatch
 - `todo-granular-iterator-semantics`: Output mismatch
@@ -130,7 +103,6 @@
 - `type-provider-log-default-import`: Output mismatch
 - `type-provider-store-capture`: Output mismatch
 - `type-provider-store-capture-namespace-import`: Output mismatch
-- `useState-unpruned-dependency`: Output mismatch
 - `weakmap-constructor`: Output mismatch
 - `weakset-constructor`: Output mismatch
 
@@ -218,6 +190,7 @@
 - `babel-existing-react-import`
 - `babel-existing-react-kitchensink-import`
 - `babel-existing-react-namespace-import`
+- `babel-existing-react-runtime-import`
 - `babel-repro-compact-negative-number`
 - `bailout-retry/bailout-capitalized-fn-call`
 - `bailout-retry/bailout-eslint-suppressions`
@@ -251,6 +224,7 @@
 - `call-args-destructuring-assignment`
 - `call-spread`
 - `call-spread-argument-mutable-iterator`
+- `call-with-independently-memoizable-arg`
 - `capitalized-function-allowlist`
 - `capture-indirect-mutate-alias`
 - `capture-indirect-mutate-alias-iife`
@@ -319,6 +293,7 @@
 - `codegen-inline-iife-storeprop`
 - `codegen-instrument-forget-test`
 - `complex-while`
+- `component`
 - `component-declaration-basic.flow`
 - `component-inner-function-with-many-args`
 - `computed-call-evaluation-order`
@@ -425,6 +400,7 @@
 - `dont-memoize-primitive-function-call-non-escaping`
 - `dont-memoize-primitive-function-call-non-escaping-useMemo`
 - `dont-merge-overlapping-scopes-store-const-used-later`
+- `dont-merge-overlapping-scopes-with-intermediate-reassignment`
 - `drop-methodcall-usecallback`
 - `drop-methodcall-usememo`
 - `early-return`
@@ -766,6 +742,7 @@
 - `global-jsx-tag-lowered-between-mutations`
 - `global-types/call-spread-argument-set`
 - `global-types/map-constructor`
+- `global-types/repro-array-map-known-mutate-shape`
 - `global-types/set-add-mutate`
 - `global-types/set-constructor`
 - `global-types/set-constructor-arg`
@@ -804,6 +781,7 @@
 - `holey-array-expr`
 - `holey-array-pattern-dce`
 - `holey-array-pattern-dce-2`
+- `hook-call`
 - `hook-call-freezes-captured-memberexpr`
 - `hook-declaration-basic.flow`
 - `hook-inside-logical-expression`
@@ -813,6 +791,7 @@
 - `hooks-freeze-arguments`
 - `hooks-freeze-possibly-mutable-arguments`
 - `hooks-with-React-namespace`
+- `hooks-with-prefix`
 - `idx-method-no-outlining`
 - `idx-method-no-outlining-wildcard`
 - `idx-no-outlining`
@@ -872,6 +851,8 @@
 - `infer-sequential-optional-chain-nonnull`
 - `infer-skip-components-without-hooks-or-jsx`
 - `infer-types-through-type-cast.flow`
+- `inner-memo-value-not-promoted-to-outer-scope-dynamic`
+- `inner-memo-value-not-promoted-to-outer-scope-static`
 - `interdependent`
 - `interdependent-across-if`
 - `invalid-jsx-in-catch-in-outer-try-with-catch`
@@ -895,12 +876,15 @@
 - `jsx-lowercase-localvar-memberexpr`
 - `jsx-lowercase-localvar-memberexpr-in-lambda`
 - `jsx-lowercase-memberexpr`
+- `jsx-member-expression`
 - `jsx-member-expression-tag-grouping`
 - `jsx-memberexpr-tag-in-lambda`
 - `jsx-namespaced-name`
 - `jsx-preserve-escape-character`
 - `jsx-reactive-local-variable-member-expr`
 - `jsx-spread`
+- `jsx-string-attribute-expression-container`
+- `jsx-tag-evaluation-order`
 - `jsx-ternary-local-variable`
 - `jump-poisoned/break-in-scope`
 - `jump-poisoned/break-poisons-outer-scope`
@@ -942,6 +926,7 @@
 - `memoize-value-block-value-logical-no-sequence`
 - `memoize-value-block-value-sequence`
 - `merge-consecutive-nested-scopes`
+- `merge-consecutive-scopes-deps-subset-of-decls`
 - `merge-consecutive-scopes-no-deps`
 - `merge-nested-scopes-with-same-inputs`
 - `merged-scopes-are-valid-effect-deps`
@@ -1044,6 +1029,7 @@
 - `nullable-objects/array-map-simple`
 - `nullable-objects/bug-invalid-array-map-manual`
 - `nullable-objects/return-object-of-functions`
+- `numeric-literal-as-object-property-key`
 - `obj-literal-cached-in-if-else`
 - `obj-literal-mutated-after-if-else`
 - `obj-mutated-after-if-else`
@@ -1158,6 +1144,7 @@
 - `preserve-memo-validation/useCallback-infer-read-dep`
 - `preserve-memo-validation/useCallback-infer-scope-global`
 - `preserve-memo-validation/useCallback-nonescaping`
+- `preserve-memo-validation/useCallback-nonescaping-invoked-callback-escaping-return`
 - `preserve-memo-validation/useCallback-reordering-deplist-controlflow`
 - `preserve-memo-validation/useCallback-with-no-depslist`
 - `preserve-memo-validation/useMemo-alias-property-load-dep`
@@ -1207,6 +1194,7 @@
 - `propagate-scope-deps-hir-fork/repro-invariant`
 - `propagate-scope-deps-hir-fork/repro-scope-missing-mutable-range`
 - `propagate-scope-deps-hir-fork/ssa-cascading-eliminated-phis`
+- `propagate-scope-deps-hir-fork/ssa-leave-case`
 - `propagate-scope-deps-hir-fork/ssa-renaming-ternary`
 - `propagate-scope-deps-hir-fork/ssa-renaming-ternary-destruction`
 - `propagate-scope-deps-hir-fork/ssa-renaming-ternary-destruction-with-mutation`
@@ -1278,6 +1266,7 @@
 - `reactivity-via-readonly-alias-of-mutable-value`
 - `readonly-object-method-calls`
 - `readonly-object-method-calls-mutable-lambda`
+- `reanimated-no-memo-arg`
 - `reanimated-shared-value-writes`
 - `reassign-global-hook-arg`
 - `reassign-global-return`
@@ -1286,6 +1275,7 @@
 - `reassigned-phi-in-returned-function-expression`
 - `reassignment`
 - `reassignment-conditional`
+- `reassignment-separate-scopes`
 - `recursive-function`
 - `recursive-function-expression`
 - `reduce-reactive-cond-deps-break-in-scope`
@@ -1369,11 +1359,14 @@
 - `repro-context-var-reassign-no-scope`
 - `repro-dce-circular-reference`
 - `repro-dont-add-hook-guards-on-retry`
+- `repro-dont-memoize-array-with-capturing-map-after-hook`
+- `repro-dont-memoize-array-with-mutable-map-after-hook`
 - `repro-duplicate-import-specifier`
 - `repro-duplicate-type-import`
 - `repro-false-positive-ref-validation-in-use-effect`
 - `repro-hoisting`
 - `repro-hoisting-variable-collision`
+- `repro-instruction-part-of-already-closed-scope`
 - `repro-invalid-phi-as-dependency`
 - `repro-invalid-pruned-scope-leaks-value`
 - `repro-invalid-pruned-scope-leaks-value-via-alias`
@@ -1383,12 +1376,15 @@
 - `repro-memoize-array-with-immutable-map-after-hook`
 - `repro-memoize-for-of-collection-when-loop-body-returns`
 - `repro-missing-dependency-if-within-while`
+- `repro-missing-memoization-lack-of-phi-types`
+- `repro-missing-memoization-lack-of-phi-types-explicit-types`
 - `repro-missing-phi-after-dce-merge-scopes`
 - `repro-mutable-range-extending-into-ternary`
 - `repro-mutate-ref-in-function-passed-to-hook`
 - `repro-mutate-result-of-function-call-with-frozen-argument-in-function-expression`
 - `repro-mutate-result-of-method-call-on-frozen-value-in-function-expression`
 - `repro-mutate-result-of-method-call-on-frozen-value-is-allowed`
+- `repro-no-declarations-in-reactive-scope-with-early-return`
 - `repro-no-value-for-temporary`
 - `repro-no-value-for-temporary-reactive-scope-with-early-return`
 - `repro-non-identifier-object-keys`
@@ -1417,6 +1413,8 @@
 - `return-ref-callback-structure`
 - `return-undefined`
 - `rewrite-phis-in-lambda-capture-context`
+- `rules-of-hooks/allow-locals-named-like-hooks`
+- `rules-of-hooks/allow-props-named-like-hooks`
 - `rules-of-hooks/error.bail.rules-of-hooks-3d692676194b`
 - `rules-of-hooks/error.bail.rules-of-hooks-8503ca76d6f8`
 - `rules-of-hooks/error.invalid-call-phi-possibly-hook`
@@ -1533,6 +1531,7 @@
 - `ssa-for-of`
 - `ssa-for-trivial-update`
 - `ssa-if-else`
+- `ssa-leave-case`
 - `ssa-multiple-phis`
 - `ssa-nested-loops-no-reassign`
 - `ssa-nested-partial-phi`
@@ -1763,6 +1762,7 @@
 - `useReducer-returned-dispatcher-is-non-reactive`
 - `useState-and-other-hook-unpruned-dependency`
 - `useState-pruned-dependency-change-detect`
+- `useState-unpruned-dependency`
 - `valid-set-state-in-useEffect-from-ref`
 - `valid-setState-in-effect-from-ref-arithmetic`
 - `valid-setState-in-effect-from-ref-array-index`
