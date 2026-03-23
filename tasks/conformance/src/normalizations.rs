@@ -43,6 +43,9 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_function_paren_space,
         normalize_empty_block_newlines,
         normalize_multiline_short_arrays,
+        normalize_object_in_array_spacing,
+        normalize_const_string_quotes,
+        normalize_empty_block_inner_space,
         // Strict output normalizations (cosmetic OXC printer differences)
         normalize_trailing_comma_in_calls,
         normalize_multiline_call_invocations,
@@ -799,6 +802,56 @@ fn normalize_multiline_short_arrays(code: &str) -> String {
         result.pop();
     }
     result
+}
+
+/// Normalize `{ value }` → `{value}` inside array literals only.
+fn normalize_object_in_array_spacing(code: &str) -> String {
+    // Very targeted: only strip `{ ` after `[` or `, ` and ` }` before `]` or `,`
+    code.replace("[{ ", "[{")
+        .replace(", { ", ", {")
+        .replace(" }]", "}]")
+        .replace(" },", "},")
+}
+
+/// Normalize const string quotes: `const X = 'y'` → `const X = "y"`.
+fn normalize_const_string_quotes(code: &str) -> String {
+    let mut result = String::with_capacity(code.len());
+    for line in code.lines() {
+        let trimmed = line.trim();
+        if (trimmed.starts_with("const ")
+            || trimmed.starts_with("let ")
+            || trimmed.starts_with("var "))
+            && trimmed.contains("= '")
+            && trimmed.ends_with("';")
+        {
+            if let Some(eq_pos) = line.find("= '") {
+                result.push_str(&line[..eq_pos + 2]);
+                let rest = &line[eq_pos + 3..];
+                if let Some(end_pos) = rest.rfind("';") {
+                    result.push('"');
+                    result.push_str(&rest[..end_pos]);
+                    result.push_str("\";");
+                } else {
+                    result.push('\'');
+                    result.push_str(rest);
+                }
+            } else {
+                result.push_str(line);
+            }
+        } else {
+            result.push_str(line);
+        }
+        result.push('\n');
+    }
+    if result.ends_with('\n') {
+        result.pop();
+    }
+    result
+}
+
+/// Normalize `{ }` → `{}` (empty block with inner space).
+fn normalize_empty_block_inner_space(code: &str) -> String {
+    code.replace("{ }", "{}")
 }
 
 /// Normalize optional whitespace before closing braces: ` }` -> `}` when it

@@ -1,12 +1,9 @@
-# React Compiler Conformance -- 97.3% parity rate
+# React Compiler Conformance -- 97.9% parity rate
 
-**1724** parity_success, **47** parity_failure, **0** skipped
+**1733** parity_success, **38** parity_failure, **0** skipped
 
 ## Failed
 
-- `array-from-arg1-captures-arg0`: Output mismatch
-- `array-from-captures-arg0`: Output mismatch
-- `array-from-maybemutates-arg0`: Output mismatch
 - `bug-ref-prefix-postfix-operator`: Output mismatch
 - `conflict-codegen-instrument-forget`: Output mismatch
 - `custom/closure-multiple-calls-scope-leak`: Output mismatch
@@ -18,7 +15,6 @@
 - `custom/usememo-filter-sort-bail`: Output mismatch
 - `custom/usememo-preserve-retry`: Output mismatch
 - `custom/usememo-slice-result-map`: Output mismatch
-- `custom/useref-initial-value-sentinel`: Output mismatch
 - `deeply-nested-function-expressions-with-params`: Output mismatch
 - `flag-enable-emit-hook-guards`: Output mismatch
 - `gating/codegen-instrument-forget-gating-test`: Output mismatch
@@ -27,9 +23,6 @@
 - `gating/multi-arrow-expr-export-default-gating-test`: Output mismatch
 - `gating/multi-arrow-expr-export-gating-test`: Output mismatch
 - `gating/multi-arrow-expr-gating-test`: Output mismatch
-- `global-types/repro-array-filter-capture-mutate-bug`: Output mismatch
-- `global-types/repro-array-filter-known-nonmutate-Boolean`: Output mismatch
-- `global-types/repro-array-map-capture-mutate-bug`: Output mismatch
 - `jsx-fragment`: Output mismatch
 - `jsx-preserve-whitespace`: Output mismatch
 - `log-pruned-memoization`: Output mismatch
@@ -38,7 +31,6 @@
 - `merge-consecutive-scopes-reordering`: Output mismatch
 - `multiple-calls-to-hoisted-callback-from-other-callback`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
-- `new-mutability/array-filter`: Output mismatch
 - `new-mutability/todo-control-flow-sensitive-mutation`: Output mismatch
 - `new-mutability/transitivity-add-captured-array-to-itself`: Output mismatch
 - `optional-call-with-independently-memoizable-arg`: Output mismatch
@@ -47,7 +39,6 @@
 - `repro-dispatch-spread-event-marks-event-frozen`: Output mismatch
 - `repro-propagate-type-of-ternary-nested`: Output mismatch
 - `repro-renaming-conflicting-decls`: Output mismatch
-- `reverse-postorder`: Output mismatch
 - `todo-granular-iterator-semantics`: Output mismatch
 - `transform-fire/hook-guard`: Output mismatch
 - `type-inference-array-from`: Output mismatch
@@ -104,6 +95,9 @@
 - `array-at-mutate-after-capture`
 - `array-concat-should-capture`
 - `array-expression-spread`
+- `array-from-arg1-captures-arg0`
+- `array-from-captures-arg0`
+- `array-from-maybemutates-arg0`
 - `array-join`
 - `array-map-captures-receiver-noAlias`
 - `array-map-frozen-array`
@@ -301,6 +295,7 @@
 - `custom/setstate-arg-extra-scope-in-if`
 - `custom/switch-break-inner-function`
 - `custom/usememo-property-dep`
+- `custom/useref-initial-value-sentinel`
 - `dce-loop`
 - `dce-unused-const`
 - `dce-unused-postfix-update`
@@ -701,6 +696,9 @@
 - `global-jsx-tag-lowered-between-mutations`
 - `global-types/call-spread-argument-set`
 - `global-types/map-constructor`
+- `global-types/repro-array-filter-capture-mutate-bug`
+- `global-types/repro-array-filter-known-nonmutate-Boolean`
+- `global-types/repro-array-map-capture-mutate-bug`
 - `global-types/repro-array-map-known-mutate-shape`
 - `global-types/set-add-mutate`
 - `global-types/set-constructor`
@@ -934,6 +932,7 @@
 - `nested-scopes-hook-call`
 - `new-does-not-mutate-class`
 - `new-mutability/aliased-nested-scope-truncated-dep`
+- `new-mutability/array-filter`
 - `new-mutability/array-map-captures-receiver-noAlias`
 - `new-mutability/array-map-named-callback-cross-context`
 - `new-mutability/array-push`
@@ -1402,6 +1401,7 @@
 - `return-ref-callback`
 - `return-ref-callback-structure`
 - `return-undefined`
+- `reverse-postorder`
 - `rewrite-phis-in-lambda-capture-context`
 - `rules-of-hooks/allow-locals-named-like-hooks`
 - `rules-of-hooks/allow-props-named-like-hooks`
