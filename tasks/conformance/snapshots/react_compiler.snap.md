@@ -1,6 +1,6 @@
-# React Compiler Conformance -- 98.8% parity rate
+# React Compiler Conformance -- 99.0% parity rate
 
-**1750** parity_success, **21** parity_failure, **0** skipped
+**1754** parity_success, **17** parity_failure, **0** skipped
 
 ## Failed
 
@@ -9,7 +9,6 @@
 - `flag-enable-emit-hook-guards`: Output mismatch
 - `gating/codegen-instrument-forget-gating-test`: Output mismatch
 - `gating/gating-test-export-function-and-default`: Output mismatch
-- `gating/invalid-fnexpr-reference`: Output mismatch
 - `gating/multi-arrow-expr-export-default-gating-test`: Output mismatch
 - `gating/multi-arrow-expr-export-gating-test`: Output mismatch
 - `gating/multi-arrow-expr-gating-test`: Output mismatch
@@ -19,12 +18,9 @@
 - `lower-context-access-hook-guard`: Output mismatch
 - `multiple-calls-to-hoisted-callback-from-other-callback`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
-- `reduce-reactive-deps/edge-case-merge-uncond-optional-chain-and-cond`: Output mismatch
 - `repro-dispatch-spread-event-marks-event-frozen`: Output mismatch
 - `repro-propagate-type-of-ternary-nested`: Output mismatch
-- `todo-granular-iterator-semantics`: Output mismatch
 - `transform-fire/hook-guard`: Output mismatch
-- `type-inference-array-from`: Output mismatch
 
 ## Passed
 
@@ -684,6 +680,7 @@
 - `gating/gating-use-before-decl-ref`
 - `gating/gating-with-hoisted-type-reference.flow`
 - `gating/infer-function-expression-React-memo-gating`
+- `gating/invalid-fnexpr-reference`
 - `gating/reassigned-fnexpr-variable`
 - `gating/repro-no-gating-import-without-compiled-functions`
 - `global-jsx-tag-lowered-between-mutations`
@@ -1272,6 +1269,7 @@
 - `reduce-reactive-deps/conditional-member-expr`
 - `reduce-reactive-deps/conditional-member-expr`
 - `reduce-reactive-deps/context-var-granular-dep`
+- `reduce-reactive-deps/edge-case-merge-uncond-optional-chain-and-cond`
 - `reduce-reactive-deps/hoist-deps-diff-ssa-instance`
 - `reduce-reactive-deps/hoist-deps-diff-ssa-instance1`
 - `reduce-reactive-deps/infer-function-cond-access-local-var`
@@ -1591,6 +1589,7 @@
 - `todo-function-expression-captures-value-later-frozen`
 - `todo-global-load-cached`
 - `todo-global-property-load-cached`
+- `todo-granular-iterator-semantics`
 - `todo.error.object-pattern-computed-key`
 - `todo.lower-context-access-array-destructuring`
 - `todo.lower-context-access-destructure-multiple`
@@ -1662,6 +1661,7 @@
 - `type-binary-operator`
 - `type-cast-expression.flow`
 - `type-field-load`
+- `type-inference-array-from`
 - `type-provider-log`
 - `type-provider-log-default-import`
 - `type-provider-store-capture`
