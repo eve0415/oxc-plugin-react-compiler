@@ -61,6 +61,9 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_bracket_string_literal_spacing,
         normalize_generated_memoization_comments,
         normalize_dead_bare_var_refs,
+        normalize_multiline_iife_collapsing,
+        normalize_inline_iife_parenthesization,
+        normalize_if_consequent_newline,
     ];
 
     let mut normalized = canonicalize_strict_text(code);
@@ -2056,11 +2059,334 @@ fn normalize_dead_bare_var_refs(code: &str) -> String {
         .join("\n")
 }
 
+/// Collapse multi-line IIFEs into single-line form with wrapping parentheses.
+///
+/// OXC prints:
+///   `= function() {\n  ...\n  }();`
+/// Babel prints:
+///   `= (function() { ... })();`
+///
+/// Detects lines ending with `function...() {` (or named `function name() {`)
+/// preceded by `=` or `return` context, then collects body lines until `}()` /
+/// `}();` closes the IIFE.
+fn normalize_multiline_iife_collapsing(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+
+        // Detect a line that opens a function-expression IIFE:
+        //   ... = function() {
+        //   ... = function name(params) {
+        //   return function() {
+        //   return function name(params) {
+        // But NOT standalone function declarations like:
+        //   function foo() {
+        if is_iife_function_open(trimmed) {
+            // Try to find the closing `}()` or `}();`
+            let mut brace_depth = 0i32;
+            let mut collected = Vec::new();
+            let start = i;
+            let mut found_iife_close = false;
+            let mut j = i;
+            let mut close_suffix = "";
+
+            while j < lines.len() && j - start < 40 {
+                let t = lines[j].trim();
+                for ch in t.bytes() {
+                    if ch == b'{' {
+                        brace_depth += 1;
+                    } else if ch == b'}' {
+                        brace_depth -= 1;
+                    }
+                }
+                // Check if this line closes the IIFE: `}()` or `}();`
+                if brace_depth == 0 && j > start && (t == "}()" || t == "}();") {
+                    close_suffix = if t == "}();" { ";" } else { "" };
+                    found_iife_close = true;
+                    j += 1;
+                    break;
+                }
+                collected.push(t);
+                j += 1;
+            }
+
+            if found_iife_close && collected.len() > 1 {
+                // collected[0] is the function open line, e.g.:
+                //   "const [state, setState] = function() {"
+                // collected[1..] are body statements
+                // The close line `}()` or `}();` is NOT in collected.
+                let func_line = collected[0];
+                let func_idx = func_line.find("function").unwrap();
+                let prefix = &func_line[..func_idx];
+                let func_part = &func_line[func_idx..]; // e.g. "function() {"
+
+                let body = collected[1..].join(" ");
+
+                // Build: prefix(function() { body })()\close_suffix
+                let collapsed = format!("{prefix}({func_part} {body} }})(){close_suffix}");
+
+                out.push(collapsed);
+                i = j;
+                continue;
+            }
+        }
+
+        out.push(trimmed.to_string());
+        i += 1;
+    }
+
+    out.join("\n")
+}
+
+/// Wrap inline (single-line) IIFEs with parentheses.
+///
+/// OXC prints `function() { ... }()` without wrapping parens, Babel prints
+/// `(function() { ... })()`. This scans each line for `function` keywords in
+/// expression position (preceded by `(`, `,`, `=`, or space after `return`),
+/// finds the matching closing `}`, and if followed by `(`, wraps the function
+/// expression.
+fn normalize_inline_iife_parenthesization(code: &str) -> String {
+    let mut result = String::with_capacity(code.len());
+    for (line_idx, line) in code.lines().enumerate() {
+        if line_idx > 0 {
+            result.push('\n');
+        }
+        result.push_str(&wrap_inline_iifes(line));
+    }
+    result
+}
+
+/// Scan a single line and wrap any unparenthesized IIFE function expressions.
+fn wrap_inline_iifes(line: &str) -> String {
+    let bytes = line.as_bytes();
+    let len = bytes.len();
+    let mut out = String::with_capacity(len + 16);
+    let mut i = 0;
+
+    while i < len {
+        // Look for "function" keyword
+        if !line[i..].starts_with("function") {
+            out.push(bytes[i] as char);
+            i += 1;
+            continue;
+        }
+
+        // Check that "function" is preceded by a character indicating expression position
+        // (not a statement/declaration position)
+        let before_char = if i > 0 { bytes[i - 1] } else { 0 };
+        let is_expr_position = matches!(before_char, b'(' | b',' | b'=' | b' ' | b'\t') && i > 0;
+
+        if !is_expr_position {
+            out.push(bytes[i] as char);
+            i += 1;
+            continue;
+        }
+
+        // Additional check: if preceded by space, verify it's after `return ` or `= `
+        // to avoid matching `function` declarations preceded by a space in other contexts
+        if before_char == b' ' || before_char == b'\t' {
+            let before_str = line[..i].trim_end();
+            if !before_str.ends_with("return")
+                && !before_str.ends_with('=')
+                && !before_str.ends_with('(')
+                && !before_str.ends_with(',')
+            {
+                out.push(bytes[i] as char);
+                i += 1;
+                continue;
+            }
+        }
+
+        // We're at a `function` in expression position. Find the opening `{` of the
+        // function body, then find its matching `}`.
+        let func_start = i;
+        // Skip past "function", optional name, and params to find `{`
+        let mut j = i + "function".len();
+        // Skip whitespace and optional function name
+        while j < len && (bytes[j] == b' ' || bytes[j] == b'\t') {
+            j += 1;
+        }
+        // Skip optional function name (identifier chars)
+        while j < len && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_' || bytes[j] == b'$')
+        {
+            j += 1;
+        }
+        // Skip whitespace before params
+        while j < len && (bytes[j] == b' ' || bytes[j] == b'\t') {
+            j += 1;
+        }
+        // Skip params `(...)`
+        if j < len && bytes[j] == b'(' {
+            let mut paren_depth = 1;
+            j += 1;
+            while j < len && paren_depth > 0 {
+                if bytes[j] == b'(' {
+                    paren_depth += 1;
+                } else if bytes[j] == b')' {
+                    paren_depth -= 1;
+                }
+                j += 1;
+            }
+        } else {
+            // Not a valid function expression, skip
+            out.push(bytes[i] as char);
+            i += 1;
+            continue;
+        }
+        // Skip whitespace before body `{`
+        while j < len && (bytes[j] == b' ' || bytes[j] == b'\t') {
+            j += 1;
+        }
+        if j >= len || bytes[j] != b'{' {
+            // No opening brace — not a function expression we can handle
+            out.push(bytes[i] as char);
+            i += 1;
+            continue;
+        }
+        // Find matching `}`
+        let mut brace_depth = 1;
+        j += 1;
+        while j < len && brace_depth > 0 {
+            match bytes[j] {
+                b'{' => brace_depth += 1,
+                b'}' => brace_depth -= 1,
+                b'\'' | b'"' | b'`' => {
+                    // Skip string literals
+                    let quote = bytes[j];
+                    j += 1;
+                    while j < len && bytes[j] != quote {
+                        if bytes[j] == b'\\' {
+                            j += 1; // skip escaped char
+                        }
+                        j += 1;
+                    }
+                    // j now points at closing quote (or end)
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        // j is now past the closing `}`. Check if followed by `(`  (IIFE invocation).
+        let func_end = j; // position right after `}`
+        // Skip whitespace
+        let mut k = func_end;
+        while k < len && (bytes[k] == b' ' || bytes[k] == b'\t') {
+            k += 1;
+        }
+        if k < len && bytes[k] == b'(' {
+            // This is an IIFE! Check if already wrapped in parens.
+            // Already wrapped means the char before `function` is `(` AND we can
+            // find the matching `)` right after the `}`.
+            let already_wrapped = before_char == b'(' && func_start >= 1 && {
+                // The char at func_end should be `)` if already wrapped
+                // Actually, we need to check: is there a `)` right after `}`?
+                let after_close = &line[func_end..];
+                after_close.starts_with(')')
+            };
+
+            if !already_wrapped {
+                // Wrap: insert `(` before function and `)` after `}`
+                out.push('(');
+                out.push_str(&line[func_start..func_end]);
+                out.push(')');
+                i = func_end;
+                continue;
+            }
+        }
+
+        // Not an IIFE or already wrapped — output normally
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+
+    out
+}
+
+/// Check if a line opens a function expression that will be immediately invoked.
+/// Returns true for patterns like:
+///   `const x = function() {`
+///   `return function name(params) {`
+///   `const t0 = function() {`
+/// Returns false for standalone function declarations:
+///   `function foo() {`
+fn is_iife_function_open(trimmed: &str) -> bool {
+    // Must end with `{`
+    if !trimmed.ends_with('{') {
+        return false;
+    }
+    // Must contain `function`
+    let Some(func_idx) = trimmed.find("function") else {
+        return false;
+    };
+    // There must be something before `function` (assignment, return, etc.)
+    // A standalone `function foo() {` starts with `function` — that's a declaration
+    let before = trimmed[..func_idx].trim();
+    if before.is_empty() {
+        return false;
+    }
+    // The prefix must be an assignment or return context
+    before.ends_with('=') || before == "return"
+}
+
+/// Normalize `if (cond)\nstatement;` to `if (cond) statement;` (collapse).
+///
+/// OXC puts short if-consequents on one line, Babel keeps them on the next line.
+/// We normalize the two-line form to one line so both match.
+fn normalize_if_consequent_newline(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+
+        // Check: line is `if (...)` with NO opening brace (no `{` at end)
+        // and no consequent on the same line beyond the closing `)`
+        if is_bare_if_condition(trimmed) {
+            // Next line should be the consequent (a single statement, not `{`)
+            if i + 1 < lines.len() {
+                let next_trimmed = lines[i + 1].trim();
+                // The consequent should NOT start with `{` (that would be a block)
+                // and should be a single statement line
+                if !next_trimmed.is_empty()
+                    && !next_trimmed.starts_with('{')
+                    && !next_trimmed.starts_with("else")
+                    && !next_trimmed.starts_with("//")
+                {
+                    // Collapse: `if (cond)\nstmt;` → `if (cond) stmt;`
+                    out.push(format!("{} {}", trimmed, next_trimmed));
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+
+        out.push(trimmed.to_string());
+        i += 1;
+    }
+
+    out.join("\n")
+}
+
+/// Check if a trimmed line is a bare `if (...)` condition with no consequent.
+/// E.g. `if (DEV && _shouldInstrument3)` — ends with `)` and starts with `if (`.
+fn is_bare_if_condition(trimmed: &str) -> bool {
+    if !trimmed.starts_with("if (") && !trimmed.starts_with("if(") {
+        return false;
+    }
+    // Must end with `)` — meaning just the condition, no consequent
+    trimmed.ends_with(')')
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         normalize_for_compare, normalize_multiline_call_invocations,
-        normalize_small_array_bracket_spacing, prepare_code_for_compare,
+        normalize_multiline_iife_collapsing, normalize_small_array_bracket_spacing,
+        prepare_code_for_compare,
     };
 
     #[test]
@@ -2196,5 +2522,26 @@ mod tests {
         let input = "return [ item.id, { value: item.value } ]";
         let expected = "return [item.id, { value: item.value }]";
         assert_eq!(normalize_small_array_bracket_spacing(input), expected);
+    }
+
+    #[test]
+    fn normalize_multiline_iife_collapsing_basic() {
+        let input = "const t0 = function() {\ntry{\n$dispatcherGuard(2);\nreturn useFire(foo)\n}finally{\n$dispatcherGuard(3)\n}\n}();";
+        let expected = "const t0 = (function() { try{ $dispatcherGuard(2); return useFire(foo) }finally{ $dispatcherGuard(3) } })();";
+        assert_eq!(normalize_multiline_iife_collapsing(input), expected);
+    }
+
+    #[test]
+    fn normalize_multiline_iife_collapsing_with_semicolon() {
+        let input = "const [state, setState] = function() {\ntry{\n$dispatcherGuard(2);\nreturn useState(t1)\n}finally{\n$dispatcherGuard(3)\n}\n}();";
+        let expected = "const [state, setState] = (function() { try{ $dispatcherGuard(2); return useState(t1) }finally{ $dispatcherGuard(3) } })();";
+        assert_eq!(normalize_multiline_iife_collapsing(input), expected);
+    }
+
+    #[test]
+    fn normalize_multiline_iife_collapsing_return() {
+        let input = "return function b(t2) {\nconst y_0 = t2 === undefined ? [] : t2;\nreturn [x_0, y_0]\n}()";
+        let expected = "return (function b(t2) { const y_0 = t2 === undefined ? [] : t2; return [x_0, y_0] })()";
+        assert_eq!(normalize_multiline_iife_collapsing(input), expected);
     }
 }

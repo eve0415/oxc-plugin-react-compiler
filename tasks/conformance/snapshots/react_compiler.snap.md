@@ -1,20 +1,15 @@
-# React Compiler Conformance -- 99.4% parity rate
+# React Compiler Conformance -- 99.7% parity rate
 
-**1760** parity_success, **11** parity_failure, **0** skipped
+**1765** parity_success, **6** parity_failure, **0** skipped
 
 ## Failed
 
-- `conflict-codegen-instrument-forget`: Output mismatch
-- `deeply-nested-function-expressions-with-params`: Output mismatch
-- `flag-enable-emit-hook-guards`: Output mismatch
 - `gating/multi-arrow-expr-export-default-gating-test`: Output mismatch
 - `gating/multi-arrow-expr-export-gating-test`: Output mismatch
 - `gating/multi-arrow-expr-gating-test`: Output mismatch
 - `log-pruned-memoization`: Output mismatch
-- `lower-context-access-hook-guard`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
 - `repro-dispatch-spread-event-marks-event-frozen`: Output mismatch
-- `transform-fire/hook-guard`: Output mismatch
 
 ## Passed
 
@@ -227,6 +222,7 @@
 - `conditional-early-return`
 - `conditional-on-mutable`
 - `conditional-set-state-in-render`
+- `conflict-codegen-instrument-forget`
 - `conflicting-dollar-sign-variable`
 - `consecutive-use-memo`
 - `console-readonly`
@@ -286,6 +282,7 @@
 - `debugger`
 - `debugger-memoized`
 - `declare-reassign-variable-in-closure`
+- `deeply-nested-function-expressions-with-params`
 - `default-param-array-with-unary`
 - `default-param-calls-global-function`
 - `default-param-with-empty-callback`
@@ -611,6 +608,7 @@
 - `fbt/fbtparam-with-jsx-fragment-value`
 - `fbt/lambda-with-fbt`
 - `fbt/repro-macro-property-not-handled`
+- `flag-enable-emit-hook-guards`
 - `flatten-scopes-with-methodcall-hook`
 - `flow-enum-inline`
 - `for-empty-update`
@@ -874,6 +872,7 @@
 - `logical-expression-object`
 - `logical-reorder.flow`
 - `loop-unused-let`
+- `lower-context-access-hook-guard`
 - `lower-context-acess-multiple`
 - `lower-context-selector-simple`
 - `maybe-mutate-object-in-callback`
@@ -1610,6 +1609,7 @@
 - `transform-fire/error.invalid-rewrite-deps-spread`
 - `transform-fire/error.invalid-spread`
 - `transform-fire/error.todo-method`
+- `transform-fire/hook-guard`
 - `transform-fire/multiple-scope`
 - `transform-fire/repeated-calls`
 - `transform-fire/repro-dont-add-hook-guards-on-retry`
