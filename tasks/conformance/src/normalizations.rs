@@ -484,20 +484,44 @@ fn normalize_jsx_assignment_parens(code: &str) -> String {
 }
 
 /// Normalize JSX text leading/trailing spaces when adjacent to expression
-/// containers. OXC omits space: `<div>text{x}`, Babel preserves: `<div> text{x}`.
+/// containers or elements.  OXC omits space: `<div>text{x}`, Babel preserves:
+/// `<div> text{x}`.  Also, Babel's printer puts JSXElement children on separate
+/// lines (creating an implicit space between preceding text and the element),
+/// while OXC prints everything inline.  Both compilers produce identical
+/// JSXText IR; the difference is purely in the printer's formatting.
 fn normalize_jsx_text_boundary_space(code: &str) -> String {
-    // Strip a single space after `>` when followed by text content (not `{` or `<`)
     let mut result = String::with_capacity(code.len());
     let bytes = code.as_bytes();
     let len = bytes.len();
     let mut i = 0;
     while i < len {
+        // Strip space after `>` before text content: `> text` → `>text`
         if bytes[i] == b'>' && i + 1 < len && bytes[i + 1] == b' ' && i + 2 < len {
             let next_after_space = bytes[i + 2];
             // Only strip space between `>` and text content (letters, not `{` or `<`)
             if next_after_space.is_ascii_alphabetic() || next_after_space == b'\'' {
                 result.push('>');
                 i += 2; // skip the space
+                continue;
+            }
+        }
+        // Strip space before `<` after text content: `text <Tag` → `text<Tag`
+        // Babel's printer puts JSXElement/Fragment children on new lines,
+        // creating a space when collapsed.  OXC prints inline — no space.
+        if bytes[i] == b' '
+            && i >= 1
+            && i + 1 < len
+            && bytes[i + 1] == b'<'
+            && i + 2 < len
+            && (bytes[i + 2].is_ascii_alphabetic() || bytes[i + 2] == b'/' || bytes[i + 2] == b'>')
+        {
+            let prev = bytes[i - 1];
+            // Only strip when preceded by text content (word char or closing
+            // quote/paren), not by JSX delimiters like `>` or `}` which are
+            // handled by normalize_jsx_child_whitespace.
+            if prev.is_ascii_alphanumeric() || prev == b'\'' || prev == b'"' {
+                // skip the space
+                i += 1;
                 continue;
             }
         }

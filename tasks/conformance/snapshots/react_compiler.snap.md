@@ -1,6 +1,6 @@
 # React Compiler Conformance -- 99.3% parity rate
 
-**1758** parity_success, **13** parity_failure, **0** skipped
+**1759** parity_success, **12** parity_failure, **0** skipped
 
 ## Failed
 
@@ -10,7 +10,6 @@
 - `gating/multi-arrow-expr-export-default-gating-test`: Output mismatch
 - `gating/multi-arrow-expr-export-gating-test`: Output mismatch
 - `gating/multi-arrow-expr-gating-test`: Output mismatch
-- `jsx-preserve-whitespace`: Output mismatch
 - `log-pruned-memoization`: Output mismatch
 - `lower-context-access-hook-guard`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
@@ -839,6 +838,7 @@
 - `jsx-outlining-simple`
 - `jsx-outlining-with-non-jsx-children`
 - `jsx-preserve-escape-character`
+- `jsx-preserve-whitespace`
 - `jsx-reactive-local-variable-member-expr`
 - `jsx-spread`
 - `jsx-string-attribute-expression-container`
