@@ -46,8 +46,8 @@ use instrumentation::{
 };
 use postprocess::{
     build_inserted_import_statement, build_runtime_import_merge_statement, codegen_program,
-    compact_simple_jsx_object_attributes, fix_gating_ternary_line_breaks,
-    fix_jsx_assignment_parens, fix_oxc_array_trailing_space,
+    compact_simple_jsx_object_attributes, fix_gating_ternary_fallback_arrow_jsx,
+    fix_gating_ternary_line_breaks, fix_jsx_assignment_parens, fix_oxc_array_trailing_space,
     fix_unoptimized_function_param_wrapping, parse_statements,
 };
 use transform_flag::{canonicalize_initializer_expressions_in_statements, compute_transform_state};
@@ -374,6 +374,7 @@ fn try_emit_module(
     code = compact_simple_jsx_object_attributes(&code);
     code = fix_oxc_array_trailing_space(&code);
     code = fix_gating_ternary_line_breaks(&code);
+    code = fix_gating_ternary_fallback_arrow_jsx(&code);
     code = fix_unoptimized_function_param_wrapping(&code);
     code = fix_jsx_assignment_parens(&code);
     Ok(CompileResult {

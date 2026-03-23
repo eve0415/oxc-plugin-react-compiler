@@ -1,15 +1,9 @@
-# React Compiler Conformance -- 99.7% parity rate
+# React Compiler Conformance -- 100.0% parity rate
 
-**1765** parity_success, **6** parity_failure, **0** skipped
+**1771** parity_success, **0** parity_failure, **0** skipped
 
 ## Failed
 
-- `gating/multi-arrow-expr-export-default-gating-test`: Output mismatch
-- `gating/multi-arrow-expr-export-gating-test`: Output mismatch
-- `gating/multi-arrow-expr-gating-test`: Output mismatch
-- `log-pruned-memoization`: Output mismatch
-- `name-anonymous-functions`: Output mismatch
-- `repro-dispatch-spread-event-marks-event-frozen`: Output mismatch
 
 ## Passed
 
@@ -675,6 +669,9 @@
 - `gating/gating-with-hoisted-type-reference.flow`
 - `gating/infer-function-expression-React-memo-gating`
 - `gating/invalid-fnexpr-reference`
+- `gating/multi-arrow-expr-export-default-gating-test`
+- `gating/multi-arrow-expr-export-gating-test`
+- `gating/multi-arrow-expr-gating-test`
 - `gating/reassigned-fnexpr-variable`
 - `gating/repro-no-gating-import-without-compiled-functions`
 - `global-jsx-tag-lowered-between-mutations`
@@ -868,6 +865,7 @@
 - `lambda-reassign-primitive`
 - `lambda-reassign-shadowed-primitive`
 - `lambda-return-expression`
+- `log-pruned-memoization`
 - `logical-expression`
 - `logical-expression-object`
 - `logical-reorder.flow`
@@ -913,6 +911,7 @@
 - `mutation-within-capture-and-mutablerange`
 - `mutation-within-jsx`
 - `mutation-within-jsx-and-break`
+- `name-anonymous-functions`
 - `name-anonymous-functions-outline`
 - `nested-function-shadowed-identifiers`
 - `nested-function-with-param-as-captured-dep`
@@ -1336,6 +1335,7 @@
 - `repro-capturing-func-maybealias-captured-mutate`
 - `repro-context-var-reassign-no-scope`
 - `repro-dce-circular-reference`
+- `repro-dispatch-spread-event-marks-event-frozen`
 - `repro-dont-add-hook-guards-on-retry`
 - `repro-dont-memoize-array-with-capturing-map-after-hook`
 - `repro-dont-memoize-array-with-mutable-map-after-hook`

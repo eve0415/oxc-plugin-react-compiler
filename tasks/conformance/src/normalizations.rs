@@ -64,6 +64,9 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_multiline_iife_collapsing,
         normalize_inline_iife_parenthesization,
         normalize_if_consequent_newline,
+        normalize_multiline_if_condition,
+        normalize_multiline_arrow_body,
+        normalize_outlined_function_spacing,
     ];
 
     let mut normalized = canonicalize_strict_text(code);
@@ -559,9 +562,8 @@ fn normalize_jsx_space_expression_container(code: &str) -> String {
 /// collapsing. After other normalizations collapse multi-line `( <...> )`
 /// to single line, the `)` may remain: `</>);` → `</>;`.
 fn normalize_jsx_residual_close_paren(code: &str) -> String {
-    // First pass: strip ` )` with space after JSX fragment close at end of statement
+    // First pass: strip ` )` with space after JSX close tags at end of statement
     let code = code.to_string();
-    // Only strip `</> );` at the end of a line (not mid-line)
     let lines: Vec<&str> = code.lines().collect();
     let mut pre_result = String::with_capacity(code.len());
     for line in &lines {
@@ -570,6 +572,22 @@ fn normalize_jsx_residual_close_paren(code: &str) -> String {
             pre_result.push_str(&line.replace("</> );", "</>;"));
         } else if trimmed.ends_with("/> );") && !trimmed.contains(": null}") {
             pre_result.push_str(&line.replace("/> );", "/>;"));
+        } else if trimmed.ends_with("> );") && trimmed.contains("</") {
+            // Handle `</TagName> );` → `</TagName>;`
+            // Find the last occurrence of `> );` and check it's after a closing tag
+            if let Some(pos) = line.rfind("> );") {
+                let before = &line[..pos];
+                if before.rfind("</").is_some() {
+                    let mut fixed = String::with_capacity(line.len());
+                    fixed.push_str(&line[..pos + 1]); // up to and including `>`
+                    fixed.push(';');
+                    pre_result.push_str(&fixed);
+                } else {
+                    pre_result.push_str(line);
+                }
+            } else {
+                pre_result.push_str(line);
+            }
         } else {
             pre_result.push_str(line);
         }
@@ -823,7 +841,8 @@ fn normalize_multiline_short_arrays(code: &str) -> String {
             || trimmed.ends_with("= [")
             || trimmed.ends_with("([")
             || trimmed.ends_with(", [")
-            || trimmed.ends_with("= [{");
+            || trimmed.ends_with("= [{")
+            || trimmed.ends_with("={[");
         let is_obj_start = (trimmed.ends_with(" {")
             || trimmed.ends_with("= {")
             || trimmed.ends_with("([{")
@@ -2379,6 +2398,183 @@ fn is_bare_if_condition(trimmed: &str) -> bool {
     }
     // Must end with `)` — meaning just the condition, no consequent
     trimmed.ends_with(')')
+}
+
+/// Collapse multi-line `if (` conditions into a single line.
+///
+/// Babel sometimes breaks long if-conditions across multiple lines:
+///   if (
+///     $[0] !== x ||
+///     $[1] !== y
+///   ) {
+///
+/// OXC keeps them on a single line:
+///   if ($[0] !== x || $[1] !== y) {
+///
+/// This normalization collapses the multi-line form to match OXC's output.
+fn normalize_multiline_if_condition(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+
+        // Detect `if (` with no closing `)` on the same line
+        if (trimmed == "if (" || trimmed == "} else if (")
+            || ((trimmed.starts_with("if (") || trimmed.starts_with("} else if ("))
+                && !trimmed.contains(") {")
+                && !trimmed.ends_with(')'))
+        {
+            // Collect continuation lines until we find `) {`
+            let mut parts = vec![trimmed.to_string()];
+            let mut j = i + 1;
+            let mut found_close = false;
+            while j < lines.len() && j - i < 20 {
+                let t = lines[j].trim();
+                parts.push(t.to_string());
+                if t == ") {" || t.ends_with(") {") {
+                    found_close = true;
+                    j += 1;
+                    break;
+                }
+                j += 1;
+            }
+            if found_close && parts.len() > 2 {
+                // Join: "if (" + conditions + ") {"
+                let collapsed = parts.join(" ");
+                // Clean up double spaces
+                let collapsed = collapsed
+                    .replace("( ", "(")
+                    .replace(" )", ")")
+                    .replace("  ", " ");
+                out.push(collapsed);
+                i = j;
+                continue;
+            }
+        }
+
+        out.push(trimmed.to_string());
+        i += 1;
+    }
+
+    out.join("\n")
+}
+
+/// Collapse short multi-line arrow function bodies.
+///
+/// OXC prints arrow bodies on multiple lines:
+///   event =>{
+///     dispatch(...event.target);
+///     event.target.value = ""
+///   }
+///
+/// Babel keeps short ones on a single line:
+///   event =>{ dispatch(...event.target); event.target.value = ""}
+///
+/// This collapses arrow bodies that are short enough (≤15 lines, ≤400 chars).
+fn normalize_multiline_arrow_body(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+
+        // Detect line ending with `=>{` — start of a multi-line arrow body
+        // But NOT a standalone line that is just `=>{`
+        if trimmed.ends_with("=>{") && trimmed.len() > 3 {
+            // Track brace depth to find the matching close
+            let mut brace_depth = 0i32;
+            let mut collected = Vec::new();
+            let start = i;
+            let mut found_close = false;
+            let mut j = i;
+
+            while j < lines.len() && j - start < 15 {
+                let t = lines[j].trim();
+                for ch in t.bytes() {
+                    if ch == b'{' {
+                        brace_depth += 1;
+                    } else if ch == b'}' {
+                        brace_depth -= 1;
+                    }
+                }
+                collected.push(t);
+                if brace_depth == 0 && j > start {
+                    found_close = true;
+                    j += 1;
+                    break;
+                }
+                j += 1;
+            }
+
+            if found_close && collected.len() > 2 {
+                let collapsed = collected.join(" ");
+                // Check total length is reasonable
+                if collapsed.len() <= 400 {
+                    // Clean up double spaces
+                    let collapsed = collapsed.replace("  ", " ");
+                    // Strip trailing space before `}}` — the join adds a space
+                    // between the last stmt and closing `}}` but Babel doesn't
+                    let collapsed = collapsed.replace(" }}", "}}");
+                    out.push(collapsed);
+                    i = j;
+                    continue;
+                }
+            }
+        }
+
+        out.push(trimmed.to_string());
+        i += 1;
+    }
+
+    out.join("\n")
+}
+
+/// Normalize spacing around `}` in outlined function naming expressions.
+///
+/// OXC prints: `() =>value }["key"]`  (space before `}`)
+/// Babel prints: `() =>value}["key"]`  (no space before `}`)
+///
+/// Also normalizes JSX expression container spacing for object-valued attrs:
+/// OXC prints: `onClick={{"key": ...}["key"]}`
+/// Babel prints: `onClick={ {"key": ...}["key"] }`
+///
+/// Normalize both to the compact (no-space) form.
+fn normalize_outlined_function_spacing(code: &str) -> String {
+    let mut result = String::with_capacity(code.len());
+    for line in code.lines() {
+        let mut l = line.to_string();
+        // 1. Normalize `={ {` to `={{` (JSX attr opening with object)
+        while let Some(pos) = l.find("={ {") {
+            if pos > 0 && l.as_bytes()[pos - 1].is_ascii_alphanumeric() {
+                l = format!("{}{{{}", &l[..pos + 1], &l[pos + 3..]);
+            } else {
+                break;
+            }
+        }
+        // 2. Normalize ` }["` to `}["` — space before `}` in outlined func exprs
+        l = l.replace(" }[\"", "}[\"");
+        // 3. Normalize `"] }` to `"]}` — trailing close of JSX expression
+        // container after outlined func bracket access
+        l = l.replace("\"] }", "\"]}");
+        // 4. Normalize `() } }` and similar trailing double-close patterns
+        l = l.replace(") } }", ")}}");
+        l = l.replace(") }}", ")}}");
+        // 5. Normalize `=>{ ` to `=>{` when inside outlined function naming
+        // pattern (line contains `}}["` indicating bracket access close)
+        if l.contains("}}[\"") {
+            l = l.replace("=>{ ", "=>{");
+        }
+
+        result.push_str(&l);
+        result.push('\n');
+    }
+    if result.ends_with('\n') {
+        result.pop();
+    }
+    result
 }
 
 #[cfg(test)]
