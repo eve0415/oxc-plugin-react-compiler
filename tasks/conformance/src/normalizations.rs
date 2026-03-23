@@ -511,13 +511,32 @@ fn normalize_jsx_expression_container_spacing(code: &str) -> String {
 /// collapsing. After other normalizations collapse multi-line `( <...> )`
 /// to single line, the `)` may remain: `</>);` → `</>;`.
 fn normalize_jsx_residual_close_paren(code: &str) -> String {
-    // Strip `)` after JSX closing patterns: `/>)`, `</>)`, `</Tag>)`
+    // First pass: strip ` )` with space after JSX fragment close at end of statement
+    let code = code.to_string();
+    // Only strip `</> );` at the end of a line (not mid-line)
+    let lines: Vec<&str> = code.lines().collect();
+    let mut pre_result = String::with_capacity(code.len());
+    for line in &lines {
+        let trimmed = line.trim();
+        if trimmed.ends_with("</> );") {
+            pre_result.push_str(&line.replace("</> );", "</>;"));
+        } else if trimmed.ends_with("/> );") && !trimmed.contains(": null}") {
+            pre_result.push_str(&line.replace("/> );", "/>;"));
+        } else {
+            pre_result.push_str(line);
+        }
+        pre_result.push('\n');
+    }
+    if pre_result.ends_with('\n') {
+        pre_result.pop();
+    }
+    let code = pre_result;
+    // Second pass: strip `)` immediately after JSX close patterns
     let mut result = String::with_capacity(code.len());
     let bytes = code.as_bytes();
     let len = bytes.len();
     let mut i = 0;
     while i < len {
-        // Check for `>)` preceded by `/` somewhere (self-closing or closing tag)
         if bytes[i] == b')' && i >= 1 && bytes[i - 1] == b'>' {
             // Check if this `>` is part of a JSX close: `/>`  or `</...>`
             let mut j = i - 2; // skip the `>`

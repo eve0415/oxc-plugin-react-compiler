@@ -1,6 +1,6 @@
-# React Compiler Conformance -- 99.0% parity rate
+# React Compiler Conformance -- 99.1% parity rate
 
-**1754** parity_success, **17** parity_failure, **0** skipped
+**1755** parity_success, **16** parity_failure, **0** skipped
 
 ## Failed
 
@@ -16,7 +16,6 @@
 - `jsx-preserve-whitespace`: Output mismatch
 - `log-pruned-memoization`: Output mismatch
 - `lower-context-access-hook-guard`: Output mismatch
-- `multiple-calls-to-hoisted-callback-from-other-callback`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
 - `repro-dispatch-spread-event-marks-event-frozen`: Output mismatch
 - `repro-propagate-type-of-ternary-nested`: Output mismatch
@@ -905,6 +904,7 @@
 - `mixedreadonly-mutating-map`
 - `module-scoped-bindings`
 - `multi-directive`
+- `multiple-calls-to-hoisted-callback-from-other-callback`
 - `multiple-components-first-is-invalid`
 - `mutable-lifetime-loops`
 - `mutable-lifetime-with-aliasing`
