@@ -1,6 +1,6 @@
-# React Compiler Conformance -- 97.1% parity rate
+# React Compiler Conformance -- 97.3% parity rate
 
-**1719** parity_success, **52** parity_failure, **0** skipped
+**1724** parity_success, **47** parity_failure, **0** skipped
 
 ## Failed
 
@@ -20,8 +20,6 @@
 - `custom/usememo-slice-result-map`: Output mismatch
 - `custom/useref-initial-value-sentinel`: Output mismatch
 - `deeply-nested-function-expressions-with-params`: Output mismatch
-- `dominator`: Output mismatch
-- `dont-merge-if-dep-is-inner-declaration-of-previous-scope`: Output mismatch
 - `flag-enable-emit-hook-guards`: Output mismatch
 - `gating/codegen-instrument-forget-gating-test`: Output mismatch
 - `gating/gating-test-export-function-and-default`: Output mismatch
@@ -36,13 +34,10 @@
 - `jsx-preserve-whitespace`: Output mismatch
 - `log-pruned-memoization`: Output mismatch
 - `lower-context-access-hook-guard`: Output mismatch
-- `memoization-comments`: Output mismatch
 - `merge-consecutive-scopes`: Output mismatch
-- `merge-consecutive-scopes-objects`: Output mismatch
 - `merge-consecutive-scopes-reordering`: Output mismatch
 - `multiple-calls-to-hoisted-callback-from-other-callback`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
-- `nested-optional-chains`: Output mismatch
 - `new-mutability/array-filter`: Output mismatch
 - `new-mutability/todo-control-flow-sensitive-mutation`: Output mismatch
 - `new-mutability/transitivity-add-captured-array-to-itself`: Output mismatch
@@ -358,8 +353,10 @@
 - `do-while-continue`
 - `do-while-early-unconditional-break`
 - `do-while-simple`
+- `dominator`
 - `dont-memoize-primitive-function-call-non-escaping`
 - `dont-memoize-primitive-function-call-non-escaping-useMemo`
+- `dont-merge-if-dep-is-inner-declaration-of-previous-scope`
 - `dont-merge-overlapping-scopes-store-const-used-later`
 - `dont-merge-overlapping-scopes-with-intermediate-reassignment`
 - `drop-methodcall-usecallback`
@@ -896,6 +893,7 @@
 - `maybe-mutate-object-in-callback`
 - `mege-consecutive-scopes-dont-merge-with-different-deps`
 - `member-inc`
+- `memoization-comments`
 - `memoize-primitive-function-calls`
 - `memoize-value-block-value-conditional`
 - `memoize-value-block-value-logical`
@@ -904,6 +902,7 @@
 - `merge-consecutive-nested-scopes`
 - `merge-consecutive-scopes-deps-subset-of-decls`
 - `merge-consecutive-scopes-no-deps`
+- `merge-consecutive-scopes-objects`
 - `merge-nested-scopes-with-same-inputs`
 - `merge-scopes-callback`
 - `merged-scopes-are-valid-effect-deps`
@@ -929,6 +928,7 @@
 - `name-anonymous-functions-outline`
 - `nested-function-shadowed-identifiers`
 - `nested-function-with-param-as-captured-dep`
+- `nested-optional-chains`
 - `nested-optional-member-expr`
 - `nested-scopes-begin-same-instr-valueblock`
 - `nested-scopes-hook-call`

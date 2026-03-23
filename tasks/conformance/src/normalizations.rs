@@ -39,6 +39,10 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_jsx_text_boundary_space,
         normalize_jsx_residual_close_paren,
         normalize_optional_parens,
+        normalize_import_quotes,
+        normalize_function_paren_space,
+        normalize_empty_block_newlines,
+        normalize_multiline_short_arrays,
         // Strict output normalizations (cosmetic OXC printer differences)
         normalize_trailing_comma_in_calls,
         normalize_multiline_call_invocations,
@@ -645,6 +649,156 @@ fn normalize_optional_parens(code: &str) -> String {
         output.pop();
     }
     output
+}
+
+/// Normalize import source quotes: single → double.
+/// OXC uses double quotes, Babel uses single quotes for import sources.
+fn normalize_import_quotes(code: &str) -> String {
+    let mut result = String::with_capacity(code.len());
+    for line in code.lines() {
+        let trimmed = line.trim();
+        if (trimmed.starts_with("import ") || trimmed.starts_with("export "))
+            && trimmed.contains(" from '")
+        {
+            // Replace `from '...'` with `from "..."`
+            let normalized = line.replace(" from '", " from \"");
+            // Find the closing quote and replace it
+            if let Some(pos) = normalized.rfind("';") {
+                result.push_str(&normalized[..pos]);
+                result.push_str("\";");
+            } else if let Some(pos) = normalized.rfind('\'') {
+                result.push_str(&normalized[..pos]);
+                result.push('"');
+            } else {
+                result.push_str(&normalized);
+            }
+        } else {
+            result.push_str(line);
+        }
+        result.push('\n');
+    }
+    if result.ends_with('\n') {
+        result.pop();
+    }
+    result
+}
+
+/// Normalize `function()` vs `function ()` — space before parens.
+fn normalize_function_paren_space(code: &str) -> String {
+    code.replace("function ()", "function()")
+        .replace("function () {", "function() {")
+}
+
+/// Normalize empty blocks: `if (x) {} else` vs `if (x) {\n} else`.
+/// Collapse empty blocks with newline to single line.
+fn normalize_empty_block_newlines(code: &str) -> String {
+    let mut result = String::with_capacity(code.len());
+    let lines: Vec<&str> = code.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        // Check for `{` followed by `} else` or just `}` on next line
+        if trimmed.ends_with('{')
+            && i + 1 < lines.len()
+            && (lines[i + 1].trim() == "} else {" || lines[i + 1].trim() == "}")
+        {
+            // Merge: `{\n}` → `{}`
+            result.push_str(lines[i]);
+            result.push(' ');
+            result.push_str(lines[i + 1].trim());
+            result.push('\n');
+            i += 2;
+        } else {
+            result.push_str(lines[i]);
+            result.push('\n');
+            i += 1;
+        }
+    }
+    if result.ends_with('\n') {
+        result.pop();
+    }
+    result
+}
+
+/// Collapse multi-line short arrays/objects to single line.
+/// OXC prints `[\n  x,\n  y\n]` while Babel prints `[x, y]`.
+fn normalize_multiline_short_arrays(code: &str) -> String {
+    let mut result = String::with_capacity(code.len());
+    let lines: Vec<&str> = code.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        // Check for line ending with `[` or `= [` (start of multi-line array)
+        // or `= {` for short objects (not functions — no `=>` or `{` alone)
+        let is_array_start = trimmed.ends_with(" [")
+            || trimmed.ends_with("= [")
+            || trimmed.ends_with("([")
+            || trimmed.ends_with(", [");
+        let is_obj_start = (trimmed.ends_with(" {")
+            || trimmed.ends_with("= {")
+            || trimmed.ends_with("([{")
+            || trimmed.ends_with(", {"))
+            && !trimmed.ends_with("=> {")
+            && !trimmed.ends_with("else {")
+            && !trimmed.ends_with(") {");
+        if is_array_start || is_obj_start {
+            let bracket = if is_array_start {
+                (b'[', b']')
+            } else {
+                (b'{', b'}')
+            };
+            // Collect lines until matching closing bracket
+            let mut depth = 0i32;
+            let mut collected = Vec::new();
+            let start = i;
+            let mut found_close = false;
+            let mut j = i;
+            while j < lines.len() && j - start < 10 {
+                // Max 10 lines for "short" arrays
+                let t = lines[j].trim();
+                for ch in t.bytes() {
+                    if ch == bracket.0 {
+                        depth += 1;
+                    } else if ch == bracket.1 {
+                        depth -= 1;
+                    }
+                }
+                collected.push(t);
+                if depth <= 0 {
+                    found_close = true;
+                    j += 1;
+                    break;
+                }
+                j += 1;
+            }
+            if found_close && collected.len() > 1 && collected.len() <= 8 {
+                // Collapse to single line
+                let collapsed = collected.join(" ");
+                // Clean up extra spaces
+                let collapsed = collapsed
+                    .replace("[ ", "[")
+                    .replace(" ]", "]")
+                    .replace("{ ", "{")
+                    .replace(" }", "}")
+                    .replace(",  ", ", ");
+                let indent = lines[start].len() - lines[start].trim_start().len();
+                for _ in 0..indent {
+                    result.push(' ');
+                }
+                result.push_str(&collapsed);
+                result.push('\n');
+                i = j;
+                continue;
+            }
+        }
+        result.push_str(lines[i]);
+        result.push('\n');
+        i += 1;
+    }
+    if result.ends_with('\n') {
+        result.pop();
+    }
+    result
 }
 
 /// Normalize optional whitespace before closing braces: ` }` -> `}` when it
