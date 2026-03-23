@@ -1,6 +1,6 @@
 # React Compiler Conformance -- 92.7% parity rate
 
-**1641** parity_success, **130** parity_failure, **0** skipped
+**1642** parity_success, **129** parity_failure, **0** skipped
 
 ## Failed
 
@@ -25,7 +25,6 @@
 - `custom/import-meta-env-property`: Output mismatch
 - `custom/local-function-call-extra-memo`: Output mismatch
 - `custom/method-chain-sub-expression-memo`: Output mismatch
-- `custom/setstate-arg-extra-scope-in-if`: Output mismatch
 - `custom/switch-break-inner-function`: Output mismatch
 - `custom/usememo-filter-nested-map-jsx`: Output mismatch
 - `custom/usememo-filter-result-map`: Output mismatch
@@ -369,6 +368,7 @@
 - `custom/labeled-block-scoping`
 - `custom/nested-math-method-calls`
 - `custom/object-literal-sentinel-memoize`
+- `custom/setstate-arg-extra-scope-in-if`
 - `custom/usememo-property-dep`
 - `dce-loop`
 - `dce-unused-const`

@@ -1996,9 +1996,18 @@ fn visit_value_for_memoization(
         state.visit_operand(instr_id, lv.place, lvalue_id);
     }
 
-    // Handle LoadLocal definitions
+    // Handle LoadLocal definitions.
+    // Skip when the LoadLocal lvalue is conditional_only — these represent
+    // values loaded into ternary branch positions, and creating a definition
+    // chain through them incorrectly connects unrelated expressions that
+    // share variable names across different contexts. Upstream avoids this
+    // because its tree-shaped ReactiveFunction doesn't create LoadLocal
+    // chains through nested ConditionalExpression branches.
     if let InstructionValue::LoadLocal { place, .. } = value
         && let Some(lv) = lvalue
+        && !ctx
+            .conditional_only_decls
+            .contains(&lv.identifier.declaration_id)
     {
         state.insert_definition(
             lv.identifier.declaration_id,
