@@ -1109,22 +1109,11 @@ fn init_oxfmt_session() -> Result<std::sync::Mutex<OxfmtSession>, String> {
     }))
 }
 
-fn format_with_oxfmt(input_path: &Path, code: &str) -> Result<String, String> {
-    static OXFMT_SESSION: OnceLock<Result<std::sync::Mutex<OxfmtSession>, String>> =
-        OnceLock::new();
-
-    let file_name = input_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("fixture.js");
-    let session = match OXFMT_SESSION.get_or_init(init_oxfmt_session) {
-        Ok(session) => session,
-        Err(err) => return Err(err.clone()),
-    };
-
-    let mut session = session
-        .lock()
-        .map_err(|_| "failed to lock oxfmt session".to_string())?;
+fn oxfmt_request(
+    session: &mut OxfmtSession,
+    file_name: &str,
+    code: &str,
+) -> Result<String, String> {
     let request = serde_json::to_string(&OxfmtRequest {
         file_name,
         source: code,
@@ -1155,6 +1144,49 @@ fn format_with_oxfmt(input_path: &Path, code: &str) -> Result<String, String> {
     response
         .code
         .ok_or_else(|| "oxfmt response missing formatted code".to_string())
+}
+
+fn format_with_oxfmt(input_path: &Path, code: &str) -> Result<String, String> {
+    static OXFMT_SESSION: OnceLock<Result<std::sync::Mutex<OxfmtSession>, String>> =
+        OnceLock::new();
+
+    let file_name = input_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("fixture.js");
+    let session = match OXFMT_SESSION.get_or_init(init_oxfmt_session) {
+        Ok(session) => session,
+        Err(err) => return Err(err.clone()),
+    };
+
+    let mut session = session
+        .lock()
+        .map_err(|_| "failed to lock oxfmt session".to_string())?;
+
+    let result = oxfmt_request(&mut session, file_name, code);
+
+    // If formatting failed on a .js/.jsx file, retry with .tsx extension.
+    // Some .js fixtures contain TypeScript syntax (e.g., type annotations),
+    // which oxfmt cannot parse without TypeScript mode enabled.
+    if result.is_err()
+        && matches!(
+            input_path.extension().and_then(|e| e.to_str()),
+            Some("js" | "jsx")
+        )
+    {
+        let tsx_name = input_path
+            .with_extension("tsx")
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(String::from)
+            .unwrap_or_else(|| "fixture.tsx".to_string());
+        let retry = oxfmt_request(&mut session, &tsx_name, code);
+        if retry.is_ok() {
+            return retry;
+        }
+    }
+
+    result
 }
 
 // --- Post-babel plugins ---

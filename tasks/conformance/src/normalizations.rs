@@ -374,6 +374,12 @@ fn normalize_jsx_child_whitespace(code: &str) -> String {
                         && i + 3 < len
                         && (bytes[i + 3].is_ascii_alphabetic() || bytes[i + 3] == b'/')
                 }
+                // `text {` — JSX text content before expression container.
+                // Babel's printer adds whitespace between JSXText and
+                // JSXExpressionContainer children; OXC prints them adjacent.
+                _ if prev.is_ascii_alphabetic() && next == b'{' => true,
+                // `} text` — expression container end before JSX text content.
+                (b'}', _) if next.is_ascii_alphabetic() => true,
                 _ => false,
             };
             if skip_space {
@@ -683,8 +689,20 @@ fn normalize_optional_parens(code: &str) -> String {
             }
         }
         // Ternary alternate with JSX parens: `: ( <...> )` → `: <...>`
-        else if trimmed.contains(": ( <") && trimmed.contains(" />") {
-            let normalized = line.replace(": ( <", ": <").replace(" /> )", " />");
+        // Handles both self-closing (`/>`) and closing tags (`</tag>`).
+        else if trimmed.contains(": ( <") && (trimmed.contains(" />") || trimmed.contains("</")) {
+            let mut normalized = line.replace(": ( <", ": <");
+            // Strip ` )` after self-closing `/>`
+            normalized = normalized.replace(" /> )", " />");
+            // Strip ` )` after closing tag `</tag>`
+            // Pattern: `</tagName> )` → `</tagName>`
+            if let Some(pos) = normalized.find("> )") {
+                // Check if the `>` closes a `</tag` sequence
+                let before = &normalized[..pos];
+                if before.rfind("</").is_some() {
+                    normalized = format!("{}{}", &normalized[..pos + 1], &normalized[pos + 3..]);
+                }
+            }
             output.push_str(&normalized);
         }
         // Logical AND/OR with JSX parens: `&& ( <...> )` → `&& <...>`

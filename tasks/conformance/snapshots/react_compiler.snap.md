@@ -1,6 +1,6 @@
-# React Compiler Conformance -- 99.3% parity rate
+# React Compiler Conformance -- 99.4% parity rate
 
-**1759** parity_success, **12** parity_failure, **0** skipped
+**1760** parity_success, **11** parity_failure, **0** skipped
 
 ## Failed
 
@@ -14,7 +14,6 @@
 - `lower-context-access-hook-guard`: Output mismatch
 - `name-anonymous-functions`: Output mismatch
 - `repro-dispatch-spread-event-marks-event-frozen`: Output mismatch
-- `repro-propagate-type-of-ternary-nested`: Output mismatch
 - `transform-fire/hook-guard`: Output mismatch
 
 ## Passed
@@ -1376,6 +1375,7 @@
 - `repro-preds-undefined-try-catch-return-primitive`
 - `repro-preserve-memoization-inner-destructured-value-mistaken-as-dependency`
 - `repro-propagate-type-of-ternary-jsx`
+- `repro-propagate-type-of-ternary-nested`
 - `repro-reassign-props`
 - `repro-reassign-to-variable-without-mutable-range`
 - `repro-ref-mutable-range`
