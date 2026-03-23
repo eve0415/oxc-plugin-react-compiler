@@ -23,8 +23,9 @@ mod transform_flag;
 
 #[allow(unused_imports)]
 use blank_lines::{
-    apply_blank_line_markers, apply_internal_blank_line_markers, codegen_statement_source,
-    move_leading_comment_to_import_trailing, transfer_blank_lines_from_original_source,
+    apply_blank_line_markers, apply_internal_blank_line_markers, apply_memo_comment_markers,
+    codegen_statement_source, move_leading_comment_to_import_trailing,
+    transfer_blank_lines_from_original_source,
 };
 #[cfg(test)]
 use flow_cast::normalize_generated_body_flow_cast_marker_calls;
@@ -365,6 +366,7 @@ fn try_emit_module(
     );
     let mut code = codegen_program(&program);
     code = apply_internal_blank_line_markers(&code);
+    code = apply_memo_comment_markers(&code);
     code = apply_blank_line_markers(state.source_type, &code, &blank_line_before);
     code = transfer_blank_lines_from_original_source(&code, args.source, compiled);
     code = move_leading_comment_to_import_trailing(&code);
@@ -847,6 +849,7 @@ fn try_run_reactive_ast_codegen<'a>(
         unique_identifiers: cf.unique_identifiers.clone(),
         param_name_overrides: std::collections::HashMap::new(),
         enable_name_anonymous_functions: cf.enable_name_anonymous_functions,
+        enable_memoization_comments: cf.enable_memoization_comments,
     };
     let result = crate::codegen_backend::codegen_ast::codegen_reactive_function(
         builder,
@@ -890,6 +893,7 @@ fn try_build_outlined_function_body_from_reactive_ast<'a>(
         unique_identifiers: outlined.unique_identifiers.clone(),
         param_name_overrides,
         enable_name_anonymous_functions: false,
+        enable_memoization_comments: false,
     };
     let result = crate::codegen_backend::codegen_ast::codegen_reactive_function(
         builder,
@@ -2619,6 +2623,7 @@ export const FIXTURE_ENTRYPOINT = {
             fbt_operands: std::collections::HashSet::new(),
             unique_identifiers: std::collections::HashSet::new(),
             enable_name_anonymous_functions: false,
+            enable_memoization_comments: false,
         }
     }
 

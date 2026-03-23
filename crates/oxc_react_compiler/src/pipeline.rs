@@ -1205,6 +1205,7 @@ fn codegen_outlined_function(
                         unique_identifiers,
                         param_name_overrides: std::collections::HashMap::new(),
                         enable_name_anonymous_functions: false,
+                        enable_memoization_comments: false,
                     },
                 )
                 .metadata();
@@ -1247,6 +1248,7 @@ fn codegen_outlined_function(
                 unique_identifiers,
                 param_name_overrides: std::collections::HashMap::new(),
                 enable_name_anonymous_functions: false,
+                enable_memoization_comments: false,
             },
         )
         .metadata();
@@ -2780,6 +2782,7 @@ fn run_reactive_passes(
             unique_identifiers: unique_identifiers_for_ast.clone(),
             param_name_overrides: std::collections::HashMap::new(),
             enable_name_anonymous_functions: env_config.enable_name_anonymous_functions,
+            enable_memoization_comments: env_config.enable_memoization_comments,
         };
         crate::codegen_backend::codegen_ast::codegen_reactive_function(
             bld,
@@ -5669,6 +5672,7 @@ fn try_compile_function<'a>(
         fbt_operands: pipeline_output.fbt_operands,
         unique_identifiers: pipeline_output.unique_identifiers,
         enable_name_anonymous_functions: options.environment.enable_name_anonymous_functions,
+        enable_memoization_comments: options.environment.enable_memoization_comments,
     }))
 }
 
@@ -5867,6 +5871,7 @@ fn try_compile_function_with_name<'a>(
         fbt_operands: pipeline_output.fbt_operands,
         unique_identifiers: pipeline_output.unique_identifiers,
         enable_name_anonymous_functions: options.environment.enable_name_anonymous_functions,
+        enable_memoization_comments: options.environment.enable_memoization_comments,
     }))
 }
 
@@ -6073,6 +6078,7 @@ fn try_compile_arrow<'a>(
         fbt_operands: pipeline_output.fbt_operands,
         unique_identifiers: pipeline_output.unique_identifiers,
         enable_name_anonymous_functions: options.environment.enable_name_anonymous_functions,
+        enable_memoization_comments: options.environment.enable_memoization_comments,
     }))
 }
 

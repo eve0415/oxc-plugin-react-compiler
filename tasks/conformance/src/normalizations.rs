@@ -50,7 +50,8 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_empty_block_inner_space,
         normalize_destructuring_brace_spacing,
         normalize_single_arrow_param_parens,
-        normalize_assignment_expression_parens,
+        // DISABLED: semantic normalization (no fixtures affected)
+        // normalize_assignment_expression_parens,
         normalize_numeric_leading_zero,
         normalize_jsx_trailing_text_space_before_close,
         normalize_optional_call_space,
@@ -61,8 +62,10 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_multiline_call_invocations,
         normalize_small_array_bracket_spacing,
         normalize_bracket_string_literal_spacing,
-        normalize_generated_memoization_comments,
-        normalize_dead_bare_var_refs,
+        // DISABLED: compiler now emits memoization comments natively
+        // normalize_generated_memoization_comments,
+        // DISABLED: Babel hoists unused _ref vars from idx macro expansion; OXC doesn't emit dead code
+        // normalize_dead_bare_var_refs,
         normalize_multiline_iife_collapsing,
         normalize_inline_iife_parenthesization,
         normalize_if_consequent_newline,
@@ -1010,6 +1013,7 @@ fn normalize_single_arrow_param_parens(code: &str) -> String {
     re.replace_all(code, "$1 =>").to_string()
 }
 
+#[allow(dead_code)]
 /// Strip parens around assignment expressions: `const x = (y = z)` → `const x = y = z`
 /// and `(y = expr), z` → `y = expr, z`.
 fn normalize_assignment_expression_parens(code: &str) -> String {
@@ -1379,6 +1383,7 @@ fn normalize_import_region_comments(code: &str) -> String {
     result.join("\n")
 }
 
+#[allow(dead_code)]
 fn normalize_generated_memoization_comments(code: &str) -> String {
     let inline_re = regex::Regex::new(r#"\s*// "(?:useMemo|useMemoCache)".*$"#).unwrap();
     code.lines()
@@ -2056,6 +2061,7 @@ fn normalize_multiline_call_invocations(code: &str) -> String {
     out.join("\n")
 }
 
+#[allow(dead_code)]
 fn normalize_dead_bare_var_refs(code: &str) -> String {
     let bare_var_ref_re = regex::Regex::new(r"^var\s+(_ref\d*)\s*;$").unwrap();
     let lines: Vec<&str> = code.lines().collect();

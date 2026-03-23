@@ -310,6 +310,89 @@ pub(super) fn apply_internal_blank_line_markers(code: &str) -> String {
     result
 }
 
+/// Replace memoization comment marker statements with actual `//` comments.
+///
+/// Codegen emits `"__REACT_COMPILER_MEMO_COMMENT__:<text>";` as expression statements.
+/// This function replaces each such line with `// <text>`, preserving indentation.
+///
+/// Special case: `"useMemo"` comments are appended as trailing inline comments
+/// on the preceding `let` declaration line, matching Babel's output format:
+///   `let x; // "useMemo" for t0 and x:`
+pub(super) fn apply_memo_comment_markers(code: &str) -> String {
+    let marker_prefix = crate::codegen_backend::codegen_ast::MEMO_COMMENT_MARKER;
+    // Quick check — skip work if no markers present.
+    if !code.contains(marker_prefix) {
+        return code.to_string();
+    }
+
+    let lines: Vec<&str> = code.lines().collect();
+    let mut result = String::with_capacity(code.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        let comment_text = extract_memo_comment_text(trimmed, marker_prefix);
+        if let Some(text) = comment_text {
+            // "useMemo" comments: merge as trailing comment on previous `let` line.
+            if text.starts_with("\"useMemo\"") || text.starts_with("\\\"useMemo\\\"") {
+                // Unescape the text (OXC string codegen may escape inner quotes).
+                let clean_text = text.replace("\\\"", "\"");
+                // Try to merge with the preceding line if it's a `let` declaration.
+                if result.ends_with('\n') {
+                    // Find the last line in result.
+                    let last_newline = result[..result.len() - 1].rfind('\n');
+                    let last_line_start = last_newline.map_or(0, |p| p + 1);
+                    let last_line = &result[last_line_start..result.len() - 1];
+                    let last_trimmed = last_line.trim();
+                    if last_trimmed.starts_with("let ") && last_trimmed.ends_with(';') {
+                        // Remove the trailing newline, append comment, re-add newline.
+                        result.pop(); // remove '\n'
+                        result.push_str(" // ");
+                        result.push_str(&clean_text);
+                        result.push('\n');
+                        i += 1;
+                        continue;
+                    }
+                }
+                // Fallback: emit as standalone comment line.
+                let indent = &lines[i][..lines[i].len() - lines[i].trim_start().len()];
+                result.push_str(indent);
+                result.push_str("// ");
+                result.push_str(&clean_text);
+                result.push('\n');
+            } else {
+                // Regular comments: emit as standalone comment line.
+                let clean_text = text.replace("\\\"", "\"");
+                let indent = &lines[i][..lines[i].len() - lines[i].trim_start().len()];
+                result.push_str(indent);
+                result.push_str("// ");
+                result.push_str(&clean_text);
+                result.push('\n');
+            }
+        } else {
+            result.push_str(lines[i]);
+            result.push('\n');
+        }
+        i += 1;
+    }
+    // Remove trailing newline if original didn't have one.
+    if !code.ends_with('\n') && result.ends_with('\n') {
+        result.pop();
+    }
+    result
+}
+
+/// Extract comment text from a memo comment marker line.
+/// Returns `Some(text)` if the line matches `"__REACT_COMPILER_MEMO_COMMENT__:<text>";`.
+fn extract_memo_comment_text<'a>(trimmed: &'a str, marker_prefix: &str) -> Option<&'a str> {
+    // Pattern: `"marker:text";` or `"marker:text"` (without semicolon)
+    let inner = trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix("\";").or_else(|| s.strip_suffix('"')))?;
+    inner
+        .strip_prefix(marker_prefix)
+        .and_then(|s| s.strip_prefix(':'))
+}
+
 /// Apply blank line markers to the generated code.
 ///
 /// `blank_line_before[i]` indicates that the i-th top-level statement in the output
