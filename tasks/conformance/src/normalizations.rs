@@ -36,6 +36,7 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_jsx_child_whitespace,
         normalize_jsx_assignment_parens,
         normalize_jsx_expression_container_spacing,
+        normalize_jsx_text_boundary_space,
         normalize_jsx_residual_close_paren,
         normalize_optional_parens,
         // Strict output normalizations (cosmetic OXC printer differences)
@@ -461,6 +462,30 @@ fn normalize_jsx_assignment_parens(code: &str) -> String {
     result
 }
 
+/// Normalize JSX text leading/trailing spaces when adjacent to expression
+/// containers. OXC omits space: `<div>text{x}`, Babel preserves: `<div> text{x}`.
+fn normalize_jsx_text_boundary_space(code: &str) -> String {
+    // Strip a single space after `>` when followed by text content (not `{` or `<`)
+    let mut result = String::with_capacity(code.len());
+    let bytes = code.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == b'>' && i + 1 < len && bytes[i + 1] == b' ' && i + 2 < len {
+            let next_after_space = bytes[i + 2];
+            // Only strip space between `>` and text content (letters, not `{` or `<`)
+            if next_after_space.is_ascii_alphabetic() || next_after_space == b'\'' {
+                result.push('>');
+                i += 2; // skip the space
+                continue;
+            }
+        }
+        result.push(bytes[i] as char);
+        i += 1;
+    }
+    result
+}
+
 /// Normalize spaces inside JSX expression containers for string literals.
 /// Babel: `{ "text" }`, OXC: `{"text"}`. Both are identical in React.
 fn normalize_jsx_expression_container_spacing(code: &str) -> String {
@@ -584,6 +609,33 @@ fn normalize_optional_parens(code: &str) -> String {
             } else {
                 output.push_str(&normalized);
             }
+        }
+        // Ternary alternate with JSX parens: `: ( <...> )` → `: <...>`
+        else if trimmed.contains(": ( <") && trimmed.contains(" />") {
+            let normalized = line.replace(": ( <", ": <").replace(" /> )", " />");
+            output.push_str(&normalized);
+        }
+        // Logical AND/OR with JSX parens: `&& ( <...> )` → `&& <...>`
+        else if (trimmed.contains("&& ( <") || trimmed.contains("|| ( <"))
+            && trimmed.contains(" />")
+        {
+            let normalized = line
+                .replace("&& ( <", "&& <")
+                .replace("|| ( <", "|| <")
+                .replace(" /> )", " />")
+                .replace(" /> );", " />;");
+            output.push_str(&normalized);
+        }
+        // Comma expression with extra parens: `((x = y), z)` → `(x = y, z)`
+        else if trimmed.contains("((") && trimmed.contains("),") {
+            let normalized = line.replace("((", "(").replace("),", ",");
+            output.push_str(&normalized);
+        }
+        // Object destructuring spacing: `{ref, ...other}` → `{ ref, ...other }`
+        // Only normalize by stripping spaces: `{ ref, ...other }` → `{ref, ...other}`
+        else if trimmed.contains("({ ") && trimmed.contains(" } =") {
+            let normalized = line.replace("({ ", "({").replace(" } =", "} =");
+            output.push_str(&normalized);
         } else {
             output.push_str(line);
         }

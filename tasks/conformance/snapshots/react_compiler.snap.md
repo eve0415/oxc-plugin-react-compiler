@@ -1,6 +1,6 @@
-# React Compiler Conformance -- 96.7% parity rate
+# React Compiler Conformance -- 97.1% parity rate
 
-**1713** parity_success, **58** parity_failure, **0** skipped
+**1719** parity_success, **52** parity_failure, **0** skipped
 
 ## Failed
 
@@ -32,10 +32,8 @@
 - `global-types/repro-array-filter-capture-mutate-bug`: Output mismatch
 - `global-types/repro-array-filter-known-nonmutate-Boolean`: Output mismatch
 - `global-types/repro-array-map-capture-mutate-bug`: Output mismatch
-- `inline-jsx-transform`: Output mismatch
 - `jsx-fragment`: Output mismatch
 - `jsx-preserve-whitespace`: Output mismatch
-- `jsx-tag-evaluation-order-non-global`: Output mismatch
 - `log-pruned-memoization`: Output mismatch
 - `lower-context-access-hook-guard`: Output mismatch
 - `memoization-comments`: Output mismatch
@@ -52,13 +50,9 @@
 - `preserve-memo-validation/useCallback-reordering-depslist-assignment`: Output mismatch
 - `reduce-reactive-deps/edge-case-merge-uncond-optional-chain-and-cond`: Output mismatch
 - `repro-dispatch-spread-event-marks-event-frozen`: Output mismatch
-- `repro-propagate-type-of-ternary-jsx`: Output mismatch
 - `repro-propagate-type-of-ternary-nested`: Output mismatch
 - `repro-renaming-conflicting-decls`: Output mismatch
-- `repro-separate-scopes-for-divs`: Output mismatch
-- `resolve-react-hooks-based-on-import-name`: Output mismatch
 - `reverse-postorder`: Output mismatch
-- `timers`: Output mismatch
 - `todo-granular-iterator-semantics`: Output mismatch
 - `transform-fire/hook-guard`: Output mismatch
 - `type-inference-array-from`: Output mismatch
@@ -820,6 +814,7 @@
 - `infer-sequential-optional-chain-nonnull`
 - `infer-skip-components-without-hooks-or-jsx`
 - `infer-types-through-type-cast.flow`
+- `inline-jsx-transform`
 - `inner-memo-value-not-promoted-to-outer-scope-dynamic`
 - `inner-memo-value-not-promoted-to-outer-scope-static`
 - `interdependent`
@@ -865,6 +860,7 @@
 - `jsx-string-attribute-expression-container`
 - `jsx-string-attribute-non-ascii`
 - `jsx-tag-evaluation-order`
+- `jsx-tag-evaluation-order-non-global`
 - `jsx-ternary-local-variable`
 - `jump-poisoned/break-in-scope`
 - `jump-poisoned/break-poisons-outer-scope`
@@ -1383,6 +1379,7 @@
 - `repro-object-pattern`
 - `repro-preds-undefined-try-catch-return-primitive`
 - `repro-preserve-memoization-inner-destructured-value-mistaken-as-dependency`
+- `repro-propagate-type-of-ternary-jsx`
 - `repro-reassign-props`
 - `repro-reassign-to-variable-without-mutable-range`
 - `repro-ref-mutable-range`
@@ -1391,11 +1388,13 @@
 - `repro-returned-inner-fn-reassigns-context`
 - `repro-scope-missing-mutable-range`
 - `repro-separate-memoization-due-to-callback-capturing`
+- `repro-separate-scopes-for-divs`
 - `repro-slow-validate-preserve-memo`
 - `repro-undefined-expression-of-jsxexpressioncontainer`
 - `repro-unmerged-fbt-call-merge-overlapping-reactive-scopes`
 - `repro-unreachable-code-early-return-in-useMemo`
 - `repro-useMemo-if-else-both-early-return`
+- `resolve-react-hooks-based-on-import-name`
 - `rest-param-with-array-pattern`
 - `rest-param-with-identifier`
 - `rest-param-with-object-spread-pattern`
@@ -1588,6 +1587,7 @@
 - `temporary-property-load-accessed-outside-scope`
 - `ternary-assignment-expression`
 - `ternary-expression`
+- `timers`
 - `todo-function-expression-captures-value-later-frozen`
 - `todo-global-load-cached`
 - `todo-global-property-load-cached`
