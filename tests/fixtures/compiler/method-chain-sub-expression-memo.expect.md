@@ -1,11 +1,10 @@
 ## Input
 
 ```javascript
-// @compilationMode(infer)
+// @compilationMode(infer) @enablePreserveExistingMemoizationGuarantees
 // Method chain on reactive value should be memoized as a sub-expression.
 // Babel extracts Math.floor(...).toString(16).toUpperCase().padStart(2,"0")
 // into a separately memoized intermediate, then interpolates it.
-// OXC inlines the chain directly in the template literal.
 import { useState, useEffect, useRef } from 'react';
 function generateBar(pct, total) { return 'x'.repeat(Math.floor(pct * total / 100)); }
 function Component({ percentage, index, animate, isLast }) {
@@ -52,11 +51,10 @@ export const FIXTURE_ENTRYPOINT = { fn: Component, params: [{}] };
 
 ```javascript
 import { c as _c } from "react/compiler-runtime";
-// @compilationMode(infer)
+// @compilationMode(infer) @enablePreserveExistingMemoizationGuarantees
 // Method chain on reactive value should be memoized as a sub-expression.
 // Babel extracts Math.floor(...).toString(16).toUpperCase().padStart(2,"0")
 // into a separately memoized intermediate, then interpolates it.
-// OXC inlines the chain directly in the template literal.
 import { useState, useEffect, useRef } from 'react';
 function generateBar(pct, total) {
   return 'x'.repeat(Math.floor(pct * total / 100));
