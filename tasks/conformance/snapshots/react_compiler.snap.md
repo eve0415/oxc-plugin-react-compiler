@@ -1,6 +1,6 @@
-# React Compiler Conformance -- 94.3% parity rate
+# React Compiler Conformance -- 94.4% parity rate
 
-**1670** parity_success, **101** parity_failure, **0** skipped
+**1671** parity_success, **100** parity_failure, **0** skipped
 
 ## Failed
 
@@ -43,7 +43,6 @@
 - `global-types/repro-array-filter-capture-mutate-bug`: Output mismatch
 - `global-types/repro-array-filter-known-nonmutate-Boolean`: Output mismatch
 - `global-types/repro-array-map-capture-mutate-bug`: Output mismatch
-- `hoist-destruct`: Output mismatch
 - `inline-jsx-transform`: Output mismatch
 - `jsx-bracket-in-text`: Output mismatch
 - `jsx-fragment`: Output mismatch
@@ -753,6 +752,7 @@
 - `globals-Number`
 - `globals-String`
 - `globals-dont-resolve-local-useState`
+- `hoist-destruct`
 - `hoisted-context-variable-in-outlined-fn`
 - `hoisted-declaration-with-scope`
 - `hoisted-function-declaration`

@@ -34,6 +34,8 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_top_level_statement_blank_lines,
         normalize_space_before_closing_brace,
         normalize_jsx_child_whitespace,
+        normalize_jsx_assignment_parens,
+        normalize_jsx_expression_container_spacing,
         // Strict output normalizations (cosmetic OXC printer differences)
         normalize_trailing_comma_in_calls,
         normalize_multiline_call_invocations,
@@ -360,6 +362,50 @@ fn normalize_jsx_child_whitespace(code: &str) -> String {
         i += 1;
     }
     result
+}
+
+/// Normalize optional parentheses around JSX in assignments and returns.
+/// Babel wraps JSX: `t1 = ( <div>...</div> )` and `return ( <div /> )`
+/// OXC omits them: `t1 = <div>...</div>` and `return <div />`
+/// Strip `( ` before `<` and ` )` after JSX close on the same line.
+fn normalize_jsx_assignment_parens(code: &str) -> String {
+    let mut result = String::with_capacity(code.len());
+    for line in code.lines() {
+        let trimmed = line.trim();
+        // Single-line pattern: `... = ( <...> )` or `return ( <...> )`
+        if (trimmed.contains("= ( <") || trimmed.starts_with("return ( <"))
+            && (trimmed.ends_with(" )") || trimmed.ends_with(" );"))
+        {
+            let normalized = line
+                .replace("= ( <", "= <")
+                .replace("return ( <", "return <");
+            // Strip trailing ` )` or ` );`
+            let normalized = if normalized.trim_end().ends_with(" );") {
+                let pos = normalized.rfind(" );").unwrap();
+                format!("{});", &normalized[..pos])
+            } else if normalized.trim_end().ends_with(" )") {
+                let pos = normalized.rfind(" )").unwrap();
+                normalized[..pos].to_string()
+            } else {
+                normalized
+            };
+            result.push_str(&normalized);
+        } else {
+            result.push_str(line);
+        }
+        result.push('\n');
+    }
+    if result.ends_with('\n') {
+        result.pop();
+    }
+    result
+}
+
+/// Normalize spaces inside JSX expression containers for string literals.
+/// Babel: `{ "text" }`, OXC: `{"text"}`. Both are identical in React.
+fn normalize_jsx_expression_container_spacing(code: &str) -> String {
+    // Replace `{ "` with `{"` and `" }` with `"}`
+    code.replace("{ \"", "{\"").replace("\" }", "\"}")
 }
 
 /// Normalize optional whitespace before closing braces: ` }` -> `}` when it
