@@ -1,10 +1,9 @@
-# React Compiler Conformance -- 95.9% parity rate
+# React Compiler Conformance -- 96.0% parity rate
 
-**1699** parity_success, **72** parity_failure, **0** skipped
+**1701** parity_success, **70** parity_failure, **0** skipped
 
 ## Failed
 
-- `align-scopes-within-nested-valueblock-in-array`: Output mismatch
 - `array-from-arg1-captures-arg0`: Output mismatch
 - `array-from-captures-arg0`: Output mismatch
 - `array-from-maybemutates-arg0`: Output mismatch
@@ -62,7 +61,6 @@
 - `optional-call-with-independently-memoizable-arg`: Output mismatch
 - `preserve-memo-validation/useCallback-reordering-depslist-assignment`: Output mismatch
 - `propagate-scope-deps-hir-fork/switch-non-final-default`: Output mismatch
-- `reassign-in-while-loop-condition`: Output mismatch
 - `reduce-reactive-deps/edge-case-merge-uncond-optional-chain-and-cond`: Output mismatch
 - `repro-dispatch-spread-event-marks-event-frozen`: Output mismatch
 - `repro-propagate-type-of-ternary-jsx`: Output mismatch
@@ -94,6 +92,7 @@
 - `align-scopes-reactive-scope-overlaps-label`
 - `align-scopes-reactive-scope-overlaps-try`
 - `align-scopes-trycatch-nested-overlapping-range`
+- `align-scopes-within-nested-valueblock-in-array`
 - `allocating-logical-expression-instruction-scope`
 - `allocating-primitive-as-dep`
 - `allocating-primitive-as-dep-nested-scope`
@@ -1257,6 +1256,7 @@
 - `reanimated-shared-value-writes`
 - `reassign-global-hook-arg`
 - `reassign-global-return`
+- `reassign-in-while-loop-condition`
 - `reassign-object-in-context`
 - `reassign-primitive-in-context`
 - `reassigned-phi-in-returned-function-expression`

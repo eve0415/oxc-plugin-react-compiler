@@ -37,6 +37,7 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_jsx_assignment_parens,
         normalize_jsx_expression_container_spacing,
         normalize_jsx_residual_close_paren,
+        normalize_optional_parens,
         // Strict output normalizations (cosmetic OXC printer differences)
         normalize_trailing_comma_in_calls,
         normalize_multiline_call_invocations,
@@ -475,6 +476,80 @@ fn normalize_jsx_residual_close_paren(code: &str) -> String {
         .replace("</>);", "</>;")
         .replace("/>)", "/>")
         .replace("</>)", "</>")
+}
+
+/// Normalize optional parentheses around expressions in various contexts.
+/// OXC omits optional parens; Babel includes them.
+fn normalize_optional_parens(code: &str) -> String {
+    let mut result = code.to_string();
+    // Assignment in return/const: `(x = y)` → `x = y` when it's the only expr
+    // This is too broad — skip for now and handle specific patterns:
+
+    // Ternary JSX branches: `? ( <div /> ) :` → `? <div /> :`
+    // Arrow body ternary: `=> (cond ? x : y)` → `=> cond ? x : y`
+    // Double parens in while: `while ((x = y))` → `while (x = y)`
+    result = result.replace("while ((", "while (");
+    // Fix the extra `)` from removing one `(`
+    // This is tricky — only strip when there are unbalanced parens
+    // Let's handle it line by line
+    let mut output = String::with_capacity(result.len());
+    for line in result.lines() {
+        let trimmed = line.trim();
+        // `while (x = y))` pattern — one extra `)`
+        if trimmed.starts_with("while (")
+            && trimmed.matches(')').count() > trimmed.matches('(').count()
+        {
+            // Remove last `)` before `{` or end
+            if let Some(pos) = line.rfind(")) {") {
+                output.push_str(&line[..pos + 1]);
+                output.push_str(&line[pos + 2..]);
+            } else if trimmed.ends_with("))") {
+                let pos = line.rfind("))").unwrap();
+                output.push_str(&line[..pos + 1]);
+            } else {
+                output.push_str(line);
+            }
+        }
+        // Ternary with parens around JSX: `? ( <...> ) :` → `? <...> :`
+        else if trimmed.contains("? ( <") && trimmed.contains("> ) :") {
+            let normalized = line.replace("? ( <", "? <").replace("> ) :", "> :");
+            output.push_str(&normalized);
+        } else if trimmed.contains("? ( <") && trimmed.contains("/> ) :") {
+            let normalized = line.replace("? ( <", "? <").replace("/> ) :", "/> :");
+            output.push_str(&normalized);
+        }
+        // Arrow body parens: `=> (<...>)` → `=> <...>`
+        else if trimmed.contains("=> ( <") {
+            let normalized = line.replace("=> ( <", "=> <");
+            // Also strip matching closing ` )` or ` ))`
+            let normalized = normalized.replace(" /> )", " />");
+            let normalized = normalized.replace(" /> ))", " />)");
+            output.push_str(&normalized);
+        }
+        // Const assignment with parens: `const x = (y = z)` → `const x = y = z`
+        else if (trimmed.starts_with("const ") || trimmed.starts_with("let "))
+            && trimmed.contains("= (")
+            && trimmed.ends_with(");")
+            && trimmed.matches('(').count() == 1
+            && trimmed.matches(')').count() == 2
+        {
+            // Single paren wrap around RHS: `const x = (expr);` → `const x = expr;`
+            let normalized = line.replacen("= (", "= ", 1);
+            if let Some(pos) = normalized.rfind(");") {
+                output.push_str(&normalized[..pos]);
+                output.push(';');
+            } else {
+                output.push_str(&normalized);
+            }
+        } else {
+            output.push_str(line);
+        }
+        output.push('\n');
+    }
+    if output.ends_with('\n') {
+        output.pop();
+    }
+    output
 }
 
 /// Normalize optional whitespace before closing braces: ` }` -> `}` when it
