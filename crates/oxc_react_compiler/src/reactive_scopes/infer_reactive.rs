@@ -119,7 +119,10 @@ pub fn infer_reactive_places(func: &mut HIRFunction) -> bool {
             // reactively-controlled block, the phi result is reactive.
             for phi in &mut block.phis {
                 if is_reactive_identifier_id(&reactive_ids, &alias_roots, phi.place.identifier.id) {
-                    continue; // Already reactive
+                    // ID is in reactive set (possibly via alias or lvalue propagation)
+                    // but ensure the Place's .reactive flag is also set.
+                    phi.place.reactive = true;
+                    continue;
                 }
                 let any_reactive = phi.operands.values().any(|op| {
                     is_reactive_identifier_id(&reactive_ids, &alias_roots, op.identifier.id)

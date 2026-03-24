@@ -23,8 +23,9 @@ use crate::hir::types::*;
 /// 4. If a scope still has reactive deps after pruning, marks all its declarations
 ///    and reassignments as reactive.
 pub fn prune_non_reactive_deps_reactive(func: &mut ReactiveFunction) {
-    let multi_source_decls = collect_multi_source_reassignment_decl_ids(func);
     let reassigned_decls = collect_reassigned_decl_ids(func);
+    let original_named_ids = collect_original_named_identifier_ids(func);
+    let stable_pruned_function_aliases = collect_stable_pruned_function_aliases(func);
     let (mut reactive_ids, mut reactive_decls) = collect_reactive_identifiers(func);
     propagate_reactivity_to_fixpoint(&func.body, &mut reactive_ids, &mut reactive_decls);
     if std::env::var("DEBUG_REACTIVE_IDS").is_ok() {
@@ -36,8 +37,9 @@ pub fn prune_non_reactive_deps_reactive(func: &mut ReactiveFunction) {
         &mut func.body,
         &mut reactive_ids,
         &mut reactive_decls,
-        &multi_source_decls,
         &reassigned_decls,
+        &original_named_ids,
+        &stable_pruned_function_aliases,
     );
     if std::env::var("DEBUG_REACTIVE_IDS").is_ok() {
         let mut ids: Vec<u32> = reactive_ids.iter().map(|id| id.0).collect();
@@ -177,7 +179,8 @@ fn is_identifier_reactive(
     reactive_ids: &HashSet<IdentifierId>,
     reactive_decls: &HashSet<DeclarationId>,
 ) -> bool {
-    reactive_ids.contains(&identifier.id) || reactive_decls.contains(&identifier.declaration_id)
+    let _ = reactive_decls;
+    reactive_ids.contains(&identifier.id)
 }
 
 /// Collect all reactive identifier IDs by walking the reactive function tree.
@@ -226,8 +229,11 @@ fn collect_from_block(
             }
             ReactiveStatement::PrunedScope(scope_block) => {
                 collect_from_block(&scope_block.instructions, reactive_ids, reactive_decls);
+                let named_function_decl_ids =
+                    collect_named_function_decl_ids(&scope_block.instructions);
                 for (id, decl) in &scope_block.scope.declarations {
                     if !is_primitive_type(&decl.identifier)
+                        && !named_function_decl_ids.contains(&decl.identifier.declaration_id)
                         && !is_stable_ref_type(&decl.identifier, reactive_ids, reactive_decls)
                     {
                         reactive_ids.insert(*id);
@@ -660,6 +666,112 @@ fn is_primitive_type(id: &Identifier) -> bool {
     matches!(id.type_, Type::Primitive)
 }
 
+fn is_plain_function_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c == '_' || c == '$' || c.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c == '$' || c.is_ascii_alphanumeric())
+}
+
+fn collect_named_function_decl_ids(block: &ReactiveBlock) -> HashSet<DeclarationId> {
+    let mut out = HashSet::new();
+    for stmt in block {
+        match stmt {
+            ReactiveStatement::Instruction(instr) => {
+                if let Some(lvalue) = &instr.lvalue {
+                    match &instr.value {
+                        InstructionValue::FunctionExpression { lowered_func, .. }
+                        | InstructionValue::ObjectMethod { lowered_func, .. } => {
+                            if lowered_func
+                                .func
+                                .id
+                                .as_deref()
+                                .is_some_and(is_plain_function_name)
+                            {
+                                out.insert(lvalue.identifier.declaration_id);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            ReactiveStatement::Terminal(term_stmt) => {
+                out.extend(collect_named_function_decl_ids_from_terminal(
+                    &term_stmt.terminal,
+                ));
+            }
+            ReactiveStatement::Scope(scope_block) => {
+                out.extend(collect_named_function_decl_ids(&scope_block.instructions));
+            }
+            ReactiveStatement::PrunedScope(scope_block) => {
+                out.extend(collect_named_function_decl_ids(&scope_block.instructions));
+            }
+        }
+    }
+    out
+}
+
+fn collect_named_function_decl_ids_from_terminal(
+    terminal: &ReactiveTerminal,
+) -> HashSet<DeclarationId> {
+    let mut out = HashSet::new();
+    match terminal {
+        ReactiveTerminal::If {
+            consequent,
+            alternate,
+            ..
+        } => {
+            out.extend(collect_named_function_decl_ids(consequent));
+            if let Some(alt) = alternate {
+                out.extend(collect_named_function_decl_ids(alt));
+            }
+        }
+        ReactiveTerminal::Switch { cases, .. } => {
+            for case in cases {
+                if let Some(block) = &case.block {
+                    out.extend(collect_named_function_decl_ids(block));
+                }
+            }
+        }
+        ReactiveTerminal::DoWhile { loop_block, .. }
+        | ReactiveTerminal::While { loop_block, .. } => {
+            out.extend(collect_named_function_decl_ids(loop_block));
+        }
+        ReactiveTerminal::For {
+            init,
+            update,
+            loop_block,
+            ..
+        } => {
+            out.extend(collect_named_function_decl_ids(init));
+            if let Some(update) = update {
+                out.extend(collect_named_function_decl_ids(update));
+            }
+            out.extend(collect_named_function_decl_ids(loop_block));
+        }
+        ReactiveTerminal::ForOf {
+            init, loop_block, ..
+        }
+        | ReactiveTerminal::ForIn {
+            init, loop_block, ..
+        } => {
+            out.extend(collect_named_function_decl_ids(init));
+            out.extend(collect_named_function_decl_ids(loop_block));
+        }
+        ReactiveTerminal::Label { block, .. } => {
+            out.extend(collect_named_function_decl_ids(block));
+        }
+        ReactiveTerminal::Try { block, handler, .. } => {
+            out.extend(collect_named_function_decl_ids(block));
+            out.extend(collect_named_function_decl_ids(handler));
+        }
+        ReactiveTerminal::Break { .. }
+        | ReactiveTerminal::Continue { .. }
+        | ReactiveTerminal::Return { .. }
+        | ReactiveTerminal::Throw { .. } => {}
+    }
+    out
+}
+
 /// Check if an identifier is a stable ref type (useRef that is not reactive).
 fn is_stable_ref_type(
     id: &Identifier,
@@ -706,30 +818,16 @@ fn visit_and_prune_block(
     block: &mut ReactiveBlock,
     reactive_ids: &mut HashSet<IdentifierId>,
     reactive_decls: &mut HashSet<DeclarationId>,
-    multi_source_decls: &HashSet<DeclarationId>,
     reassigned_decls: &HashSet<DeclarationId>,
+    original_named_ids: &HashMap<DeclarationId, IdentifierId>,
+    stable_pruned_function_aliases: &HashSet<DeclarationId>,
 ) {
     let debug_flow = std::env::var("DEBUG_PRUNE_NONREACTIVE_FLOW").is_ok();
-    // Track output DeclarationIds of zero-dep scopes. After a zero-dep scope,
-    // any StoreLocal that assigns from a scope output to a named variable
-    // produces a non-reactive value (the scope is sentinel-memoized).
-    let mut zero_dep_scope_output_decl_ids: HashSet<DeclarationId> = HashSet::new();
     for i in 0..block.len() {
         let keep_nonreactive_reassigned_deps =
             should_retain_reassigned_deps_for_scope(&block[..i], reactive_ids, reactive_decls);
         match &mut block[i] {
             ReactiveStatement::Instruction(instr) => {
-                // Check if this instruction assigns a zero-dep scope output
-                // to a named variable (e.g., `content = t30` where t30 is
-                // from a sentinel scope). If so, the target is non-reactive.
-                if let InstructionValue::StoreLocal { lvalue, value, .. }
-                | InstructionValue::StoreContext { lvalue, value, .. } = &instr.value
-                    && lvalue.place.identifier.name.is_some()
-                    && zero_dep_scope_output_decl_ids.contains(&value.identifier.declaration_id)
-                {
-                    reactive_ids.remove(&lvalue.place.identifier.id);
-                    reactive_decls.remove(&lvalue.place.identifier.declaration_id);
-                }
                 propagate_reactivity(instr, reactive_ids, reactive_decls);
             }
             ReactiveStatement::Terminal(term_stmt) => {
@@ -737,8 +835,9 @@ fn visit_and_prune_block(
                     &mut term_stmt.terminal,
                     reactive_ids,
                     reactive_decls,
-                    multi_source_decls,
                     reassigned_decls,
+                    original_named_ids,
+                    stable_pruned_function_aliases,
                 );
             }
             ReactiveStatement::Scope(scope_block) => {
@@ -746,11 +845,11 @@ fn visit_and_prune_block(
                     &mut scope_block.instructions,
                     reactive_ids,
                     reactive_decls,
-                    multi_source_decls,
                     reassigned_decls,
+                    original_named_ids,
+                    stable_pruned_function_aliases,
                 );
 
-                // Prune non-reactive dependencies from this scope
                 if debug_flow {
                     eprintln!(
                         "[PRUNE_NONREACTIVE] scope={} keep_reassigned_fallback={} deps_before={:?}",
@@ -779,14 +878,20 @@ fn visit_and_prune_block(
                     );
                 }
                 scope_block.scope.dependencies.retain(|dep| {
-                    let keep = is_identifier_reactive(&dep.identifier, reactive_ids, reactive_decls)
+                    let keep = (!stable_pruned_function_aliases
+                        .contains(&dep.identifier.declaration_id)
+                        || !dep.path.is_empty())
+                        && (is_identifier_reactive(&dep.identifier, reactive_ids, reactive_decls)
+                        || (reactive_decls.contains(&dep.identifier.declaration_id)
+                            && original_named_ids.get(&dep.identifier.declaration_id)
+                                == Some(&dep.identifier.id))
                         || (keep_nonreactive_reassigned_deps
                             && dep.path.is_empty()
                             && reassigned_decls.contains(&dep.identifier.declaration_id)
                             && matches!(
                                 dep.identifier.type_,
                                 Type::Primitive | Type::TypeVar { .. }
-                            ));
+                            )));
                     if debug_flow {
                         eprintln!(
                             "[PRUNE_NONREACTIVE] scope={} dep_id={} dep_decl={} name={} keep={} reactive_id={} reactive_decl={} reassigned={} path_len={}",
@@ -808,9 +913,6 @@ fn visit_and_prune_block(
                     keep
                 });
 
-                // If the scope still has reactive deps, mark all outputs as reactive.
-                // If the scope has zero deps (sentinel), remove its outputs from the
-                // reactive set so downstream scopes don't treat them as reactive deps.
                 if !scope_block.scope.dependencies.is_empty() {
                     for decl in scope_block.scope.declarations.values() {
                         mark_reactive_identifier(
@@ -828,29 +930,6 @@ fn visit_and_prune_block(
                             reactive_decls,
                         );
                     }
-                } else {
-                    // Scope has zero reactive deps (sentinel). Remove its
-                    // outputs from the reactive set so downstream scopes
-                    // don't treat them as reactive deps.
-                    for decl in scope_block.scope.declarations.values() {
-                        reactive_ids.remove(&decl.identifier.id);
-                        reactive_decls.remove(&decl.identifier.declaration_id);
-                        // Track for subsequent StoreLocal detection
-                        zero_dep_scope_output_decl_ids.insert(decl.identifier.declaration_id);
-                    }
-                    for reassignment in &scope_block.scope.reassignments {
-                        reactive_ids.remove(&reassignment.id);
-                        reactive_decls.remove(&reassignment.declaration_id);
-                    }
-                    // Also scan body for StoreLocal/StoreContext assignments
-                    // to named variables. These are reassignments of outer
-                    // variables that may not be in scope.reassignments but
-                    // are effectively non-reactive outputs of a sentinel scope.
-                    collect_store_targets_from_block(
-                        &scope_block.instructions,
-                        reactive_ids,
-                        reactive_decls,
-                    );
                 }
             }
             ReactiveStatement::PrunedScope(scope_block) => {
@@ -858,178 +937,12 @@ fn visit_and_prune_block(
                     &mut scope_block.instructions,
                     reactive_ids,
                     reactive_decls,
-                    multi_source_decls,
                     reassigned_decls,
+                    original_named_ids,
+                    stable_pruned_function_aliases,
                 );
-                // After visiting the body (which prunes inner scope deps and
-                // conditionally marks outputs reactive), un-mark PrunedScope
-                // declarations whose value originates from an inner zero-dep
-                // scope.  Inner zero-dep scopes produce stable (sentinel-memoized)
-                // values that should not be treated as reactive.
-                let zero_dep_decl_ids =
-                    collect_zero_dep_inner_scope_decl_ids(&scope_block.instructions);
-                for decl in scope_block.scope.declarations.values() {
-                    if zero_dep_decl_ids.contains(&decl.identifier.declaration_id) {
-                        reactive_ids.remove(&decl.identifier.id);
-                        reactive_decls.remove(&decl.identifier.declaration_id);
-                    }
-                }
             }
         }
-    }
-}
-
-/// Scan a reactive block for StoreLocal/StoreContext instructions that assign
-/// to named variables, and remove those from the reactive set. Used when a
-/// sentinel scope assigns to variables declared outside it — these assignments
-/// produce stable (non-reactive) values.
-fn collect_store_targets_from_block(
-    block: &ReactiveBlock,
-    reactive_ids: &mut HashSet<IdentifierId>,
-    reactive_decls: &mut HashSet<DeclarationId>,
-) {
-    let debug_flow = std::env::var("DEBUG_PRUNE_NONREACTIVE_FLOW").is_ok();
-    for stmt in block {
-        match stmt {
-            ReactiveStatement::Instruction(instr) => match &instr.value {
-                InstructionValue::StoreLocal { lvalue, .. }
-                | InstructionValue::StoreContext { lvalue, .. } => {
-                    if lvalue.place.identifier.name.is_some() {
-                        if debug_flow {
-                            eprintln!(
-                                "[PRUNE_NONREACTIVE] STORE_SCAN removing name={} id={} decl={}",
-                                lvalue
-                                    .place
-                                    .identifier
-                                    .name
-                                    .as_ref()
-                                    .map(|n| n.value().to_string())
-                                    .unwrap_or_default(),
-                                lvalue.place.identifier.id.0,
-                                lvalue.place.identifier.declaration_id.0,
-                            );
-                        }
-                        reactive_ids.remove(&lvalue.place.identifier.id);
-                        reactive_decls.remove(&lvalue.place.identifier.declaration_id);
-                    }
-                }
-                _ => {}
-            },
-            ReactiveStatement::Terminal(term) => {
-                // Recurse into terminal branches
-                if let ReactiveTerminal::If {
-                    consequent,
-                    alternate,
-                    ..
-                } = &term.terminal
-                {
-                    collect_store_targets_from_block(consequent, reactive_ids, reactive_decls);
-                    if let Some(alt) = alternate {
-                        collect_store_targets_from_block(alt, reactive_ids, reactive_decls);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Collect declaration IDs from inner non-pruned scopes that have zero
-/// dependencies (after pruning).  Also follows StoreLocal/StoreContext
-/// chains so named bindings derived from inner scope outputs are included.
-fn collect_zero_dep_inner_scope_decl_ids(block: &ReactiveBlock) -> HashSet<DeclarationId> {
-    let mut ids = HashSet::new();
-    for stmt in block {
-        match stmt {
-            ReactiveStatement::Scope(scope_block) => {
-                if scope_block.scope.dependencies.is_empty() {
-                    for decl in scope_block.scope.declarations.values() {
-                        ids.insert(decl.identifier.declaration_id);
-                    }
-                }
-                ids.extend(collect_zero_dep_inner_scope_decl_ids(
-                    &scope_block.instructions,
-                ));
-            }
-            ReactiveStatement::PrunedScope(scope_block) => {
-                ids.extend(collect_zero_dep_inner_scope_decl_ids(
-                    &scope_block.instructions,
-                ));
-            }
-            ReactiveStatement::Terminal(term_stmt) => {
-                collect_zero_dep_decl_ids_terminal(&term_stmt.terminal, &mut ids);
-            }
-            ReactiveStatement::Instruction(instr) => {
-                if let InstructionValue::StoreLocal { lvalue, value, .. }
-                | InstructionValue::StoreContext { lvalue, value, .. } = &instr.value
-                    && ids.contains(&value.identifier.declaration_id)
-                {
-                    ids.insert(lvalue.place.identifier.declaration_id);
-                }
-            }
-        }
-    }
-    ids
-}
-
-fn collect_zero_dep_decl_ids_terminal(
-    terminal: &ReactiveTerminal,
-    ids: &mut HashSet<DeclarationId>,
-) {
-    match terminal {
-        ReactiveTerminal::If {
-            consequent,
-            alternate,
-            ..
-        } => {
-            ids.extend(collect_zero_dep_inner_scope_decl_ids(consequent));
-            if let Some(alt) = alternate {
-                ids.extend(collect_zero_dep_inner_scope_decl_ids(alt));
-            }
-        }
-        ReactiveTerminal::Switch { cases, .. } => {
-            for case in cases {
-                if let Some(block) = &case.block {
-                    ids.extend(collect_zero_dep_inner_scope_decl_ids(block));
-                }
-            }
-        }
-        ReactiveTerminal::DoWhile { loop_block, .. }
-        | ReactiveTerminal::While { loop_block, .. } => {
-            ids.extend(collect_zero_dep_inner_scope_decl_ids(loop_block));
-        }
-        ReactiveTerminal::For {
-            init,
-            update,
-            loop_block,
-            ..
-        } => {
-            ids.extend(collect_zero_dep_inner_scope_decl_ids(init));
-            if let Some(upd) = update {
-                ids.extend(collect_zero_dep_inner_scope_decl_ids(upd));
-            }
-            ids.extend(collect_zero_dep_inner_scope_decl_ids(loop_block));
-        }
-        ReactiveTerminal::ForOf {
-            init, loop_block, ..
-        }
-        | ReactiveTerminal::ForIn {
-            init, loop_block, ..
-        } => {
-            ids.extend(collect_zero_dep_inner_scope_decl_ids(init));
-            ids.extend(collect_zero_dep_inner_scope_decl_ids(loop_block));
-        }
-        ReactiveTerminal::Label { block, .. } => {
-            ids.extend(collect_zero_dep_inner_scope_decl_ids(block));
-        }
-        ReactiveTerminal::Try { block, handler, .. } => {
-            ids.extend(collect_zero_dep_inner_scope_decl_ids(block));
-            ids.extend(collect_zero_dep_inner_scope_decl_ids(handler));
-        }
-        ReactiveTerminal::Break { .. }
-        | ReactiveTerminal::Continue { .. }
-        | ReactiveTerminal::Return { .. }
-        | ReactiveTerminal::Throw { .. } => {}
     }
 }
 
@@ -1086,8 +999,9 @@ fn visit_and_prune_terminal(
     terminal: &mut ReactiveTerminal,
     reactive_ids: &mut HashSet<IdentifierId>,
     reactive_decls: &mut HashSet<DeclarationId>,
-    multi_source_decls: &HashSet<DeclarationId>,
     reassigned_decls: &HashSet<DeclarationId>,
+    original_named_ids: &HashMap<DeclarationId, IdentifierId>,
+    stable_pruned_function_aliases: &HashSet<DeclarationId>,
 ) {
     match terminal {
         ReactiveTerminal::If {
@@ -1099,16 +1013,18 @@ fn visit_and_prune_terminal(
                 consequent,
                 reactive_ids,
                 reactive_decls,
-                multi_source_decls,
                 reassigned_decls,
+                original_named_ids,
+                stable_pruned_function_aliases,
             );
             if let Some(alt) = alternate {
                 visit_and_prune_block(
                     alt,
                     reactive_ids,
                     reactive_decls,
-                    multi_source_decls,
                     reassigned_decls,
+                    original_named_ids,
+                    stable_pruned_function_aliases,
                 );
             }
         }
@@ -1119,8 +1035,9 @@ fn visit_and_prune_terminal(
                         block,
                         reactive_ids,
                         reactive_decls,
-                        multi_source_decls,
                         reassigned_decls,
+                        original_named_ids,
+                        stable_pruned_function_aliases,
                     );
                 }
             }
@@ -1131,8 +1048,9 @@ fn visit_and_prune_terminal(
                 loop_block,
                 reactive_ids,
                 reactive_decls,
-                multi_source_decls,
                 reassigned_decls,
+                original_named_ids,
+                stable_pruned_function_aliases,
             );
         }
         ReactiveTerminal::For {
@@ -1145,24 +1063,27 @@ fn visit_and_prune_terminal(
                 init,
                 reactive_ids,
                 reactive_decls,
-                multi_source_decls,
                 reassigned_decls,
+                original_named_ids,
+                stable_pruned_function_aliases,
             );
             if let Some(upd) = update {
                 visit_and_prune_block(
                     upd,
                     reactive_ids,
                     reactive_decls,
-                    multi_source_decls,
                     reassigned_decls,
+                    original_named_ids,
+                    stable_pruned_function_aliases,
                 );
             }
             visit_and_prune_block(
                 loop_block,
                 reactive_ids,
                 reactive_decls,
-                multi_source_decls,
                 reassigned_decls,
+                original_named_ids,
+                stable_pruned_function_aliases,
             );
         }
         ReactiveTerminal::ForOf {
@@ -1172,15 +1093,17 @@ fn visit_and_prune_terminal(
                 init,
                 reactive_ids,
                 reactive_decls,
-                multi_source_decls,
                 reassigned_decls,
+                original_named_ids,
+                stable_pruned_function_aliases,
             );
             visit_and_prune_block(
                 loop_block,
                 reactive_ids,
                 reactive_decls,
-                multi_source_decls,
                 reassigned_decls,
+                original_named_ids,
+                stable_pruned_function_aliases,
             );
         }
         ReactiveTerminal::ForIn {
@@ -1190,15 +1113,17 @@ fn visit_and_prune_terminal(
                 init,
                 reactive_ids,
                 reactive_decls,
-                multi_source_decls,
                 reassigned_decls,
+                original_named_ids,
+                stable_pruned_function_aliases,
             );
             visit_and_prune_block(
                 loop_block,
                 reactive_ids,
                 reactive_decls,
-                multi_source_decls,
                 reassigned_decls,
+                original_named_ids,
+                stable_pruned_function_aliases,
             );
         }
         ReactiveTerminal::Label { block, .. } => {
@@ -1206,8 +1131,9 @@ fn visit_and_prune_terminal(
                 block,
                 reactive_ids,
                 reactive_decls,
-                multi_source_decls,
                 reassigned_decls,
+                original_named_ids,
+                stable_pruned_function_aliases,
             );
         }
         ReactiveTerminal::Try { block, handler, .. } => {
@@ -1215,15 +1141,17 @@ fn visit_and_prune_terminal(
                 block,
                 reactive_ids,
                 reactive_decls,
-                multi_source_decls,
                 reassigned_decls,
+                original_named_ids,
+                stable_pruned_function_aliases,
             );
             visit_and_prune_block(
                 handler,
                 reactive_ids,
                 reactive_decls,
-                multi_source_decls,
                 reassigned_decls,
+                original_named_ids,
+                stable_pruned_function_aliases,
             );
         }
         ReactiveTerminal::Break { .. }
@@ -1315,117 +1243,302 @@ fn collect_reassigned_decl_ids(func: &ReactiveFunction) -> HashSet<DeclarationId
     out
 }
 
-/// Collect declaration IDs that are assigned from multiple distinct source
-/// declarations via `Reassign` stores. These values can vary with control-flow
-/// even when each source is individually "stable" (e.g. selecting one of two
-/// setState functions), so scopes depending on them must not be pruned.
-fn collect_multi_source_reassignment_decl_ids(func: &ReactiveFunction) -> HashSet<DeclarationId> {
-    let mut decl_to_sources: HashMap<DeclarationId, HashSet<DeclarationId>> = HashMap::new();
-    collect_multi_source_reassignment_decl_ids_block(&func.body, &mut decl_to_sources);
-    decl_to_sources
-        .into_iter()
-        .filter_map(|(decl, sources)| (sources.len() > 1).then_some(decl))
-        .collect()
-}
-
-fn collect_multi_source_reassignment_decl_ids_block(
-    block: &ReactiveBlock,
-    decl_to_sources: &mut HashMap<DeclarationId, HashSet<DeclarationId>>,
-) {
-    for stmt in block {
-        match stmt {
-            ReactiveStatement::Instruction(instr) => {
-                if let InstructionValue::StoreLocal { lvalue, value, .. }
-                | InstructionValue::StoreContext { lvalue, value, .. } = &instr.value
-                    && lvalue.kind == InstructionKind::Reassign
-                {
-                    decl_to_sources
-                        .entry(lvalue.place.identifier.declaration_id)
-                        .or_default()
-                        .insert(value.identifier.declaration_id);
+fn collect_original_named_identifier_ids(
+    func: &ReactiveFunction,
+) -> HashMap<DeclarationId, IdentifierId> {
+    fn visit_block(block: &ReactiveBlock, out: &mut HashMap<DeclarationId, IdentifierId>) {
+        for stmt in block {
+            match stmt {
+                ReactiveStatement::Instruction(instr) => {
+                    if let Some(lvalue) = &instr.lvalue
+                        && lvalue.identifier.name.is_some()
+                    {
+                        out.entry(lvalue.identifier.declaration_id)
+                            .or_insert(lvalue.identifier.id);
+                    }
+                    match &instr.value {
+                        InstructionValue::StoreLocal { lvalue, .. }
+                        | InstructionValue::StoreContext { lvalue, .. }
+                        | InstructionValue::DeclareLocal { lvalue, .. }
+                        | InstructionValue::DeclareContext { lvalue, .. } => {
+                            if lvalue.place.identifier.name.is_some() {
+                                out.entry(lvalue.place.identifier.declaration_id)
+                                    .or_insert(lvalue.place.identifier.id);
+                            }
+                        }
+                        InstructionValue::Destructure { lvalue, .. } => {
+                            for_each_pattern_place(&lvalue.pattern, &mut |place| {
+                                if place.identifier.name.is_some() {
+                                    out.entry(place.identifier.declaration_id)
+                                        .or_insert(place.identifier.id);
+                                }
+                            });
+                        }
+                        _ => {}
+                    }
                 }
-            }
-            ReactiveStatement::Terminal(term_stmt) => {
-                collect_multi_source_reassignment_decl_ids_terminal(
-                    &term_stmt.terminal,
-                    decl_to_sources,
-                );
-            }
-            ReactiveStatement::Scope(scope_block) => {
-                collect_multi_source_reassignment_decl_ids_block(
-                    &scope_block.instructions,
-                    decl_to_sources,
-                );
-            }
-            ReactiveStatement::PrunedScope(scope_block) => {
-                collect_multi_source_reassignment_decl_ids_block(
-                    &scope_block.instructions,
-                    decl_to_sources,
-                );
-            }
-        }
-    }
-}
-
-fn collect_multi_source_reassignment_decl_ids_terminal(
-    terminal: &ReactiveTerminal,
-    decl_to_sources: &mut HashMap<DeclarationId, HashSet<DeclarationId>>,
-) {
-    match terminal {
-        ReactiveTerminal::If {
-            consequent,
-            alternate,
-            ..
-        } => {
-            collect_multi_source_reassignment_decl_ids_block(consequent, decl_to_sources);
-            if let Some(alt) = alternate {
-                collect_multi_source_reassignment_decl_ids_block(alt, decl_to_sources);
-            }
-        }
-        ReactiveTerminal::Switch { cases, .. } => {
-            for case in cases {
-                if let Some(block) = &case.block {
-                    collect_multi_source_reassignment_decl_ids_block(block, decl_to_sources);
+                ReactiveStatement::Terminal(term_stmt) => {
+                    visit_terminal(&term_stmt.terminal, out);
+                }
+                ReactiveStatement::Scope(scope_block) => {
+                    visit_block(&scope_block.instructions, out)
+                }
+                ReactiveStatement::PrunedScope(scope_block) => {
+                    visit_block(&scope_block.instructions, out)
                 }
             }
         }
-        ReactiveTerminal::DoWhile { loop_block, .. }
-        | ReactiveTerminal::While { loop_block, .. } => {
-            collect_multi_source_reassignment_decl_ids_block(loop_block, decl_to_sources);
-        }
-        ReactiveTerminal::For {
-            init,
-            update,
-            loop_block,
-            ..
-        } => {
-            collect_multi_source_reassignment_decl_ids_block(init, decl_to_sources);
-            if let Some(upd) = update {
-                collect_multi_source_reassignment_decl_ids_block(upd, decl_to_sources);
-            }
-            collect_multi_source_reassignment_decl_ids_block(loop_block, decl_to_sources);
-        }
-        ReactiveTerminal::ForOf {
-            init, loop_block, ..
-        }
-        | ReactiveTerminal::ForIn {
-            init, loop_block, ..
-        } => {
-            collect_multi_source_reassignment_decl_ids_block(init, decl_to_sources);
-            collect_multi_source_reassignment_decl_ids_block(loop_block, decl_to_sources);
-        }
-        ReactiveTerminal::Label { block, .. } => {
-            collect_multi_source_reassignment_decl_ids_block(block, decl_to_sources);
-        }
-        ReactiveTerminal::Try { block, handler, .. } => {
-            collect_multi_source_reassignment_decl_ids_block(block, decl_to_sources);
-            collect_multi_source_reassignment_decl_ids_block(handler, decl_to_sources);
-        }
-        ReactiveTerminal::Break { .. }
-        | ReactiveTerminal::Continue { .. }
-        | ReactiveTerminal::Return { .. }
-        | ReactiveTerminal::Throw { .. } => {}
     }
+
+    fn visit_terminal(terminal: &ReactiveTerminal, out: &mut HashMap<DeclarationId, IdentifierId>) {
+        match terminal {
+            ReactiveTerminal::If {
+                consequent,
+                alternate,
+                ..
+            } => {
+                visit_block(consequent, out);
+                if let Some(alt) = alternate {
+                    visit_block(alt, out);
+                }
+            }
+            ReactiveTerminal::Switch { cases, .. } => {
+                for case in cases {
+                    if let Some(block) = &case.block {
+                        visit_block(block, out);
+                    }
+                }
+            }
+            ReactiveTerminal::DoWhile { loop_block, .. }
+            | ReactiveTerminal::While { loop_block, .. } => visit_block(loop_block, out),
+            ReactiveTerminal::For {
+                init,
+                update,
+                loop_block,
+                ..
+            } => {
+                visit_block(init, out);
+                if let Some(update) = update {
+                    visit_block(update, out);
+                }
+                visit_block(loop_block, out);
+            }
+            ReactiveTerminal::ForOf {
+                init, loop_block, ..
+            }
+            | ReactiveTerminal::ForIn {
+                init, loop_block, ..
+            } => {
+                visit_block(init, out);
+                visit_block(loop_block, out);
+            }
+            ReactiveTerminal::Label { block, .. } => visit_block(block, out),
+            ReactiveTerminal::Try { block, handler, .. } => {
+                visit_block(block, out);
+                visit_block(handler, out);
+            }
+            ReactiveTerminal::Break { .. }
+            | ReactiveTerminal::Continue { .. }
+            | ReactiveTerminal::Return { .. }
+            | ReactiveTerminal::Throw { .. } => {}
+        }
+    }
+
+    let mut out = HashMap::new();
+    for param in &func.params {
+        match param {
+            Argument::Place(place) | Argument::Spread(place) => {
+                if place.identifier.name.is_some() {
+                    out.entry(place.identifier.declaration_id)
+                        .or_insert(place.identifier.id);
+                }
+            }
+        }
+    }
+    visit_block(&func.body, &mut out);
+    out
+}
+
+fn collect_stable_pruned_function_aliases(func: &ReactiveFunction) -> HashSet<DeclarationId> {
+    fn collect_named_in_pruned_scopes(block: &ReactiveBlock, out: &mut HashSet<DeclarationId>) {
+        for stmt in block {
+            match stmt {
+                ReactiveStatement::PrunedScope(scope_block) => {
+                    out.extend(collect_named_function_decl_ids(&scope_block.instructions));
+                    collect_named_in_pruned_scopes(&scope_block.instructions, out);
+                }
+                ReactiveStatement::Scope(scope_block) => {
+                    collect_named_in_pruned_scopes(&scope_block.instructions, out);
+                }
+                ReactiveStatement::Terminal(term_stmt) => {
+                    collect_named_in_pruned_scopes_from_terminal(&term_stmt.terminal, out);
+                }
+                ReactiveStatement::Instruction(_) => {}
+            }
+        }
+    }
+
+    fn collect_named_in_pruned_scopes_from_terminal(
+        terminal: &ReactiveTerminal,
+        out: &mut HashSet<DeclarationId>,
+    ) {
+        match terminal {
+            ReactiveTerminal::If {
+                consequent,
+                alternate,
+                ..
+            } => {
+                collect_named_in_pruned_scopes(consequent, out);
+                if let Some(alt) = alternate {
+                    collect_named_in_pruned_scopes(alt, out);
+                }
+            }
+            ReactiveTerminal::Switch { cases, .. } => {
+                for case in cases {
+                    if let Some(block) = &case.block {
+                        collect_named_in_pruned_scopes(block, out);
+                    }
+                }
+            }
+            ReactiveTerminal::DoWhile { loop_block, .. }
+            | ReactiveTerminal::While { loop_block, .. } => {
+                collect_named_in_pruned_scopes(loop_block, out);
+            }
+            ReactiveTerminal::For {
+                init,
+                update,
+                loop_block,
+                ..
+            } => {
+                collect_named_in_pruned_scopes(init, out);
+                if let Some(update) = update {
+                    collect_named_in_pruned_scopes(update, out);
+                }
+                collect_named_in_pruned_scopes(loop_block, out);
+            }
+            ReactiveTerminal::ForOf {
+                init, loop_block, ..
+            }
+            | ReactiveTerminal::ForIn {
+                init, loop_block, ..
+            } => {
+                collect_named_in_pruned_scopes(init, out);
+                collect_named_in_pruned_scopes(loop_block, out);
+            }
+            ReactiveTerminal::Label { block, .. } => {
+                collect_named_in_pruned_scopes(block, out);
+            }
+            ReactiveTerminal::Try { block, handler, .. } => {
+                collect_named_in_pruned_scopes(block, out);
+                collect_named_in_pruned_scopes(handler, out);
+            }
+            ReactiveTerminal::Break { .. }
+            | ReactiveTerminal::Continue { .. }
+            | ReactiveTerminal::Return { .. }
+            | ReactiveTerminal::Throw { .. } => {}
+        }
+    }
+
+    fn propagate_aliases(block: &ReactiveBlock, stable: &mut HashSet<DeclarationId>) {
+        for stmt in block {
+            match stmt {
+                ReactiveStatement::Instruction(instr) => match &instr.value {
+                    InstructionValue::StoreLocal { lvalue, value, .. }
+                    | InstructionValue::StoreContext { lvalue, value, .. } => {
+                        if stable.contains(&value.identifier.declaration_id) {
+                            stable.insert(lvalue.place.identifier.declaration_id);
+                        }
+                    }
+                    InstructionValue::LoadLocal { place, .. }
+                    | InstructionValue::LoadContext { place, .. } => {
+                        if let Some(lvalue) = &instr.lvalue
+                            && stable.contains(&place.identifier.declaration_id)
+                        {
+                            stable.insert(lvalue.identifier.declaration_id);
+                        }
+                    }
+                    _ => {}
+                },
+                ReactiveStatement::Terminal(term_stmt) => {
+                    propagate_aliases_from_terminal(&term_stmt.terminal, stable);
+                }
+                ReactiveStatement::Scope(scope_block) => {
+                    propagate_aliases(&scope_block.instructions, stable)
+                }
+                ReactiveStatement::PrunedScope(scope_block) => {
+                    propagate_aliases(&scope_block.instructions, stable)
+                }
+            }
+        }
+    }
+
+    fn propagate_aliases_from_terminal(
+        terminal: &ReactiveTerminal,
+        stable: &mut HashSet<DeclarationId>,
+    ) {
+        match terminal {
+            ReactiveTerminal::If {
+                consequent,
+                alternate,
+                ..
+            } => {
+                propagate_aliases(consequent, stable);
+                if let Some(alt) = alternate {
+                    propagate_aliases(alt, stable);
+                }
+            }
+            ReactiveTerminal::Switch { cases, .. } => {
+                for case in cases {
+                    if let Some(block) = &case.block {
+                        propagate_aliases(block, stable);
+                    }
+                }
+            }
+            ReactiveTerminal::DoWhile { loop_block, .. }
+            | ReactiveTerminal::While { loop_block, .. } => propagate_aliases(loop_block, stable),
+            ReactiveTerminal::For {
+                init,
+                update,
+                loop_block,
+                ..
+            } => {
+                propagate_aliases(init, stable);
+                if let Some(update) = update {
+                    propagate_aliases(update, stable);
+                }
+                propagate_aliases(loop_block, stable);
+            }
+            ReactiveTerminal::ForOf {
+                init, loop_block, ..
+            }
+            | ReactiveTerminal::ForIn {
+                init, loop_block, ..
+            } => {
+                propagate_aliases(init, stable);
+                propagate_aliases(loop_block, stable);
+            }
+            ReactiveTerminal::Label { block, .. } => propagate_aliases(block, stable),
+            ReactiveTerminal::Try { block, handler, .. } => {
+                propagate_aliases(block, stable);
+                propagate_aliases(handler, stable);
+            }
+            ReactiveTerminal::Break { .. }
+            | ReactiveTerminal::Continue { .. }
+            | ReactiveTerminal::Return { .. }
+            | ReactiveTerminal::Throw { .. } => {}
+        }
+    }
+
+    let mut stable = HashSet::new();
+    collect_named_in_pruned_scopes(&func.body, &mut stable);
+    loop {
+        let before = stable.len();
+        propagate_aliases(&func.body, &mut stable);
+        if stable.len() == before {
+            break;
+        }
+    }
+    stable
 }
 
 /// Propagate reactivity through data-flow instructions.

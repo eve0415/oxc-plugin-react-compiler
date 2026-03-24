@@ -1225,7 +1225,13 @@ fn lower_binding_pat<'a>(
                         nested_followups.push((temp.clone(), &prop.value));
                         temp
                     } else {
-                        build_pattern_place(builder, &prop.value)
+                        declare_pattern_place(
+                            builder,
+                            ident,
+                            kind,
+                            semantic,
+                            allow_lexical_shadowing,
+                        )
                     }
                 } else {
                     let temp = builder.make_temporary_place(span_to_loc(prop.span));
@@ -1245,7 +1251,13 @@ fn lower_binding_pat<'a>(
                         nested_followups.push((temp.clone(), &rest.argument));
                         temp
                     } else {
-                        build_pattern_place(builder, &rest.argument)
+                        declare_pattern_place(
+                            builder,
+                            ident,
+                            kind,
+                            semantic,
+                            allow_lexical_shadowing,
+                        )
                     }
                 } else {
                     let temp = builder.make_temporary_place(span_to_loc(rest.span));
@@ -1320,7 +1332,13 @@ fn lower_binding_pat<'a>(
                                 });
                                 items.push(hir::ArrayElement::Place(temp_place));
                             } else {
-                                let place = build_pattern_place(builder, elem);
+                                let place = declare_pattern_place(
+                                    builder,
+                                    ident,
+                                    kind,
+                                    semantic,
+                                    allow_lexical_shadowing,
+                                );
                                 items.push(hir::ArrayElement::Place(place));
                             }
                         }
@@ -1348,7 +1366,13 @@ fn lower_binding_pat<'a>(
                         });
                         items.push(hir::ArrayElement::Spread(temp_place));
                     } else {
-                        let place = build_pattern_place(builder, &rest.argument);
+                        let place = declare_pattern_place(
+                            builder,
+                            ident,
+                            kind,
+                            semantic,
+                            allow_lexical_shadowing,
+                        );
                         items.push(hir::ArrayElement::Spread(place));
                     }
                 } else {
@@ -1446,6 +1470,29 @@ fn lower_reorderable_expr_to_temp<'a>(
         ));
     }
     lower_expr_to_temp(builder, expr, semantic, source)
+}
+
+fn declare_pattern_place<'a>(
+    builder: &mut HIRBuilder,
+    ident: &js::BindingIdentifier<'a>,
+    kind: hir::InstructionKind,
+    semantic: &Semantic<'a>,
+    allow_lexical_shadowing: bool,
+) -> hir::Place {
+    let loc = span_to_loc(ident.span);
+    let identifier = builder.declare_binding(&ident.name, loc.clone(), allow_lexical_shadowing);
+    if kind == hir::InstructionKind::Const {
+        builder.mark_binding_const(&ident.name);
+    }
+    if binding_identifier_is_context_like(ident, semantic) {
+        builder.mark_context_identifier(&identifier);
+    }
+    hir::Place {
+        identifier,
+        effect: hir::Effect::Unknown,
+        reactive: false,
+        loc,
+    }
 }
 
 /// Emit a block-based default value computation for destructuring patterns.
@@ -1761,36 +1808,6 @@ fn reorderable_expr_type_name(expr: &js::Expression<'_>) -> &'static str {
     }
 }
 
-/// Build a Place for a binding pattern element (used in Destructure instructions).
-fn build_pattern_place<'a>(
-    builder: &mut HIRBuilder,
-    pattern: &js::BindingPattern<'a>,
-) -> hir::Place {
-    match pattern {
-        js::BindingPattern::BindingIdentifier(ident) => {
-            let loc = span_to_loc(ident.span);
-            let identifier = builder.resolve_binding(&ident.name, loc.clone());
-            hir::Place {
-                identifier,
-                effect: hir::Effect::Unknown,
-                reactive: false,
-                loc,
-            }
-        }
-        _ => {
-            // For complex nested patterns, create a temporary place
-            let loc = hir::SourceLocation::Generated;
-            let identifier = builder.make_temporary(loc.clone());
-            hir::Place {
-                identifier,
-                effect: hir::Effect::Unknown,
-                reactive: false,
-                loc,
-            }
-        }
-    }
-}
-
 fn binding_identifier_is_context_like(
     ident: &js::BindingIdentifier<'_>,
     semantic: &Semantic<'_>,
@@ -2053,6 +2070,10 @@ fn lower_for<'a>(
     let continuation = builder.reserve(hir::BlockKind::Block);
     let cont_id = continuation.id;
 
+    // Enter a binding scope for the for-loop's variable declarations so that
+    // sibling loops with the same variable name get unique DeclarationIds.
+    builder.enter_binding_scope();
+
     // Init block: variable declarations or expression
     let init_block = builder.enter(hir::BlockKind::Loop, |builder, _| {
         if let Some(init) = &for_stmt.init {
@@ -2151,6 +2172,9 @@ fn lower_for<'a>(
             continuation,
         );
     }
+
+    // Exit the binding scope opened at the start of lower_for.
+    builder.exit_binding_scope();
 }
 
 fn lower_for_of<'a>(
@@ -2177,6 +2201,11 @@ fn lower_for_of_inner<'a>(
         return;
     }
 
+    // Enter a binding scope for the for-of's variable declarations so that
+    // each for-of loop gets unique DeclarationIds for its bindings, even if
+    // sibling loops use the same variable name (e.g., `for (const [i, ..] of a)`,
+    // `for (const [i, ..] of b)`).
+    builder.enter_binding_scope();
     let (for_of_decl_kind, for_of_allow_lexical_shadowing) =
         if let js::ForStatementLeft::VariableDeclaration(decl) = &for_of.left {
             let allow_lexical_shadowing = !matches!(decl.kind, js::VariableDeclarationKind::Var);
@@ -2312,6 +2341,10 @@ fn lower_for_of_inner<'a>(
         next_item
     };
 
+    // Exit the binding scope opened at the start of lower_for_of_inner,
+    // restoring previous bindings so sibling for-of loops get unique DeclarationIds.
+    builder.exit_binding_scope();
+
     builder.terminate_with_continuation(
         hir::Terminal::Branch {
             test: test_place,
@@ -2377,6 +2410,7 @@ fn lower_for_in<'a>(
         builder.push_todo("Support non-trivial for..in inits".to_string());
     }
 
+    builder.enter_binding_scope();
     let (for_in_decl_kind, for_in_allow_lexical_shadowing) =
         if let js::ForStatementLeft::VariableDeclaration(decl) = &for_in.left {
             let allow_lexical_shadowing = !matches!(decl.kind, js::VariableDeclarationKind::Var);
@@ -2498,6 +2532,7 @@ fn lower_for_in<'a>(
         },
         continuation,
     );
+    builder.exit_binding_scope();
 }
 
 fn for_in_has_non_trivial_context_iterator(

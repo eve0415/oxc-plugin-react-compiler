@@ -1,6 +1,6 @@
 # React Compiler Conformance -- 100.0% parity rate
 
-**1768** parity_success, **0** parity_failure, **0** skipped
+**1779** parity_success, **0** parity_failure, **0** skipped
 
 ## Failed
 
@@ -250,22 +250,33 @@
 - `controlled-input`
 - `createElement-freeze`
 - `custom-opt-out-directive`
+- `custom/array-find-ternary-between-hooks`
+- `custom/array-from-sentinel-as-scope-dep`
 - `custom/catch-forloop-same-name-variable`
 - `custom/closure-multiple-calls-scope-leak`
+- `custom/conditional-expr-extra-scope`
+- `custom/for-loop-variable-name-dedup`
 - `custom/import-meta-env-property`
 - `custom/labeled-block-scoping`
 - `custom/local-function-call-extra-memo`
 - `custom/method-chain-sub-expression-memo`
 - `custom/nested-math-method-calls`
+- `custom/object-literal-property-lookup-memo`
 - `custom/object-literal-sentinel-memoize`
+- `custom/setstate-arg-extra-scope-in-if`
 - `custom/switch-break-inner-function`
 - `custom/usememo-filter-nested-map-jsx`
 - `custom/usememo-filter-result-map`
 - `custom/usememo-filter-sort-bail`
+- `custom/usememo-nested-map-conditional-style`
 - `custom/usememo-preserve-retry`
 - `custom/usememo-property-dep`
 - `custom/usememo-slice-result-map`
 - `custom/useref-initial-value-sentinel`
+- `custom/website-helper-function-order`
+- `custom/website-index-out-of-bounds-cache-layout`
+- `custom/website-skills-grouping`
+- `custom/website-terminal-switch`
 - `dce-loop`
 - `dce-unused-const`
 - `dce-unused-postfix-update`

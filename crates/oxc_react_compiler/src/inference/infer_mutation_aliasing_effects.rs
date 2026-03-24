@@ -70,6 +70,7 @@ struct ValueId(u32);
 struct StoredFunctionSignature {
     signature: AliasingSignature,
     context: Vec<Place>,
+    mutates_inputs: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -1543,6 +1544,7 @@ fn apply_effect(
             into,
             signature,
             context,
+            mutates_inputs,
         } => {
             // Ensure hoisted context declarations exist before they are frozen via
             // transitive function freezing (e.g. useEffect(() => setState(...))).
@@ -1597,6 +1599,7 @@ fn apply_effect(
                     StoredFunctionSignature {
                         signature: sig.clone(),
                         context: context.clone(),
+                        mutates_inputs: *mutates_inputs,
                     },
                 );
             }
@@ -2328,6 +2331,7 @@ fn collect_effect_identifier_ids(effect: &AliasingEffect, into: &mut HashSet<Ide
             into: to,
             signature,
             context,
+            ..
         } => {
             into.insert(to.identifier.id);
             for capture in captures {
@@ -3002,11 +3006,14 @@ fn compute_signature_for_instruction(
                 .cloned()
                 .collect();
             let signature = build_signature_from_function_expression(lowered_func);
+            let mutates_inputs =
+                lowered_function_params_mutate_inputs(lowered_func, signature.as_ref());
             effects.push(AliasingEffect::CreateFunction {
                 into: lvalue.clone(),
                 captures,
                 signature,
                 context: lowered_func.func.context.clone(),
+                mutates_inputs,
             });
         }
 
@@ -3019,11 +3026,14 @@ fn compute_signature_for_instruction(
                 .cloned()
                 .collect();
             let signature = build_signature_from_function_expression(lowered_func);
+            let mutates_inputs =
+                lowered_function_params_mutate_inputs(lowered_func, signature.as_ref());
             effects.push(AliasingEffect::CreateFunction {
                 into: lvalue.clone(),
                 captures,
                 signature,
                 context: lowered_func.func.context.clone(),
+                mutates_inputs,
             });
         }
 
@@ -3873,19 +3883,50 @@ fn is_known_mutable_effect(effect: Effect) -> bool {
     }
 }
 
-fn aliasing_signature_mutates_inputs(signature: &AliasingSignature) -> bool {
-    let mut input_ids: HashSet<IdentifierId> = signature.params.iter().copied().collect();
-    if let Some(rest) = signature.rest {
-        input_ids.insert(rest);
+fn lowered_function_params_mutate_inputs(
+    lowered_func: &LoweredFunction,
+    signature: Option<&AliasingSignature>,
+) -> bool {
+    let params: Vec<&Place> = lowered_func
+        .func
+        .params
+        .iter()
+        .map(|param| match param {
+            Argument::Place(place) | Argument::Spread(place) => place,
+        })
+        .collect();
+
+    if params.iter().any(|place| {
+        place.identifier.mutable_range.end.0 > place.identifier.mutable_range.start.0 + 1
+    }) {
+        return true;
     }
-    signature.effects.iter().any(|effect| match effect {
-        AliasingEffect::Mutate { value, .. }
-        | AliasingEffect::MutateConditionally { value }
-        | AliasingEffect::MutateTransitive { value }
-        | AliasingEffect::MutateTransitiveConditionally { value } => {
-            input_ids.contains(&value.identifier.id)
-        }
-        _ => false,
+
+    let Some(signature) = signature else {
+        return false;
+    };
+
+    let params_by_id: HashMap<IdentifierId, &Place> = params
+        .iter()
+        .copied()
+        .map(|place| (place.identifier.id, place))
+        .collect();
+
+    signature.effects.iter().any(|effect| {
+        let mutated = match effect {
+            AliasingEffect::Mutate { value, .. }
+            | AliasingEffect::MutateConditionally { value }
+            | AliasingEffect::MutateTransitive { value }
+            | AliasingEffect::MutateTransitiveConditionally { value } => Some(value),
+            _ => None,
+        };
+        let Some(value) = mutated else {
+            return false;
+        };
+        let Some(param) = params_by_id.get(&value.identifier.id) else {
+            return false;
+        };
+        !matches!(param.identifier.type_, Type::Primitive)
     })
 }
 
@@ -3934,7 +3975,7 @@ fn are_arguments_immutable_and_non_mutating(
             _ => return false,
         }
         if let Some(local_sig) = state.local_function_signature(place.identifier.id)
-            && aliasing_signature_mutates_inputs(&local_sig.signature)
+            && local_sig.mutates_inputs
         {
             // Frozen local lambdas still count as mutating args if they may mutate
             // their own inputs.

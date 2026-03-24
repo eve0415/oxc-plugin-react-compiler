@@ -1,25 +1,10 @@
 import { describe, expect, it } from 'vite-plus/test'
 import { build } from 'vite-plus'
-import { readFile, readdir, rm } from 'node:fs/promises'
+import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { compareAST, parseJS } from './utils/ast-compare.js'
+import { collectJsFiles, compareExactJsOutputs, logExactMismatchSummary } from './utils/build-compare.js'
 
 const fixtureDir = join(import.meta.dirname, 'fixtures/shadcn-app')
-
-const collectJsFiles = async (dir: string): Promise<string[]> => {
-  const results: string[] = []
-  try {
-    const entries = await readdir(dir, { withFileTypes: true, recursive: true })
-    for (const entry of entries) {
-      if (entry.isFile() && entry.name.endsWith('.js')) {
-        results.push(join(entry.parentPath ?? dir, entry.name))
-      }
-    }
-  } catch {
-    // dir may not exist
-  }
-  return results
-}
 
 const buildOnce = async (configFile: string): Promise<number> => {
   const start = performance.now()
@@ -91,7 +76,7 @@ describe('build comparison: shadcn-style app (~25 components)', { timeout: 120_0
     expect(babelTimes.length).toBe(runs)
   })
 
-  it('AST output comparison', async () => {
+  it('exact JS output comparison', async () => {
     const oxcDir = join(fixtureDir, 'dist-oxc')
     const babelDir = join(fixtureDir, 'dist-babel')
 
@@ -100,64 +85,8 @@ describe('build comparison: shadcn-style app (~25 components)', { timeout: 120_0
 
     expect(oxcFiles.length).toBeGreaterThan(0)
     expect(babelFiles.length).toBe(oxcFiles.length)
-
-    let totalDiffs = 0
-
-    for (let i = 0; i < oxcFiles.length; i++) {
-      const oxcPath = oxcFiles[i]
-      const babelPath = babelFiles[i]
-      if (!oxcPath || !babelPath) continue
-
-      const name = `chunk-${String(i)}.js`
-      const [oxcSource, babelSource] = await Promise.all([
-        readFile(oxcPath, 'utf8'),
-        readFile(babelPath, 'utf8'),
-      ])
-
-      const oxcAST = parseJS(oxcSource)
-      const babelAST = parseJS(babelSource)
-      const result = compareAST(oxcAST, babelAST)
-
-      totalDiffs += result.differences.length
-
-      if (result.match) {
-        console.log(`  ${name}: AST structures match`)
-      } else {
-        // Categorize differences
-        const valueMismatches = result.differences.filter((d) => d.kind === 'value_mismatch')
-        const structural = result.differences.filter((d) => d.kind !== 'value_mismatch')
-
-        console.log(`\n  ${name}: ${String(result.differences.length)} differences (${String(valueMismatches.length)} value, ${String(structural.length)} structural)`)
-
-        if (structural.length > 0) {
-          console.log('    Structural differences:')
-          for (const diff of structural.slice(0, 5)) {
-            console.log(`      ${diff.path}: ${diff.kind}`)
-          }
-        }
-
-        if (valueMismatches.length > 0) {
-          console.log(`    Value mismatches (first 5 of ${String(valueMismatches.length)}):`)
-          for (const diff of valueMismatches.slice(0, 5)) {
-            console.log(`      ${diff.path}: ${diff.expected ?? '?'} → ${diff.actual ?? '?'}`)
-          }
-        }
-      }
-    }
-
-    console.log(`\n  Total AST differences: ${String(totalDiffs)}`)
-
-    // Output sizes
-    for (let i = 0; i < oxcFiles.length; i++) {
-      const oxcPath = oxcFiles[i]
-      const babelPath = babelFiles[i]
-      if (!oxcPath || !babelPath) continue
-
-      const [oxcStat, babelStat] = await Promise.all([
-        readFile(oxcPath).then((b) => b.length),
-        readFile(babelPath).then((b) => b.length),
-      ])
-      console.log(`  chunk-${String(i)}.js — OXC: ${String(oxcStat)} bytes, Babel: ${String(babelStat)} bytes`)
-    }
+    const mismatches = await compareExactJsOutputs(babelDir, oxcDir)
+    logExactMismatchSummary('shadcn-app', mismatches)
+    expect(mismatches).toHaveLength(0)
   })
 })

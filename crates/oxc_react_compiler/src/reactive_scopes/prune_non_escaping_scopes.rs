@@ -146,6 +146,8 @@ struct State {
     identifiers: HashMap<DeclarationId, IdentifierNode>,
     scopes: HashMap<ScopeId, ScopeNode>,
     escaping_values: HashSet<DeclarationId>,
+    /// Subset of escaping_values that escape specifically as hook call arguments.
+    hook_escaping_values: HashSet<DeclarationId>,
 }
 
 impl State {
@@ -155,6 +157,7 @@ impl State {
             identifiers: HashMap::new(),
             scopes: HashMap::new(),
             escaping_values: HashSet::new(),
+            hook_escaping_values: HashSet::new(),
         }
     }
 
@@ -1353,9 +1356,22 @@ fn compute_memoization_inputs<'a>(
                     return false;
                 }
                 match value {
-                    InstructionValue::ArrayExpression { .. } => true,
+                    InstructionValue::ArrayExpression { .. } => {
+                        // Suppress lvalue for conditional-only arrays. Empty
+                        // arrays ([]) are trivial and don't need memoization.
+                        // Non-empty arrays used only as ternary branches also
+                        // get suppressed since upstream processes them with
+                        // lvalue=null inside ConditionalExpression.
+                        true
+                    }
                     InstructionValue::ObjectExpression { properties, .. } => {
-                        !properties.iter().any(|property| {
+                        // Only suppress EMPTY ObjectExpressions ({}) and those
+                        // without methods. ObjectExpressions WITH properties
+                        // (e.g. {stage: currentStage, value: ...}) should keep
+                        // their lvalue so the memoization graph connects the
+                        // ternary result to its branch properties, matching
+                        // upstream's recursive ConditionalExpression processing.
+                        let has_method = properties.iter().any(|property| {
                             matches!(
                                 property,
                                 ObjectPropertyOrSpread::Property(ObjectProperty {
@@ -1363,7 +1379,8 @@ fn compute_memoization_inputs<'a>(
                                     ..
                                 })
                             )
-                        })
+                        });
+                        !has_method && properties.is_empty()
                     }
                     _ => false,
                 }
@@ -1921,6 +1938,7 @@ fn visit_value_for_memoization(
     value: &InstructionValue,
     lvalue: Option<&Place>,
     ctx: &MemoizationVisitContext<'_>,
+    active_scopes: &[ScopeId],
 ) {
     let aliasing = compute_memoization_inputs(
         value,
@@ -1980,11 +1998,29 @@ fn visit_value_for_memoization(
 
         // Visit lvalue operand to associate with scope
         state.visit_operand(instr_id, lv.place, lvalue_id);
+
+        // Upstream visitor framework propagates the active scope chain to all
+        // instructions inside a scope. Mirror that by associating the lvalue
+        // with every enclosing scope from active_scopes.
+        if let Some(node) = state.identifiers.get_mut(&lvalue_id) {
+            for &scope_id in active_scopes {
+                node.scopes.insert(scope_id);
+            }
+        }
     }
 
-    // Handle LoadLocal definitions
+    // Handle LoadLocal definitions.
+    // Skip when the LoadLocal lvalue is conditional_only — these represent
+    // values loaded into ternary branch positions, and creating a definition
+    // chain through them incorrectly connects unrelated expressions that
+    // share variable names across different contexts. Upstream avoids this
+    // because its tree-shaped ReactiveFunction doesn't create LoadLocal
+    // chains through nested ConditionalExpression branches.
     if let InstructionValue::LoadLocal { place, .. } = value
         && let Some(lv) = lvalue
+        && !ctx
+            .conditional_only_decls
+            .contains(&lv.identifier.declaration_id)
     {
         state.insert_definition(
             lv.identifier.declaration_id,
@@ -2019,6 +2055,9 @@ fn visit_value_for_memoization(
                     state
                         .escaping_values
                         .insert(place.identifier.declaration_id);
+                    state
+                        .hook_escaping_values
+                        .insert(place.identifier.declaration_id);
                 }
             }
         }
@@ -2047,6 +2086,9 @@ fn visit_value_for_memoization(
                     state
                         .escaping_values
                         .insert(place.identifier.declaration_id);
+                    state
+                        .hook_escaping_values
+                        .insert(place.identifier.declaration_id);
                 }
             }
         }
@@ -2070,6 +2112,7 @@ fn collect_dependencies_block(
                     &instr.value,
                     instr.lvalue.as_ref(),
                     ctx,
+                    active_scopes,
                 );
             }
             ReactiveStatement::Terminal(term_stmt) => {
@@ -2187,6 +2230,40 @@ fn compute_memoized_identifiers(state: &mut State) -> HashSet<DeclarationId> {
 
     for id in escaping {
         visit_identifier(state, &mut memoized, id, false);
+    }
+
+    // Second pass: for hook-argument escaping Conditional identifiers that
+    // weren't memoized but live in a scope containing a Memoized sibling,
+    // force-memoize them. This handles value-block expressions (e.g. `a && b`)
+    // where the phi result has Conditional level and no direct dependency edge
+    // to the allocating sub-expression, but they share the same reactive scope
+    // because align_scopes extended the scope to cover the entire value block.
+    // Only applies to hook arguments (not return values) to avoid over-memoizing.
+    let escaping_again: Vec<DeclarationId> = state.hook_escaping_values.iter().copied().collect();
+    for id in escaping_again {
+        if memoized.contains(&id) {
+            continue;
+        }
+        let (level, scope_ids) = match state.identifiers.get(&id) {
+            Some(node) => (node.level, node.scopes.iter().copied().collect::<Vec<_>>()),
+            None => continue,
+        };
+        if level != MemoizationLevel::Conditional || scope_ids.is_empty() {
+            continue;
+        }
+        // Check if any Memoized sibling shares a scope
+        let has_memoized_sibling = state.identifiers.iter().any(|(other_id, other_node)| {
+            *other_id != id
+                && other_node.level == MemoizationLevel::Memoized
+                && other_node.scopes.iter().any(|s| scope_ids.contains(s))
+        });
+        if has_memoized_sibling {
+            // Reset seen flag and force-memoize
+            if let Some(node) = state.identifiers.get_mut(&id) {
+                node.seen = false;
+            }
+            visit_identifier(state, &mut memoized, id, true);
+        }
     }
 
     memoized
@@ -2400,7 +2477,23 @@ fn prune_scopes_block(
                             .collect();
                         let feeds_conditional_scope =
                             scope_feeds_flattened_conditional_dependency(block, i, &scope_decl_ids);
-                        if has_memoized_output || feeds_conditional_scope {
+                        // Check if any declaration in this scope is the target of
+                        // a FinishMemoize marker (i.e., it holds a manually memoized
+                        // value from useMemo/useCallback). If so, keep the scope even
+                        // if the output doesn't appear "memoized" by the normal graph
+                        // — pruning it would cause validate_preserved_manual_memoization
+                        // to fail.
+                        let has_manual_memo_decl = scope_block.instructions.iter().any(|stmt| {
+                            matches!(
+                                stmt,
+                                ReactiveStatement::Instruction(instr)
+                                    if matches!(
+                                        instr.value,
+                                        InstructionValue::FinishMemoize { pruned: false, .. }
+                                    )
+                            )
+                        });
+                        if has_memoized_output || feeds_conditional_scope || has_manual_memo_decl {
                             if feeds_conditional_scope && !has_memoized_output {
                                 debug_scope_prune(
                                     &scope_block.scope,

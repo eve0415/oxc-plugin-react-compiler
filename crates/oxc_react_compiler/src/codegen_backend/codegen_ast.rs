@@ -50,6 +50,9 @@ pub const EARLY_RETURN_SENTINEL: &str = "react.early_return_sentinel";
 const FLOW_CAST_MARKER_HELPER: &str = "__REACT_COMPILER_FLOW_CAST__";
 /// Internal blank line marker used by module_emitter for formatting.
 pub(crate) const INTERNAL_BLANK_LINE_MARKER: &str = "__REACT_COMPILER_INTERNAL_BLANK_LINE_MARKER__";
+/// Internal memoization comment marker prefix. Module_emitter replaces
+/// `"__REACT_COMPILER_MEMO_COMMENT__:<text>";` with `// <text>`.
+pub(crate) const MEMO_COMMENT_MARKER: &str = "__REACT_COMPILER_MEMO_COMMENT__";
 /// Hook guard push operation constant.
 pub(crate) const HOOK_GUARD_PUSH: u8 = 0;
 /// Hook guard pop operation constant.
@@ -78,6 +81,9 @@ pub struct CodegenOptions {
     pub param_name_overrides: HashMap<DeclarationId, String>,
     /// Wrap anonymous function expressions with generated name hints.
     pub enable_name_anonymous_functions: bool,
+    /// Emit memoization annotation comments (e.g., `// check if ...`,
+    /// `// Inputs changed, recompute`) matching upstream's `enableMemoizationComments`.
+    pub enable_memoization_comments: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +315,18 @@ impl<'a> CodegenContext<'a> {
     fn ident_expr(&self, name: &str) -> ast::Expression<'a> {
         self.builder
             .expression_identifier(SPAN, self.builder.ident(name))
+    }
+
+    /// Create an expression statement that acts as a comment marker.
+    /// The module emitter replaces `"__REACT_COMPILER_MEMO_COMMENT__:<text>";`
+    /// with `// <text>` in the final output.
+    fn memo_comment_stmt(&self, text: &str) -> ast::Statement<'a> {
+        let marker = format!("{MEMO_COMMENT_MARKER}:{text}");
+        self.builder.statement_expression(
+            SPAN,
+            self.builder
+                .expression_string_literal(SPAN, self.builder.atom(&marker), None),
+        )
     }
 
     /// Push a new name scope frame (entering a block like if/for/while).
@@ -667,18 +685,38 @@ fn codegen_block_no_reset<'a>(
                     // Upstream's codegenBlock always returns a BlockStatement,
                     // then unwraps single-element blocks for the label body.
                     // Our codegen_terminal returns Vec<Statement>, so we wrap
-                    // in a block to create proper lexical scope, matching upstream.
-                    let body = if terminal_stmts.len() == 1
-                        && matches!(
-                            &terminal_stmts[0],
-                            ast::Statement::BlockStatement(b) if b.body.len() == 1
-                        ) {
-                        // Unwrap single-element BlockStatement (upstream line 565-568)
-                        match terminal_stmts.remove(0) {
-                            ast::Statement::BlockStatement(block) => {
-                                block.unbox().body.into_iter().next().unwrap()
+                    // Matching upstream (CodegenReactiveFunction.ts line 565-568):
+                    // If codegenTerminal returned a BlockStatement with a single
+                    // child, unwrap it. Otherwise use the statement directly.
+                    // Only wrap in a new block when there are multiple statements.
+                    let body = if terminal_stmts.len() == 1 {
+                        let stmt = terminal_stmts.remove(0);
+                        match &stmt {
+                            // Upstream line 565-568: unwrap single-element
+                            // BlockStatement, UNLESS the inner stmt is a
+                            // TryStatement (upstream keeps the block for
+                            // catch binding lexical scope).
+                            ast::Statement::BlockStatement(b) if b.body.len() == 1 => {
+                                let keep_block =
+                                    matches!(b.body.first(), Some(ast::Statement::TryStatement(_)));
+                                if keep_block {
+                                    stmt
+                                } else {
+                                    match stmt {
+                                        ast::Statement::BlockStatement(block) => {
+                                            block.unbox().body.into_iter().next().unwrap()
+                                        }
+                                        _ => unreachable!(),
+                                    }
+                                }
                             }
-                            _ => unreachable!(),
+                            // TryStatement: wrap in block to preserve
+                            // catch binding lexical scope
+                            ast::Statement::TryStatement(_) => {
+                                cx.builder.statement_block(SPAN, cx.builder.vec1(stmt))
+                            }
+                            // Other single statement: use directly
+                            _ => stmt,
                         }
                     } else {
                         cx.builder.statement_block(
@@ -2814,7 +2852,9 @@ fn codegen_terminal<'a>(
             let (Some(left), Some(right)) = (left, right) else {
                 return vec![];
             };
+            cx.push_name_scope();
             let body_stmts = codegen_block(cx, loop_block);
+            cx.pop_name_scope();
             let body = cx
                 .builder
                 .statement_block(SPAN, cx.builder.vec_from_iter(body_stmts));
@@ -2834,7 +2874,9 @@ fn codegen_terminal<'a>(
             let (Some(left), Some(right)) = (left, right) else {
                 return vec![];
             };
+            cx.push_name_scope();
             let body_stmts = codegen_block(cx, loop_block);
+            cx.pop_name_scope();
             let body = cx
                 .builder
                 .statement_block(SPAN, cx.builder.vec_from_iter(body_stmts));
@@ -3366,6 +3408,30 @@ fn codegen_reactive_scope<'a>(
         })
         .collect();
 
+    // Collect memoization comment data (when enableMemoizationComments is active).
+    let memo_comments: Option<(Vec<String>, Vec<String>)> =
+        if cx.options.enable_memoization_comments {
+            let change_comments: Vec<String> = sorted_deps
+                .iter()
+                .map(|dep| print_dependency_comment(cx, dep))
+                .collect();
+            let mut output_comments: Vec<String> = decl_names
+                .iter()
+                .map(|(name, _, decl_id)| {
+                    shifted_names
+                        .get(decl_id)
+                        .cloned()
+                        .unwrap_or_else(|| name.clone())
+                })
+                .collect();
+            for (name, _) in &reassign_slots {
+                output_comments.push(name.clone());
+            }
+            Some((change_comments, output_comments))
+        } else {
+            None
+        };
+
     // Build the scope body.
     let mut body_stmts = codegen_block(cx, instructions);
 
@@ -3620,6 +3686,22 @@ fn codegen_reactive_scope<'a>(
             );
         }
 
+        // Inject memoization comments (zero-dep path).
+        if let Some((_, ref output_comments)) = memo_comments {
+            let output_list = print_delimited_comment_list(output_comments, "and");
+            stmts.push(cx.memo_comment_stmt(&format!("\"useMemo\" for {output_list}:")));
+            stmts.push(cx.memo_comment_stmt("cache value with no dependencies"));
+        }
+        if memo_comments.is_some() && !if_body.is_empty() {
+            if_body.insert(0, cx.memo_comment_stmt("Inputs changed, recompute"));
+        }
+        if memo_comments.is_some() && !else_body.is_empty() {
+            else_body.insert(
+                0,
+                cx.memo_comment_stmt("Inputs did not change, use cached value"),
+            );
+        }
+
         let else_stmt = if else_body.is_empty() {
             None
         } else {
@@ -3758,6 +3840,28 @@ fn codegen_reactive_scope<'a>(
             );
         }
 
+        // Inject memoization comments (change-variable path).
+        if let Some((ref change_comments, ref output_comments)) = memo_comments {
+            let output_list = print_delimited_comment_list(output_comments, "and");
+            if !change_comments.is_empty() {
+                let change_list = print_delimited_comment_list(change_comments, "or");
+                stmts.push(cx.memo_comment_stmt(&format!("\"useMemo\" for {output_list}:")));
+                stmts.push(cx.memo_comment_stmt(&format!("check if {change_list} changed")));
+            } else {
+                stmts.push(cx.memo_comment_stmt(&format!("\"useMemo\" for {output_list}:")));
+                stmts.push(cx.memo_comment_stmt("cache value with no dependencies"));
+            }
+        }
+        if memo_comments.is_some() && !if_body.is_empty() {
+            if_body.insert(0, cx.memo_comment_stmt("Inputs changed, recompute"));
+        }
+        if memo_comments.is_some() && !else_body.is_empty() {
+            else_body.insert(
+                0,
+                cx.memo_comment_stmt("Inputs did not change, use cached value"),
+            );
+        }
+
         let else_stmt = if else_body.is_empty() {
             None
         } else {
@@ -3875,6 +3979,28 @@ fn codegen_reactive_scope<'a>(
             );
         }
 
+        // Inject memoization comments (multi-dep path).
+        if let Some((ref change_comments, ref output_comments)) = memo_comments {
+            let output_list = print_delimited_comment_list(output_comments, "and");
+            if !change_comments.is_empty() {
+                let change_list = print_delimited_comment_list(change_comments, "or");
+                stmts.push(cx.memo_comment_stmt(&format!("\"useMemo\" for {output_list}:")));
+                stmts.push(cx.memo_comment_stmt(&format!("check if {change_list} changed")));
+            } else {
+                stmts.push(cx.memo_comment_stmt(&format!("\"useMemo\" for {output_list}:")));
+                stmts.push(cx.memo_comment_stmt("cache value with no dependencies"));
+            }
+        }
+        if memo_comments.is_some() && !if_body.is_empty() {
+            if_body.insert(0, cx.memo_comment_stmt("Inputs changed, recompute"));
+        }
+        if memo_comments.is_some() && !else_body.is_empty() {
+            else_body.insert(
+                0,
+                cx.memo_comment_stmt("Inputs did not change, use cached value"),
+            );
+        }
+
         let else_stmt = if else_body.is_empty() {
             None
         } else {
@@ -3931,6 +4057,50 @@ fn codegen_reactive_scope<'a>(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Format a dependency as a human-readable name for memoization comments.
+/// Mirrors upstream `printDependencyComment`.
+fn print_dependency_comment(cx: &CodegenContext, dep: &ReactiveScopeDependency) -> String {
+    let base = cx
+        .decl_names
+        .get(&dep.identifier.declaration_id)
+        .map(|s| s.to_string())
+        .or_else(|| dep.identifier.name.as_ref().map(|n| n.value().to_string()))
+        .unwrap_or_default();
+    let mut name = base;
+    for entry in &dep.path {
+        name.push('.');
+        name.push_str(&entry.property);
+    }
+    name
+}
+
+/// Join a list of names with a delimiter word (e.g., "and" or "or").
+/// Mirrors upstream `printDelimitedCommentList`.
+fn print_delimited_comment_list(items: &[String], final_completion: &str) -> String {
+    match items.len() {
+        0 => String::new(),
+        1 => items[0].clone(),
+        2 => format!("{} {} {}", items[0], final_completion, items[1]),
+        _ => {
+            let mut output = String::new();
+            for (i, item) in items.iter().enumerate() {
+                if i < items.len() - 2 {
+                    output.push_str(item);
+                    output.push_str(", ");
+                } else if i == items.len() - 2 {
+                    output.push_str(item);
+                    output.push_str(", ");
+                    output.push_str(final_completion);
+                    output.push(' ');
+                } else {
+                    output.push_str(item);
+                }
+            }
+            output
+        }
+    }
+}
 
 fn codegen_dependency_expr<'a>(
     cx: &mut CodegenContext<'a>,
@@ -4802,6 +4972,7 @@ fn lower_function_expression_via_reactive<'a>(
         unique_identifiers: HashSet::new(),
         param_name_overrides: HashMap::new(),
         enable_name_anonymous_functions: cx.options.enable_name_anonymous_functions,
+        enable_memoization_comments: cx.options.enable_memoization_comments,
     };
 
     let result = codegen_reactive_function(cx.builder, cx.allocator, &reactive_fn, options);

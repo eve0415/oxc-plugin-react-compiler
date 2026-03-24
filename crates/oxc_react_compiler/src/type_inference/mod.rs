@@ -2234,7 +2234,7 @@ fn is_primitive_returning_global(name: &str) -> bool {
 }
 
 /// Check if a method name is known to return a primitive.
-fn is_primitive_returning_method(name: &str) -> bool {
+pub(crate) fn is_primitive_returning_method(name: &str) -> bool {
     matches!(
         name,
         // String methods returning primitives

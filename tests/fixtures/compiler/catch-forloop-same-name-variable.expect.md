@@ -1,18 +1,89 @@
+## Input
+
+```javascript
+// @compilationMode:"infer"
+// Same-name variable in catch clause and for-loop body: `catch (error)` +
+// `const error = result.errors[fieldName]` in a sibling arrow function.
+// OXC bails: "Expected all references to a variable to be consistently
+// local or context references"
+import { useEffect, useState } from 'react';
+function ContactForm() {
+  const [state, setState] = useState('idle');
+  const [globalError, setGlobalError] = useState(null);
+
+  const form = useForm({
+    onSubmit: async ({ value, formApi }) => {
+      setGlobalError(undefined);
+      try {
+        const result = await handleForm({ data: value });
+        if (result.success) {
+          setState('success');
+          formApi.reset();
+        } else handleError(result);
+      } catch (error) {
+        console.error('Failed:', error);
+        setGlobalError('Unexpected');
+        setState('error');
+      }
+    },
+  });
+
+  useEffect(() => {
+    if (state !== 'success') return;
+    const timer = setTimeout(() => setState('idle'), 5000);
+    return () => clearTimeout(timer);
+  }, [state]);
+
+  const handleError = (result) => {
+    setState('error');
+    for (const fieldName of ['name', 'email']) {
+      const error = result.errors[fieldName];
+      if (error) form.setFieldMeta(fieldName, prev => ({ ...prev, errors: [error] }));
+    }
+  };
+
+  return (
+    <form>
+      {globalError && <p>{globalError}</p>}
+      <button type="submit" disabled={form.state.isSubmitting}>Submit</button>
+    </form>
+  );
+}
+function useForm(opts) { return { state: { isSubmitting: false }, setFieldMeta: () => {} }; }
+async function handleForm(data) { return { success: true }; }
+
+export const FIXTURE_ENTRYPOINT = {
+  fn: ContactForm,
+  params: [{}],
+};
+```
+
 ## Code
 
 ```javascript
 import { c as _c } from "react/compiler-runtime";
-import { useEffect, useState } from "react";
+// @compilationMode:"infer"
+// Same-name variable in catch clause and for-loop body: `catch (error)` +
+// `const error = result.errors[fieldName]` in a sibling arrow function.
+// OXC bails: "Expected all references to a variable to be consistently
+// local or context references"
+import { useEffect, useState } from 'react';
 function ContactForm() {
   const $ = _c(10);
   const [state, setState] = useState("idle");
   const [globalError, setGlobalError] = useState(null);
   const form = useForm({
-    onSubmit: async (t0) => {
-      const { value, formApi } = t0;
+    onSubmit: async t0 => {
+      const {
+        value,
+        formApi
+      } = t0;
       setGlobalError(undefined);
+      ;
       try {
-        const result = await handleForm({ data: value });
+        const result = await handleForm({
+          data: value
+        });
         if (result.success) {
           setState("success");
           formApi.reset();
@@ -25,7 +96,7 @@ function ContactForm() {
         setGlobalError("Unexpected");
         setState("error");
       }
-    },
+    }
   });
   let t2;
   let t3;
@@ -46,12 +117,15 @@ function ContactForm() {
     t3 = $[2];
   }
   useEffect(t2, t3);
-  const handleError = (result_0) => {
+  const handleError = result_0 => {
     setState("error");
     for (const fieldName of ["name", "email"]) {
       const error_0 = result_0.errors[fieldName];
       if (error_0) {
-        form.setFieldMeta(fieldName, (prev) => ({ ...prev, errors: [error_0] }));
+        form.setFieldMeta(fieldName, prev => ({
+          ...prev,
+          errors: [error_0]
+        }));
       }
     }
   };
@@ -83,10 +157,20 @@ function ContactForm() {
   return t6;
 }
 function useForm(opts) {
-  return { state: { isSubmitting: false }, setFieldMeta: () => {} };
+  return {
+    state: {
+      isSubmitting: false
+    },
+    setFieldMeta: () => {}
+  };
 }
 async function handleForm(data) {
-  return { success: true };
+  return {
+    success: true
+  };
 }
-export const FIXTURE_ENTRYPOINT = { fn: ContactForm, params: [{}] };
+export const FIXTURE_ENTRYPOINT = {
+  fn: ContactForm,
+  params: [{}]
+};
 ```

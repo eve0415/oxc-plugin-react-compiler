@@ -8,13 +8,90 @@ use oxc_span::{GetSpan, SPAN, SourceType};
 use super::postprocess::codegen_program;
 use crate::codegen_backend::CompiledFunction;
 
-pub(super) fn move_leading_comment_to_import_trailing(code: &str) -> String {
+enum LeadingFileCommentStyle {
+    None,
+    IsolatedLine,
+    CommentGroupWithBlankGap,
+    Block,
+    ImportTrailingLine,
+}
+
+fn first_import_trailing_line_comment(source: &str) -> Option<String> {
+    let first_line = source.lines().find(|line| !line.trim().is_empty())?;
+    let trimmed = first_line.trim_start();
+    if !trimmed.starts_with("import ") {
+        return None;
+    }
+    let comment_idx = trimmed.find("//")?;
+    Some(trimmed[comment_idx..].to_string())
+}
+
+fn leading_file_comment_style(source: &str) -> LeadingFileCommentStyle {
+    let trimmed = source.trim_start();
+    let mut rest = trimmed;
+    if rest.starts_with("/**") || rest.starts_with("/*") {
+        return LeadingFileCommentStyle::Block;
+    }
+    if !rest.starts_with("//") {
+        if let Some(first_line) = trimmed.lines().find(|line| !line.trim().is_empty()) {
+            let first_trimmed = first_line.trim_start();
+            if first_trimmed.starts_with("import ") && first_trimmed.contains("//") {
+                return LeadingFileCommentStyle::ImportTrailingLine;
+            }
+        }
+        return LeadingFileCommentStyle::None;
+    }
+
+    let mut comment_lines = 0usize;
+    let mut saw_blank_after_comments = false;
+    let mut next_noncomment_is_import = false;
+    while !rest.is_empty() {
+        let Some(line_end) = rest.find('\n') else {
+            let trimmed = rest.trim_start();
+            if trimmed.starts_with("//") {
+                comment_lines += 1;
+            } else if !trimmed.is_empty() {
+                next_noncomment_is_import = trimmed.starts_with("import ");
+            }
+            break;
+        };
+        let line = &rest[..line_end];
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            if comment_lines > 0 {
+                saw_blank_after_comments = true;
+            }
+            rest = &rest[line_end + 1..];
+            continue;
+        }
+        if trimmed.starts_with("//") {
+            comment_lines += 1;
+            rest = &rest[line_end + 1..];
+            continue;
+        }
+        next_noncomment_is_import = trimmed.starts_with("import ");
+        break;
+    }
+
+    if comment_lines == 1 {
+        LeadingFileCommentStyle::IsolatedLine
+    } else if comment_lines > 1 && (saw_blank_after_comments || !next_noncomment_is_import) {
+        LeadingFileCommentStyle::CommentGroupWithBlankGap
+    } else {
+        LeadingFileCommentStyle::None
+    }
+}
+
+pub(super) fn move_leading_comment_to_import_trailing(code: &str, source: &str) -> String {
+    let leading_style = leading_file_comment_style(source);
+    let import_trailing_comment = first_import_trailing_line_comment(source);
+    if matches!(leading_style, LeadingFileCommentStyle::None) {
+        return code.to_string();
+    }
     if !code.starts_with("import ") {
         return code.to_string();
     }
 
-    // Find the last import line in the consecutive import block that ends with a
-    // compiler-runtime import. Only apply comment-move when we inserted a runtime import.
     let lines: Vec<&str> = code.lines().collect();
     let mut last_runtime_import_idx: Option<usize> = None;
     let mut last_import_idx = 0;
@@ -29,70 +106,77 @@ pub(super) fn move_leading_comment_to_import_trailing(code: &str) -> String {
         }
     }
 
-    // Only apply if we have a runtime import, and the comment follows the last import
-    // in the block. Use last_import_idx (not last_runtime_import_idx) since Babel
-    // attaches the comment to whichever import ends up last in the output.
     if last_runtime_import_idx.is_none() {
         return code.to_string();
     }
 
-    // Check if the line after the last import is a comment (line or block).
-    // Skip blank lines between the last import and the comment.
     let mut comment_idx = last_import_idx + 1;
     while comment_idx < lines.len() && lines[comment_idx].trim().is_empty() {
         comment_idx += 1;
     }
-    if comment_idx >= lines.len() {
-        return code.to_string();
-    }
-    let is_line_comment = lines[comment_idx].starts_with("//");
-    let is_block_comment =
-        lines[comment_idx].starts_with("/**") || lines[comment_idx].starts_with("/*");
-    if !is_line_comment && !is_block_comment {
-        return code.to_string();
-    }
+    let synthesized_import_comment = import_trailing_comment.as_deref().filter(|comment| {
+        lines[last_import_idx].starts_with("import ") && !lines[last_import_idx].contains(*comment)
+    });
 
-    // For block comments, find the end line (the line containing */)
-    let comment_end_idx = if is_block_comment {
-        let mut end = comment_idx;
-        for (j, line) in lines.iter().enumerate().skip(comment_idx) {
-            if line.contains("*/") {
-                end = j;
-                break;
+    let merge_comment = |comment_text: &str, skip_comment_idx: Option<usize>| {
+        let mut result = String::with_capacity(code.len() + comment_text.len() + 1);
+        for (i, line) in lines.iter().enumerate() {
+            if i == last_import_idx {
+                result.push_str(line);
+                result.push(' ');
+                result.push_str(comment_text);
+                result.push('\n');
+            } else if Some(i) == skip_comment_idx
+                || (skip_comment_idx.is_some()
+                    && i > last_import_idx
+                    && i < skip_comment_idx.unwrap()
+                    && lines[i].trim().is_empty())
+            {
+                continue;
+            } else {
+                result.push_str(line);
+                result.push('\n');
             }
         }
-        end
-    } else {
-        comment_idx
+        if !code.ends_with('\n') && result.ends_with('\n') {
+            result.pop();
+        }
+        result
     };
 
-    // Build the result: everything up to last import, then import + first comment line,
-    // then remaining comment lines, then rest. Skip blank lines between the import
-    // and the comment that were jumped over during detection.
-    let mut result = String::with_capacity(code.len());
-    for (i, line) in lines.iter().enumerate() {
-        if i == last_import_idx {
-            result.push_str(line);
-            result.push(' ');
-            result.push_str(lines[comment_idx]);
-            result.push('\n');
-        } else if i == comment_idx {
-            // Skip — already merged onto import line
-            continue;
-        } else if i > last_import_idx && i < comment_idx && lines[i].trim().is_empty() {
-            // Skip blank lines between last import and the merged comment
-            continue;
-        } else {
-            result.push_str(line);
-            result.push('\n');
+    if comment_idx >= lines.len() {
+        return synthesized_import_comment
+            .map(|comment| merge_comment(comment, None))
+            .unwrap_or_else(|| code.to_string());
+    }
+
+    let comment_line = lines[comment_idx].trim_start();
+    match leading_style {
+        LeadingFileCommentStyle::IsolatedLine
+        | LeadingFileCommentStyle::CommentGroupWithBlankGap
+            if !comment_line.starts_with("//") =>
+        {
+            return code.to_string();
         }
+        LeadingFileCommentStyle::ImportTrailingLine => {
+            if comment_line.starts_with("//") {
+                return merge_comment(lines[comment_idx], Some(comment_idx));
+            }
+            return synthesized_import_comment
+                .map(|comment| merge_comment(comment, None))
+                .unwrap_or_else(|| code.to_string());
+        }
+        LeadingFileCommentStyle::Block
+            if !(comment_line.starts_with("/**") || comment_line.starts_with("/*")) =>
+        {
+            return code.to_string();
+        }
+        LeadingFileCommentStyle::None => return code.to_string(),
+        LeadingFileCommentStyle::IsolatedLine
+        | LeadingFileCommentStyle::CommentGroupWithBlankGap
+        | LeadingFileCommentStyle::Block => {}
     }
-    // Remove trailing newline if original didn't have one
-    if !code.ends_with('\n') && result.ends_with('\n') {
-        result.pop();
-    }
-    let _ = comment_end_idx; // block comment lines after first are kept in place
-    result
+    merge_comment(lines[comment_idx], Some(comment_idx))
 }
 
 /// Insert blank lines in the output based on blank line positions in the original source.
@@ -308,6 +392,89 @@ pub(super) fn apply_internal_blank_line_markers(code: &str) -> String {
     }
 
     result
+}
+
+/// Replace memoization comment marker statements with actual `//` comments.
+///
+/// Codegen emits `"__REACT_COMPILER_MEMO_COMMENT__:<text>";` as expression statements.
+/// This function replaces each such line with `// <text>`, preserving indentation.
+///
+/// Special case: `"useMemo"` comments are appended as trailing inline comments
+/// on the preceding `let` declaration line, matching Babel's output format:
+///   `let x; // "useMemo" for t0 and x:`
+pub(super) fn apply_memo_comment_markers(code: &str) -> String {
+    let marker_prefix = crate::codegen_backend::codegen_ast::MEMO_COMMENT_MARKER;
+    // Quick check — skip work if no markers present.
+    if !code.contains(marker_prefix) {
+        return code.to_string();
+    }
+
+    let lines: Vec<&str> = code.lines().collect();
+    let mut result = String::with_capacity(code.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        let comment_text = extract_memo_comment_text(trimmed, marker_prefix);
+        if let Some(text) = comment_text {
+            // "useMemo" comments: merge as trailing comment on previous `let` line.
+            if text.starts_with("\"useMemo\"") || text.starts_with("\\\"useMemo\\\"") {
+                // Unescape the text (OXC string codegen may escape inner quotes).
+                let clean_text = text.replace("\\\"", "\"");
+                // Try to merge with the preceding line if it's a `let` declaration.
+                if result.ends_with('\n') {
+                    // Find the last line in result.
+                    let last_newline = result[..result.len() - 1].rfind('\n');
+                    let last_line_start = last_newline.map_or(0, |p| p + 1);
+                    let last_line = &result[last_line_start..result.len() - 1];
+                    let last_trimmed = last_line.trim();
+                    if last_trimmed.starts_with("let ") && last_trimmed.ends_with(';') {
+                        // Remove the trailing newline, append comment, re-add newline.
+                        result.pop(); // remove '\n'
+                        result.push_str(" // ");
+                        result.push_str(&clean_text);
+                        result.push('\n');
+                        i += 1;
+                        continue;
+                    }
+                }
+                // Fallback: emit as standalone comment line.
+                let indent = &lines[i][..lines[i].len() - lines[i].trim_start().len()];
+                result.push_str(indent);
+                result.push_str("// ");
+                result.push_str(&clean_text);
+                result.push('\n');
+            } else {
+                // Regular comments: emit as standalone comment line.
+                let clean_text = text.replace("\\\"", "\"");
+                let indent = &lines[i][..lines[i].len() - lines[i].trim_start().len()];
+                result.push_str(indent);
+                result.push_str("// ");
+                result.push_str(&clean_text);
+                result.push('\n');
+            }
+        } else {
+            result.push_str(lines[i]);
+            result.push('\n');
+        }
+        i += 1;
+    }
+    // Remove trailing newline if original didn't have one.
+    if !code.ends_with('\n') && result.ends_with('\n') {
+        result.pop();
+    }
+    result
+}
+
+/// Extract comment text from a memo comment marker line.
+/// Returns `Some(text)` if the line matches `"__REACT_COMPILER_MEMO_COMMENT__:<text>";`.
+fn extract_memo_comment_text<'a>(trimmed: &'a str, marker_prefix: &str) -> Option<&'a str> {
+    // Pattern: `"marker:text";` or `"marker:text"` (without semicolon)
+    let inner = trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix("\";").or_else(|| s.strip_suffix('"')))?;
+    inner
+        .strip_prefix(marker_prefix)
+        .and_then(|s| s.strip_prefix(':'))
 }
 
 /// Apply blank line markers to the generated code.

@@ -256,15 +256,19 @@ pub(super) fn fix_oxc_array_trailing_space(code: &str) -> String {
     result
 }
 
-/// Fix OXC formatting of gating ternary expressions with function-expression branches.
+/// Fix OXC formatting of gating ternary expressions with function-expression or
+/// arrow-function branches.
 ///
-/// Babel formats `test() ? function F(...) { ... } : function F(...) { ... }` with
-/// line breaks before `?` and `:`, while OXC puts everything on one line:
+/// Babel formats `test() ? function F(...) { ... } : function F(...) { ... }` and
+/// `test() ? (p) => { ... } : (p) => expr` with line breaks before `?` and `:`,
+/// while OXC puts everything on one line:
 ///   `test() ? function F(` → `test()\n? function F(`
 ///   `} : function F(`     → `}\n: function F(`
+///   `test() ? (p) =>{`    → `test()\n? (p) =>{`
+///   `} : (p) =>expr`      → `}\n: (p) =>expr`
 pub(super) fn fix_gating_ternary_line_breaks(code: &str) -> String {
-    // Only apply when the code contains a gating ternary with function branches.
-    if !code.contains("() ? function ") {
+    // Only apply when the code contains a gating ternary.
+    if !code.contains("() ? function ") && !code.contains("() ? (") && !code.contains("() ? ") {
         return code.to_string();
     }
     let mut result = String::with_capacity(code.len() + 16);
@@ -283,9 +287,119 @@ pub(super) fn fix_gating_ternary_line_breaks(code: &str) -> String {
             result.push_str(&line[..pos + 1]); // up to and including "}"
             result.push('\n');
             result.push_str(&line[pos + 2..]); // skip the space, keep ": function ..."
+        }
+        // Arrow function patterns for gating ternaries
+        else if is_gating_arrow_ternary_start(line) {
+            // Pattern: `... test() ? (params) =>{` or `... test() ? params =>{`
+            let pos = line.find("() ? ").unwrap();
+            result.push_str(&line[..pos + 2]); // up to and including "()"
+            result.push('\n');
+            result.push_str(&line[pos + 3..]); // skip the space, keep "? ..."
+        } else if is_gating_arrow_alternate(line) {
+            // Pattern: `} : (params) =>...` or `} : params =>...`
+            let pos = line.find("} : ").unwrap();
+            result.push_str(&line[..pos + 1]); // up to and including "}"
+            result.push('\n');
+            result.push_str(&line[pos + 2..]); // skip the space, keep ": ..."
         } else {
             result.push_str(line);
         }
+    }
+    result
+}
+
+/// Check if a line contains a gating ternary start with arrow function consequent.
+/// Matches: `= isForgetEnabled_Fixtures() ? (params) =>{` or `() ? params =>{`
+fn is_gating_arrow_ternary_start(line: &str) -> bool {
+    let Some(pos) = line.find("() ? ") else {
+        return false;
+    };
+    // Already handled by function pattern
+    if line[pos..].starts_with("() ? function ") {
+        return false;
+    }
+    // The rest after `() ? ` should start an arrow: `(params) =>{` or `ident =>{`
+    let after = &line[pos + 5..]; // skip "() ? "
+    contains_arrow_start(after)
+}
+
+/// Check if a line contains a gating ternary alternate with arrow function.
+/// Matches: `} : (params) =>...` or `} : params =>...`
+fn is_gating_arrow_alternate(line: &str) -> bool {
+    let Some(pos) = line.find("} : ") else {
+        return false;
+    };
+    // Already handled by function pattern
+    if line[pos..].starts_with("} : function ") {
+        return false;
+    }
+    let after = &line[pos + 4..]; // skip "} : "
+    contains_arrow_start(after)
+}
+
+/// Check if text starts with an arrow function pattern:
+/// `(params) =>` or `ident =>` (with arrow appearing somewhere in the text).
+fn contains_arrow_start(text: &str) -> bool {
+    text.contains("=>")
+}
+
+/// Collapse multiline JSX in gating ternary fallback arrow expressions.
+///
+/// OXC reprints the fallback (unoptimized) arrow's JSX body across multiple lines,
+/// while Babel keeps it on a single line. After `fix_gating_ternary_line_breaks`,
+/// the pattern is:
+///   `: params =><Tag>\n<Child></Child>\n</Tag>;`
+/// This collapses it to:
+///   `: params =><Tag><Child></Child></Tag>;`
+pub(super) fn fix_gating_ternary_fallback_arrow_jsx(code: &str) -> String {
+    // Quick bail: only applies when we have a ternary alternate with arrow + JSX
+    if !code.contains(": ") || !code.contains("=>") {
+        return code.to_string();
+    }
+    let lines: Vec<&str> = code.split('\n').collect();
+    let mut result = String::with_capacity(code.len());
+    let mut i = 0;
+    while i < lines.len() {
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        let trimmed = lines[i].trim();
+        // Detect `: params =><Tag>` where next lines are JSX children/close
+        if trimmed.starts_with(": ") && trimmed.contains("=><") && !trimmed.ends_with(';') {
+            // Check if this starts a multiline JSX block in a ternary alternate
+            // Collect lines until we find the closing tag + semicolon
+            let mut collected = String::from(trimmed);
+            let start_i = i;
+            i += 1;
+            let mut found_end = false;
+            while i < lines.len() {
+                let next_trimmed = lines[i].trim();
+                if next_trimmed.is_empty() {
+                    break;
+                }
+                collected.push_str(next_trimmed);
+                if next_trimmed.ends_with(';') || next_trimmed.ends_with(");") {
+                    found_end = true;
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            if found_end {
+                result.push_str(&collected);
+            } else {
+                // Didn't find a proper end, emit lines as-is
+                result.push_str(lines[start_i]);
+                // Re-emit the lines we consumed
+                for line in &lines[(start_i + 1)..i] {
+                    result.push('\n');
+                    result.push_str(line);
+                }
+            }
+            continue;
+        }
+        result.push_str(lines[i]);
+        i += 1;
     }
     result
 }

@@ -1,3 +1,4 @@
+// @enablePreserveExistingMemoizationGuarantees
 import { useMemo } from "react";
 
 function Component({ items, sortKey }) {
