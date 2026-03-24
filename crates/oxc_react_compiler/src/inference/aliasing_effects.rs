@@ -83,6 +83,9 @@ pub enum AliasingEffect {
         signature: Option<AliasingSignature>,
         /// Context places referenced by the lowered function's aliasing effects.
         context: Vec<Place>,
+        /// Whether any lowered parameter has a non-trivial mutable range.
+        /// This matches upstream's non-mutating callback check for frozen lambdas.
+        mutates_inputs: bool,
     },
 
     /// Error: mutation of an immutable (frozen) value.
