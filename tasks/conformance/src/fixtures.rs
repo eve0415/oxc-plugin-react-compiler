@@ -6,7 +6,8 @@ use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
 
 use crate::normalizations::{
-    canonicalize_strict_text, normalize_post_babel_export_spacing, prepare_code_for_compare,
+    canonicalize_strict_text, legacy_compare_normalizations_enabled,
+    normalize_post_babel_export_spacing, prepare_code_for_compare,
     preprocess_flow_syntax_for_expectation,
 };
 use crate::pragmas::parse_pragma;
@@ -729,7 +730,11 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
             false,
             &source,
         );
-        let postprocessed = normalize_post_babel_export_spacing(&postprocessed);
+        let postprocessed = if legacy_compare_normalizations_enabled() {
+            normalize_post_babel_export_spacing(&postprocessed)
+        } else {
+            canonicalize_strict_text(&postprocessed)
+        };
         // Try OXC reprint comparison: parse+reprint both sides to canonicalize formatting.
         // If both reprint successfully AND match, use that (fast path, zero normalizations).
         // Otherwise fall back to the old normalization pipeline.

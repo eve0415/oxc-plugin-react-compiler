@@ -369,7 +369,7 @@ fn try_emit_module(
     code = apply_memo_comment_markers(&code);
     code = apply_blank_line_markers(state.source_type, &code, &blank_line_before);
     code = transfer_blank_lines_from_original_source(&code, args.source, compiled);
-    code = move_leading_comment_to_import_trailing(&code);
+    code = move_leading_comment_to_import_trailing(&code, args.source);
     if code.contains(FLOW_CAST_MARKER_HELPER) {
         code = restore_flow_cast_marker_calls(&code);
     }

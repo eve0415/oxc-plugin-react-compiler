@@ -8,13 +8,68 @@ use oxc_span::{GetSpan, SPAN, SourceType};
 use super::postprocess::codegen_program;
 use crate::codegen_backend::CompiledFunction;
 
-pub(super) fn move_leading_comment_to_import_trailing(code: &str) -> String {
+enum LeadingFileCommentStyle {
+    None,
+    IsolatedLine,
+    Block,
+    ImportTrailingLine,
+}
+
+fn leading_file_comment_style(source: &str) -> LeadingFileCommentStyle {
+    let trimmed = source.trim_start();
+    let mut rest = trimmed;
+    if rest.starts_with("/**") || rest.starts_with("/*") {
+        return LeadingFileCommentStyle::Block;
+    }
+    if !rest.starts_with("//") {
+        if let Some(first_line) = trimmed.lines().find(|line| !line.trim().is_empty()) {
+            let first_trimmed = first_line.trim_start();
+            if first_trimmed.starts_with("import ") && first_trimmed.contains("//") {
+                return LeadingFileCommentStyle::ImportTrailingLine;
+            }
+        }
+        return LeadingFileCommentStyle::None;
+    }
+
+    let mut comment_lines = 0usize;
+    while !rest.is_empty() {
+        let Some(line_end) = rest.find('\n') else {
+            let trimmed = rest.trim_start();
+            if trimmed.starts_with("//") {
+                comment_lines += 1;
+            }
+            break;
+        };
+        let line = &rest[..line_end];
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            rest = &rest[line_end + 1..];
+            continue;
+        }
+        if trimmed.starts_with("//") {
+            comment_lines += 1;
+            rest = &rest[line_end + 1..];
+            continue;
+        }
+        break;
+    }
+
+    if comment_lines == 1 {
+        LeadingFileCommentStyle::IsolatedLine
+    } else {
+        LeadingFileCommentStyle::None
+    }
+}
+
+pub(super) fn move_leading_comment_to_import_trailing(code: &str, source: &str) -> String {
+    let leading_style = leading_file_comment_style(source);
+    if matches!(leading_style, LeadingFileCommentStyle::None) {
+        return code.to_string();
+    }
     if !code.starts_with("import ") {
         return code.to_string();
     }
 
-    // Find the last import line in the consecutive import block that ends with a
-    // compiler-runtime import. Only apply comment-move when we inserted a runtime import.
     let lines: Vec<&str> = code.lines().collect();
     let mut last_runtime_import_idx: Option<usize> = None;
     let mut last_import_idx = 0;
@@ -29,15 +84,10 @@ pub(super) fn move_leading_comment_to_import_trailing(code: &str) -> String {
         }
     }
 
-    // Only apply if we have a runtime import, and the comment follows the last import
-    // in the block. Use last_import_idx (not last_runtime_import_idx) since Babel
-    // attaches the comment to whichever import ends up last in the output.
     if last_runtime_import_idx.is_none() {
         return code.to_string();
     }
 
-    // Check if the line after the last import is a comment (line or block).
-    // Skip blank lines between the last import and the comment.
     let mut comment_idx = last_import_idx + 1;
     while comment_idx < lines.len() && lines[comment_idx].trim().is_empty() {
         comment_idx += 1;
@@ -45,30 +95,25 @@ pub(super) fn move_leading_comment_to_import_trailing(code: &str) -> String {
     if comment_idx >= lines.len() {
         return code.to_string();
     }
-    let is_line_comment = lines[comment_idx].starts_with("//");
-    let is_block_comment =
-        lines[comment_idx].starts_with("/**") || lines[comment_idx].starts_with("/*");
-    if !is_line_comment && !is_block_comment {
-        return code.to_string();
+
+    let comment_line = lines[comment_idx].trim_start();
+    match leading_style {
+        LeadingFileCommentStyle::IsolatedLine | LeadingFileCommentStyle::ImportTrailingLine
+            if !comment_line.starts_with("//") =>
+        {
+            return code.to_string();
+        }
+        LeadingFileCommentStyle::Block
+            if !(comment_line.starts_with("/**") || comment_line.starts_with("/*")) =>
+        {
+            return code.to_string();
+        }
+        LeadingFileCommentStyle::None => return code.to_string(),
+        LeadingFileCommentStyle::IsolatedLine
+        | LeadingFileCommentStyle::Block
+        | LeadingFileCommentStyle::ImportTrailingLine => {}
     }
 
-    // For block comments, find the end line (the line containing */)
-    let comment_end_idx = if is_block_comment {
-        let mut end = comment_idx;
-        for (j, line) in lines.iter().enumerate().skip(comment_idx) {
-            if line.contains("*/") {
-                end = j;
-                break;
-            }
-        }
-        end
-    } else {
-        comment_idx
-    };
-
-    // Build the result: everything up to last import, then import + first comment line,
-    // then remaining comment lines, then rest. Skip blank lines between the import
-    // and the comment that were jumped over during detection.
     let mut result = String::with_capacity(code.len());
     for (i, line) in lines.iter().enumerate() {
         if i == last_import_idx {
@@ -76,22 +121,18 @@ pub(super) fn move_leading_comment_to_import_trailing(code: &str) -> String {
             result.push(' ');
             result.push_str(lines[comment_idx]);
             result.push('\n');
-        } else if i == comment_idx {
-            // Skip — already merged onto import line
-            continue;
-        } else if i > last_import_idx && i < comment_idx && lines[i].trim().is_empty() {
-            // Skip blank lines between last import and the merged comment
+        } else if i == comment_idx
+            || (i > last_import_idx && i < comment_idx && lines[i].trim().is_empty())
+        {
             continue;
         } else {
             result.push_str(line);
             result.push('\n');
         }
     }
-    // Remove trailing newline if original didn't have one
     if !code.ends_with('\n') && result.ends_with('\n') {
         result.pop();
     }
-    let _ = comment_end_idx; // block comment lines after first are kept in place
     result
 }
 

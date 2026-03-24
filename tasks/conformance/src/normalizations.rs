@@ -4,6 +4,11 @@ pub(crate) fn canonicalize_strict_text(code: &str) -> String {
     code.replace("\r\n", "\n").trim_end().to_string()
 }
 
+pub(crate) fn legacy_compare_normalizations_enabled() -> bool {
+    std::env::var("CONFORMANCE_ALLOW_LEGACY_NORMALIZATIONS")
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
 pub(crate) fn normalize_post_babel_export_spacing(code: &str) -> String {
     code.replace("\n    );\n\nexport default", "\n    );\nexport default")
         .replace(
@@ -85,7 +90,11 @@ fn normalize_for_compare(code: &str) -> String {
 
 // Keep old names as aliases for call-site compatibility
 pub(crate) fn prepare_code_for_compare(code: &str) -> String {
-    normalize_for_compare(code)
+    if legacy_compare_normalizations_enabled() {
+        normalize_for_compare(code)
+    } else {
+        canonicalize_strict_text(code)
+    }
 }
 
 // --- Flow preprocessing ---
@@ -2440,43 +2449,43 @@ mod tests {
     };
 
     #[test]
-    fn prepare_code_for_compare_strict_matches_switch_label_shape() {
+    fn prepare_code_for_compare_default_preserves_switch_label_shape() {
         let actual = "function Component(props) {\nlet x = 0;\nbb0: if (props.a) {\nx = 1\n}\nbb1: switch (props.c) {\ncase \"a\": { x = 4; break }\n}\nreturn x\n}";
         let expected = "function Component(props) {\nlet x = 0;\nbb0: if (props.a) {\nx = 1\n}\nswitch (props.c) {\ncase \"a\": { x = 4; break }\n}\nreturn x\n}";
-        assert_eq!(
+        assert_ne!(
             prepare_code_for_compare(actual),
             prepare_code_for_compare(expected)
         );
     }
 
     #[test]
-    fn prepare_code_for_compare_strict_matches_call_trivia_shapes() {
+    fn prepare_code_for_compare_default_preserves_call_trivia_shapes() {
         let actual = "setProperty( x, { b: 3, other }, \"a\");\nJSON.stringify( null, null, { \"Component[k]\": () => value }[ \"Component[k]\" ], );";
         let expected = "setProperty(x, { b: 3, other }, \"a\");\nJSON.stringify(null, null, { \"Component[k]\": () => value }[\"Component[k]\"]);";
-        assert_eq!(
+        assert_ne!(
             prepare_code_for_compare(actual),
             prepare_code_for_compare(expected)
         );
     }
 
     #[test]
-    fn normalize_for_compare_collapses_inline_assign_then_read_stmt() {
+    fn prepare_code_for_compare_default_preserves_inline_assign_then_read_stmt() {
         let actual = "if ($[2] !== arr2 || $[3] !== x) { y = x.concat(arr2);";
         let expected = "if ($[2] !== arr2 || $[3] !== x) { ((y = x.concat(arr2)), y);";
-        assert_eq!(
-            normalize_for_compare(actual),
-            normalize_for_compare(expected)
+        assert_ne!(
+            prepare_code_for_compare(actual),
+            prepare_code_for_compare(expected)
         );
     }
 
     #[test]
-    fn normalize_for_compare_collapses_inline_assign_then_discard_stmt() {
+    fn prepare_code_for_compare_default_preserves_inline_assign_then_discard_stmt() {
         let actual = "if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) { x = [];";
         let expected =
             "if ($[0] === Symbol.for(\"react.memo_cache_sentinel\")) { ((x = []), null);";
-        assert_eq!(
-            normalize_for_compare(actual),
-            normalize_for_compare(expected)
+        assert_ne!(
+            prepare_code_for_compare(actual),
+            prepare_code_for_compare(expected)
         );
     }
 
@@ -2551,13 +2560,13 @@ mod tests {
     }
 
     #[test]
-    fn normalize_for_compare_strips_labeled_switch_after_block_braces() {
+    fn prepare_code_for_compare_default_preserves_labeled_switch_shape() {
         let actual =
             "function foo(x) {\nbb0: {\nswitch (x) {\ncase 0: {\nbreak bb0;\n}\ndefault:\n}\n}\n}";
         let expected = "function foo(x) {\nswitch (x) {\ncase 0: {\nbreak;\n}\ndefault:\n}\n}";
-        assert_eq!(
-            normalize_for_compare(actual),
-            normalize_for_compare(expected)
+        assert_ne!(
+            prepare_code_for_compare(actual),
+            prepare_code_for_compare(expected)
         );
     }
     #[test]

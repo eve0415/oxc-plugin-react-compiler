@@ -11,7 +11,7 @@
 //! declarations and reassignments are marked as reactive (since they may
 //! re-evaluate when reactive inputs change).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::hir::types::*;
 
@@ -23,7 +23,6 @@ use crate::hir::types::*;
 /// 4. If a scope still has reactive deps after pruning, marks all its declarations
 ///    and reassignments as reactive.
 pub fn prune_non_reactive_deps_reactive(func: &mut ReactiveFunction) {
-    let multi_source_decls = collect_multi_source_reassignment_decl_ids(func);
     let reassigned_decls = collect_reassigned_decl_ids(func);
     let (mut reactive_ids, mut reactive_decls) = collect_reactive_identifiers(func);
     propagate_reactivity_to_fixpoint(&func.body, &mut reactive_ids, &mut reactive_decls);
@@ -36,7 +35,6 @@ pub fn prune_non_reactive_deps_reactive(func: &mut ReactiveFunction) {
         &mut func.body,
         &mut reactive_ids,
         &mut reactive_decls,
-        &multi_source_decls,
         &reassigned_decls,
     );
     if std::env::var("DEBUG_REACTIVE_IDS").is_ok() {
@@ -706,30 +704,14 @@ fn visit_and_prune_block(
     block: &mut ReactiveBlock,
     reactive_ids: &mut HashSet<IdentifierId>,
     reactive_decls: &mut HashSet<DeclarationId>,
-    multi_source_decls: &HashSet<DeclarationId>,
     reassigned_decls: &HashSet<DeclarationId>,
 ) {
     let debug_flow = std::env::var("DEBUG_PRUNE_NONREACTIVE_FLOW").is_ok();
-    // Track output DeclarationIds of zero-dep scopes. After a zero-dep scope,
-    // any StoreLocal that assigns from a scope output to a named variable
-    // produces a non-reactive value (the scope is sentinel-memoized).
-    let mut zero_dep_scope_output_decl_ids: HashSet<DeclarationId> = HashSet::new();
     for i in 0..block.len() {
         let keep_nonreactive_reassigned_deps =
             should_retain_reassigned_deps_for_scope(&block[..i], reactive_ids, reactive_decls);
         match &mut block[i] {
             ReactiveStatement::Instruction(instr) => {
-                // Check if this instruction assigns a zero-dep scope output
-                // to a named variable (e.g., `content = t30` where t30 is
-                // from a sentinel scope). If so, the target is non-reactive.
-                if let InstructionValue::StoreLocal { lvalue, value, .. }
-                | InstructionValue::StoreContext { lvalue, value, .. } = &instr.value
-                    && lvalue.place.identifier.name.is_some()
-                    && zero_dep_scope_output_decl_ids.contains(&value.identifier.declaration_id)
-                {
-                    reactive_ids.remove(&lvalue.place.identifier.id);
-                    reactive_decls.remove(&lvalue.place.identifier.declaration_id);
-                }
                 propagate_reactivity(instr, reactive_ids, reactive_decls);
             }
             ReactiveStatement::Terminal(term_stmt) => {
@@ -737,7 +719,6 @@ fn visit_and_prune_block(
                     &mut term_stmt.terminal,
                     reactive_ids,
                     reactive_decls,
-                    multi_source_decls,
                     reassigned_decls,
                 );
             }
@@ -746,11 +727,9 @@ fn visit_and_prune_block(
                     &mut scope_block.instructions,
                     reactive_ids,
                     reactive_decls,
-                    multi_source_decls,
                     reassigned_decls,
                 );
 
-                // Prune non-reactive dependencies from this scope
                 if debug_flow {
                     eprintln!(
                         "[PRUNE_NONREACTIVE] scope={} keep_reassigned_fallback={} deps_before={:?}",
@@ -808,9 +787,6 @@ fn visit_and_prune_block(
                     keep
                 });
 
-                // If the scope still has reactive deps, mark all outputs as reactive.
-                // If the scope has zero deps (sentinel), remove its outputs from the
-                // reactive set so downstream scopes don't treat them as reactive deps.
                 if !scope_block.scope.dependencies.is_empty() {
                     for decl in scope_block.scope.declarations.values() {
                         mark_reactive_identifier(
@@ -828,29 +804,6 @@ fn visit_and_prune_block(
                             reactive_decls,
                         );
                     }
-                } else {
-                    // Scope has zero reactive deps (sentinel). Remove its
-                    // outputs from the reactive set so downstream scopes
-                    // don't treat them as reactive deps.
-                    for decl in scope_block.scope.declarations.values() {
-                        reactive_ids.remove(&decl.identifier.id);
-                        reactive_decls.remove(&decl.identifier.declaration_id);
-                        // Track for subsequent StoreLocal detection
-                        zero_dep_scope_output_decl_ids.insert(decl.identifier.declaration_id);
-                    }
-                    for reassignment in &scope_block.scope.reassignments {
-                        reactive_ids.remove(&reassignment.id);
-                        reactive_decls.remove(&reassignment.declaration_id);
-                    }
-                    // Also scan body for StoreLocal/StoreContext assignments
-                    // to named variables. These are reassignments of outer
-                    // variables that may not be in scope.reassignments but
-                    // are effectively non-reactive outputs of a sentinel scope.
-                    collect_store_targets_from_block(
-                        &scope_block.instructions,
-                        reactive_ids,
-                        reactive_decls,
-                    );
                 }
             }
             ReactiveStatement::PrunedScope(scope_block) => {
@@ -858,80 +811,13 @@ fn visit_and_prune_block(
                     &mut scope_block.instructions,
                     reactive_ids,
                     reactive_decls,
-                    multi_source_decls,
                     reassigned_decls,
                 );
-                // Upstream CollectReactiveIdentifiers.visitPrunedScope marks ALL
-                // non-primitive, non-ref declarations of PrunedScopes as reactive.
-                // We mirror this: PrunedScope declarations stay in the reactive set
-                // as added by collectReactiveIdentifiers.
-                for decl in scope_block.scope.declarations.values() {
-                    // no-op: keep declarations reactive (upstream behavior)
-                    let _ = decl;
-                }
             }
         }
     }
 }
 
-/// Scan a reactive block for StoreLocal/StoreContext instructions that assign
-/// to named variables, and remove those from the reactive set. Used when a
-/// sentinel scope assigns to variables declared outside it — these assignments
-/// produce stable (non-reactive) values.
-fn collect_store_targets_from_block(
-    block: &ReactiveBlock,
-    reactive_ids: &mut HashSet<IdentifierId>,
-    reactive_decls: &mut HashSet<DeclarationId>,
-) {
-    let debug_flow = std::env::var("DEBUG_PRUNE_NONREACTIVE_FLOW").is_ok();
-    for stmt in block {
-        match stmt {
-            ReactiveStatement::Instruction(instr) => match &instr.value {
-                InstructionValue::StoreLocal { lvalue, .. }
-                | InstructionValue::StoreContext { lvalue, .. } => {
-                    if lvalue.place.identifier.name.is_some() {
-                        if debug_flow {
-                            eprintln!(
-                                "[PRUNE_NONREACTIVE] STORE_SCAN removing name={} id={} decl={}",
-                                lvalue
-                                    .place
-                                    .identifier
-                                    .name
-                                    .as_ref()
-                                    .map(|n| n.value().to_string())
-                                    .unwrap_or_default(),
-                                lvalue.place.identifier.id.0,
-                                lvalue.place.identifier.declaration_id.0,
-                            );
-                        }
-                        reactive_ids.remove(&lvalue.place.identifier.id);
-                        reactive_decls.remove(&lvalue.place.identifier.declaration_id);
-                    }
-                }
-                _ => {}
-            },
-            ReactiveStatement::Terminal(term) => {
-                // Recurse into terminal branches
-                if let ReactiveTerminal::If {
-                    consequent,
-                    alternate,
-                    ..
-                } = &term.terminal
-                {
-                    collect_store_targets_from_block(consequent, reactive_ids, reactive_decls);
-                    if let Some(alt) = alternate {
-                        collect_store_targets_from_block(alt, reactive_ids, reactive_decls);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Collect declaration IDs from inner non-pruned scopes that have zero
-/// dependencies (after pruning).  Also follows StoreLocal/StoreContext
-/// chains so named bindings derived from inner scope outputs are included.
 fn should_retain_reassigned_deps_for_scope(
     preceding: &[ReactiveStatement],
     reactive_ids: &HashSet<IdentifierId>,
@@ -985,7 +871,6 @@ fn visit_and_prune_terminal(
     terminal: &mut ReactiveTerminal,
     reactive_ids: &mut HashSet<IdentifierId>,
     reactive_decls: &mut HashSet<DeclarationId>,
-    multi_source_decls: &HashSet<DeclarationId>,
     reassigned_decls: &HashSet<DeclarationId>,
 ) {
     match terminal {
@@ -994,45 +879,21 @@ fn visit_and_prune_terminal(
             alternate,
             ..
         } => {
-            visit_and_prune_block(
-                consequent,
-                reactive_ids,
-                reactive_decls,
-                multi_source_decls,
-                reassigned_decls,
-            );
+            visit_and_prune_block(consequent, reactive_ids, reactive_decls, reassigned_decls);
             if let Some(alt) = alternate {
-                visit_and_prune_block(
-                    alt,
-                    reactive_ids,
-                    reactive_decls,
-                    multi_source_decls,
-                    reassigned_decls,
-                );
+                visit_and_prune_block(alt, reactive_ids, reactive_decls, reassigned_decls);
             }
         }
         ReactiveTerminal::Switch { cases, .. } => {
             for case in cases.iter_mut() {
                 if let Some(block) = &mut case.block {
-                    visit_and_prune_block(
-                        block,
-                        reactive_ids,
-                        reactive_decls,
-                        multi_source_decls,
-                        reassigned_decls,
-                    );
+                    visit_and_prune_block(block, reactive_ids, reactive_decls, reassigned_decls);
                 }
             }
         }
         ReactiveTerminal::DoWhile { loop_block, .. }
         | ReactiveTerminal::While { loop_block, .. } => {
-            visit_and_prune_block(
-                loop_block,
-                reactive_ids,
-                reactive_decls,
-                multi_source_decls,
-                reassigned_decls,
-            );
+            visit_and_prune_block(loop_block, reactive_ids, reactive_decls, reassigned_decls);
         }
         ReactiveTerminal::For {
             init,
@@ -1040,90 +901,30 @@ fn visit_and_prune_terminal(
             loop_block,
             ..
         } => {
-            visit_and_prune_block(
-                init,
-                reactive_ids,
-                reactive_decls,
-                multi_source_decls,
-                reassigned_decls,
-            );
+            visit_and_prune_block(init, reactive_ids, reactive_decls, reassigned_decls);
             if let Some(upd) = update {
-                visit_and_prune_block(
-                    upd,
-                    reactive_ids,
-                    reactive_decls,
-                    multi_source_decls,
-                    reassigned_decls,
-                );
+                visit_and_prune_block(upd, reactive_ids, reactive_decls, reassigned_decls);
             }
-            visit_and_prune_block(
-                loop_block,
-                reactive_ids,
-                reactive_decls,
-                multi_source_decls,
-                reassigned_decls,
-            );
+            visit_and_prune_block(loop_block, reactive_ids, reactive_decls, reassigned_decls);
         }
         ReactiveTerminal::ForOf {
             init, loop_block, ..
         } => {
-            visit_and_prune_block(
-                init,
-                reactive_ids,
-                reactive_decls,
-                multi_source_decls,
-                reassigned_decls,
-            );
-            visit_and_prune_block(
-                loop_block,
-                reactive_ids,
-                reactive_decls,
-                multi_source_decls,
-                reassigned_decls,
-            );
+            visit_and_prune_block(init, reactive_ids, reactive_decls, reassigned_decls);
+            visit_and_prune_block(loop_block, reactive_ids, reactive_decls, reassigned_decls);
         }
         ReactiveTerminal::ForIn {
             init, loop_block, ..
         } => {
-            visit_and_prune_block(
-                init,
-                reactive_ids,
-                reactive_decls,
-                multi_source_decls,
-                reassigned_decls,
-            );
-            visit_and_prune_block(
-                loop_block,
-                reactive_ids,
-                reactive_decls,
-                multi_source_decls,
-                reassigned_decls,
-            );
+            visit_and_prune_block(init, reactive_ids, reactive_decls, reassigned_decls);
+            visit_and_prune_block(loop_block, reactive_ids, reactive_decls, reassigned_decls);
         }
         ReactiveTerminal::Label { block, .. } => {
-            visit_and_prune_block(
-                block,
-                reactive_ids,
-                reactive_decls,
-                multi_source_decls,
-                reassigned_decls,
-            );
+            visit_and_prune_block(block, reactive_ids, reactive_decls, reassigned_decls);
         }
         ReactiveTerminal::Try { block, handler, .. } => {
-            visit_and_prune_block(
-                block,
-                reactive_ids,
-                reactive_decls,
-                multi_source_decls,
-                reassigned_decls,
-            );
-            visit_and_prune_block(
-                handler,
-                reactive_ids,
-                reactive_decls,
-                multi_source_decls,
-                reassigned_decls,
-            );
+            visit_and_prune_block(block, reactive_ids, reactive_decls, reassigned_decls);
+            visit_and_prune_block(handler, reactive_ids, reactive_decls, reassigned_decls);
         }
         ReactiveTerminal::Break { .. }
         | ReactiveTerminal::Continue { .. }
@@ -1212,119 +1013,6 @@ fn collect_reassigned_decl_ids(func: &ReactiveFunction) -> HashSet<DeclarationId
     let mut out = HashSet::new();
     visit_block(&func.body, &mut out);
     out
-}
-
-/// Collect declaration IDs that are assigned from multiple distinct source
-/// declarations via `Reassign` stores. These values can vary with control-flow
-/// even when each source is individually "stable" (e.g. selecting one of two
-/// setState functions), so scopes depending on them must not be pruned.
-fn collect_multi_source_reassignment_decl_ids(func: &ReactiveFunction) -> HashSet<DeclarationId> {
-    let mut decl_to_sources: HashMap<DeclarationId, HashSet<DeclarationId>> = HashMap::new();
-    collect_multi_source_reassignment_decl_ids_block(&func.body, &mut decl_to_sources);
-    decl_to_sources
-        .into_iter()
-        .filter_map(|(decl, sources)| (sources.len() > 1).then_some(decl))
-        .collect()
-}
-
-fn collect_multi_source_reassignment_decl_ids_block(
-    block: &ReactiveBlock,
-    decl_to_sources: &mut HashMap<DeclarationId, HashSet<DeclarationId>>,
-) {
-    for stmt in block {
-        match stmt {
-            ReactiveStatement::Instruction(instr) => {
-                if let InstructionValue::StoreLocal { lvalue, value, .. }
-                | InstructionValue::StoreContext { lvalue, value, .. } = &instr.value
-                    && lvalue.kind == InstructionKind::Reassign
-                {
-                    decl_to_sources
-                        .entry(lvalue.place.identifier.declaration_id)
-                        .or_default()
-                        .insert(value.identifier.declaration_id);
-                }
-            }
-            ReactiveStatement::Terminal(term_stmt) => {
-                collect_multi_source_reassignment_decl_ids_terminal(
-                    &term_stmt.terminal,
-                    decl_to_sources,
-                );
-            }
-            ReactiveStatement::Scope(scope_block) => {
-                collect_multi_source_reassignment_decl_ids_block(
-                    &scope_block.instructions,
-                    decl_to_sources,
-                );
-            }
-            ReactiveStatement::PrunedScope(scope_block) => {
-                collect_multi_source_reassignment_decl_ids_block(
-                    &scope_block.instructions,
-                    decl_to_sources,
-                );
-            }
-        }
-    }
-}
-
-fn collect_multi_source_reassignment_decl_ids_terminal(
-    terminal: &ReactiveTerminal,
-    decl_to_sources: &mut HashMap<DeclarationId, HashSet<DeclarationId>>,
-) {
-    match terminal {
-        ReactiveTerminal::If {
-            consequent,
-            alternate,
-            ..
-        } => {
-            collect_multi_source_reassignment_decl_ids_block(consequent, decl_to_sources);
-            if let Some(alt) = alternate {
-                collect_multi_source_reassignment_decl_ids_block(alt, decl_to_sources);
-            }
-        }
-        ReactiveTerminal::Switch { cases, .. } => {
-            for case in cases {
-                if let Some(block) = &case.block {
-                    collect_multi_source_reassignment_decl_ids_block(block, decl_to_sources);
-                }
-            }
-        }
-        ReactiveTerminal::DoWhile { loop_block, .. }
-        | ReactiveTerminal::While { loop_block, .. } => {
-            collect_multi_source_reassignment_decl_ids_block(loop_block, decl_to_sources);
-        }
-        ReactiveTerminal::For {
-            init,
-            update,
-            loop_block,
-            ..
-        } => {
-            collect_multi_source_reassignment_decl_ids_block(init, decl_to_sources);
-            if let Some(upd) = update {
-                collect_multi_source_reassignment_decl_ids_block(upd, decl_to_sources);
-            }
-            collect_multi_source_reassignment_decl_ids_block(loop_block, decl_to_sources);
-        }
-        ReactiveTerminal::ForOf {
-            init, loop_block, ..
-        }
-        | ReactiveTerminal::ForIn {
-            init, loop_block, ..
-        } => {
-            collect_multi_source_reassignment_decl_ids_block(init, decl_to_sources);
-            collect_multi_source_reassignment_decl_ids_block(loop_block, decl_to_sources);
-        }
-        ReactiveTerminal::Label { block, .. } => {
-            collect_multi_source_reassignment_decl_ids_block(block, decl_to_sources);
-        }
-        ReactiveTerminal::Try { block, handler, .. } => {
-            collect_multi_source_reassignment_decl_ids_block(block, decl_to_sources);
-            collect_multi_source_reassignment_decl_ids_block(handler, decl_to_sources);
-        }
-        ReactiveTerminal::Break { .. }
-        | ReactiveTerminal::Continue { .. }
-        | ReactiveTerminal::Return { .. }
-        | ReactiveTerminal::Throw { .. } => {}
-    }
 }
 
 /// Propagate reactivity through data-flow instructions.
