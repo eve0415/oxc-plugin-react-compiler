@@ -11,7 +11,7 @@
 //! declarations and reassignments are marked as reactive (since they may
 //! re-evaluate when reactive inputs change).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::hir::types::*;
 
@@ -24,6 +24,7 @@ use crate::hir::types::*;
 ///    and reassignments as reactive.
 pub fn prune_non_reactive_deps_reactive(func: &mut ReactiveFunction) {
     let reassigned_decls = collect_reassigned_decl_ids(func);
+    let original_named_ids = collect_original_named_identifier_ids(func);
     let (mut reactive_ids, mut reactive_decls) = collect_reactive_identifiers(func);
     propagate_reactivity_to_fixpoint(&func.body, &mut reactive_ids, &mut reactive_decls);
     if std::env::var("DEBUG_REACTIVE_IDS").is_ok() {
@@ -36,6 +37,7 @@ pub fn prune_non_reactive_deps_reactive(func: &mut ReactiveFunction) {
         &mut reactive_ids,
         &mut reactive_decls,
         &reassigned_decls,
+        &original_named_ids,
     );
     if std::env::var("DEBUG_REACTIVE_IDS").is_ok() {
         let mut ids: Vec<u32> = reactive_ids.iter().map(|id| id.0).collect();
@@ -804,6 +806,7 @@ fn visit_and_prune_block(
     reactive_ids: &mut HashSet<IdentifierId>,
     reactive_decls: &mut HashSet<DeclarationId>,
     reassigned_decls: &HashSet<DeclarationId>,
+    original_named_ids: &HashMap<DeclarationId, IdentifierId>,
 ) {
     let debug_flow = std::env::var("DEBUG_PRUNE_NONREACTIVE_FLOW").is_ok();
     for i in 0..block.len() {
@@ -819,6 +822,7 @@ fn visit_and_prune_block(
                     reactive_ids,
                     reactive_decls,
                     reassigned_decls,
+                    original_named_ids,
                 );
             }
             ReactiveStatement::Scope(scope_block) => {
@@ -827,6 +831,7 @@ fn visit_and_prune_block(
                     reactive_ids,
                     reactive_decls,
                     reassigned_decls,
+                    original_named_ids,
                 );
 
                 if debug_flow {
@@ -858,6 +863,9 @@ fn visit_and_prune_block(
                 }
                 scope_block.scope.dependencies.retain(|dep| {
                     let keep = is_identifier_reactive(&dep.identifier, reactive_ids, reactive_decls)
+                        || (reactive_decls.contains(&dep.identifier.declaration_id)
+                            && original_named_ids.get(&dep.identifier.declaration_id)
+                                == Some(&dep.identifier.id))
                         || (keep_nonreactive_reassigned_deps
                             && dep.path.is_empty()
                             && reassigned_decls.contains(&dep.identifier.declaration_id)
@@ -911,6 +919,7 @@ fn visit_and_prune_block(
                     reactive_ids,
                     reactive_decls,
                     reassigned_decls,
+                    original_named_ids,
                 );
             }
         }
@@ -971,6 +980,7 @@ fn visit_and_prune_terminal(
     reactive_ids: &mut HashSet<IdentifierId>,
     reactive_decls: &mut HashSet<DeclarationId>,
     reassigned_decls: &HashSet<DeclarationId>,
+    original_named_ids: &HashMap<DeclarationId, IdentifierId>,
 ) {
     match terminal {
         ReactiveTerminal::If {
@@ -978,21 +988,45 @@ fn visit_and_prune_terminal(
             alternate,
             ..
         } => {
-            visit_and_prune_block(consequent, reactive_ids, reactive_decls, reassigned_decls);
+            visit_and_prune_block(
+                consequent,
+                reactive_ids,
+                reactive_decls,
+                reassigned_decls,
+                original_named_ids,
+            );
             if let Some(alt) = alternate {
-                visit_and_prune_block(alt, reactive_ids, reactive_decls, reassigned_decls);
+                visit_and_prune_block(
+                    alt,
+                    reactive_ids,
+                    reactive_decls,
+                    reassigned_decls,
+                    original_named_ids,
+                );
             }
         }
         ReactiveTerminal::Switch { cases, .. } => {
             for case in cases.iter_mut() {
                 if let Some(block) = &mut case.block {
-                    visit_and_prune_block(block, reactive_ids, reactive_decls, reassigned_decls);
+                    visit_and_prune_block(
+                        block,
+                        reactive_ids,
+                        reactive_decls,
+                        reassigned_decls,
+                        original_named_ids,
+                    );
                 }
             }
         }
         ReactiveTerminal::DoWhile { loop_block, .. }
         | ReactiveTerminal::While { loop_block, .. } => {
-            visit_and_prune_block(loop_block, reactive_ids, reactive_decls, reassigned_decls);
+            visit_and_prune_block(
+                loop_block,
+                reactive_ids,
+                reactive_decls,
+                reassigned_decls,
+                original_named_ids,
+            );
         }
         ReactiveTerminal::For {
             init,
@@ -1000,30 +1034,90 @@ fn visit_and_prune_terminal(
             loop_block,
             ..
         } => {
-            visit_and_prune_block(init, reactive_ids, reactive_decls, reassigned_decls);
+            visit_and_prune_block(
+                init,
+                reactive_ids,
+                reactive_decls,
+                reassigned_decls,
+                original_named_ids,
+            );
             if let Some(upd) = update {
-                visit_and_prune_block(upd, reactive_ids, reactive_decls, reassigned_decls);
+                visit_and_prune_block(
+                    upd,
+                    reactive_ids,
+                    reactive_decls,
+                    reassigned_decls,
+                    original_named_ids,
+                );
             }
-            visit_and_prune_block(loop_block, reactive_ids, reactive_decls, reassigned_decls);
+            visit_and_prune_block(
+                loop_block,
+                reactive_ids,
+                reactive_decls,
+                reassigned_decls,
+                original_named_ids,
+            );
         }
         ReactiveTerminal::ForOf {
             init, loop_block, ..
         } => {
-            visit_and_prune_block(init, reactive_ids, reactive_decls, reassigned_decls);
-            visit_and_prune_block(loop_block, reactive_ids, reactive_decls, reassigned_decls);
+            visit_and_prune_block(
+                init,
+                reactive_ids,
+                reactive_decls,
+                reassigned_decls,
+                original_named_ids,
+            );
+            visit_and_prune_block(
+                loop_block,
+                reactive_ids,
+                reactive_decls,
+                reassigned_decls,
+                original_named_ids,
+            );
         }
         ReactiveTerminal::ForIn {
             init, loop_block, ..
         } => {
-            visit_and_prune_block(init, reactive_ids, reactive_decls, reassigned_decls);
-            visit_and_prune_block(loop_block, reactive_ids, reactive_decls, reassigned_decls);
+            visit_and_prune_block(
+                init,
+                reactive_ids,
+                reactive_decls,
+                reassigned_decls,
+                original_named_ids,
+            );
+            visit_and_prune_block(
+                loop_block,
+                reactive_ids,
+                reactive_decls,
+                reassigned_decls,
+                original_named_ids,
+            );
         }
         ReactiveTerminal::Label { block, .. } => {
-            visit_and_prune_block(block, reactive_ids, reactive_decls, reassigned_decls);
+            visit_and_prune_block(
+                block,
+                reactive_ids,
+                reactive_decls,
+                reassigned_decls,
+                original_named_ids,
+            );
         }
         ReactiveTerminal::Try { block, handler, .. } => {
-            visit_and_prune_block(block, reactive_ids, reactive_decls, reassigned_decls);
-            visit_and_prune_block(handler, reactive_ids, reactive_decls, reassigned_decls);
+            visit_and_prune_block(
+                block,
+                reactive_ids,
+                reactive_decls,
+                reassigned_decls,
+                original_named_ids,
+            );
+            visit_and_prune_block(
+                handler,
+                reactive_ids,
+                reactive_decls,
+                reassigned_decls,
+                original_named_ids,
+            );
         }
         ReactiveTerminal::Break { .. }
         | ReactiveTerminal::Continue { .. }
@@ -1110,6 +1204,122 @@ fn collect_reassigned_decl_ids(func: &ReactiveFunction) -> HashSet<DeclarationId
     }
 
     let mut out = HashSet::new();
+    visit_block(&func.body, &mut out);
+    out
+}
+
+fn collect_original_named_identifier_ids(
+    func: &ReactiveFunction,
+) -> HashMap<DeclarationId, IdentifierId> {
+    fn visit_block(block: &ReactiveBlock, out: &mut HashMap<DeclarationId, IdentifierId>) {
+        for stmt in block {
+            match stmt {
+                ReactiveStatement::Instruction(instr) => {
+                    if let Some(lvalue) = &instr.lvalue
+                        && lvalue.identifier.name.is_some()
+                    {
+                        out.entry(lvalue.identifier.declaration_id)
+                            .or_insert(lvalue.identifier.id);
+                    }
+                    match &instr.value {
+                        InstructionValue::StoreLocal { lvalue, .. }
+                        | InstructionValue::StoreContext { lvalue, .. }
+                        | InstructionValue::DeclareLocal { lvalue, .. }
+                        | InstructionValue::DeclareContext { lvalue, .. } => {
+                            if lvalue.place.identifier.name.is_some() {
+                                out.entry(lvalue.place.identifier.declaration_id)
+                                    .or_insert(lvalue.place.identifier.id);
+                            }
+                        }
+                        InstructionValue::Destructure { lvalue, .. } => {
+                            for_each_pattern_place(&lvalue.pattern, &mut |place| {
+                                if place.identifier.name.is_some() {
+                                    out.entry(place.identifier.declaration_id)
+                                        .or_insert(place.identifier.id);
+                                }
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                ReactiveStatement::Terminal(term_stmt) => {
+                    visit_terminal(&term_stmt.terminal, out);
+                }
+                ReactiveStatement::Scope(scope_block) => {
+                    visit_block(&scope_block.instructions, out)
+                }
+                ReactiveStatement::PrunedScope(scope_block) => {
+                    visit_block(&scope_block.instructions, out)
+                }
+            }
+        }
+    }
+
+    fn visit_terminal(terminal: &ReactiveTerminal, out: &mut HashMap<DeclarationId, IdentifierId>) {
+        match terminal {
+            ReactiveTerminal::If {
+                consequent,
+                alternate,
+                ..
+            } => {
+                visit_block(consequent, out);
+                if let Some(alt) = alternate {
+                    visit_block(alt, out);
+                }
+            }
+            ReactiveTerminal::Switch { cases, .. } => {
+                for case in cases {
+                    if let Some(block) = &case.block {
+                        visit_block(block, out);
+                    }
+                }
+            }
+            ReactiveTerminal::DoWhile { loop_block, .. }
+            | ReactiveTerminal::While { loop_block, .. } => visit_block(loop_block, out),
+            ReactiveTerminal::For {
+                init,
+                update,
+                loop_block,
+                ..
+            } => {
+                visit_block(init, out);
+                if let Some(update) = update {
+                    visit_block(update, out);
+                }
+                visit_block(loop_block, out);
+            }
+            ReactiveTerminal::ForOf {
+                init, loop_block, ..
+            }
+            | ReactiveTerminal::ForIn {
+                init, loop_block, ..
+            } => {
+                visit_block(init, out);
+                visit_block(loop_block, out);
+            }
+            ReactiveTerminal::Label { block, .. } => visit_block(block, out),
+            ReactiveTerminal::Try { block, handler, .. } => {
+                visit_block(block, out);
+                visit_block(handler, out);
+            }
+            ReactiveTerminal::Break { .. }
+            | ReactiveTerminal::Continue { .. }
+            | ReactiveTerminal::Return { .. }
+            | ReactiveTerminal::Throw { .. } => {}
+        }
+    }
+
+    let mut out = HashMap::new();
+    for param in &func.params {
+        match param {
+            Argument::Place(place) | Argument::Spread(place) => {
+                if place.identifier.name.is_some() {
+                    out.entry(place.identifier.declaration_id)
+                        .or_insert(place.identifier.id);
+                }
+            }
+        }
+    }
     visit_block(&func.body, &mut out);
     out
 }
