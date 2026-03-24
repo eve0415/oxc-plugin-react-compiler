@@ -11,6 +11,7 @@ use crate::codegen_backend::CompiledFunction;
 enum LeadingFileCommentStyle {
     None,
     IsolatedLine,
+    CommentGroupWithBlankGap,
     Block,
     ImportTrailingLine,
 }
@@ -42,6 +43,7 @@ fn leading_file_comment_style(source: &str) -> LeadingFileCommentStyle {
     }
 
     let mut comment_lines = 0usize;
+    let mut saw_blank_after_comments = false;
     while !rest.is_empty() {
         let Some(line_end) = rest.find('\n') else {
             let trimmed = rest.trim_start();
@@ -53,6 +55,9 @@ fn leading_file_comment_style(source: &str) -> LeadingFileCommentStyle {
         let line = &rest[..line_end];
         let trimmed = line.trim_start();
         if trimmed.is_empty() {
+            if comment_lines > 0 {
+                saw_blank_after_comments = true;
+            }
             rest = &rest[line_end + 1..];
             continue;
         }
@@ -66,6 +71,8 @@ fn leading_file_comment_style(source: &str) -> LeadingFileCommentStyle {
 
     if comment_lines == 1 {
         LeadingFileCommentStyle::IsolatedLine
+    } else if comment_lines > 1 && saw_blank_after_comments {
+        LeadingFileCommentStyle::CommentGroupWithBlankGap
     } else {
         LeadingFileCommentStyle::None
     }
@@ -141,7 +148,10 @@ pub(super) fn move_leading_comment_to_import_trailing(code: &str, source: &str) 
 
     let comment_line = lines[comment_idx].trim_start();
     match leading_style {
-        LeadingFileCommentStyle::IsolatedLine if !comment_line.starts_with("//") => {
+        LeadingFileCommentStyle::IsolatedLine
+        | LeadingFileCommentStyle::CommentGroupWithBlankGap
+            if !comment_line.starts_with("//") =>
+        {
             return code.to_string();
         }
         LeadingFileCommentStyle::ImportTrailingLine => {
@@ -158,7 +168,9 @@ pub(super) fn move_leading_comment_to_import_trailing(code: &str, source: &str) 
             return code.to_string();
         }
         LeadingFileCommentStyle::None => return code.to_string(),
-        LeadingFileCommentStyle::IsolatedLine | LeadingFileCommentStyle::Block => {}
+        LeadingFileCommentStyle::IsolatedLine
+        | LeadingFileCommentStyle::CommentGroupWithBlankGap
+        | LeadingFileCommentStyle::Block => {}
     }
     merge_comment(lines[comment_idx], Some(comment_idx))
 }
