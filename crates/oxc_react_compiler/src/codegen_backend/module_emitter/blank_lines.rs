@@ -44,11 +44,14 @@ fn leading_file_comment_style(source: &str) -> LeadingFileCommentStyle {
 
     let mut comment_lines = 0usize;
     let mut saw_blank_after_comments = false;
+    let mut next_noncomment_is_import = false;
     while !rest.is_empty() {
         let Some(line_end) = rest.find('\n') else {
             let trimmed = rest.trim_start();
             if trimmed.starts_with("//") {
                 comment_lines += 1;
+            } else if !trimmed.is_empty() {
+                next_noncomment_is_import = trimmed.starts_with("import ");
             }
             break;
         };
@@ -66,12 +69,15 @@ fn leading_file_comment_style(source: &str) -> LeadingFileCommentStyle {
             rest = &rest[line_end + 1..];
             continue;
         }
+        next_noncomment_is_import = trimmed.starts_with("import ");
         break;
     }
 
     if comment_lines == 1 {
         LeadingFileCommentStyle::IsolatedLine
     } else if comment_lines > 1 && saw_blank_after_comments {
+        LeadingFileCommentStyle::CommentGroupWithBlankGap
+    } else if comment_lines > 1 && !next_noncomment_is_import {
         LeadingFileCommentStyle::CommentGroupWithBlankGap
     } else {
         LeadingFileCommentStyle::None
