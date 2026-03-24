@@ -1,9 +1,10 @@
-# React Compiler Conformance -- 100.0% parity rate
+# React Compiler Conformance -- 99.9% parity rate
 
-**1774** parity_success, **0** parity_failure, **0** skipped
+**1774** parity_success, **1** parity_failure, **0** skipped
 
 ## Failed
 
+- `custom/array-from-sentinel-as-scope-dep`: Output mismatch
 
 ## Passed
 
