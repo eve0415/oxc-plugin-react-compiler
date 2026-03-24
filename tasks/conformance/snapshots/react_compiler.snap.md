@@ -1,11 +1,10 @@
 # React Compiler Conformance -- 99.9% parity rate
 
-**1773** parity_success, **2** parity_failure, **0** skipped
+**1773** parity_success, **1** parity_failure, **0** skipped
 
 ## Failed
 
 - `custom/for-loop-variable-name-dedup`: Output mismatch
-- `custom/for-of-destructure-const-not-let`: Output mismatch
 
 ## Passed
 
