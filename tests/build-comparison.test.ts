@@ -1,10 +1,10 @@
-import { readFile, readdir, rm } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { build } from 'vite-plus';
 import { describe, expect, it } from 'vite-plus/test';
 
-import { compareAST, parseJS } from './utils/ast-compare.js';
+import { collectJsFiles, compareExactJsOutputs, logExactMismatchSummary } from './utils/build-compare.js';
 
 const fixtureDir = join(import.meta.dirname, 'fixtures/minimal-app');
 
@@ -20,21 +20,6 @@ const buildWithConfig = async (configFile: string): Promise<BuildResult> => {
   // Count output JS files on disk instead of inspecting the opaque return type
   const files = await collectJsFiles(join(fixtureDir, configFile.includes('oxc') ? 'dist-oxc' : 'dist-babel'));
   return { duration, chunkCount: files.length };
-};
-
-const collectJsFiles = async (dir: string): Promise<string[]> => {
-  const results: string[] = [];
-  try {
-    const entries = await readdir(dir, { withFileTypes: true, recursive: true });
-    for (const entry of entries) {
-      if (entry.isFile() && entry.name.endsWith('.js')) {
-        results.push(join(entry.parentPath ?? dir, entry.name));
-      }
-    }
-  } catch {
-    // Directory may not exist yet
-  }
-  return results;
 };
 
 describe('build comparison: OXC vs Babel', { timeout: 60_000 }, () => {
@@ -55,46 +40,16 @@ describe('build comparison: OXC vs Babel', { timeout: 60_000 }, () => {
     expect(babel.chunkCount).toBeGreaterThan(0);
   });
 
-  it('JS output files have matching AST structure', async () => {
+  it('JS output files are byte-identical after pairing by logical chunk name', async () => {
     const oxcDir = join(fixtureDir, 'dist-oxc');
     const babelDir = join(fixtureDir, 'dist-babel');
 
-    const oxcFiles = await collectJsFiles(oxcDir);
-    const babelFiles = await collectJsFiles(babelDir);
+    const [oxcFiles, babelFiles] = await Promise.all([collectJsFiles(oxcDir), collectJsFiles(babelDir)]);
 
     expect(oxcFiles.length).toBeGreaterThan(0);
     expect(babelFiles.length).toBeGreaterThan(0);
-    expect(oxcFiles.length).toBe(babelFiles.length);
-
-    // Read all files upfront then compare
-    const pairs = await Promise.all(
-      oxcFiles.map(async (oxcPath, i) => {
-        const babelPath = babelFiles[i];
-        if (!babelPath) return null;
-        const [oxcSource, babelSource] = await Promise.all([readFile(oxcPath, 'utf8'), readFile(babelPath, 'utf8')]);
-        return { name: `chunk-${String(i)}.js`, oxcSource, babelSource };
-      }),
-    );
-
-    for (const pair of pairs) {
-      if (!pair) continue;
-      const { name, oxcSource, babelSource } = pair;
-
-      const oxcAST = parseJS(oxcSource);
-      const babelAST = parseJS(babelSource);
-      const result = compareAST(oxcAST, babelAST);
-
-      if (result.match) {
-        console.log(`  ${name}: AST structures match`);
-      } else {
-        console.log(`\n  AST differences in ${name}:`);
-        for (const diff of result.differences.slice(0, 10)) {
-          console.log(`    ${diff.path}: ${diff.kind} (expected: ${diff.expected ?? 'N/A'}, actual: ${diff.actual ?? 'N/A'})`);
-        }
-        if (result.differences.length > 10) {
-          console.log(`    ... and ${String(result.differences.length - 10)} more`);
-        }
-      }
-    }
+    const mismatches = await compareExactJsOutputs(babelDir, oxcDir);
+    logExactMismatchSummary('minimal-app', mismatches);
+    expect(mismatches).toHaveLength(0);
   });
 });

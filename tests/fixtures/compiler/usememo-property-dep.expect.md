@@ -1,6 +1,7 @@
 ## Input
 
 ```javascript
+// @enablePreserveExistingMemoizationGuarantees
 import { useMemo } from "react";
 
 function Component({ items, sortKey }) {
@@ -24,6 +25,7 @@ export const FIXTURE_ENTRYPOINT = {
 
 ```javascript
 import { c as _c } from "react/compiler-runtime";
+// @enablePreserveExistingMemoizationGuarantees
 import { useMemo } from "react";
 function Component(t0) {
   const $ = _c(9);

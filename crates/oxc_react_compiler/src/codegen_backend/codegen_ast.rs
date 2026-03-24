@@ -2852,7 +2852,9 @@ fn codegen_terminal<'a>(
             let (Some(left), Some(right)) = (left, right) else {
                 return vec![];
             };
+            cx.push_name_scope();
             let body_stmts = codegen_block(cx, loop_block);
+            cx.pop_name_scope();
             let body = cx
                 .builder
                 .statement_block(SPAN, cx.builder.vec_from_iter(body_stmts));
@@ -2872,7 +2874,9 @@ fn codegen_terminal<'a>(
             let (Some(left), Some(right)) = (left, right) else {
                 return vec![];
             };
+            cx.push_name_scope();
             let body_stmts = codegen_block(cx, loop_block);
+            cx.pop_name_scope();
             let body = cx
                 .builder
                 .statement_block(SPAN, cx.builder.vec_from_iter(body_stmts));

@@ -1031,8 +1031,37 @@ fn format_code_for_compare(input_path: &Path, code: &str) -> String {
 // --- Oxfmt formatting ---
 
 const OXFMT_FORMAT_SCRIPT: &str = r#"
-import { format } from 'oxfmt';
+import fs from 'node:fs';
+import path from 'node:path';
 import readline from 'node:readline';
+import { pathToFileURL } from 'node:url';
+
+async function resolveFormat() {
+  const pnpmDir = path.join(process.cwd(), 'node_modules', '.pnpm');
+  if (!fs.existsSync(pnpmDir)) {
+    throw new Error(`missing pnpm directory: ${pnpmDir}`);
+  }
+
+  const candidates = fs
+    .readdirSync(pnpmDir)
+    .filter(entry => entry.startsWith('oxfmt@'))
+    .sort();
+
+  for (const entry of candidates) {
+    const modPath = path.join(pnpmDir, entry, 'node_modules', 'oxfmt', 'dist', 'index.js');
+    if (!fs.existsSync(modPath)) {
+      continue;
+    }
+    const mod = await import(pathToFileURL(modPath).href);
+    if (typeof mod.format === 'function') {
+      return mod.format;
+    }
+  }
+
+  throw new Error('failed to resolve oxfmt formatter from node_modules/.pnpm');
+}
+
+const format = await resolveFormat();
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 
@@ -1047,7 +1076,12 @@ for await (const line of rl) {
   }
 
   try {
-    const result = await format(request.fileName || 'fixture.js', request.source || '', {});
+    const result = await format(request.fileName || 'fixture.js', request.source || '', {
+      semi: true,
+      singleQuote: false,
+      jsxSingleQuote: false,
+      trailingComma: 'all',
+    });
     if (result.errors && result.errors.length > 0) {
       process.stdout.write(
         JSON.stringify({
