@@ -6,9 +6,7 @@ use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
 
 use crate::normalizations::{
-    canonicalize_strict_text, legacy_compare_normalizations_enabled,
-    normalize_post_babel_export_spacing, prepare_code_for_compare,
-    preprocess_flow_syntax_for_expectation,
+    canonicalize_strict_text, prepare_code_for_compare, preprocess_flow_syntax_for_expectation,
 };
 use crate::pragmas::parse_pragma;
 use crate::{FixtureSuiteOptions, JsRuntime};
@@ -722,7 +720,7 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
         }
     } else {
         let expected_code = expected_code.unwrap(); // safe: we checked above
-        let postprocessed = maybe_apply_snap_post_babel_plugins(
+        let actual = maybe_apply_snap_post_babel_plugins(
             &result.code,
             &filename,
             language,
@@ -730,65 +728,10 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
             false,
             &source,
         );
-        let postprocessed = if legacy_compare_normalizations_enabled() {
-            normalize_post_babel_export_spacing(&postprocessed)
-        } else {
-            canonicalize_strict_text(&postprocessed)
-        };
-        // Try OXC reprint comparison: parse+reprint both sides to canonicalize formatting.
-        // If both reprint successfully AND match, use that (fast path, zero normalizations).
-        // Otherwise fall back to the old normalization pipeline.
-        let st = source_type_from_path(&fixture.input_path);
-        // Strategy: try three comparison approaches in order:
-        // 1. OXC reprint both sides (fast path — handles all formatting)
-        // 2. OXC reprint expected only + normalize both (handles multiline)
-        // 3. Normalize both raw outputs (original fallback)
-        let reprinted_actual = oxc_reprint(&postprocessed, st);
-        let reprinted_expected = oxc_reprint(&expected_code, st);
-
-        let (actual, expected) =
-            if let (Some(a), Some(e)) = (&reprinted_actual, &reprinted_expected) {
-                if a == e {
-                    // Fast path: reprinted outputs match exactly
-                    (a.clone(), e.clone())
-                } else {
-                    // Both reprintable but differ — try normalizing reprinted versions
-                    let actual_source = format_code_for_compare(&fixture.input_path, a);
-                    let expected_source = format_code_for_compare(&fixture.input_path, e);
-                    let norm_a = prepare_code_for_compare(&actual_source);
-                    let norm_e = prepare_code_for_compare(&expected_source);
-                    if norm_a == norm_e {
-                        (norm_a, norm_e)
-                    } else {
-                        // Try normalizing raw actual vs reprinted expected
-                        let actual_source =
-                            format_code_for_compare(&fixture.input_path, &postprocessed);
-                        let expected_source = format_code_for_compare(&fixture.input_path, e);
-                        let norm_a2 = prepare_code_for_compare(&actual_source);
-                        let norm_e2 = prepare_code_for_compare(&expected_source);
-                        if norm_a2 == norm_e2 {
-                            (norm_a2, norm_e2)
-                        } else {
-                            // Fall back to normalizing both raw outputs
-                            let actual_source =
-                                format_code_for_compare(&fixture.input_path, &postprocessed);
-                            let expected_source =
-                                format_code_for_compare(&fixture.input_path, &expected_code);
-                            (
-                                prepare_code_for_compare(&actual_source),
-                                prepare_code_for_compare(&expected_source),
-                            )
-                        }
-                    }
-                }
-            } else {
-                let actual_source = format_code_for_compare(&fixture.input_path, &postprocessed);
-                let expected_source = format_code_for_compare(&fixture.input_path, &expected_code);
-                (
-                    prepare_code_for_compare(&actual_source),
-                    prepare_code_for_compare(&expected_source),
-                )
-            };
+        let actual = format_code_for_compare(&fixture.input_path, &actual);
+        let expected = format_code_for_compare(&fixture.input_path, &expected_code);
+        let actual = prepare_code_for_compare(&actual);
+        let expected = prepare_code_for_compare(&expected);
 
         match expected_state.unwrap_or(ExpectedState::Transform) {
             ExpectedState::Transform => {
@@ -989,79 +932,28 @@ fn extract_markdown_code_block(md: &str, header: &str) -> Option<String> {
     Some(code_start[..block_end].trim_end().to_string())
 }
 
-// --- OXC reprint ---
-
-/// Parse `code` with OXC and reprint it via `oxc_codegen`, canonicalizing formatting.
-/// Returns `None` if parsing fails (e.g. Flow-annotated code that OXC can't handle).
-fn oxc_reprint(code: &str, source_type: oxc_span::SourceType) -> Option<String> {
-    let allocator = oxc_allocator::Allocator::default();
-    let parsed = oxc_parser::Parser::new(&allocator, code, source_type).parse();
-    if parsed.panicked || !parsed.errors.is_empty() {
-        return None;
-    }
-    let reprinted = oxc_codegen::Codegen::new()
-        .with_options(oxc_codegen::CodegenOptions {
-            indent_char: oxc_codegen::IndentChar::Space,
-            indent_width: 2,
-            ..oxc_codegen::CodegenOptions::default()
-        })
-        .build(&parsed.program)
-        .code;
-    Some(reprinted)
-}
-
-/// Derive an OXC `SourceType` from a fixture input file path.
-fn source_type_from_path(input_path: &Path) -> oxc_span::SourceType {
-    let ext = input_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("js");
-    match ext {
-        "tsx" => oxc_span::SourceType::tsx(),
-        "ts" => oxc_span::SourceType::ts().with_jsx(true),
-        "jsx" => oxc_span::SourceType::jsx(),
-        _ => oxc_span::SourceType::mjs().with_jsx(true),
-    }
-}
-
 fn format_code_for_compare(input_path: &Path, code: &str) -> String {
     format_with_oxfmt(input_path, code).unwrap_or_else(|_| code.to_string())
 }
 
-// --- Oxfmt formatting ---
+// --- Formatter canonicalization ---
 
-const OXFMT_FORMAT_SCRIPT: &str = r#"
+const PRETTIER_FORMAT_SCRIPT: &str = r#"
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
 
-async function resolveFormat() {
-  const pnpmDir = path.join(process.cwd(), 'node_modules', '.pnpm');
-  if (!fs.existsSync(pnpmDir)) {
-    throw new Error(`missing pnpm directory: ${pnpmDir}`);
+async function resolvePrettier() {
+  const compilerDir = path.join(process.cwd(), 'third_party', 'react', 'compiler');
+  const prettierPath = path.join(compilerDir, 'node_modules', 'prettier', 'index.mjs');
+  if (!fs.existsSync(prettierPath)) {
+    throw new Error(`missing prettier at ${prettierPath}`);
   }
-
-  const candidates = fs
-    .readdirSync(pnpmDir)
-    .filter(entry => entry.startsWith('oxfmt@'))
-    .sort();
-
-  for (const entry of candidates) {
-    const modPath = path.join(pnpmDir, entry, 'node_modules', 'oxfmt', 'dist', 'index.js');
-    if (!fs.existsSync(modPath)) {
-      continue;
-    }
-    const mod = await import(pathToFileURL(modPath).href);
-    if (typeof mod.format === 'function') {
-      return mod.format;
-    }
-  }
-
-  throw new Error('failed to resolve oxfmt formatter from node_modules/.pnpm');
+  return import(pathToFileURL(prettierPath).href);
 }
 
-const format = await resolveFormat();
+const prettier = await resolvePrettier();
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 
@@ -1076,48 +968,43 @@ for await (const line of rl) {
   }
 
   try {
-    const result = await format(request.fileName || 'fixture.js', request.source || '', {
+    const code = await prettier.format(request.source || '', {
       semi: true,
       singleQuote: false,
       jsxSingleQuote: false,
       trailingComma: 'all',
+      parser: request.parser || 'babel-ts',
+      filepath: request.fileName || 'fixture.js',
     });
-    if (result.errors && result.errors.length > 0) {
-      process.stdout.write(
-        JSON.stringify({
-          error: result.errors.map(error => error.message || 'unknown oxfmt error').join('\n'),
-        }) + '\n',
-      );
-      continue;
-    }
-    process.stdout.write(JSON.stringify({ code: result.code }) + '\n');
+    process.stdout.write(JSON.stringify({ code }) + '\n');
   } catch (error) {
-    process.stdout.write(JSON.stringify({ error: error?.message || 'oxfmt failed' }) + '\n');
+    process.stdout.write(JSON.stringify({ error: error?.message || 'prettier failed' }) + '\n');
   }
 }
 "#;
 
 #[derive(Serialize)]
-struct OxfmtRequest<'a> {
+struct FormatRequest<'a> {
     #[serde(rename = "fileName")]
     file_name: &'a str,
+    parser: &'a str,
     source: &'a str,
 }
 
 #[derive(Deserialize)]
-struct OxfmtResponse {
+struct FormatResponse {
     code: Option<String>,
     error: Option<String>,
 }
 
-struct OxfmtSession {
+struct FormatterSession {
     _child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     _stderr: ChildStderr,
 }
 
-fn init_oxfmt_session() -> Result<std::sync::Mutex<OxfmtSession>, String> {
+fn init_formatter_session() -> Result<std::sync::Mutex<FormatterSession>, String> {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -1125,12 +1012,12 @@ fn init_oxfmt_session() -> Result<std::sync::Mutex<OxfmtSession>, String> {
 
     let mut child = Command::new("node")
         .current_dir(workspace_root)
-        .args(["--input-type=module", "-e", OXFMT_FORMAT_SCRIPT])
+        .args(["--input-type=module", "-e", PRETTIER_FORMAT_SCRIPT])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|err| format!("failed to spawn oxfmt: {err}"))?;
+        .map_err(|err| format!("failed to spawn formatter: {err}"))?;
 
     let stdin = child
         .stdin
@@ -1145,7 +1032,7 @@ fn init_oxfmt_session() -> Result<std::sync::Mutex<OxfmtSession>, String> {
         .take()
         .ok_or_else(|| "failed to capture oxfmt stderr".to_string())?;
 
-    Ok(std::sync::Mutex::new(OxfmtSession {
+    Ok(std::sync::Mutex::new(FormatterSession {
         _child: child,
         stdin,
         stdout: BufReader::new(stdout),
@@ -1153,65 +1040,69 @@ fn init_oxfmt_session() -> Result<std::sync::Mutex<OxfmtSession>, String> {
     }))
 }
 
-fn oxfmt_request(
-    session: &mut OxfmtSession,
+fn formatter_request(
+    session: &mut FormatterSession,
     file_name: &str,
+    parser: &str,
     code: &str,
 ) -> Result<String, String> {
-    let request = serde_json::to_string(&OxfmtRequest {
+    let request = serde_json::to_string(&FormatRequest {
         file_name,
+        parser,
         source: code,
     })
-    .map_err(|err| format!("failed to encode oxfmt request: {err}"))?;
+    .map_err(|err| format!("failed to encode formatter request: {err}"))?;
     session
         .stdin
         .write_all(request.as_bytes())
         .and_then(|_| session.stdin.write_all(b"\n"))
         .and_then(|_| session.stdin.flush())
-        .map_err(|err| format!("failed to write oxfmt stdin: {err}"))?;
+        .map_err(|err| format!("failed to write formatter stdin: {err}"))?;
 
     let mut response_line = String::new();
     session
         .stdout
         .read_line(&mut response_line)
-        .map_err(|err| format!("failed to read oxfmt output: {err}"))?;
+        .map_err(|err| format!("failed to read formatter output: {err}"))?;
     if response_line.is_empty() {
-        return Err("oxfmt process terminated unexpectedly".to_string());
+        return Err("formatter process terminated unexpectedly".to_string());
     }
 
-    let response: OxfmtResponse = serde_json::from_str(response_line.trim_end())
-        .map_err(|err| format!("failed to decode oxfmt response: {err}"))?;
+    let response: FormatResponse = serde_json::from_str(response_line.trim_end())
+        .map_err(|err| format!("failed to decode formatter response: {err}"))?;
     if let Some(error) = response.error {
         return Err(error);
     }
 
     response
         .code
-        .ok_or_else(|| "oxfmt response missing formatted code".to_string())
+        .ok_or_else(|| "formatter response missing formatted code".to_string())
 }
 
 fn format_with_oxfmt(input_path: &Path, code: &str) -> Result<String, String> {
-    static OXFMT_SESSION: OnceLock<Result<std::sync::Mutex<OxfmtSession>, String>> =
+    static FORMATTER_SESSION: OnceLock<Result<std::sync::Mutex<FormatterSession>, String>> =
         OnceLock::new();
 
     let file_name = input_path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("fixture.js");
-    let session = match OXFMT_SESSION.get_or_init(init_oxfmt_session) {
+    let parser = if file_name.contains(".flow.") || file_name.ends_with(".flow.js") {
+        "flow"
+    } else {
+        "babel-ts"
+    };
+    let session = match FORMATTER_SESSION.get_or_init(init_formatter_session) {
         Ok(session) => session,
         Err(err) => return Err(err.clone()),
     };
 
     let mut session = session
         .lock()
-        .map_err(|_| "failed to lock oxfmt session".to_string())?;
+        .map_err(|_| "failed to lock formatter session".to_string())?;
 
-    let result = oxfmt_request(&mut session, file_name, code);
+    let result = formatter_request(&mut session, file_name, parser, code);
 
-    // If formatting failed on a .js/.jsx file, retry with .tsx extension.
-    // Some .js fixtures contain TypeScript syntax (e.g., type annotations),
-    // which oxfmt cannot parse without TypeScript mode enabled.
     if result.is_err()
         && matches!(
             input_path.extension().and_then(|e| e.to_str()),
@@ -1224,7 +1115,7 @@ fn format_with_oxfmt(input_path: &Path, code: &str) -> Result<String, String> {
             .and_then(|n| n.to_str())
             .map(String::from)
             .unwrap_or_else(|| "fixture.tsx".to_string());
-        let retry = oxfmt_request(&mut session, &tsx_name, code);
+        let retry = formatter_request(&mut session, &tsx_name, parser, code);
         if retry.is_ok() {
             return retry;
         }

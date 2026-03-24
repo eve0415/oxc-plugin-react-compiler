@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::sync::OnceLock;
 
 pub(crate) fn canonicalize_strict_text(code: &str) -> String {
@@ -17,8 +19,8 @@ pub(crate) fn normalize_post_babel_export_spacing(code: &str) -> String {
         )
 }
 
-/// Normalize code for comparison. Applies all cosmetic normalizations (shared +
-/// strict) in a convergence loop until the output stabilizes.
+/// Normalize code for comparison. Applies only cosmetic printer/trivia
+/// normalizations in a convergence loop until the output stabilizes.
 fn normalize_for_compare(code: &str) -> String {
     let steps: &[fn(&str) -> String] = &[
         // Shared cosmetic normalizations (OXC vs Babel formatting)
@@ -42,7 +44,6 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_jsx_expression_container_spacing,
         normalize_jsx_text_boundary_space,
         normalize_jsx_residual_close_paren,
-        normalize_optional_parens,
         normalize_import_quotes,
         normalize_function_paren_space,
         normalize_empty_block_newlines,
@@ -62,16 +63,6 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_multiline_call_invocations,
         normalize_small_array_bracket_spacing,
         normalize_bracket_string_literal_spacing,
-        // Re-enabled: Babel's idx macro post-processing hoists dead `var _ref;`
-        // declarations that our compiler correctly omits. This is a post-processing
-        // artifact, not a compiler bug.
-        normalize_dead_bare_var_refs,
-        normalize_multiline_iife_collapsing,
-        normalize_inline_iife_parenthesization,
-        normalize_if_consequent_newline,
-        normalize_multiline_if_condition,
-        normalize_multiline_arrow_body,
-        normalize_outlined_function_spacing,
     ];
 
     let mut normalized = canonicalize_strict_text(code);
@@ -88,13 +79,8 @@ fn normalize_for_compare(code: &str) -> String {
     normalized
 }
 
-// Keep old names as aliases for call-site compatibility
 pub(crate) fn prepare_code_for_compare(code: &str) -> String {
-    if legacy_compare_normalizations_enabled() {
-        normalize_for_compare(code)
-    } else {
-        canonicalize_strict_text(code)
-    }
+    normalize_for_compare(code)
 }
 
 // --- Flow preprocessing ---
