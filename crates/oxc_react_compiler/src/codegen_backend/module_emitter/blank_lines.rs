@@ -15,6 +15,16 @@ enum LeadingFileCommentStyle {
     ImportTrailingLine,
 }
 
+fn first_import_trailing_line_comment(source: &str) -> Option<String> {
+    let first_line = source.lines().find(|line| !line.trim().is_empty())?;
+    let trimmed = first_line.trim_start();
+    if !trimmed.starts_with("import ") {
+        return None;
+    }
+    let comment_idx = trimmed.find("//")?;
+    Some(trimmed[comment_idx..].to_string())
+}
+
 fn leading_file_comment_style(source: &str) -> LeadingFileCommentStyle {
     let trimmed = source.trim_start();
     let mut rest = trimmed;
@@ -63,6 +73,7 @@ fn leading_file_comment_style(source: &str) -> LeadingFileCommentStyle {
 
 pub(super) fn move_leading_comment_to_import_trailing(code: &str, source: &str) -> String {
     let leading_style = leading_file_comment_style(source);
+    let import_trailing_comment = first_import_trailing_line_comment(source);
     if matches!(leading_style, LeadingFileCommentStyle::None) {
         return code.to_string();
     }
@@ -92,16 +103,54 @@ pub(super) fn move_leading_comment_to_import_trailing(code: &str, source: &str) 
     while comment_idx < lines.len() && lines[comment_idx].trim().is_empty() {
         comment_idx += 1;
     }
+    let synthesized_import_comment = import_trailing_comment.as_deref().filter(|comment| {
+        lines[last_import_idx].starts_with("import ") && !lines[last_import_idx].contains(*comment)
+    });
+
+    let merge_comment = |comment_text: &str, skip_comment_idx: Option<usize>| {
+        let mut result = String::with_capacity(code.len() + comment_text.len() + 1);
+        for (i, line) in lines.iter().enumerate() {
+            if i == last_import_idx {
+                result.push_str(line);
+                result.push(' ');
+                result.push_str(comment_text);
+                result.push('\n');
+            } else if Some(i) == skip_comment_idx
+                || (skip_comment_idx.is_some()
+                    && i > last_import_idx
+                    && i < skip_comment_idx.unwrap()
+                    && lines[i].trim().is_empty())
+            {
+                continue;
+            } else {
+                result.push_str(line);
+                result.push('\n');
+            }
+        }
+        if !code.ends_with('\n') && result.ends_with('\n') {
+            result.pop();
+        }
+        result
+    };
+
     if comment_idx >= lines.len() {
-        return code.to_string();
+        return synthesized_import_comment
+            .map(|comment| merge_comment(comment, None))
+            .unwrap_or_else(|| code.to_string());
     }
 
     let comment_line = lines[comment_idx].trim_start();
     match leading_style {
-        LeadingFileCommentStyle::IsolatedLine | LeadingFileCommentStyle::ImportTrailingLine
-            if !comment_line.starts_with("//") =>
-        {
+        LeadingFileCommentStyle::IsolatedLine if !comment_line.starts_with("//") => {
             return code.to_string();
+        }
+        LeadingFileCommentStyle::ImportTrailingLine => {
+            if comment_line.starts_with("//") {
+                return merge_comment(lines[comment_idx], Some(comment_idx));
+            }
+            return synthesized_import_comment
+                .map(|comment| merge_comment(comment, None))
+                .unwrap_or_else(|| code.to_string());
         }
         LeadingFileCommentStyle::Block
             if !(comment_line.starts_with("/**") || comment_line.starts_with("/*")) =>
@@ -109,31 +158,9 @@ pub(super) fn move_leading_comment_to_import_trailing(code: &str, source: &str) 
             return code.to_string();
         }
         LeadingFileCommentStyle::None => return code.to_string(),
-        LeadingFileCommentStyle::IsolatedLine
-        | LeadingFileCommentStyle::Block
-        | LeadingFileCommentStyle::ImportTrailingLine => {}
+        LeadingFileCommentStyle::IsolatedLine | LeadingFileCommentStyle::Block => {}
     }
-
-    let mut result = String::with_capacity(code.len());
-    for (i, line) in lines.iter().enumerate() {
-        if i == last_import_idx {
-            result.push_str(line);
-            result.push(' ');
-            result.push_str(lines[comment_idx]);
-            result.push('\n');
-        } else if i == comment_idx
-            || (i > last_import_idx && i < comment_idx && lines[i].trim().is_empty())
-        {
-            continue;
-        } else {
-            result.push_str(line);
-            result.push('\n');
-        }
-    }
-    if !code.ends_with('\n') && result.ends_with('\n') {
-        result.pop();
-    }
-    result
+    merge_comment(lines[comment_idx], Some(comment_idx))
 }
 
 /// Insert blank lines in the output based on blank line positions in the original source.
