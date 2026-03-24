@@ -2688,9 +2688,13 @@ fn run_reactive_passes(
         eprintln!("[REACTIVE] after prune_non_escaping: {} scopes", n);
     }
 
-    prune_non_reactive_deps_reactive::prune_non_reactive_deps_reactive(&mut reactive_fn);
+    // Upstream order: PruneUnusedScopes (creates PrunedScope nodes) runs BEFORE
+    // PruneNonReactiveDependencies. This matters because collectReactiveIdentifiers
+    // (inside PruneNonReactiveDependencies) marks PrunedScope declarations as reactive.
+    // If PruneUnusedScopes hasn't run yet, there are no PrunedScope nodes to read.
     prune_unused_scopes_reactive::prune_unused_scopes(&mut reactive_fn);
-    maybe_dump_reactive_scopes("after prune_non_reactive/prune_unused", &reactive_fn.body);
+    prune_non_reactive_deps_reactive::prune_non_reactive_deps_reactive(&mut reactive_fn);
+    maybe_dump_reactive_scopes("after prune_unused/prune_non_reactive", &reactive_fn.body);
 
     if debug {
         let n = count_reactive_scopes(&reactive_fn.body);
