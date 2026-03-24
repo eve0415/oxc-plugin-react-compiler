@@ -225,8 +225,11 @@ fn collect_from_block(
             }
             ReactiveStatement::PrunedScope(scope_block) => {
                 collect_from_block(&scope_block.instructions, reactive_ids, reactive_decls);
+                let named_function_decl_ids =
+                    collect_named_function_decl_ids(&scope_block.instructions);
                 for (id, decl) in &scope_block.scope.declarations {
                     if !is_primitive_type(&decl.identifier)
+                        && !named_function_decl_ids.contains(&decl.identifier.declaration_id)
                         && !is_stable_ref_type(&decl.identifier, reactive_ids, reactive_decls)
                     {
                         reactive_ids.insert(*id);
@@ -657,6 +660,101 @@ fn for_each_pattern_place<F: FnMut(&Place)>(pattern: &Pattern, f: &mut F) {
 /// Check if an identifier has a primitive type.
 fn is_primitive_type(id: &Identifier) -> bool {
     matches!(id.type_, Type::Primitive)
+}
+
+fn collect_named_function_decl_ids(block: &ReactiveBlock) -> HashSet<DeclarationId> {
+    let mut out = HashSet::new();
+    for stmt in block {
+        match stmt {
+            ReactiveStatement::Instruction(instr) => {
+                if let Some(lvalue) = &instr.lvalue {
+                    match &instr.value {
+                        InstructionValue::FunctionExpression { lowered_func, .. }
+                        | InstructionValue::ObjectMethod { lowered_func, .. } => {
+                            if lowered_func.func.id.is_some() {
+                                out.insert(lvalue.identifier.declaration_id);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            ReactiveStatement::Terminal(term_stmt) => {
+                out.extend(collect_named_function_decl_ids_from_terminal(
+                    &term_stmt.terminal,
+                ));
+            }
+            ReactiveStatement::Scope(scope_block) => {
+                out.extend(collect_named_function_decl_ids(&scope_block.instructions));
+            }
+            ReactiveStatement::PrunedScope(scope_block) => {
+                out.extend(collect_named_function_decl_ids(&scope_block.instructions));
+            }
+        }
+    }
+    out
+}
+
+fn collect_named_function_decl_ids_from_terminal(
+    terminal: &ReactiveTerminal,
+) -> HashSet<DeclarationId> {
+    let mut out = HashSet::new();
+    match terminal {
+        ReactiveTerminal::If {
+            consequent,
+            alternate,
+            ..
+        } => {
+            out.extend(collect_named_function_decl_ids(consequent));
+            if let Some(alt) = alternate {
+                out.extend(collect_named_function_decl_ids(alt));
+            }
+        }
+        ReactiveTerminal::Switch { cases, .. } => {
+            for case in cases {
+                if let Some(block) = &case.block {
+                    out.extend(collect_named_function_decl_ids(block));
+                }
+            }
+        }
+        ReactiveTerminal::DoWhile { loop_block, .. }
+        | ReactiveTerminal::While { loop_block, .. } => {
+            out.extend(collect_named_function_decl_ids(loop_block));
+        }
+        ReactiveTerminal::For {
+            init,
+            update,
+            loop_block,
+            ..
+        } => {
+            out.extend(collect_named_function_decl_ids(init));
+            if let Some(update) = update {
+                out.extend(collect_named_function_decl_ids(update));
+            }
+            out.extend(collect_named_function_decl_ids(loop_block));
+        }
+        ReactiveTerminal::ForOf {
+            init, loop_block, ..
+        }
+        | ReactiveTerminal::ForIn {
+            init, loop_block, ..
+        } => {
+            out.extend(collect_named_function_decl_ids(init));
+            out.extend(collect_named_function_decl_ids(loop_block));
+        }
+        ReactiveTerminal::Label { block, .. } => {
+            out.extend(collect_named_function_decl_ids(block));
+        }
+        ReactiveTerminal::Try { block, handler, .. } => {
+            out.extend(collect_named_function_decl_ids(block));
+            out.extend(collect_named_function_decl_ids(handler));
+        }
+        ReactiveTerminal::Break { .. }
+        | ReactiveTerminal::Continue { .. }
+        | ReactiveTerminal::Return { .. }
+        | ReactiveTerminal::Throw { .. } => {}
+    }
+    out
 }
 
 /// Check if an identifier is a stable ref type (useRef that is not reactive).
