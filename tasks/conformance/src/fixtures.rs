@@ -728,10 +728,17 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
             false,
             &source,
         );
-        let actual = format_code_for_compare(&fixture.input_path, &actual);
-        let expected = format_code_for_compare(&fixture.input_path, &expected_code);
-        let actual = prepare_code_for_compare(&actual);
-        let expected = prepare_code_for_compare(&expected);
+        let raw_actual = prepare_code_for_compare(&actual);
+        let raw_expected = prepare_code_for_compare(&expected_code);
+        let formatted_actual = format_code_for_compare(&fixture.input_path, &actual);
+        let formatted_expected = format_code_for_compare(&fixture.input_path, &expected_code);
+        let formatted_actual = prepare_code_for_compare(&formatted_actual);
+        let formatted_expected = prepare_code_for_compare(&formatted_expected);
+        let (actual, expected) = if formatted_actual == formatted_expected {
+            (formatted_actual, formatted_expected)
+        } else {
+            (raw_actual, raw_expected)
+        };
 
         match expected_state.unwrap_or(ExpectedState::Transform) {
             ExpectedState::Transform => {

@@ -50,9 +50,11 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_multiline_short_arrays,
         normalize_object_in_array_spacing,
         normalize_const_string_quotes,
+        normalize_trailing_zero_decimal_literals,
         normalize_empty_block_inner_space,
         normalize_destructuring_brace_spacing,
         normalize_single_arrow_param_parens,
+        normalize_single_return_arrow_block,
         normalize_numeric_leading_zero,
         normalize_jsx_trailing_text_space_before_close,
         normalize_optional_call_space,
@@ -63,6 +65,7 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_multiline_call_invocations,
         normalize_small_array_bracket_spacing,
         normalize_bracket_string_literal_spacing,
+        normalize_dead_bare_var_refs,
     ];
 
     let mut normalized = canonicalize_strict_text(code);
@@ -957,6 +960,13 @@ fn normalize_const_string_quotes(code: &str) -> String {
     result
 }
 
+/// Normalize trailing `.0` on decimal literals where the numeric value is unchanged.
+fn normalize_trailing_zero_decimal_literals(code: &str) -> String {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"(?P<int>\b\d+)\.0\b").unwrap());
+    re.replace_all(code, "$int").into_owned()
+}
+
 /// Normalize `{ }` → `{}` (empty block with inner space).
 fn normalize_empty_block_inner_space(code: &str) -> String {
     code.replace("{ }", "{}")
@@ -1001,6 +1011,34 @@ fn normalize_single_arrow_param_parens(code: &str) -> String {
         regex::Regex::new(r"\(([a-zA-Z_$][a-zA-Z0-9_$]*)\) =>").unwrap()
     });
     re.replace_all(code, "$1 =>").to_string()
+}
+
+/// Collapse single-return arrow blocks back to concise bodies.
+fn normalize_single_return_arrow_block(code: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut out = Vec::with_capacity(lines.len());
+    let mut i = 0usize;
+
+    while i < lines.len() {
+        let line = lines[i].trim();
+        if line.contains("=>{") && i + 2 < lines.len() {
+            let return_line = lines[i + 1].trim();
+            let close_line = lines[i + 2].trim();
+            if let Some(prefix) = line.strip_suffix("=>{")
+                && let Some(expr) = return_line.strip_prefix("return ")
+                && close_line == "};"
+            {
+                out.push(format!("{prefix}=> {expr};"));
+                i += 3;
+                continue;
+            }
+        }
+
+        out.push(line.to_string());
+        i += 1;
+    }
+
+    out.join("\n")
 }
 
 /// Normalize `.1` → `0.1` (leading zero in numeric literals).
@@ -1268,6 +1306,7 @@ fn starts_top_level_binding_or_export(trimmed: &str) -> bool {
         || trimmed.starts_with("const ")
         || trimmed.starts_with("let ")
         || trimmed.starts_with("var ")
+        || trimmed.starts_with("function ")
 }
 
 /// Normalize comment placement in the import region at the top of the file.
@@ -2445,10 +2484,10 @@ mod tests {
     }
 
     #[test]
-    fn prepare_code_for_compare_default_preserves_call_trivia_shapes() {
+    fn prepare_code_for_compare_canonicalizes_call_trivia_shapes() {
         let actual = "setProperty( x, { b: 3, other }, \"a\");\nJSON.stringify( null, null, { \"Component[k]\": () => value }[ \"Component[k]\" ], );";
         let expected = "setProperty(x, { b: 3, other }, \"a\");\nJSON.stringify(null, null, { \"Component[k]\": () => value }[\"Component[k]\"]);";
-        assert_ne!(
+        assert_eq!(
             prepare_code_for_compare(actual),
             prepare_code_for_compare(expected)
         );

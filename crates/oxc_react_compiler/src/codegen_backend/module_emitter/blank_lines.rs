@@ -75,9 +75,7 @@ fn leading_file_comment_style(source: &str) -> LeadingFileCommentStyle {
 
     if comment_lines == 1 {
         LeadingFileCommentStyle::IsolatedLine
-    } else if comment_lines > 1 && saw_blank_after_comments {
-        LeadingFileCommentStyle::CommentGroupWithBlankGap
-    } else if comment_lines > 1 && !next_noncomment_is_import {
+    } else if comment_lines > 1 && (saw_blank_after_comments || !next_noncomment_is_import) {
         LeadingFileCommentStyle::CommentGroupWithBlankGap
     } else {
         LeadingFileCommentStyle::None
