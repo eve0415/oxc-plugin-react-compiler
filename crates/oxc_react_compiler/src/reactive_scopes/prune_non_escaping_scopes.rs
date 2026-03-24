@@ -2477,7 +2477,23 @@ fn prune_scopes_block(
                             .collect();
                         let feeds_conditional_scope =
                             scope_feeds_flattened_conditional_dependency(block, i, &scope_decl_ids);
-                        if has_memoized_output || feeds_conditional_scope {
+                        // Check if any declaration in this scope is the target of
+                        // a FinishMemoize marker (i.e., it holds a manually memoized
+                        // value from useMemo/useCallback). If so, keep the scope even
+                        // if the output doesn't appear "memoized" by the normal graph
+                        // — pruning it would cause validate_preserved_manual_memoization
+                        // to fail.
+                        let has_manual_memo_decl = scope_block.instructions.iter().any(|stmt| {
+                            matches!(
+                                stmt,
+                                ReactiveStatement::Instruction(instr)
+                                    if matches!(
+                                        instr.value,
+                                        InstructionValue::FinishMemoize { pruned: false, .. }
+                                    )
+                            )
+                        });
+                        if has_memoized_output || feeds_conditional_scope || has_manual_memo_decl {
                             if feeds_conditional_scope && !has_memoized_output {
                                 debug_scope_prune(
                                     &scope_block.scope,

@@ -1,10 +1,9 @@
-# React Compiler Conformance -- 99.9% parity rate
+# React Compiler Conformance -- 100.0% parity rate
 
-**1772** parity_success, **1** parity_failure, **0** skipped
+**1773** parity_success, **0** parity_failure, **0** skipped
 
 ## Failed
 
-- `custom/usememo-nested-map-conditional-style`: Output mismatch
 
 ## Passed
 
@@ -267,6 +266,7 @@
 - `custom/usememo-filter-nested-map-jsx`
 - `custom/usememo-filter-result-map`
 - `custom/usememo-filter-sort-bail`
+- `custom/usememo-nested-map-conditional-style`
 - `custom/usememo-preserve-retry`
 - `custom/usememo-property-dep`
 - `custom/usememo-slice-result-map`
