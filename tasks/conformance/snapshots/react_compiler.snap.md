@@ -1,9 +1,14 @@
-# React Compiler Conformance -- 100.0% parity rate
+# React Compiler Conformance -- 99.7% parity rate
 
-**1779** parity_success, **0** parity_failure, **0** skipped
+**1778** parity_success, **5** parity_failure, **0** skipped
 
 ## Failed
 
+- `custom/website-index-out-of-bounds-cache-layout`: Output mismatch
+- `custom/website-repro-link`: Expected transformed output, but compiler bailed out/skipped
+- `custom/website-repro-skills`: Output mismatch
+- `custom/website-repro-sys`: Output mismatch
+- `idx-no-outlining`: Output mismatch
 
 ## Passed
 
@@ -274,7 +279,7 @@
 - `custom/usememo-slice-result-map`
 - `custom/useref-initial-value-sentinel`
 - `custom/website-helper-function-order`
-- `custom/website-index-out-of-bounds-cache-layout`
+- `custom/website-repro-projects`
 - `custom/website-skills-grouping`
 - `custom/website-terminal-switch`
 - `dce-loop`
@@ -741,7 +746,6 @@
 - `hooks-with-prefix`
 - `idx-method-no-outlining`
 - `idx-method-no-outlining-wildcard`
-- `idx-no-outlining`
 - `ignore-inner-interface-types`
 - `ignore-use-no-forget`
 - `iife-inline-ternary`

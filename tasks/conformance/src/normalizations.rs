@@ -21,15 +21,17 @@ pub(crate) fn normalize_post_babel_export_spacing(code: &str) -> String {
 
 /// Normalize code for comparison. Applies only cosmetic printer/trivia
 /// normalizations in a convergence loop until the output stabilizes.
+///
+/// Any non-cosmetic structural rewrites must stay behind the legacy flag so the
+/// default parity comparison does not hide real code-shape drift.
 fn normalize_for_compare(code: &str) -> String {
-    let steps: &[fn(&str) -> String] = &[
+    let mut steps: Vec<fn(&str) -> String> = vec![
         // Shared cosmetic normalizations (OXC vs Babel formatting)
         normalize_compare_multiline_imports,
         normalize_import_region_comments,
         normalize_top_level_comment_trivia,
         normalize_compare_multiline_brace_literals,
         normalize_multiline_trailing_commas_before_closers,
-        normalize_switch_case_braces,
         normalize_multiline_switch_cases,
         normalize_ts_object_type_semicolons,
         normalize_numeric_exponent_literals,
@@ -54,24 +56,30 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_empty_block_inner_space,
         normalize_destructuring_brace_spacing,
         normalize_single_arrow_param_parens,
-        normalize_single_return_arrow_block,
         normalize_numeric_leading_zero,
         normalize_jsx_trailing_text_space_before_close,
         normalize_optional_call_space,
         normalize_jsx_attr_trailing_space,
-        normalize_empty_statement_semicolons,
         // Strict output normalizations (cosmetic OXC printer differences)
         normalize_trailing_comma_in_calls,
         normalize_multiline_call_invocations,
         normalize_small_array_bracket_spacing,
         normalize_bracket_string_literal_spacing,
-        normalize_dead_bare_var_refs,
     ];
+
+    if legacy_compare_normalizations_enabled() {
+        steps.extend([
+            normalize_switch_case_braces,
+            normalize_single_return_arrow_block,
+            normalize_empty_statement_semicolons,
+            normalize_dead_bare_var_refs,
+        ]);
+    }
 
     let mut normalized = canonicalize_strict_text(code);
     for _ in 0..6 {
         let mut next = normalized.clone();
-        for step in steps {
+        for step in &steps {
             next = step(&next);
         }
         if next == normalized {
@@ -2589,6 +2597,46 @@ mod tests {
         let actual =
             "function foo(x) {\nbb0: {\nswitch (x) {\ncase 0: {\nbreak bb0;\n}\ndefault:\n}\n}\n}";
         let expected = "function foo(x) {\nswitch (x) {\ncase 0: {\nbreak;\n}\ndefault:\n}\n}";
+        assert_ne!(
+            prepare_code_for_compare(actual),
+            prepare_code_for_compare(expected)
+        );
+    }
+
+    #[test]
+    fn prepare_code_for_compare_default_preserves_switch_case_brace_shape() {
+        let actual = "switch (kind) {\ncase \"a\": {\nconst value = read();\nreturn value;\n}\n}";
+        let expected = "switch (kind) {\ncase \"a\":\nconst value = read();\nreturn value;\n}";
+        assert_ne!(
+            prepare_code_for_compare(actual),
+            prepare_code_for_compare(expected)
+        );
+    }
+
+    #[test]
+    fn prepare_code_for_compare_default_preserves_single_return_arrow_block_shape() {
+        let actual = "const fnRef = value =>{\nreturn value;\n};";
+        let expected = "const fnRef = value => value;";
+        assert_ne!(
+            prepare_code_for_compare(actual),
+            prepare_code_for_compare(expected)
+        );
+    }
+
+    #[test]
+    fn prepare_code_for_compare_default_preserves_empty_statement_shape() {
+        let actual = "doThing(); ;\nreturn value;";
+        let expected = "doThing();\nreturn value;";
+        assert_ne!(
+            prepare_code_for_compare(actual),
+            prepare_code_for_compare(expected)
+        );
+    }
+
+    #[test]
+    fn prepare_code_for_compare_default_preserves_dead_bare_var_ref_shape() {
+        let actual = "var _ref;\nconst value = foo;";
+        let expected = "const value = foo;";
         assert_ne!(
             prepare_code_for_compare(actual),
             prepare_code_for_compare(expected)
