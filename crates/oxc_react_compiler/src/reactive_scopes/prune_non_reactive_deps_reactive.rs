@@ -175,7 +175,8 @@ fn is_identifier_reactive(
     reactive_ids: &HashSet<IdentifierId>,
     reactive_decls: &HashSet<DeclarationId>,
 ) -> bool {
-    reactive_ids.contains(&identifier.id) || reactive_decls.contains(&identifier.declaration_id)
+    let _ = reactive_decls;
+    reactive_ids.contains(&identifier.id)
 }
 
 /// Collect all reactive identifier IDs by walking the reactive function tree.
