@@ -1225,7 +1225,13 @@ fn lower_binding_pat<'a>(
                         nested_followups.push((temp.clone(), &prop.value));
                         temp
                     } else {
-                        build_pattern_place(builder, &prop.value)
+                        declare_pattern_place(
+                            builder,
+                            ident,
+                            kind,
+                            semantic,
+                            allow_lexical_shadowing,
+                        )
                     }
                 } else {
                     let temp = builder.make_temporary_place(span_to_loc(prop.span));
@@ -1245,7 +1251,13 @@ fn lower_binding_pat<'a>(
                         nested_followups.push((temp.clone(), &rest.argument));
                         temp
                     } else {
-                        build_pattern_place(builder, &rest.argument)
+                        declare_pattern_place(
+                            builder,
+                            ident,
+                            kind,
+                            semantic,
+                            allow_lexical_shadowing,
+                        )
                     }
                 } else {
                     let temp = builder.make_temporary_place(span_to_loc(rest.span));
@@ -1320,7 +1332,13 @@ fn lower_binding_pat<'a>(
                                 });
                                 items.push(hir::ArrayElement::Place(temp_place));
                             } else {
-                                let place = build_pattern_place(builder, elem);
+                                let place = declare_pattern_place(
+                                    builder,
+                                    ident,
+                                    kind,
+                                    semantic,
+                                    allow_lexical_shadowing,
+                                );
                                 items.push(hir::ArrayElement::Place(place));
                             }
                         }
@@ -1348,7 +1366,13 @@ fn lower_binding_pat<'a>(
                         });
                         items.push(hir::ArrayElement::Spread(temp_place));
                     } else {
-                        let place = build_pattern_place(builder, &rest.argument);
+                        let place = declare_pattern_place(
+                            builder,
+                            ident,
+                            kind,
+                            semantic,
+                            allow_lexical_shadowing,
+                        );
                         items.push(hir::ArrayElement::Spread(place));
                     }
                 } else {
@@ -1446,6 +1470,29 @@ fn lower_reorderable_expr_to_temp<'a>(
         ));
     }
     lower_expr_to_temp(builder, expr, semantic, source)
+}
+
+fn declare_pattern_place<'a>(
+    builder: &mut HIRBuilder,
+    ident: &js::BindingIdentifier<'a>,
+    kind: hir::InstructionKind,
+    semantic: &Semantic<'a>,
+    allow_lexical_shadowing: bool,
+) -> hir::Place {
+    let loc = span_to_loc(ident.span);
+    let identifier = builder.declare_binding(&ident.name, loc.clone(), allow_lexical_shadowing);
+    if kind == hir::InstructionKind::Const {
+        builder.mark_binding_const(&ident.name);
+    }
+    if binding_identifier_is_context_like(ident, semantic) {
+        builder.mark_context_identifier(&identifier);
+    }
+    hir::Place {
+        identifier,
+        effect: hir::Effect::Unknown,
+        reactive: false,
+        loc,
+    }
 }
 
 /// Emit a block-based default value computation for destructuring patterns.
@@ -1758,36 +1805,6 @@ fn reorderable_expr_type_name(expr: &js::Expression<'_>) -> &'static str {
         js::Expression::BinaryExpression(_) => "BinaryExpression",
         js::Expression::NewExpression(_) => "NewExpression",
         _ => "unknown",
-    }
-}
-
-/// Build a Place for a binding pattern element (used in Destructure instructions).
-fn build_pattern_place<'a>(
-    builder: &mut HIRBuilder,
-    pattern: &js::BindingPattern<'a>,
-) -> hir::Place {
-    match pattern {
-        js::BindingPattern::BindingIdentifier(ident) => {
-            let loc = span_to_loc(ident.span);
-            let identifier = builder.resolve_binding(&ident.name, loc.clone());
-            hir::Place {
-                identifier,
-                effect: hir::Effect::Unknown,
-                reactive: false,
-                loc,
-            }
-        }
-        _ => {
-            // For complex nested patterns, create a temporary place
-            let loc = hir::SourceLocation::Generated;
-            let identifier = builder.make_temporary(loc.clone());
-            hir::Place {
-                identifier,
-                effect: hir::Effect::Unknown,
-                reactive: false,
-                loc,
-            }
-        }
     }
 }
 
