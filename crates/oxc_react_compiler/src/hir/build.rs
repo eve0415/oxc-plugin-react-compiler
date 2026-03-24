@@ -2053,6 +2053,10 @@ fn lower_for<'a>(
     let continuation = builder.reserve(hir::BlockKind::Block);
     let cont_id = continuation.id;
 
+    // Enter a binding scope for the for-loop's variable declarations so that
+    // sibling loops with the same variable name get unique DeclarationIds.
+    builder.enter_binding_scope();
+
     // Init block: variable declarations or expression
     let init_block = builder.enter(hir::BlockKind::Loop, |builder, _| {
         if let Some(init) = &for_stmt.init {
@@ -2151,6 +2155,9 @@ fn lower_for<'a>(
             continuation,
         );
     }
+
+    // Exit the binding scope opened at the start of lower_for.
+    builder.exit_binding_scope();
 }
 
 fn lower_for_of<'a>(
@@ -2177,6 +2184,11 @@ fn lower_for_of_inner<'a>(
         return;
     }
 
+    // Enter a binding scope for the for-of's variable declarations so that
+    // each for-of loop gets unique DeclarationIds for its bindings, even if
+    // sibling loops use the same variable name (e.g., `for (const [i, ..] of a)`,
+    // `for (const [i, ..] of b)`).
+    builder.enter_binding_scope();
     let (for_of_decl_kind, for_of_allow_lexical_shadowing) =
         if let js::ForStatementLeft::VariableDeclaration(decl) = &for_of.left {
             let allow_lexical_shadowing = !matches!(decl.kind, js::VariableDeclarationKind::Var);
@@ -2312,6 +2324,10 @@ fn lower_for_of_inner<'a>(
         next_item
     };
 
+    // Exit the binding scope opened at the start of lower_for_of_inner,
+    // restoring previous bindings so sibling for-of loops get unique DeclarationIds.
+    builder.exit_binding_scope();
+
     builder.terminate_with_continuation(
         hir::Terminal::Branch {
             test: test_place,
@@ -2377,6 +2393,7 @@ fn lower_for_in<'a>(
         builder.push_todo("Support non-trivial for..in inits".to_string());
     }
 
+    builder.enter_binding_scope();
     let (for_in_decl_kind, for_in_allow_lexical_shadowing) =
         if let js::ForStatementLeft::VariableDeclaration(decl) = &for_in.left {
             let allow_lexical_shadowing = !matches!(decl.kind, js::VariableDeclarationKind::Var);
@@ -2498,6 +2515,7 @@ fn lower_for_in<'a>(
         },
         continuation,
     );
+    builder.exit_binding_scope();
 }
 
 fn for_in_has_non_trivial_context_iterator(

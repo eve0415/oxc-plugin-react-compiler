@@ -1,10 +1,9 @@
-# React Compiler Conformance -- 99.9% parity rate
+# React Compiler Conformance -- 100.0% parity rate
 
-**1773** parity_success, **1** parity_failure, **0** skipped
+**1774** parity_success, **0** parity_failure, **0** skipped
 
 ## Failed
 
-- `custom/for-loop-variable-name-dedup`: Output mismatch
 
 ## Passed
 
@@ -255,6 +254,7 @@
 - `custom/catch-forloop-same-name-variable`
 - `custom/closure-multiple-calls-scope-leak`
 - `custom/conditional-expr-extra-scope`
+- `custom/for-loop-variable-name-dedup`
 - `custom/import-meta-env-property`
 - `custom/labeled-block-scoping`
 - `custom/local-function-call-extra-memo`
