@@ -5966,21 +5966,6 @@ fn try_compile_arrow<'a>(
         }
     };
 
-    // Upstream panicThreshold:"none" retry behavior can keep source unchanged for
-    // no-memo retry fallbacks that only surfaced validation diagnostics.
-    if pipeline_output.retry_no_memo_mode
-        && !pipeline_output.has_fire_rewrite
-        && !pipeline_output.has_inferred_effect
-    {
-        if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
-            eprintln!(
-                "[RETRY_SKIP_EMIT] {}: preserving source on no-memo retry",
-                name
-            );
-        }
-        return Ok(None);
-    }
-
     let codegen_result = pipeline_output.codegen_result;
     align_params_result_with_codegen(&mut params_result, &codegen_result.param_names);
     let PreparedGeneratedBody {
