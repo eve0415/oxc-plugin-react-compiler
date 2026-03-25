@@ -725,7 +725,7 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
         }
     } else {
         let expected_code = expected_code.unwrap(); // safe: we checked above
-        let actual = maybe_apply_snap_post_babel_plugins(
+        let actual_code = maybe_apply_snap_post_babel_plugins(
             &result.code,
             &filename,
             language,
@@ -733,9 +733,9 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
             false,
             &source,
         );
-        let raw_actual = prepare_code_for_compare(&actual);
+        let raw_actual = prepare_code_for_compare(&actual_code);
         let raw_expected = prepare_code_for_compare(&expected_code);
-        let formatted_actual = format_code_for_compare(&fixture.input_path, &actual)
+        let formatted_actual = format_code_for_compare(&fixture.input_path, &actual_code)
             .ok()
             .map(|code| prepare_code_for_compare(&code));
         let formatted_expected = format_code_for_compare(&fixture.input_path, &expected_code)
@@ -754,8 +754,8 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
         };
         let ast_equivalent = if actual != expected {
             let mut matched = false;
-            for candidate in [expected.as_str(), expected_code.as_str()] {
-                match ast_compare_for_compare(&fixture.input_path, &actual, candidate) {
+            for candidate in [expected_code.as_str(), expected.as_str()] {
+                match ast_compare_for_compare(&fixture.input_path, &actual_code, candidate) {
                     Ok(value) => {
                         if std::env::var("DEBUG_AST_COMPARE").is_ok() {
                             eprintln!(
