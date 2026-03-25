@@ -45,13 +45,13 @@ jobs:
           run-install: true
 
       - name: Build NAPI binding
-        run: vpx napi build --platform --release --cwd crates/oxc_react_compiler_napi -o napi/binding/dist
+        run: vpx napi build --platform --release --cwd crates/oxc_react_compiler_napi -o napi/dist
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: binding-${{ matrix.target }}
-          path: napi/binding/dist/*.node
+          path: napi/dist/*.node
           if-no-files-found: error
 
   publish:
@@ -78,27 +78,24 @@ jobs:
           path: artifacts
 
       - name: Move artifacts to platform packages
-        run: vpx napi artifacts --package-json-path napi/binding/package.json --build-output-dir artifacts
+        run: vpx napi artifacts --package-json-path napi/package.json --build-output-dir artifacts
 
       - name: List artifacts
         run: |
           echo "=== Platform packages ==="
-          ls -lR napi/binding/npm/
-          echo "=== Binding dist ==="
-          ls -lR napi/binding/dist/ || true
+          ls -lR napi/npm/
+          echo "=== Dist ==="
+          ls -lR napi/dist/ || true
 
       - name: Build Vite plugin
         run: vp pack
 
       - name: Publish platform packages
         run: |
-          for pkg in napi/binding/npm/*/; do
+          for pkg in napi/npm/*/; do
             echo "Publishing $pkg"
             pnpm publish "$pkg" --provenance --access public --no-git-checks
           done
-
-      - name: Publish @oxc-plugin-react-compiler/binding
-        run: pnpm publish napi/binding/ --provenance --access public --no-git-checks
 
       - name: Publish oxc-plugin-react-compiler
         run: pnpm publish napi/ --provenance --access public --no-git-checks

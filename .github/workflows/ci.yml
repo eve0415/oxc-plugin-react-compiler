@@ -93,7 +93,7 @@ jobs:
           run-install: true
 
       - name: Build NAPI binding
-        run: vpx napi build --platform --release --cwd crates/oxc_react_compiler_napi -o napi/binding/dist
+        run: vpx napi build --platform --release --cwd crates/oxc_react_compiler_napi -o napi/dist
 
       - name: Typecheck
         run: vp check

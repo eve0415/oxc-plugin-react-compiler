@@ -57,24 +57,19 @@ importers:
 
   napi:
     dependencies:
-      '@oxc-plugin-react-compiler/binding':
-        specifier: workspace:*
-        version: link:binding
       vite:
         specifier: npm:@voidzero-dev/vite-plus-core@0.1.13
         version: '@voidzero-dev/vite-plus-core@0.1.13(@types/node@25.5.0)'
 
-  napi/binding: {}
+  napi/npm/darwin-arm64: {}
 
-  napi/binding/npm/darwin-arm64: {}
+  napi/npm/darwin-x64: {}
 
-  napi/binding/npm/darwin-x64: {}
+  napi/npm/linux-arm64-gnu: {}
 
-  napi/binding/npm/linux-arm64-gnu: {}
+  napi/npm/linux-x64-gnu: {}
 
-  napi/binding/npm/linux-x64-gnu: {}
-
-  napi/binding/npm/win32-x64-msvc: {}
+  napi/npm/win32-x64-msvc: {}
 
 packages:
 
