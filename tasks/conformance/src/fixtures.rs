@@ -761,7 +761,11 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
                             eprintln!(
                                 "[AST_COMPARE] fixture={} candidate={} match={}",
                                 fixture.name,
-                                if candidate == expected { "selected" } else { "original" },
+                                if candidate == expected {
+                                    "selected"
+                                } else {
+                                    "original"
+                                },
                                 value
                             );
                         }
@@ -775,7 +779,11 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
                             eprintln!(
                                 "[AST_COMPARE] fixture={} candidate={} error={}",
                                 fixture.name,
-                                if candidate == expected { "selected" } else { "original" },
+                                if candidate == expected {
+                                    "selected"
+                                } else {
+                                    "original"
+                                },
                                 err
                             );
                         }
@@ -1089,7 +1097,44 @@ function strip(node) {
     if (IGNORED_KEYS.has(key)) continue;
     out[key] = strip(value);
   }
+  if ((out.type === 'JSXElement' || out.type === 'JSXFragment') && Array.isArray(out.children)) {
+    out.children = normalizeJsxChildren(out.children);
+  }
   return out;
+}
+
+function normalizeJsxChildren(children) {
+  const filtered = children.filter(
+    child =>
+      child != null &&
+      !(child.type === 'JSXText' && typeof child.value === 'string' && child.value.trim() === '') &&
+      !(
+        child.type === 'JSXExpressionContainer' &&
+        child.expression?.type === 'StringLiteral' &&
+        typeof child.expression.value === 'string' &&
+        child.expression.value.trim() === ''
+      )
+  );
+  return filtered
+    .map((child, index) => {
+      if (child.type !== 'JSXText' || typeof child.value !== 'string') {
+        return child;
+      }
+      let value = child.value;
+      const prev = filtered[index - 1];
+      const next = filtered[index + 1];
+      if (index === 0 || prev?.type !== 'JSXText') {
+        value = value.replace(/^ +/, '');
+      }
+      if (index === filtered.length - 1 || next?.type !== 'JSXText') {
+        value = value.replace(/ +$/, '');
+      }
+      if (value.trim() === '') {
+        return null;
+      }
+      return { ...child, value };
+    })
+    .filter(Boolean);
 }
 
 function parseCode(source, parser) {

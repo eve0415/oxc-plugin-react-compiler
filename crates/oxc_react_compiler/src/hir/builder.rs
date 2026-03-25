@@ -128,7 +128,7 @@ pub fn mark_predecessors(body: &mut HIR) {
         pred_map.insert(*id, HashSet::new());
     }
     for (_, block) in &body.blocks {
-        for succ in each_terminal_successor(&block.terminal) {
+        for succ in terminal_successors(&block.terminal) {
             if let Some(preds) = pred_map.get_mut(&succ) {
                 preds.insert(block.id);
             }

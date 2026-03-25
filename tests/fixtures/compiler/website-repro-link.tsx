@@ -1,3 +1,4 @@
+// @panicThreshold:"none"
 // Reduced from the website contact-form path.
 // Reproduces exact transform drift plus a real AST mismatch involving
 // async submit flow, try/catch, field-meta callbacks, and switch-based
