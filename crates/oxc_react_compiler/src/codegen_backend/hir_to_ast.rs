@@ -2189,6 +2189,10 @@ pub(crate) fn lower_function_expression_ast<'a>(
     if expr_type == types::FunctionExpressionType::ArrowFunctionExpression
         && directives.is_empty()
         && let Some(expression) = single_return_expression(&statements, builder.allocator)
+        && !matches!(
+            &expression,
+            ast::Expression::JSXElement(_) | ast::Expression::JSXFragment(_)
+        )
     {
         return Some(builder.expression_arrow_function(
             SPAN,

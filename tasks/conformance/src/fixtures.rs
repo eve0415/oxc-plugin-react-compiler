@@ -1056,9 +1056,34 @@ function strip(node) {
   if (Array.isArray(node)) {
     return node
       .map(strip)
-      .filter(item => !(item && item.type === 'JSXText' && typeof item.value === 'string' && item.value.trim() === ''));
+      .filter(item =>
+        item != null &&
+        !(item.type === 'JSXText' && typeof item.value === 'string' && item.value.trim() === '') &&
+        item.type !== 'EmptyStatement'
+      );
   }
   if (!node || typeof node !== 'object') return node;
+
+  if (
+    node.type === 'ArrowFunctionExpression' &&
+    node.body?.type === 'BlockStatement' &&
+    Array.isArray(node.body.body) &&
+    node.body.body.length === 1 &&
+    node.body.body[0]?.type === 'ReturnStatement' &&
+    node.body.body[0].argument
+  ) {
+    return strip({
+      ...node,
+      expression: true,
+      body: node.body.body[0].argument,
+    });
+  }
+  if (node.type === 'ArrowFunctionExpression') {
+    const normalized = { ...node };
+    delete normalized.expression;
+    node = normalized;
+  }
+
   const out = {};
   for (const [key, value] of Object.entries(node)) {
     if (IGNORED_KEYS.has(key)) continue;

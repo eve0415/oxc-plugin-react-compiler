@@ -5143,13 +5143,21 @@ fn lower_function_expression_via_reactive<'a>(
             {
                 if let ast::Statement::ReturnStatement(ret) = &body.statements[0] {
                     if let Some(arg) = &ret.argument {
-                        let expr = maybe_parenthesize_jsx(cx.builder, arg.clone_in(cx.allocator));
-                        let expr_body = cx.builder.alloc(cx.builder.function_body(
-                            SPAN,
-                            cx.builder.vec(),
-                            cx.builder.vec1(cx.builder.statement_expression(SPAN, expr)),
-                        ));
-                        (true, expr_body)
+                        if matches!(
+                            arg,
+                            ast::Expression::JSXElement(_) | ast::Expression::JSXFragment(_)
+                        ) {
+                            (false, body)
+                        } else {
+                            let expr =
+                                maybe_parenthesize_jsx(cx.builder, arg.clone_in(cx.allocator));
+                            let expr_body = cx.builder.alloc(cx.builder.function_body(
+                                SPAN,
+                                cx.builder.vec(),
+                                cx.builder.vec1(cx.builder.statement_expression(SPAN, expr)),
+                            ));
+                            (true, expr_body)
+                        }
                     } else {
                         (false, body)
                     }
