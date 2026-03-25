@@ -101,3 +101,36 @@ fn find_matching_paren(code: &str, open_idx: usize) -> Option<usize> {
 
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_strips_whitespace_and_quotes() {
+        let code = "const x = 'hello';\n  const y = 42;\n";
+        let result = normalize_for_transform_flag(code);
+        assert!(
+            !result.contains(' '),
+            "whitespace should be stripped, got: {result}"
+        );
+        assert!(
+            !result.contains('\''),
+            "single quotes should be normalized to double, got: {result}"
+        );
+    }
+
+    #[test]
+    fn normalize_unwraps_function_parens() {
+        let code = "constx=(function(){});";
+        let result = normalize_for_transform_flag(code);
+        assert!(
+            !result.contains("=(function"),
+            "wrapped function expression parens should be stripped, got: {result}"
+        );
+        assert!(
+            result.contains("=function"),
+            "function expression should remain after unwrap, got: {result}"
+        );
+    }
+}

@@ -6502,3 +6502,158 @@ fn is_valid_js_identifier(s: &str) -> bool {
     }
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::hir::types::{InstructionValue, Terminal};
+    use crate::test_utils::parse_and_lower;
+
+    #[test]
+    fn lower_let_declaration() {
+        let func = parse_and_lower("let x = 1; return x;").expect("should lower");
+        assert!(!func.body.blocks.is_empty());
+    }
+
+    #[test]
+    fn lower_const_declaration() {
+        let func = parse_and_lower("const x = 1; return x;").expect("should lower");
+        assert!(!func.body.blocks.is_empty());
+    }
+
+    #[test]
+    fn lower_destructuring() {
+        let func = parse_and_lower("const { a, b } = props; return a;").expect("should lower");
+        assert!(func.body.blocks.iter().any(|(_, b)| {
+            b.instructions
+                .iter()
+                .any(|i| matches!(&i.value, InstructionValue::Destructure { .. }))
+        }));
+    }
+
+    #[test]
+    fn lower_if_else() {
+        let func =
+            parse_and_lower("if (props.x) { return 1; } else { return 2; }").expect("should lower");
+        assert!(
+            func.body
+                .blocks
+                .iter()
+                .any(|(_, b)| matches!(&b.terminal, Terminal::If { .. }))
+        );
+    }
+
+    #[test]
+    fn lower_for_loop() {
+        let func =
+            parse_and_lower("for (let i = 0; i < 10; i++) {} return null;").expect("should lower");
+        assert!(
+            func.body
+                .blocks
+                .iter()
+                .any(|(_, b)| matches!(&b.terminal, Terminal::For { .. }))
+        );
+    }
+
+    #[test]
+    fn lower_while_loop() {
+        let func = parse_and_lower("while (props.x) {} return null;").expect("should lower");
+        assert!(
+            func.body
+                .blocks
+                .iter()
+                .any(|(_, b)| matches!(&b.terminal, Terminal::While { .. }))
+        );
+    }
+
+    #[test]
+    fn lower_switch() {
+        let func = parse_and_lower("switch (props.x) { case 1: break; } return null;")
+            .expect("should lower");
+        assert!(
+            func.body
+                .blocks
+                .iter()
+                .any(|(_, b)| matches!(&b.terminal, Terminal::Switch { .. }))
+        );
+    }
+
+    #[test]
+    fn lower_try_catch() {
+        let func =
+            parse_and_lower("try { foo(); } catch (e) {} return null;").expect("should lower");
+        assert!(
+            func.body
+                .blocks
+                .iter()
+                .any(|(_, b)| matches!(&b.terminal, Terminal::Try { .. }))
+        );
+    }
+
+    #[test]
+    fn lower_for_of() {
+        let func =
+            parse_and_lower("for (const x of props.items) {} return null;").expect("should lower");
+        assert!(
+            func.body
+                .blocks
+                .iter()
+                .any(|(_, b)| matches!(&b.terminal, Terminal::ForOf { .. }))
+        );
+    }
+
+    #[test]
+    fn lower_binary_expression() {
+        let func = parse_and_lower("return props.a + props.b;").expect("should lower");
+        assert!(func.body.blocks.iter().any(|(_, b)| {
+            b.instructions
+                .iter()
+                .any(|i| matches!(&i.value, InstructionValue::BinaryExpression { .. }))
+        }));
+    }
+
+    #[test]
+    fn lower_call_expression() {
+        let func = parse_and_lower("return foo(props.a);").expect("should lower");
+        assert!(func.body.blocks.iter().any(|(_, b)| {
+            b.instructions
+                .iter()
+                .any(|i| matches!(&i.value, InstructionValue::CallExpression { .. }))
+        }));
+    }
+
+    #[test]
+    fn lower_array_expression() {
+        let func = parse_and_lower("return [1, 2, 3];").expect("should lower");
+        assert!(func.body.blocks.iter().any(|(_, b)| {
+            b.instructions
+                .iter()
+                .any(|i| matches!(&i.value, InstructionValue::ArrayExpression { .. }))
+        }));
+    }
+
+    #[test]
+    fn lower_jsx_element() {
+        let func = parse_and_lower("return <div />;").expect("should lower");
+        assert!(func.body.blocks.iter().any(|(_, b)| {
+            b.instructions
+                .iter()
+                .any(|i| matches!(&i.value, InstructionValue::JsxExpression { .. }))
+        }));
+    }
+
+    #[test]
+    fn lower_arrow_function() {
+        let func = parse_and_lower("const f = () => 1; return f;").expect("should lower");
+        assert!(func.body.blocks.iter().any(|(_, b)| {
+            b.instructions
+                .iter()
+                .any(|i| matches!(&i.value, InstructionValue::FunctionExpression { .. }))
+        }));
+    }
+
+    #[test]
+    fn lower_empty_function() {
+        let func = parse_and_lower("function Empty() {}").expect("should lower");
+        assert!(!func.body.blocks.is_empty());
+    }
+}

@@ -314,3 +314,61 @@ impl Default for EnvironmentConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_compilation_mode_is_infer() {
+        assert_eq!(CompilationMode::default(), CompilationMode::Infer);
+    }
+
+    #[test]
+    fn default_panic_threshold_is_none() {
+        assert_eq!(PanicThreshold::default(), PanicThreshold::None);
+    }
+
+    #[test]
+    fn default_plugin_options_compilation_mode() {
+        assert_eq!(
+            PluginOptions::default().compilation_mode,
+            CompilationMode::Infer
+        );
+    }
+
+    #[test]
+    fn default_plugin_options_panic_threshold() {
+        assert_eq!(
+            PluginOptions::default().panic_threshold,
+            PanicThreshold::None
+        );
+    }
+
+    #[test]
+    fn default_environment_config_validate_hooks() {
+        assert!(EnvironmentConfig::default().validate_hooks_usage);
+    }
+
+    #[test]
+    fn default_environment_config_disable_memoization() {
+        assert!(!EnvironmentConfig::default().disable_memoization_for_debugging);
+    }
+
+    #[test]
+    fn compilation_mode_all_variant() {
+        assert_ne!(CompilationMode::All, CompilationMode::default());
+    }
+
+    #[test]
+    fn environment_config_custom_macro() {
+        let config = EnvironmentConfig {
+            custom_macros: Some(vec![CustomMacroConfig {
+                name: "cx".to_string(),
+                props: vec![MacroProp::Name("foo".to_string())],
+            }]),
+            ..EnvironmentConfig::default()
+        };
+        assert!(config.custom_macros.is_some());
+    }
+}

@@ -611,3 +611,23 @@ pub(super) fn codegen_statement_source(
     );
     codegen_program(&program)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_utils::compile_to_result;
+
+    #[test]
+    fn blank_lines_preserved() {
+        let source = "function Component(props) {\n  const a = props.x;\n  const b = props.y;\n\n  const c = a + b;\n  return <div>{c}</div>;\n}";
+        let result = compile_to_result(source);
+        assert!(result.transformed, "should be transformed");
+        assert!(!result.code.is_empty(), "output should be non-empty");
+    }
+
+    #[test]
+    fn blank_lines_no_crash() {
+        let result =
+            compile_to_result("function Component(props) { return <div>{props.x}</div>; }");
+        assert!(!result.code.is_empty(), "output should be non-empty");
+    }
+}
