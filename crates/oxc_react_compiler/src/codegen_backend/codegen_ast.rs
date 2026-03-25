@@ -4991,6 +4991,12 @@ fn lower_function_expression_via_reactive<'a>(
     }
 
     let mut body_stmts = result.body;
+    let return_name = hir_func
+        .returns
+        .identifier
+        .name
+        .as_ref()
+        .map(|name| name.value().to_string());
     // When the last body statement is an assignment expression `name = ...;`,
     // add a trailing expression statement with just the variable name.
     // This matches upstream Babel codegen which emits the block value expression
@@ -4999,6 +5005,7 @@ fn lower_function_expression_via_reactive<'a>(
         && let ast::Expression::AssignmentExpression(assign) = &last_expr.expression
         && assign.operator == oxc_syntax::operator::AssignmentOperator::Assign
         && let ast::AssignmentTarget::AssignmentTargetIdentifier(ident) = &assign.left
+        && return_name.as_deref() == Some(ident.name.as_str())
     {
         let name = ident.name.as_str();
         let trailing = cx.builder.statement_expression(

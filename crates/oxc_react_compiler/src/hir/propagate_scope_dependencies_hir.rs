@@ -1812,6 +1812,43 @@ fn collect_manual_memo_callback_deps(
     out: &mut HashMap<DeclarationId, Vec<ManualMemoDependency>>,
 ) {
     let mut active: HashMap<u32, Vec<ManualMemoDependency>> = HashMap::new();
+    let component_props_place = if matches!(func.fn_type, ReactFunctionType::Component) {
+        func.params.first().and_then(|param| match param {
+            Argument::Place(place) | Argument::Spread(place) => Some(place.clone()),
+        })
+    } else {
+        None
+    };
+    let mut function_decl_by_ident: HashMap<IdentifierId, DeclarationId> = HashMap::new();
+    let mut value_defs: HashMap<IdentifierId, &InstructionValue> = HashMap::new();
+
+    for (_block_id, block) in &func.body.blocks {
+        for instr in &block.instructions {
+            value_defs.insert(instr.lvalue.identifier.id, &instr.value);
+            match &instr.value {
+                InstructionValue::FunctionExpression { .. }
+                | InstructionValue::ObjectMethod { .. } => {
+                    function_decl_by_ident
+                        .insert(instr.lvalue.identifier.id, instr.lvalue.identifier.declaration_id);
+                }
+                InstructionValue::LoadLocal { place, .. }
+                | InstructionValue::LoadContext { place, .. } => {
+                    if let Some(decl_id) = function_decl_by_ident.get(&place.identifier.id).copied()
+                    {
+                        function_decl_by_ident.insert(instr.lvalue.identifier.id, decl_id);
+                    }
+                }
+                InstructionValue::StoreLocal { lvalue, value, .. }
+                | InstructionValue::StoreContext { lvalue, value, .. } => {
+                    if let Some(decl_id) = function_decl_by_ident.get(&value.identifier.id).copied()
+                    {
+                        function_decl_by_ident.insert(lvalue.place.identifier.id, decl_id);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 
     for (_block_id, block) in &func.body.blocks {
         for instr in &block.instructions {
@@ -1833,6 +1870,26 @@ fn collect_manual_memo_callback_deps(
                     }
                     active.remove(manual_memo_id);
                 }
+                InstructionValue::CallExpression { callee, args, .. } => {
+                    maybe_record_effect_callback_root_dep(
+                        &component_props_place,
+                        &function_decl_by_ident,
+                        &value_defs,
+                        &callee.identifier.type_,
+                        args,
+                        out,
+                    );
+                }
+                InstructionValue::MethodCall { property, args, .. } => {
+                    maybe_record_effect_callback_root_dep(
+                        &component_props_place,
+                        &function_decl_by_ident,
+                        &value_defs,
+                        &property.identifier.type_,
+                        args,
+                        out,
+                    );
+                }
                 InstructionValue::FunctionExpression { lowered_func, .. }
                 | InstructionValue::ObjectMethod { lowered_func, .. } => {
                     collect_manual_memo_callback_deps(&lowered_func.func, out);
@@ -1841,6 +1898,126 @@ fn collect_manual_memo_callback_deps(
             }
         }
     }
+}
+
+fn maybe_record_effect_callback_root_dep(
+    component_props_place: &Option<Place>,
+    function_decl_by_ident: &HashMap<IdentifierId, DeclarationId>,
+    value_defs: &HashMap<IdentifierId, &InstructionValue>,
+    callee_type: &Type,
+    args: &[Argument],
+    out: &mut HashMap<DeclarationId, Vec<ManualMemoDependency>>,
+) {
+    let Some(props_place) = component_props_place else {
+        return;
+    };
+    if !is_effect_like_hook_type(callee_type) {
+        return;
+    }
+    let (Some(Argument::Place(callback_arg)), Some(Argument::Place(dep_array_arg))) =
+        (args.first(), args.get(1))
+    else {
+        return;
+    };
+    let Some(callback_decl_id) = function_decl_by_ident.get(&callback_arg.identifier.id).copied()
+    else {
+        return;
+    };
+    let Some(InstructionValue::ArrayExpression { elements, .. }) =
+        value_defs.get(&dep_array_arg.identifier.id).copied()
+    else {
+        return;
+    };
+
+    let mut dep_paths: Vec<Vec<DependencyPathEntry>> = Vec::new();
+    for element in elements {
+        let ArrayElement::Place(place) = element else {
+            return;
+        };
+        let Some(dep) = resolve_rooted_dep_from_value_defs(place, value_defs) else {
+            return;
+        };
+        if dep.identifier.declaration_id != props_place.identifier.declaration_id {
+            return;
+        }
+        dep_paths.push(dep.path);
+    }
+
+    let mut unique_paths: Vec<Vec<DependencyPathEntry>> = Vec::new();
+    for path in dep_paths {
+        if !unique_paths
+            .iter()
+            .any(|existing| dependency_path_is_prefix(existing, &path) && existing.len() == path.len())
+        {
+            unique_paths.push(path);
+        }
+    }
+    if unique_paths.len() <= 1 {
+        return;
+    }
+
+    out.entry(callback_decl_id).or_insert_with(|| {
+        vec![ManualMemoDependency {
+            root: ManualMemoRoot::NamedLocal(props_place.clone()),
+            path: Vec::new(),
+        }]
+    });
+}
+
+fn resolve_rooted_dep_from_value_defs(
+    place: &Place,
+    value_defs: &HashMap<IdentifierId, &InstructionValue>,
+) -> Option<ReactiveScopeDependency> {
+    let mut path: Vec<DependencyPathEntry> = Vec::new();
+    let mut current = place.clone();
+
+    loop {
+        match value_defs.get(&current.identifier.id).copied() {
+            Some(InstructionValue::PropertyLoad {
+                object,
+                property,
+                optional,
+                ..
+            }) => {
+                let property_name = match property {
+                    PropertyLiteral::String(value) => value.clone(),
+                    PropertyLiteral::Number(value) => value.to_string(),
+                };
+                path.push(DependencyPathEntry {
+                    property: property_name,
+                    optional: *optional,
+                });
+                current = object.clone();
+            }
+            Some(InstructionValue::LoadLocal { place, .. })
+            | Some(InstructionValue::LoadContext { place, .. }) => {
+                current = place.clone();
+            }
+            _ => {
+                path.reverse();
+                return Some(ReactiveScopeDependency {
+                    identifier: current.identifier,
+                    path,
+                });
+            }
+        }
+    }
+}
+
+fn is_effect_like_hook_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Function {
+            shape_id: Some(shape_id),
+            ..
+        } if matches!(
+            shape_id.as_str(),
+            "BuiltInUseEffectHookId"
+                | "BuiltInUseLayoutEffectHookId"
+                | "BuiltInUseInsertionEffectHookId"
+                | "BuiltInUseImperativeHandleHookId"
+        )
+    )
 }
 
 // ---------------------------------------------------------------------------

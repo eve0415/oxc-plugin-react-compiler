@@ -710,6 +710,21 @@ fn dead_code_elimination_pass(
                 .map(|instr| (instr.lvalue.identifier.id, &instr.value))
         })
         .collect();
+    let used_reassigned_decl_ids: HashSet<DeclarationId> = func
+        .body
+        .blocks
+        .iter()
+        .flat_map(|(_, block)| block.instructions.iter())
+        .filter_map(|instr| match &instr.value {
+            InstructionValue::StoreLocal { lvalue, .. }
+                if lvalue.kind == InstructionKind::Reassign
+                    && used_ids.contains(&lvalue.place.identifier.id) =>
+            {
+                Some(lvalue.place.identifier.declaration_id)
+            }
+            _ => None,
+        })
+        .collect();
 
     // Rewrite StoreLocal → DeclareLocal when the initializer value is dead
     // but the variable binding is still needed.
@@ -760,15 +775,16 @@ fn dead_code_elimination_pass(
             if let InstructionValue::StoreLocal { lvalue, value, .. } = &instr.value
                 && lvalue.kind != InstructionKind::Reassign
             {
+                let rhs_primitive = match value_defs.get(&value.identifier.id) {
+                    Some(InstructionValue::Primitive { value, .. }) => Some(value),
+                    _ => None,
+                };
                 let primitive_literal = (block.id == func.body.entry
                     && lvalue.kind == InstructionKind::Let
                     && lvalue.place.identifier.name.is_some()
                     && !captured_context_decl_ids
                         .contains(&lvalue.place.identifier.declaration_id))
-                .then(|| match value_defs.get(&value.identifier.id) {
-                    Some(InstructionValue::Primitive { value, .. }) => Some(value),
-                    _ => None,
-                })
+                .then_some(rhs_primitive)
                 .flatten();
                 let precise_literal_let_rewrite = primitive_literal.map(|_| {
                     top_level_literal_initializer_is_elidable(
@@ -792,6 +808,16 @@ fn dead_code_elimination_pass(
                     preserved_initializers.insert(
                         lvalue.place.identifier.declaration_id,
                         primitive_to_js(primitive),
+                    );
+                }
+                if matches!(
+                    rhs_primitive,
+                    Some(PrimitiveValue::Null | PrimitiveValue::Undefined)
+                ) && used_reassigned_decl_ids.contains(&lvalue.place.identifier.declaration_id)
+                {
+                    preserved_initializers.insert(
+                        lvalue.place.identifier.declaration_id,
+                        primitive_to_js(rhs_primitive.unwrap()),
                     );
                 }
                 if !should_rewrite {
