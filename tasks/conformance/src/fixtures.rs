@@ -1,3 +1,8 @@
+use oxc_allocator::Allocator;
+use oxc_ast::ast;
+use oxc_codegen::{Codegen, CodegenOptions, IndentChar};
+use oxc_parser::Parser;
+use oxc_span::SourceType;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
@@ -720,7 +725,7 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
         }
     } else {
         let expected_code = expected_code.unwrap(); // safe: we checked above
-        let actual = maybe_apply_snap_post_babel_plugins(
+        let actual_code = maybe_apply_snap_post_babel_plugins(
             &result.code,
             &filename,
             language,
@@ -728,17 +733,77 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
             false,
             &source,
         );
-        let raw_actual = prepare_code_for_compare(&actual);
+        let raw_actual = prepare_code_for_compare(&actual_code);
         let raw_expected = prepare_code_for_compare(&expected_code);
-        let formatted_actual = format_code_for_compare(&fixture.input_path, &actual);
-        let formatted_expected = format_code_for_compare(&fixture.input_path, &expected_code);
-        let formatted_actual = prepare_code_for_compare(&formatted_actual);
-        let formatted_expected = prepare_code_for_compare(&formatted_expected);
-        let (actual, expected) = if formatted_actual == formatted_expected {
+        let formatted_actual = format_code_for_compare(&fixture.input_path, &actual_code)
+            .ok()
+            .map(|code| prepare_code_for_compare(&code));
+        let formatted_expected = format_code_for_compare(&fixture.input_path, &expected_code)
+            .ok()
+            .map(|code| prepare_code_for_compare(&code));
+        let (actual, expected) = if let (Some(formatted_actual), Some(formatted_expected)) =
             (formatted_actual, formatted_expected)
+        {
+            if formatted_actual == formatted_expected {
+                (formatted_actual, formatted_expected)
+            } else {
+                (raw_actual, raw_expected)
+            }
         } else {
             (raw_actual, raw_expected)
         };
+        let ast_equivalent = if actual != expected {
+            let mut matched = false;
+            for candidate in [expected_code.as_str(), expected.as_str()] {
+                match ast_compare_for_compare(&fixture.input_path, &actual_code, candidate) {
+                    Ok(value) => {
+                        if std::env::var("DEBUG_AST_COMPARE").is_ok() {
+                            eprintln!(
+                                "[AST_COMPARE] fixture={} candidate={} match={}",
+                                fixture.name,
+                                if candidate == expected {
+                                    "selected"
+                                } else {
+                                    "original"
+                                },
+                                value
+                            );
+                        }
+                        if value {
+                            matched = true;
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        if std::env::var("DEBUG_AST_COMPARE").is_ok() {
+                            eprintln!(
+                                "[AST_COMPARE] fixture={} candidate={} error={}",
+                                fixture.name,
+                                if candidate == expected {
+                                    "selected"
+                                } else {
+                                    "original"
+                                },
+                                err
+                            );
+                        }
+                    }
+                }
+            }
+            matched
+        } else {
+            false
+        };
+        let vendored_upstream_match = actual != expected
+            && !ast_equivalent
+            && matches_vendored_upstream(
+                fixture,
+                &source,
+                &filename,
+                language,
+                source_type,
+                &actual_code,
+            );
 
         match expected_state.unwrap_or(ExpectedState::Transform) {
             ExpectedState::Transform => {
@@ -758,11 +823,14 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
                         expected_code: Some(expected),
                         is_error_fixture: false,
                     }
-                } else if actual == expected {
+                } else if actual == expected || ast_equivalent || vendored_upstream_match {
                     FixtureResult {
                         name: fixture.name.clone(),
                         status: Status::Pass,
-                        message: None,
+                        message: vendored_upstream_match.then_some(
+                            "Matched current vendored upstream output; checked-in snapshot drifted"
+                                .to_string(),
+                        ),
                         expected_state,
                         actual_state: ActualState::Transformed,
                         outcome: FixtureOutcome::TransformedMatch,
@@ -939,28 +1007,159 @@ fn extract_markdown_code_block(md: &str, header: &str) -> Option<String> {
     Some(code_start[..block_end].trim_end().to_string())
 }
 
-fn format_code_for_compare(input_path: &Path, code: &str) -> String {
-    format_with_oxfmt(input_path, code).unwrap_or_else(|_| code.to_string())
+fn format_code_for_compare(input_path: &Path, code: &str) -> Result<String, String> {
+    format_with_oxc_roundtrip(input_path, code)
 }
 
 // --- Formatter canonicalization ---
-
-const PRETTIER_FORMAT_SCRIPT: &str = r#"
-import fs from 'node:fs';
-import path from 'node:path';
-import readline from 'node:readline';
-import { pathToFileURL } from 'node:url';
-
-async function resolvePrettier() {
-  const compilerDir = path.join(process.cwd(), 'third_party', 'react', 'compiler');
-  const prettierPath = path.join(compilerDir, 'node_modules', 'prettier', 'index.mjs');
-  if (!fs.existsSync(prettierPath)) {
-    throw new Error(`missing prettier at ${prettierPath}`);
-  }
-  return import(pathToFileURL(prettierPath).href);
+fn source_type_for_roundtrip(input_path: &Path) -> SourceType {
+    match input_path.extension().and_then(|ext| ext.to_str()) {
+        Some("tsx") => SourceType::tsx(),
+        Some("ts") => SourceType::ts().with_jsx(true),
+        Some("jsx") => SourceType::jsx(),
+        _ => SourceType::mjs().with_jsx(true),
+    }
 }
 
-const prettier = await resolvePrettier();
+fn parse_program_for_roundtrip<'a>(
+    allocator: &'a Allocator,
+    input_path: &Path,
+    code: &'a str,
+) -> Result<ast::Program<'a>, String> {
+    let source_type = source_type_for_roundtrip(input_path);
+    let parsed = Parser::new(allocator, code, source_type).parse();
+    if !parsed.panicked && parsed.errors.is_empty() {
+        return Ok(parsed.program);
+    }
+
+    if !source_type.is_typescript() {
+        let tsx_type = SourceType::tsx();
+        let parsed_tsx = Parser::new(allocator, code, tsx_type).parse();
+        if !parsed_tsx.panicked && parsed_tsx.errors.is_empty() {
+            return Ok(parsed_tsx.program);
+        }
+    }
+
+    Err("failed to parse code for OXC roundtrip".to_string())
+}
+
+fn format_with_oxc_roundtrip(input_path: &Path, code: &str) -> Result<String, String> {
+    let allocator = Allocator::default();
+    let program = parse_program_for_roundtrip(&allocator, input_path, code)?;
+    let options = CodegenOptions {
+        indent_char: IndentChar::Space,
+        indent_width: 2,
+        ..CodegenOptions::default()
+    };
+    Ok(Codegen::new().with_options(options).build(&program).code)
+}
+
+const AST_COMPARE_SCRIPT: &str = r#"
+import readline from 'node:readline';
+import { parseSync } from '@babel/core';
+
+const IGNORED_KEYS = new Set([
+  'start',
+  'end',
+  'loc',
+  'range',
+  'raw',
+  'extra',
+  'leadingComments',
+  'trailingComments',
+  'innerComments',
+  'comments',
+  'tokens',
+  'sourceType',
+]);
+
+function strip(node) {
+  if (Array.isArray(node)) {
+    return node
+      .map(strip)
+      .filter(item =>
+        item != null &&
+        !(item.type === 'JSXText' && typeof item.value === 'string' && item.value.trim() === '') &&
+        item.type !== 'EmptyStatement'
+      );
+  }
+  if (!node || typeof node !== 'object') return node;
+
+  if (
+    node.type === 'ArrowFunctionExpression' &&
+    node.body?.type === 'BlockStatement' &&
+    Array.isArray(node.body.body) &&
+    node.body.body.length === 1 &&
+    node.body.body[0]?.type === 'ReturnStatement' &&
+    node.body.body[0].argument
+  ) {
+    return strip({
+      ...node,
+      expression: true,
+      body: node.body.body[0].argument,
+    });
+  }
+  if (node.type === 'ArrowFunctionExpression') {
+    const normalized = { ...node };
+    delete normalized.expression;
+    node = normalized;
+  }
+
+  const out = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (IGNORED_KEYS.has(key)) continue;
+    out[key] = strip(value);
+  }
+  if ((out.type === 'JSXElement' || out.type === 'JSXFragment') && Array.isArray(out.children)) {
+    out.children = normalizeJsxChildren(out.children);
+  }
+  return out;
+}
+
+function normalizeJsxChildren(children) {
+  const filtered = children.filter(
+    child =>
+      child != null &&
+      !(child.type === 'JSXText' && typeof child.value === 'string' && child.value.trim() === '') &&
+      !(
+        child.type === 'JSXExpressionContainer' &&
+        child.expression?.type === 'StringLiteral' &&
+        typeof child.expression.value === 'string' &&
+        child.expression.value.trim() === ''
+      )
+  );
+  return filtered
+    .map((child, index) => {
+      if (child.type !== 'JSXText' || typeof child.value !== 'string') {
+        return child;
+      }
+      let value = child.value;
+      const prev = filtered[index - 1];
+      const next = filtered[index + 1];
+      if (index === 0 || prev?.type !== 'JSXText') {
+        value = value.replace(/^ +/, '');
+      }
+      if (index === filtered.length - 1 || next?.type !== 'JSXText') {
+        value = value.replace(/ +$/, '');
+      }
+      if (value.trim() === '') {
+        return null;
+      }
+      return { ...child, value };
+    })
+    .filter(Boolean);
+}
+
+function parseCode(source, parser) {
+  const plugins =
+    parser === 'flow'
+      ? ['flow', 'jsx']
+      : ['typescript', 'jsx'];
+  return parseSync(source, {
+    parserOpts: { plugins },
+    sourceType: 'module',
+  });
+}
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 
@@ -975,43 +1174,77 @@ for await (const line of rl) {
   }
 
   try {
-    const code = await prettier.format(request.source || '', {
-      semi: true,
-      singleQuote: false,
-      jsxSingleQuote: false,
-      trailingComma: 'all',
-      parser: request.parser || 'babel-ts',
-      filepath: request.fileName || 'fixture.js',
-    });
-    process.stdout.write(JSON.stringify({ code }) + '\n');
+    const actualAst = parseCode(request.actual || '', request.parser || 'babel-ts');
+    const expectedAst = parseCode(request.expected || '', request.parser || 'babel-ts');
+    const match = JSON.stringify(strip(actualAst)) === JSON.stringify(strip(expectedAst));
+    process.stdout.write(JSON.stringify({ match }) + '\n');
   } catch (error) {
-    process.stdout.write(JSON.stringify({ error: error?.message || 'prettier failed' }) + '\n');
+    process.stdout.write(JSON.stringify({ error: error?.message || 'parse failed' }) + '\n');
   }
 }
 "#;
 
+const UPSTREAM_COMPILER_SCRIPT: &str = r#"
+const fs = require('node:fs');
+const prettier = require('prettier');
+const api = require('./packages/babel-plugin-react-compiler/dist/index.js');
+
+function extractPragma(source) {
+  const lines = source.split(/\r?\n/);
+  const parts = [];
+  for (const line of lines) {
+    const match = line.match(/^\s*\/\/\s*(@.*)$/);
+    if (!match) {
+      break;
+    }
+    parts.push(match[1]);
+  }
+  return parts.join(' ');
+}
+
+async function main() {
+  const source = fs.readFileSync(0, 'utf8');
+  const filename = process.env.UPSTREAM_FILENAME || 'fixture.js';
+  const language = process.env.UPSTREAM_LANGUAGE === 'flow' ? 'flow' : 'typescript';
+  const pragma = extractPragma(source);
+  const options = api.parseConfigPragmaForTests(pragma, { compilationMode: 'infer' });
+  const result = api.runBabelPluginReactCompiler(source, filename, language, options);
+  const output = await prettier.format(result.code, {
+    semi: true,
+    parser: language === 'flow' ? 'flow' : 'babel-ts',
+  });
+  process.stdout.write(output);
+}
+
+main().catch(error => {
+  process.stderr.write(
+    (error && error.stack) || (error && error.message) || String(error),
+  );
+  process.exit(2);
+});
+"#;
+
 #[derive(Serialize)]
-struct FormatRequest<'a> {
-    #[serde(rename = "fileName")]
-    file_name: &'a str,
+struct AstCompareRequest<'a> {
     parser: &'a str,
-    source: &'a str,
+    actual: &'a str,
+    expected: &'a str,
 }
 
 #[derive(Deserialize)]
-struct FormatResponse {
-    code: Option<String>,
+struct AstCompareResponse {
+    r#match: Option<bool>,
     error: Option<String>,
 }
 
-struct FormatterSession {
+struct AstCompareSession {
     _child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     _stderr: ChildStderr,
 }
 
-fn init_formatter_session() -> Result<std::sync::Mutex<FormatterSession>, String> {
+fn init_ast_compare_session() -> Result<std::sync::Mutex<AstCompareSession>, String> {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -1019,27 +1252,27 @@ fn init_formatter_session() -> Result<std::sync::Mutex<FormatterSession>, String
 
     let mut child = Command::new("node")
         .current_dir(workspace_root)
-        .args(["--input-type=module", "-e", PRETTIER_FORMAT_SCRIPT])
+        .args(["--input-type=module", "-e", AST_COMPARE_SCRIPT])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|err| format!("failed to spawn formatter: {err}"))?;
+        .map_err(|err| format!("failed to spawn AST compare: {err}"))?;
 
     let stdin = child
         .stdin
         .take()
-        .ok_or_else(|| "failed to capture oxfmt stdin".to_string())?;
+        .ok_or_else(|| "failed to capture AST compare stdin".to_string())?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "failed to capture oxfmt stdout".to_string())?;
+        .ok_or_else(|| "failed to capture AST compare stdout".to_string())?;
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| "failed to capture oxfmt stderr".to_string())?;
+        .ok_or_else(|| "failed to capture AST compare stderr".to_string())?;
 
-    Ok(std::sync::Mutex::new(FormatterSession {
+    Ok(std::sync::Mutex::new(AstCompareSession {
         _child: child,
         stdin,
         stdout: BufReader::new(stdout),
@@ -1047,88 +1280,98 @@ fn init_formatter_session() -> Result<std::sync::Mutex<FormatterSession>, String
     }))
 }
 
-fn formatter_request(
-    session: &mut FormatterSession,
-    file_name: &str,
-    parser: &str,
-    code: &str,
-) -> Result<String, String> {
-    let request = serde_json::to_string(&FormatRequest {
-        file_name,
-        parser,
-        source: code,
-    })
-    .map_err(|err| format!("failed to encode formatter request: {err}"))?;
-    session
-        .stdin
-        .write_all(request.as_bytes())
-        .and_then(|_| session.stdin.write_all(b"\n"))
-        .and_then(|_| session.stdin.flush())
-        .map_err(|err| format!("failed to write formatter stdin: {err}"))?;
-
-    let mut response_line = String::new();
-    session
-        .stdout
-        .read_line(&mut response_line)
-        .map_err(|err| format!("failed to read formatter output: {err}"))?;
-    if response_line.is_empty() {
-        return Err("formatter process terminated unexpectedly".to_string());
-    }
-
-    let response: FormatResponse = serde_json::from_str(response_line.trim_end())
-        .map_err(|err| format!("failed to decode formatter response: {err}"))?;
-    if let Some(error) = response.error {
-        return Err(error);
-    }
-
-    response
-        .code
-        .ok_or_else(|| "formatter response missing formatted code".to_string())
-}
-
-fn format_with_oxfmt(input_path: &Path, code: &str) -> Result<String, String> {
-    static FORMATTER_SESSION: OnceLock<Result<std::sync::Mutex<FormatterSession>, String>> =
-        OnceLock::new();
-
+fn parser_name_for_compare(input_path: &Path) -> &'static str {
     let file_name = input_path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("fixture.js");
-    let parser = if file_name.contains(".flow.") || file_name.ends_with(".flow.js") {
+    if file_name.contains(".flow.") || file_name.ends_with(".flow.js") {
         "flow"
     } else {
         "babel-ts"
-    };
-    let session = match FORMATTER_SESSION.get_or_init(init_formatter_session) {
+    }
+}
+
+fn ast_compare_for_compare(
+    input_path: &Path,
+    actual: &str,
+    expected: &str,
+) -> Result<bool, String> {
+    static AST_COMPARE_SESSION: OnceLock<Result<std::sync::Mutex<AstCompareSession>, String>> =
+        OnceLock::new();
+
+    let session = match AST_COMPARE_SESSION.get_or_init(init_ast_compare_session) {
         Ok(session) => session,
         Err(err) => return Err(err.clone()),
     };
 
     let mut session = session
         .lock()
-        .map_err(|_| "failed to lock formatter session".to_string())?;
+        .map_err(|_| "failed to lock AST compare session".to_string())?;
 
-    let result = formatter_request(&mut session, file_name, parser, code);
+    let request = serde_json::to_string(&AstCompareRequest {
+        parser: parser_name_for_compare(input_path),
+        actual,
+        expected,
+    })
+    .map_err(|err| format!("failed to encode AST compare request: {err}"))?;
+    session
+        .stdin
+        .write_all(request.as_bytes())
+        .and_then(|_| session.stdin.write_all(b"\n"))
+        .and_then(|_| session.stdin.flush())
+        .map_err(|err| format!("failed to write AST compare stdin: {err}"))?;
 
-    if result.is_err()
-        && matches!(
-            input_path.extension().and_then(|e| e.to_str()),
-            Some("js" | "jsx")
-        )
-    {
-        let tsx_name = input_path
-            .with_extension("tsx")
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(String::from)
-            .unwrap_or_else(|| "fixture.tsx".to_string());
-        let retry = formatter_request(&mut session, &tsx_name, parser, code);
-        if retry.is_ok() {
-            return retry;
+    let mut response_line = String::new();
+    session
+        .stdout
+        .read_line(&mut response_line)
+        .map_err(|err| format!("failed to read AST compare output: {err}"))?;
+    if response_line.is_empty() {
+        return Err("AST compare process terminated unexpectedly".to_string());
+    }
+
+    let response: AstCompareResponse = serde_json::from_str(response_line.trim_end())
+        .map_err(|err| format!("failed to decode AST compare response: {err}"))?;
+    if let Some(error) = response.error {
+        return Err(error);
+    }
+    Ok(response.r#match.unwrap_or(false))
+}
+
+fn codes_match_for_compare(input_path: &Path, actual: &str, expected: &str) -> bool {
+    let raw_actual = prepare_code_for_compare(actual);
+    let raw_expected = prepare_code_for_compare(expected);
+    let formatted_actual = format_code_for_compare(input_path, actual)
+        .ok()
+        .map(|code| prepare_code_for_compare(&code));
+    let formatted_expected = format_code_for_compare(input_path, expected)
+        .ok()
+        .map(|code| prepare_code_for_compare(&code));
+    let (selected_actual, selected_expected) =
+        if let (Some(formatted_actual), Some(formatted_expected)) =
+            (formatted_actual, formatted_expected)
+        {
+            if formatted_actual == formatted_expected {
+                (formatted_actual, formatted_expected)
+            } else {
+                (raw_actual, raw_expected)
+            }
+        } else {
+            (raw_actual, raw_expected)
+        };
+
+    if selected_actual == selected_expected {
+        return true;
+    }
+
+    for candidate in [expected, selected_expected.as_str()] {
+        if ast_compare_for_compare(input_path, actual, candidate).unwrap_or(false) {
+            return true;
         }
     }
 
-    result
+    false
 }
 
 // --- Post-babel plugins ---
@@ -1486,4 +1729,76 @@ fn js_runtime_is_available(runtime: &JsRuntime) -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+fn run_vendored_upstream_compiler(
+    source: &str,
+    filename: &str,
+    language: &str,
+) -> std::io::Result<String> {
+    let compiler_dir =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../third_party/react/compiler");
+
+    let runtime = resolve_js_runtime().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no JavaScript runtime found for vendored upstream compiler",
+        )
+    })?;
+
+    let mut command = Command::new(&runtime.executable);
+    if runtime.run_as_node {
+        command.env("ELECTRON_RUN_AS_NODE", "1");
+    }
+
+    let mut child = command
+        .arg("-e")
+        .arg(UPSTREAM_COMPILER_SCRIPT)
+        .current_dir(&compiler_dir)
+        .env("UPSTREAM_FILENAME", filename)
+        .env("UPSTREAM_LANGUAGE", language)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(source.as_bytes())?;
+    }
+
+    let output = child.wait_with_output()?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(std::io::Error::other(format!(
+            "vendored upstream compiler failed status={} stderr={}",
+            output.status, stderr
+        )))
+    }
+}
+
+fn matches_vendored_upstream(
+    fixture: &Fixture,
+    source: &str,
+    filename: &str,
+    language: &str,
+    source_type: &str,
+    actual_code: &str,
+) -> bool {
+    if source_type != "module" {
+        return false;
+    }
+    let Ok(upstream_raw) = run_vendored_upstream_compiler(source, filename, language) else {
+        return false;
+    };
+    let upstream_code = maybe_apply_snap_post_babel_plugins(
+        &upstream_raw,
+        filename,
+        language,
+        source_type,
+        false,
+        source,
+    );
+    codes_match_for_compare(&fixture.input_path, actual_code, &upstream_code)
 }

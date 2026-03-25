@@ -138,6 +138,7 @@ pub(crate) struct ModuleEmitArgs<'a> {
     pub(crate) program: &'a ast::Program<'a>,
     pub(crate) options: &'a PluginOptions,
     pub(crate) dynamic_gate_ident: Option<&'a str>,
+    pub(crate) ast_identifier_renames: &'a std::collections::HashMap<(u32, u32), String>,
 }
 
 pub(crate) fn emit_module(

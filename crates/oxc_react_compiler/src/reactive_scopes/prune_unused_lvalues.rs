@@ -44,11 +44,7 @@ fn prune_unused_lvalues_once(func: &mut ReactiveFunction) -> bool {
         return false;
     }
 
-    // Pre-compute the set of DeclarationIds that have HoistedLet declarations
-    // anywhere in the reactive function. This is needed by
-    // should_preserve_reassign_result_load to distinguish TDZ-check reads
-    // (which must be kept) from dead comma-expression artifact reads (which
-    // should be dropped).
+    // Pre-compute hoisted-let declarations for named scope bridge preservation.
     let mut hoisted_let_decls = HashSet::new();
     collect_hoisted_let_decl_ids(&func.body, &mut hoisted_let_decls);
 
@@ -853,7 +849,7 @@ fn should_drop_pruned_instruction(
     stmt: &ReactiveStatement,
     index: usize,
     to_prune: &std::collections::HashSet<InstructionId>,
-    hoisted_let_decls: &HashSet<DeclarationId>,
+    _hoisted_let_decls: &HashSet<DeclarationId>,
 ) -> bool {
     let ReactiveStatement::Instruction(instr) = stmt else {
         return false;
@@ -864,12 +860,12 @@ fn should_drop_pruned_instruction(
 
     match &instr.value {
         InstructionValue::LoadLocal { place, .. } | InstructionValue::LoadContext { place, .. } => {
-            let preserve_reassign_result_load = should_preserve_reassign_result_load(
-                stmts,
-                index,
-                place.identifier.declaration_id,
-                hoisted_let_decls,
-            );
+            let preserve_reassign_result_load = place.identifier.name.is_some()
+                && should_preserve_reassign_result_load(
+                    stmts,
+                    index,
+                    place.identifier.declaration_id,
+                );
             let preserve_named_scope_bridge = place.identifier.name.is_some()
                 && (should_preserve_named_scope_bridge_load(stmts, index)
                     || has_prior_hoisted_let_declaration(
@@ -895,24 +891,14 @@ fn should_drop_pruned_instruction(
 }
 
 /// Preserve a LoadLocal/LoadContext that immediately follows a Reassign
-/// StoreLocal/StoreContext for the same variable, but ONLY when the variable
-/// has a HoistedLet declaration.  These reads serve as TDZ checks that the
-/// upstream emits.  Without the hoisted-let guard, this also incorrectly
-/// preserves dead reads from flattened comma expressions in deps lists
-/// (e.g., `((y = x.concat(arr2)), y)` produces a trailing `y` that should
-/// be dropped when the deps array is removed).
+/// StoreLocal/StoreContext for the same named variable. Upstream preserves
+/// these as the trailing read in sequence/comma expressions such as
+/// `((y = x.concat(arr2)), y)`.
 fn should_preserve_reassign_result_load(
     stmts: &[ReactiveStatement],
     index: usize,
     declaration_id: DeclarationId,
-    hoisted_let_decls: &HashSet<DeclarationId>,
 ) -> bool {
-    // Only preserve for variables with HoistedLet declarations — these need
-    // TDZ enforcement reads after reassignment.
-    if !hoisted_let_decls.contains(&declaration_id) {
-        return false;
-    }
-
     let Some(ReactiveStatement::Instruction(prev_instr)) = index
         .checked_sub(1)
         .and_then(|prev_index| stmts.get(prev_index))

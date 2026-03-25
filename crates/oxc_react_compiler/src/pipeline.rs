@@ -110,6 +110,10 @@ thread_local! {
     static FLOW_HOOK_NAMES: RefCell<std::collections::HashSet<String>> =
         RefCell::new(std::collections::HashSet::new());
     static FAST_REFRESH_SOURCE_HASH: RefCell<Option<String>> = const { RefCell::new(None) };
+    static AST_IDENTIFIER_RENAMES: RefCell<std::collections::HashMap<(u32, u32), String>> =
+        RefCell::new(std::collections::HashMap::new());
+    static AST_RENAMED_SYMBOLS: RefCell<std::collections::HashSet<oxc_semantic::SymbolId>> =
+        RefCell::new(std::collections::HashSet::new());
 }
 
 fn mark_pipeline_error(error: &impl std::fmt::Display) {
@@ -125,6 +129,53 @@ fn set_fast_refresh_source_hash(hash: Option<String>) {
 
 fn get_fast_refresh_source_hash() -> Option<String> {
     FAST_REFRESH_SOURCE_HASH.with(|slot| slot.borrow().clone())
+}
+
+fn clear_ast_identifier_renames() {
+    AST_IDENTIFIER_RENAMES.with(|slot| slot.borrow_mut().clear());
+    AST_RENAMED_SYMBOLS.with(|slot| slot.borrow_mut().clear());
+}
+
+pub(crate) fn record_ast_symbol_rename<'a>(
+    semantic: &oxc_semantic::Semantic<'a>,
+    symbol_id: oxc_semantic::SymbolId,
+    decl_span: oxc_span::Span,
+    original_name: &str,
+    emitted_name: &str,
+) {
+    if emitted_name == original_name {
+        return;
+    }
+
+    let scoping = semantic.scoping();
+    if scoping.symbol_flags(symbol_id).is_import() {
+        return;
+    }
+    let decl_scope_id = scoping.symbol_scope_id(symbol_id);
+    if scoping.scope_flags(decl_scope_id).is_top() {
+        return;
+    }
+
+    let inserted = AST_RENAMED_SYMBOLS.with(|slot| slot.borrow_mut().insert(symbol_id));
+    if !inserted {
+        return;
+    }
+
+    AST_IDENTIFIER_RENAMES.with(|slot| {
+        let mut renames = slot.borrow_mut();
+        renames.insert((decl_span.start, decl_span.end), emitted_name.to_string());
+        let nodes = semantic.nodes();
+        for reference in semantic.symbol_references(symbol_id) {
+            let span = nodes.get_node(reference.node_id()).span();
+            renames.insert((span.start, span.end), emitted_name.to_string());
+        }
+    });
+}
+
+fn take_ast_identifier_renames() -> std::collections::HashMap<(u32, u32), String> {
+    let renames = AST_IDENTIFIER_RENAMES.with(|slot| std::mem::take(&mut *slot.borrow_mut()));
+    AST_RENAMED_SYMBOLS.with(|slot| slot.borrow_mut().clear());
+    renames
 }
 
 const FLOW_CAST_REWRITE_MARKER: &str = "/*__FLOW_CAST__*/";
@@ -1206,6 +1257,7 @@ fn codegen_outlined_function(
                         param_name_overrides: std::collections::HashMap::new(),
                         enable_name_anonymous_functions: false,
                         enable_memoization_comments: false,
+                        emit_nested_context_reassign_reads: false,
                     },
                 )
                 .metadata();
@@ -1249,6 +1301,7 @@ fn codegen_outlined_function(
                 param_name_overrides: std::collections::HashMap::new(),
                 enable_name_anonymous_functions: false,
                 enable_memoization_comments: false,
+                emit_nested_context_reassign_reads: false,
             },
         )
         .metadata();
@@ -1488,12 +1541,14 @@ fn run_hir_pipeline(
     trace_pass!("infer_types");
     type_inference::infer_types(&mut hir_func);
 
-    // Post-type-inference validation — bail on error
-    run_validation!(validate_hooks_usage::validate_hooks_usage(&hir_func));
-    if env_config.validate_no_capitalized_calls.is_some() {
-        run_validation!(
-            validate_no_capitalized_calls::validate_no_capitalized_calls(&hir_func, env_config,)
-        );
+    if !retry_no_memo_mode {
+        // Upstream only runs these validations when inferred memoization is enabled.
+        run_validation!(validate_hooks_usage::validate_hooks_usage(&hir_func));
+        if env_config.validate_no_capitalized_calls.is_some() {
+            run_validation!(
+                validate_no_capitalized_calls::validate_no_capitalized_calls(&hir_func, env_config,)
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2787,6 +2842,7 @@ fn run_reactive_passes(
             param_name_overrides: std::collections::HashMap::new(),
             enable_name_anonymous_functions: env_config.enable_name_anonymous_functions,
             enable_memoization_comments: env_config.enable_memoization_comments,
+            emit_nested_context_reassign_reads: false,
         };
         crate::codegen_backend::codegen_ast::codegen_reactive_function(
             bld,
@@ -3450,6 +3506,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
     FILE_HAD_PIPELINE_ERROR.with(|flag| flag.set(false));
     FILE_LAST_PIPELINE_ERROR.with(|cell| cell.borrow_mut().clear());
     CURRENT_FILENAME.with(|cell| *cell.borrow_mut() = filename.to_string());
+    clear_ast_identifier_renames();
     FLOW_COMPONENT_NAMES.with(|set| {
         *set.borrow_mut() = collect_flow_component_names(source);
     });
@@ -3736,6 +3793,8 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
         untransformed_result!(source.to_string());
     }
 
+    let ast_identifier_renames = take_ast_identifier_renames();
+
     crate::codegen_backend::emit_module(
         ModuleEmitArgs {
             filename,
@@ -3745,6 +3804,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
             program: &program,
             options,
             dynamic_gate_ident: dynamic_gate_ident.as_deref(),
+            ast_identifier_renames: &ast_identifier_renames,
         },
         compiled,
     )
@@ -5957,21 +6017,6 @@ fn try_compile_arrow<'a>(
             return Ok(None); // Validation error → skip this function
         }
     };
-
-    // Upstream panicThreshold:"none" retry behavior can keep source unchanged for
-    // no-memo retry fallbacks that only surfaced validation diagnostics.
-    if pipeline_output.retry_no_memo_mode
-        && !pipeline_output.has_fire_rewrite
-        && !pipeline_output.has_inferred_effect
-    {
-        if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
-            eprintln!(
-                "[RETRY_SKIP_EMIT] {}: preserving source on no-memo retry",
-                name
-            );
-        }
-        return Ok(None);
-    }
 
     let codegen_result = pipeline_output.codegen_result;
     align_params_result_with_codegen(&mut params_result, &codegen_result.param_names);

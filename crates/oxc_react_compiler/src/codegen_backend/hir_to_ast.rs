@@ -38,10 +38,18 @@ pub(crate) fn try_lower_function_body_ast<'a>(
             matches!(
                 instruction.value,
                 InstructionValue::TypeCastExpression { .. }
+                    | InstructionValue::StoreContext {
+                        lvalue: types::LValue {
+                            kind: InstructionKind::Reassign,
+                            ..
+                        },
+                        ..
+                    }
             ) || is_self_referential_property_store(instruction, &instruction_map)
                 || is_assignment_value_sensitive_store(instruction, &used_temps)
         })
-    }) {
+    }) || has_reassign_read_sequence(hir_function, &used_temps)
+    {
         return None;
     }
 
@@ -606,7 +614,16 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         let suppressed_declares =
             collect_same_block_suppressed_declare_instruction_ids(&block.instructions);
         let mut statements = self.builder.vec();
-        for instruction in &block.instructions {
+        for (index, instruction) in block.instructions.iter().enumerate() {
+            if index > 0
+                && let Some(statement) = self.lower_reassign_read_expression_statement(
+                    &block.instructions[index - 1],
+                    instruction,
+                )
+            {
+                statements.push(statement);
+                continue;
+            }
             if let Some(statement) =
                 self.lower_instruction_to_statement(instruction, &suppressed_declares)?
             {
@@ -621,6 +638,43 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         )?);
         visiting_blocks.remove(&block_id);
         Some(statements)
+    }
+
+    fn lower_reassign_read_expression_statement(
+        &self,
+        previous: &Instruction,
+        current: &Instruction,
+    ) -> Option<ast::Statement<'a>> {
+        if current.lvalue.identifier.name.is_some()
+            || self.used_temps.contains(&current.lvalue.identifier.id)
+        {
+            return None;
+        }
+
+        let read_place = match &current.value {
+            InstructionValue::LoadLocal { place, .. }
+            | InstructionValue::LoadContext { place, .. } => place,
+            _ => return None,
+        };
+
+        let reassigned_place = match &previous.value {
+            InstructionValue::StoreLocal { lvalue, .. }
+            | InstructionValue::StoreContext { lvalue, .. }
+                if lvalue.kind == InstructionKind::Reassign =>
+            {
+                &lvalue.place
+            }
+            _ => return None,
+        };
+
+        if reassigned_place.identifier.declaration_id != read_place.identifier.declaration_id {
+            return None;
+        }
+
+        Some(
+            self.builder
+                .statement_expression(SPAN, self.lower_place(read_place, &mut HashSet::new())?),
+        )
     }
 
     fn lower_instruction_to_statement(
@@ -1029,7 +1083,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 SPAN,
                 self.lower_place(left, visiting)?,
                 lower_logical_operator(*operator),
-                self.lower_place(right, visiting)?,
+                maybe_parenthesize_jsx(self.builder, self.lower_place(right, visiting)?),
             )),
             InstructionValue::Ternary {
                 test,
@@ -1039,8 +1093,8 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
             } => Some(self.builder.expression_conditional(
                 SPAN,
                 self.lower_place(test, visiting)?,
-                self.lower_place(consequent, visiting)?,
-                self.lower_place(alternate, visiting)?,
+                maybe_parenthesize_jsx(self.builder, self.lower_place(consequent, visiting)?),
+                maybe_parenthesize_jsx(self.builder, self.lower_place(alternate, visiting)?),
             )),
             InstructionValue::CallExpression {
                 callee,
@@ -1049,7 +1103,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 ..
             } => Some(self.builder.expression_call(
                 SPAN,
-                self.lower_place(callee, visiting)?,
+                maybe_parenthesize_call_callee(self.builder, self.lower_place(callee, visiting)?),
                 NONE,
                 self.lower_arguments(args, visiting)?,
                 *optional,
@@ -1078,7 +1132,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 )?;
                 Some(self.builder.expression_call(
                     SPAN,
-                    callee,
+                    maybe_parenthesize_call_callee(self.builder, callee),
                     NONE,
                     self.lower_arguments(args, visiting)?,
                     *call_optional,
@@ -2134,6 +2188,10 @@ pub(crate) fn lower_function_expression_ast<'a>(
     if expr_type == types::FunctionExpressionType::ArrowFunctionExpression
         && directives.is_empty()
         && let Some(expression) = single_return_expression(&statements, builder.allocator)
+        && !matches!(
+            &expression,
+            ast::Expression::JSXElement(_) | ast::Expression::JSXFragment(_)
+        )
     {
         return Some(builder.expression_arrow_function(
             SPAN,
@@ -2145,7 +2203,9 @@ pub(crate) fn lower_function_expression_ast<'a>(
             builder.alloc(builder.function_body(
                 SPAN,
                 builder.vec(),
-                builder.vec1(builder.statement_expression(SPAN, expression)),
+                builder.vec1(
+                    builder.statement_expression(SPAN, maybe_parenthesize_jsx(builder, expression)),
+                ),
             )),
         ));
     }
@@ -2270,6 +2330,42 @@ fn is_assignment_value_sensitive_store(
     ) && used_temps.contains(&instruction.lvalue.identifier.id)
 }
 
+fn has_reassign_read_sequence(
+    hir_function: &HIRFunction,
+    used_temps: &HashSet<IdentifierId>,
+) -> bool {
+    hir_function.body.blocks.iter().any(|(_, block)| {
+        block.instructions.windows(2).any(|pair| {
+            let [store_instr, read_instr] = pair else {
+                return false;
+            };
+            let reassigned_decl_id = match &store_instr.value {
+                InstructionValue::StoreLocal { lvalue, .. }
+                | InstructionValue::StoreContext { lvalue, .. }
+                    if lvalue.kind == InstructionKind::Reassign =>
+                {
+                    lvalue.place.identifier.declaration_id
+                }
+                _ => return false,
+            };
+
+            if read_instr.lvalue.identifier.name.is_some()
+                || used_temps.contains(&read_instr.lvalue.identifier.id)
+            {
+                return false;
+            }
+
+            match &read_instr.value {
+                InstructionValue::LoadLocal { place, .. }
+                | InstructionValue::LoadContext { place, .. } => {
+                    place.identifier.declaration_id == reassigned_decl_id
+                }
+                _ => false,
+            }
+        })
+    })
+}
+
 fn collect_terminal_uses(terminal: &Terminal, used: &mut HashSet<IdentifierId>) {
     match terminal {
         Terminal::Return { value, .. }
@@ -2377,6 +2473,34 @@ fn record_argument_uses(args: &[types::Argument], used: &mut HashSet<IdentifierI
 fn record_temp_use(place: &Place, used: &mut HashSet<IdentifierId>) {
     if place.identifier.name.is_none() {
         used.insert(place.identifier.id);
+    }
+}
+
+fn maybe_parenthesize_jsx<'a>(
+    builder: AstBuilder<'a>,
+    expr: ast::Expression<'a>,
+) -> ast::Expression<'a> {
+    if matches!(
+        &expr,
+        ast::Expression::JSXElement(_) | ast::Expression::JSXFragment(_)
+    ) {
+        builder.expression_parenthesized(SPAN, expr)
+    } else {
+        expr
+    }
+}
+
+fn maybe_parenthesize_call_callee<'a>(
+    builder: AstBuilder<'a>,
+    expr: ast::Expression<'a>,
+) -> ast::Expression<'a> {
+    if matches!(
+        &expr,
+        ast::Expression::FunctionExpression(_) | ast::Expression::ArrowFunctionExpression(_)
+    ) {
+        builder.expression_parenthesized(SPAN, expr)
+    } else {
+        expr
     }
 }
 

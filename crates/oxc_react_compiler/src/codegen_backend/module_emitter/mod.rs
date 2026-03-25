@@ -67,6 +67,7 @@ struct AstRenderState {
     imports_to_insert: Vec<InsertedImport>,
     runtime_import_merge_plan: Option<crate::pipeline::RuntimeImportMergePlan>,
     instrument_source_path: String,
+    ast_identifier_renames: std::collections::HashMap<(u32, u32), String>,
 }
 
 struct InsertedImport {
@@ -241,7 +242,13 @@ fn try_emit_module(
                 })
                 .unwrap_or(original_stmt.clone());
             if maybe_gated == original_stmt {
-                body.push(stmt.clone_in(&allocator));
+                let mut cloned = stmt.clone_in(&allocator);
+                apply_planned_identifier_renames(
+                    builder,
+                    &mut cloned,
+                    &state.ast_identifier_renames,
+                );
+                body.push(cloned);
                 blank_line_before.push(has_blank);
             } else {
                 let stmts = parse_statements(
@@ -624,6 +631,7 @@ fn build_render_state(args: ModuleEmitArgs<'_>, compiled: &[CompiledFunction]) -
         imports_to_insert,
         runtime_import_merge_plan,
         instrument_source_path,
+        ast_identifier_renames: args.ast_identifier_renames.clone(),
     }
 }
 
@@ -637,6 +645,7 @@ fn try_rewrite_compiled_statement_ast<'a>(
     state: &AstRenderState,
 ) -> Option<oxc_allocator::Vec<'a, ast::Statement<'a>>> {
     let mut rewritten_stmt = stmt.clone_in(allocator);
+    apply_planned_identifier_renames(builder, &mut rewritten_stmt, &state.ast_identifier_renames);
     let stmt_source = &source[stmt.span().start as usize..stmt.span().end as usize];
     if compiled.len() == 1
         && let Some(gate_name) = state
@@ -730,6 +739,44 @@ fn try_rewrite_compiled_statement_ast<'a>(
 
     Some(statements)
 }
+
+fn apply_planned_identifier_renames<'a>(
+    builder: AstBuilder<'a>,
+    statement: &mut ast::Statement<'a>,
+    renames: &std::collections::HashMap<(u32, u32), String>,
+) {
+    if renames.is_empty() {
+        return;
+    }
+    let mut renamer = PlannedIdentifierRenamer { builder, renames };
+    renamer.visit_statement(statement);
+}
+
+struct PlannedIdentifierRenamer<'a, 'map> {
+    builder: AstBuilder<'a>,
+    renames: &'map std::collections::HashMap<(u32, u32), String>,
+}
+
+impl<'a> VisitMut<'a> for PlannedIdentifierRenamer<'a, '_> {
+    fn visit_binding_identifier(&mut self, it: &mut ast::BindingIdentifier<'a>) {
+        if let Some(to) = self.renames.get(&(it.span.start, it.span.end)) {
+            it.name = self.builder.ident(to);
+        }
+    }
+
+    fn visit_identifier_reference(&mut self, it: &mut ast::IdentifierReference<'a>) {
+        if let Some(to) = self.renames.get(&(it.span.start, it.span.end)) {
+            it.name = self.builder.ident(to);
+        }
+    }
+
+    fn visit_jsx_identifier(&mut self, it: &mut ast::JSXIdentifier<'a>) {
+        if let Some(to) = self.renames.get(&(it.span.start, it.span.end)) {
+            it.name = self.builder.atom(to);
+        }
+    }
+}
+
 pub(super) fn strip_compiled_function_signature_types(function: &mut ast::Function<'_>) {
     function.type_parameters = None;
     function.this_param = None;
@@ -850,6 +897,7 @@ fn try_run_reactive_ast_codegen<'a>(
         param_name_overrides: std::collections::HashMap::new(),
         enable_name_anonymous_functions: cf.enable_name_anonymous_functions,
         enable_memoization_comments: cf.enable_memoization_comments,
+        emit_nested_context_reassign_reads: false,
     };
     let result = crate::codegen_backend::codegen_ast::codegen_reactive_function(
         builder,
@@ -894,6 +942,7 @@ fn try_build_outlined_function_body_from_reactive_ast<'a>(
         param_name_overrides,
         enable_name_anonymous_functions: false,
         enable_memoization_comments: false,
+        emit_nested_context_reassign_reads: false,
     };
     let result = crate::codegen_backend::codegen_ast::codegen_reactive_function(
         builder,
@@ -1875,6 +1924,7 @@ mod tests {
             imports_to_insert: vec![],
             runtime_import_merge_plan: None,
             instrument_source_path: String::new(),
+            ast_identifier_renames: std::collections::HashMap::new(),
         }
     }
 
@@ -1963,6 +2013,7 @@ return { name: country.name, code };"#;
                 program: &program,
                 options: &options,
                 dynamic_gate_ident: None,
+                ast_identifier_renames: &std::collections::HashMap::new(),
             },
             vec![compiled_function],
         );

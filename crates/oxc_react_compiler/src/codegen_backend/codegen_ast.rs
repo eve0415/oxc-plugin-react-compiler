@@ -84,6 +84,10 @@ pub struct CodegenOptions {
     /// Emit memoization annotation comments (e.g., `// check if ...`,
     /// `// Inputs changed, recompute`) matching upstream's `enableMemoizationComments`.
     pub enable_memoization_comments: bool,
+    /// Nested function-expression lowering may need to materialize a trailing
+    /// captured-context read after certain reassignment sequences to match
+    /// upstream callback output.
+    pub emit_nested_context_reassign_reads: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -672,6 +676,42 @@ fn codegen_block_no_reset<'a>(
                 if let Some(s) = codegen_instruction(cx, instr) {
                     stmts.push(s);
                 }
+                if let InstructionValue::StoreContext { lvalue, .. } = &instr.value
+                    && cx.options.emit_nested_context_reassign_reads
+                    && instr.lvalue.is_none()
+                    && matches!(lvalue.kind, InstructionKind::Reassign)
+                    && lvalue.place.identifier.name.is_some()
+                    && let Some(ReactiveStatement::Instruction(prev_instr)) = i
+                        .checked_sub(1)
+                        .and_then(|prev_index| block_vec.get(prev_index))
+                    && let Some(ReactiveStatement::Instruction(prev_prev_instr)) = i
+                        .checked_sub(2)
+                        .and_then(|prev_index| block_vec.get(prev_index))
+                    && let InstructionValue::LoadContext { place, .. } = &prev_prev_instr.value
+                    && place.identifier.declaration_id == lvalue.place.identifier.declaration_id
+                    && let Some(load_temp) = prev_prev_instr.lvalue.as_ref()
+                    && matches!(
+                        &prev_instr.value,
+                        InstructionValue::BinaryExpression { left, right, .. }
+                            if left.identifier.declaration_id == load_temp.identifier.declaration_id
+                                || right.identifier.declaration_id
+                                    == load_temp.identifier.declaration_id
+                    )
+                    && !matches!(
+                        block_vec.get(i + 1),
+                        Some(ReactiveStatement::Instruction(next_instr))
+                            if matches!(
+                                &next_instr.value,
+                                InstructionValue::LoadLocal { place, .. }
+                                    | InstructionValue::LoadContext { place, .. }
+                                        if place.identifier.declaration_id
+                                            == lvalue.place.identifier.declaration_id
+                            )
+                    )
+                    && let Some(expr) = codegen_place(cx, &lvalue.place)
+                {
+                    stmts.push(cx.builder.statement_expression(SPAN, expr));
+                }
             }
             ReactiveStatement::Terminal(term_stmt) => {
                 let label = term_stmt.label.as_ref();
@@ -995,7 +1035,8 @@ fn try_fuse_destructure_into_call<'a>(
             optional,
             ..
         } => {
-            let callee_expr = codegen_place(cx, callee)?;
+            let callee_expr =
+                maybe_parenthesize_call_callee(cx.builder, codegen_place(cx, callee)?);
             let mut arg_exprs = cx.builder.vec();
             for (idx, arg) in args.iter().enumerate() {
                 arg_exprs.push(codegen_arg_or_fused(cx, idx, arg, &assign_expr)?);
@@ -1208,7 +1249,7 @@ fn codegen_instruction_value<'a>(
             SPAN,
             codegen_place(cx, left)?,
             lower_logical_operator(*operator),
-            codegen_place(cx, right)?,
+            maybe_parenthesize_jsx(cx.builder, codegen_place(cx, right)?),
         )),
         InstructionValue::Ternary {
             test,
@@ -1218,8 +1259,8 @@ fn codegen_instruction_value<'a>(
         } => Some(cx.builder.expression_conditional(
             SPAN,
             codegen_place(cx, test)?,
-            codegen_place(cx, consequent)?,
-            codegen_place(cx, alternate)?,
+            maybe_parenthesize_jsx(cx.builder, codegen_place(cx, consequent)?),
+            maybe_parenthesize_jsx(cx.builder, codegen_place(cx, alternate)?),
         )),
         InstructionValue::CallExpression {
             callee,
@@ -1258,8 +1299,10 @@ fn codegen_instruction_value<'a>(
             call_optional,
             ..
         } => {
-            let callee_expr =
-                codegen_method_call_callee(cx, receiver, property, *receiver_optional)?;
+            let callee_expr = maybe_parenthesize_call_callee(
+                cx.builder,
+                codegen_method_call_callee(cx, receiver, property, *receiver_optional)?,
+            );
             // For method calls, the hook name is the property (e.g., obj.useIdentity).
             let is_hook = cx.options.enable_emit_hook_guards
                 && !cx.options.disable_memoization_features
@@ -1672,6 +1715,14 @@ fn codegen_instruction_value<'a>(
                     _ => codegen_instruction_value(cx, &seq_instr.value),
                 };
                 if let Some(expr) = expr {
+                    let pure_value_read_later = seq_instr.lvalue.as_ref().is_some_and(|lv| {
+                        let decl = lv.identifier.declaration_id;
+                        !is_side_effecting
+                            && (instructions.iter().any(|other| {
+                                !std::ptr::eq(other, seq_instr)
+                                    && instruction_references_decl(&other.value, decl)
+                            }) || instruction_references_decl(value, decl))
+                    });
                     if let Some(lv) = &seq_instr.lvalue
                         && is_temp_identifier(&lv.identifier)
                     {
@@ -1693,6 +1744,19 @@ fn codegen_instruction_value<'a>(
                                 prefix_exprs.push(expr);
                             }
                         }
+                    } else if let Some(lv) = &seq_instr.lvalue
+                        && pure_value_read_later
+                    {
+                        // Pure sequence-local values can be safely inlined even when
+                        // they later surface as synthetic runtime temps like `t6`.
+                        // Without this, later reads fall through to the synthetic
+                        // identifier fallback and emit invalid code such as
+                        // `let found = t6;` with no matching declaration.
+                        cx.temps.insert(
+                            lv.identifier.declaration_id,
+                            Some(expr.clone_in(cx.allocator)),
+                        );
+                        cx.force_inline_decls.insert(lv.identifier.declaration_id);
                     } else if is_side_effecting {
                         prefix_exprs.push(expr);
                     }
@@ -2403,6 +2467,20 @@ fn maybe_parenthesize_jsx<'a>(
     if matches!(
         &expr,
         ast::Expression::JSXElement(_) | ast::Expression::JSXFragment(_)
+    ) {
+        builder.expression_parenthesized(SPAN, expr)
+    } else {
+        expr
+    }
+}
+
+fn maybe_parenthesize_call_callee<'a>(
+    builder: AstBuilder<'a>,
+    expr: ast::Expression<'a>,
+) -> ast::Expression<'a> {
+    if matches!(
+        &expr,
+        ast::Expression::FunctionExpression(_) | ast::Expression::ArrowFunctionExpression(_)
     ) {
         builder.expression_parenthesized(SPAN, expr)
     } else {
@@ -4973,6 +5051,7 @@ fn lower_function_expression_via_reactive<'a>(
         param_name_overrides: HashMap::new(),
         enable_name_anonymous_functions: cx.options.enable_name_anonymous_functions,
         enable_memoization_comments: cx.options.enable_memoization_comments,
+        emit_nested_context_reassign_reads: true,
     };
 
     let result = codegen_reactive_function(cx.builder, cx.allocator, &reactive_fn, options);
@@ -4991,6 +5070,12 @@ fn lower_function_expression_via_reactive<'a>(
     }
 
     let mut body_stmts = result.body;
+    let return_name = hir_func
+        .returns
+        .identifier
+        .name
+        .as_ref()
+        .map(|name| name.value().to_string());
     // When the last body statement is an assignment expression `name = ...;`,
     // add a trailing expression statement with just the variable name.
     // This matches upstream Babel codegen which emits the block value expression
@@ -4999,6 +5084,7 @@ fn lower_function_expression_via_reactive<'a>(
         && let ast::Expression::AssignmentExpression(assign) = &last_expr.expression
         && assign.operator == oxc_syntax::operator::AssignmentOperator::Assign
         && let ast::AssignmentTarget::AssignmentTargetIdentifier(ident) = &assign.left
+        && return_name.as_deref() == Some(ident.name.as_str())
     {
         let name = ident.name.as_str();
         let trailing = cx.builder.statement_expression(
@@ -5057,13 +5143,21 @@ fn lower_function_expression_via_reactive<'a>(
             {
                 if let ast::Statement::ReturnStatement(ret) = &body.statements[0] {
                     if let Some(arg) = &ret.argument {
-                        let expr = arg.clone_in(cx.allocator);
-                        let expr_body = cx.builder.alloc(cx.builder.function_body(
-                            SPAN,
-                            cx.builder.vec(),
-                            cx.builder.vec1(cx.builder.statement_expression(SPAN, expr)),
-                        ));
-                        (true, expr_body)
+                        if matches!(
+                            arg,
+                            ast::Expression::JSXElement(_) | ast::Expression::JSXFragment(_)
+                        ) {
+                            (false, body)
+                        } else {
+                            let expr =
+                                maybe_parenthesize_jsx(cx.builder, arg.clone_in(cx.allocator));
+                            let expr_body = cx.builder.alloc(cx.builder.function_body(
+                                SPAN,
+                                cx.builder.vec(),
+                                cx.builder.vec1(cx.builder.statement_expression(SPAN, expr)),
+                            ));
+                            (true, expr_body)
+                        }
                     } else {
                         (false, body)
                     }
@@ -5248,8 +5342,13 @@ fn wrap_hook_guard_iife<'a>(
             ))),
         );
 
-    cx.builder
-        .expression_call(SPAN, function_expr, NONE, cx.builder.vec(), false)
+    cx.builder.expression_call(
+        SPAN,
+        maybe_parenthesize_call_callee(cx.builder, function_expr),
+        NONE,
+        cx.builder.vec(),
+        false,
+    )
 }
 
 /// Check whether a HIR function body has a side-effecting unnamed temp whose

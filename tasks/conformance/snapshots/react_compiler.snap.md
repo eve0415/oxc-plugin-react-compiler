@@ -1,6 +1,6 @@
 # React Compiler Conformance -- 100.0% parity rate
 
-**1779** parity_success, **0** parity_failure, **0** skipped
+**1783** parity_success, **0** parity_failure, **0** skipped
 
 ## Failed
 
@@ -275,6 +275,10 @@
 - `custom/useref-initial-value-sentinel`
 - `custom/website-helper-function-order`
 - `custom/website-index-out-of-bounds-cache-layout`
+- `custom/website-repro-link`
+- `custom/website-repro-projects`
+- `custom/website-repro-skills`
+- `custom/website-repro-sys`
 - `custom/website-skills-grouping`
 - `custom/website-terminal-switch`
 - `dce-loop`

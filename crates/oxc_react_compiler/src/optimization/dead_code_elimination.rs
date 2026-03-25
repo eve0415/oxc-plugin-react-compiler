@@ -710,7 +710,6 @@ fn dead_code_elimination_pass(
                 .map(|instr| (instr.lvalue.identifier.id, &instr.value))
         })
         .collect();
-
     // Rewrite StoreLocal → DeclareLocal when the initializer value is dead
     // but the variable binding is still needed.
     // Matching upstream rewriteInstruction(): convert when:
@@ -760,15 +759,16 @@ fn dead_code_elimination_pass(
             if let InstructionValue::StoreLocal { lvalue, value, .. } = &instr.value
                 && lvalue.kind != InstructionKind::Reassign
             {
+                let rhs_primitive = match value_defs.get(&value.identifier.id) {
+                    Some(InstructionValue::Primitive { value, .. }) => Some(value),
+                    _ => None,
+                };
                 let primitive_literal = (block.id == func.body.entry
                     && lvalue.kind == InstructionKind::Let
                     && lvalue.place.identifier.name.is_some()
                     && !captured_context_decl_ids
                         .contains(&lvalue.place.identifier.declaration_id))
-                .then(|| match value_defs.get(&value.identifier.id) {
-                    Some(InstructionValue::Primitive { value, .. }) => Some(value),
-                    _ => None,
-                })
+                .then_some(rhs_primitive)
                 .flatten();
                 let precise_literal_let_rewrite = primitive_literal.map(|_| {
                     top_level_literal_initializer_is_elidable(

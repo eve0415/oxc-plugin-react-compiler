@@ -122,122 +122,100 @@ fn enter_ssa_with_next_id(func: &mut HIRFunction, next_id: &mut u32) -> Result<(
         }
     }
 
-    // Compute block predecessors from terminal successors (BuildHIR doesn't set preds)
-    {
-        let mut pred_map: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
-        for (block_id, block) in &func.body.blocks {
-            for succ in enter_ssa_successors(&block.terminal) {
-                let preds = pred_map.entry(succ).or_default();
-                if !preds.contains(block_id) {
-                    preds.push(*block_id);
-                }
-            }
-        }
-        for (block_id, block) in &mut func.body.blocks {
-            if let Some(preds) = pred_map.remove(block_id) {
-                ctx.pred_lists.insert(*block_id, preds.clone());
-                block.preds = preds.into_iter().collect();
-            } else {
-                ctx.pred_lists.insert(*block_id, Vec::new());
-                block.preds.clear();
-            }
-        }
+    // Upstream EnterSSA uses the predecessor sets already recorded on blocks.
+    // Preserve that CFG shape instead of reconstructing it from the reduced
+    // visitor successor set, which omits loop backedges/fallthrough structure.
+    for (block_id, block) in &func.body.blocks {
+        let mut preds: Vec<BlockId> = block.preds.iter().copied().collect();
+        preds.sort_by_key(|id| id.0);
+        ctx.pred_lists.insert(*block_id, preds);
     }
 
-    // Now that predecessors are computed, fill in pred_count
     for (block_id, _) in &func.body.blocks {
         let count = ctx.pred_lists.get(block_id).map_or(0, Vec::len);
         ctx.pred_count.insert(*block_id, count);
     }
 
-    // Place phi nodes at merge points
-    // For blocks with multiple predecessors, check if they need phis
-    // Also track which old SSA ids are replaced by phis for the second pass
+    // Place phi nodes at merge points.
+    // A single sweep is not enough for loop-carried values because one merge can
+    // depend on a phi inserted at another merge later in the traversal. Iterate
+    // to a fixpoint so loop headers and exits converge like upstream's sealed SSA.
     let mut phi_rewrites_by_block: HashMap<BlockId, HashMap<IdentifierId, Identifier>> =
         HashMap::new();
+    let mut placed_phis: HashSet<(BlockId, IdentifierId)> = HashSet::new();
+    let mut made_progress = true;
+    while made_progress {
+        made_progress = false;
+        for i in 0..func.body.blocks.len() {
+            let block_id = func.body.blocks[i].0;
+            let preds: Vec<BlockId> = ctx.pred_lists.get(&block_id).cloned().unwrap_or_default();
+            if preds.len() <= 1 {
+                continue;
+            }
 
-    for i in 0..func.body.blocks.len() {
-        let block_id = func.body.blocks[i].0;
-        let preds: Vec<BlockId> = ctx.pred_lists.get(&block_id).cloned().unwrap_or_default();
-        if preds.len() <= 1 {
-            continue;
-        }
+            let mut all_orig_ids: Vec<IdentifierId> = ctx.global_defs.keys().copied().collect();
+            all_orig_ids.sort_by_key(|id| id.0);
 
-        // Find identifiers that have different defs visible from different predecessors.
-        // We need to check ALL known variables, not just the ones directly defined in
-        // each predecessor's block. A variable defined in a dominating block and only
-        // reassigned in some branches still needs a phi at the merge point.
-        //
-        // Collect the set of all original variable IDs that have been defined anywhere.
-        let mut all_orig_ids: Vec<IdentifierId> = ctx.global_defs.keys().copied().collect();
-        all_orig_ids.sort_by_key(|id| id.0);
-
-        let mut all_defs: HashMap<IdentifierId, Vec<(BlockId, Identifier)>> = HashMap::new();
-        for &pred_id in &preds {
-            for &orig_id in &all_orig_ids {
-                // Walk up the predecessor chain from pred_id to find the
-                // reaching definition for orig_id. This correctly handles
-                // sibling branches: B2's definitions don't "leak" into B3.
-                let ssa_id =
-                    find_reaching_def(pred_id, orig_id, &ctx.block_defs, &ctx.pred_lists, func);
-                if let Some(ssa_id) = ssa_id {
-                    all_defs.entry(orig_id).or_default().push((pred_id, ssa_id));
+            let mut all_defs: HashMap<IdentifierId, Vec<(BlockId, Identifier)>> = HashMap::new();
+            for &pred_id in &preds {
+                for &orig_id in &all_orig_ids {
+                    let ssa_id =
+                        find_reaching_def(pred_id, orig_id, &ctx.block_defs, &ctx.pred_lists, func);
+                    if let Some(ssa_id) = ssa_id {
+                        all_defs.entry(orig_id).or_default().push((pred_id, ssa_id));
+                    }
                 }
             }
-        }
 
-        let mut all_defs_sorted: Vec<(IdentifierId, Vec<(BlockId, Identifier)>)> =
-            all_defs.into_iter().collect();
-        all_defs_sorted.sort_by_key(|(orig_id, _)| orig_id.0);
+            let mut all_defs_sorted: Vec<(IdentifierId, Vec<(BlockId, Identifier)>)> =
+                all_defs.into_iter().collect();
+            all_defs_sorted.sort_by_key(|(orig_id, _)| orig_id.0);
 
-        for (orig_id, pred_defs) in all_defs_sorted {
-            if pred_defs.len() < 2 {
-                continue;
-            }
-            // Check if all defs are the same
-            let first = &pred_defs[0].1.id;
-            if pred_defs.iter().all(|(_, d)| d.id == *first) {
-                continue;
-            }
-            // Need a phi node
-            let phi_id = ctx.make_ssa_id(&pred_defs[0].1);
+            for (orig_id, pred_defs) in all_defs_sorted {
+                if pred_defs.len() < 2 || placed_phis.contains(&(block_id, orig_id)) {
+                    continue;
+                }
+                let first = &pred_defs[0].1.id;
+                if pred_defs.iter().all(|(_, d)| d.id == *first) {
+                    continue;
+                }
 
-            // Record what old SSA id this block's instructions currently use for this variable.
-            // That's whatever lookup() returned during pass 1 = global_defs[orig_id] at that time.
-            // Since set_def hasn't been called yet for this phi, the current global_defs entry
-            // for orig_id is still the old one.
-            if let Some(old_ssa) = ctx.global_defs.get(&orig_id) {
-                phi_rewrites_by_block
-                    .entry(block_id)
-                    .or_default()
-                    .insert(old_ssa.id, phi_id.clone());
-            }
+                let phi_id = ctx.make_ssa_id(&pred_defs[0].1);
+                if let Some(old_ssa) = ctx.global_defs.get(&orig_id) {
+                    phi_rewrites_by_block
+                        .entry(block_id)
+                        .or_default()
+                        .insert(old_ssa.id, phi_id.clone());
+                }
 
-            let mut operands = HashMap::new();
-            for (pred_bid, ssa_id) in pred_defs {
-                let loc = ssa_id.loc.clone();
-                operands.insert(
-                    pred_bid,
-                    Place {
-                        identifier: ssa_id,
+                let mut operands = HashMap::new();
+                for (pred_bid, ssa_id) in pred_defs {
+                    let loc = ssa_id.loc.clone();
+                    operands.insert(
+                        pred_bid,
+                        Place {
+                            identifier: ssa_id,
+                            effect: Effect::Unknown,
+                            reactive: false,
+                            loc,
+                        },
+                    );
+                }
+                let phi = Phi {
+                    place: Place {
+                        identifier: phi_id.clone(),
                         effect: Effect::Unknown,
                         reactive: false,
-                        loc,
+                        loc: phi_id.loc.clone(),
                     },
-                );
-            }
-            let phi = Phi {
-                place: Place {
-                    identifier: phi_id.clone(),
-                    effect: Effect::Unknown,
-                    reactive: false,
-                    loc: phi_id.loc.clone(),
-                },
-                operands,
-            };
+                    operands,
+                };
 
-            func.body.blocks[i].1.phis.push(phi);
-            ctx.set_phi_def(block_id, orig_id, phi_id);
+                func.body.blocks[i].1.phis.push(phi);
+                ctx.set_phi_def(block_id, orig_id, phi_id);
+                placed_phis.insert((block_id, orig_id));
+                made_progress = true;
+            }
         }
     }
 
@@ -411,19 +389,32 @@ fn find_reaching_def(
     pred_lists: &HashMap<BlockId, Vec<BlockId>>,
     func: &HIRFunction,
 ) -> Option<Identifier> {
-    let mut current = start_block;
-    let mut visited: HashSet<BlockId> = HashSet::new();
-    loop {
+    let mut memo: HashMap<(BlockId, IdentifierId), Option<Identifier>> = HashMap::new();
+
+    fn helper(
+        current: BlockId,
+        orig_id: IdentifierId,
+        block_defs: &HashMap<BlockId, HashMap<IdentifierId, Identifier>>,
+        pred_lists: &HashMap<BlockId, Vec<BlockId>>,
+        func: &HIRFunction,
+        visited: &mut HashSet<BlockId>,
+        memo: &mut HashMap<(BlockId, IdentifierId), Option<Identifier>>,
+    ) -> Option<Identifier> {
         if !visited.insert(current) {
-            return None; // cycle
+            return None;
         }
-        // Check if this block directly defines the variable (includes phi outputs)
+        if let Some(cached) = memo.get(&(current, orig_id)) {
+            return cached.clone();
+        }
+
         if let Some(defs) = block_defs.get(&current)
             && let Some(def) = defs.get(&orig_id)
         {
-            return Some(def.clone());
+            let result = Some(def.clone());
+            memo.insert((current, orig_id), result.clone());
+            return result;
         }
-        // Walk to predecessor(s), preserving deterministic predecessor order.
+
         let preds = pred_lists.get(&current).cloned().unwrap_or_else(|| {
             func.body
                 .blocks
@@ -436,28 +427,52 @@ fn find_reaching_def(
                 })
         });
         if preds.is_empty() {
-            // Entry block (0 preds) — no definition reachable
+            memo.insert((current, orig_id), None);
             return None;
         }
         if preds.len() == 1 {
-            current = preds[0];
-            continue;
+            let result = helper(
+                preds[0], orig_id, block_defs, pred_lists, func, visited, memo,
+            );
+            memo.insert((current, orig_id), result.clone());
+            return result;
         }
-        // Merge point without a phi for this variable.
-        // Prefer later predecessors (typically backedges) to match the
-        // sealed-SSA behavior from upstream and avoid hash-order instability.
-        let mut found = false;
+
+        let mut found: Option<Identifier> = None;
         for pred in preds.iter().rev() {
-            if !visited.contains(pred) {
-                current = *pred;
-                found = true;
-                break;
+            let mut branch_visited = visited.clone();
+            let Some(def) = helper(
+                *pred,
+                orig_id,
+                block_defs,
+                pred_lists,
+                func,
+                &mut branch_visited,
+                memo,
+            ) else {
+                continue;
+            };
+            if let Some(existing) = &found {
+                if existing.id != def.id {
+                    return None;
+                }
+            } else {
+                found = Some(def);
             }
         }
-        if !found {
-            return None; // All preds visited — cycle
-        }
+        memo.insert((current, orig_id), found.clone());
+        found
     }
+
+    helper(
+        start_block,
+        orig_id,
+        block_defs,
+        pred_lists,
+        func,
+        &mut HashSet::new(),
+        &mut memo,
+    )
 }
 
 struct SSAContext {

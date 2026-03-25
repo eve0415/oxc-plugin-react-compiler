@@ -127,6 +127,26 @@ impl<'a> LowerFunctionOptions<'a> {
     }
 }
 
+fn maybe_record_binding_identifier_rename<'a>(
+    semantic: &Semantic<'a>,
+    ident: &js::BindingIdentifier<'a>,
+    identifier: &hir::Identifier,
+) {
+    let Some(symbol_id) = ident.symbol_id.get() else {
+        return;
+    };
+    let Some(name) = identifier.name.as_ref() else {
+        return;
+    };
+    crate::pipeline::record_ast_symbol_rename(
+        semantic,
+        symbol_id,
+        ident.span,
+        ident.name.as_str(),
+        name.value(),
+    );
+}
+
 /// Lower a function body and params to HIR.
 pub fn lower_function<'a>(
     func_body: &js::FunctionBody<'a>,
@@ -220,6 +240,7 @@ fn lower_function_inner<'a>(
             js::BindingPattern::BindingIdentifier(ident) => {
                 let loc = span_to_loc(param.span);
                 let identifier = builder.resolve_binding(&ident.name, loc.clone());
+                maybe_record_binding_identifier_rename(semantic, ident, &identifier);
                 let place = hir::Place {
                     identifier,
                     effect: hir::Effect::Unknown,
@@ -308,7 +329,7 @@ fn lower_function_inner<'a>(
             );
         }
     } else {
-        predeclare_function_decls_in_block(&mut builder, &func_body.statements);
+        predeclare_function_decls_in_block(&mut builder, semantic, &func_body.statements);
         if has_forward_function_decl_reference(&func_body.statements) {
             builder.push_todo(
                 "[PruneHoistedContexts] Rewrite hoisted function references".to_string(),
@@ -383,7 +404,7 @@ fn lower_statement<'a>(
     match stmt {
         js::Statement::BlockStatement(block) => {
             builder.enter_binding_scope();
-            predeclare_function_decls_in_block(builder, &block.body);
+            predeclare_function_decls_in_block(builder, semantic, &block.body);
             lower_block_statements_with_hoisted_contexts(builder, &block.body, semantic, source);
             builder.exit_binding_scope();
         }
@@ -845,6 +866,7 @@ fn statement_needs_hoisted_context_declare(
 
 fn predeclare_function_decls_in_block<'a>(
     builder: &mut HIRBuilder,
+    semantic: &Semantic<'a>,
     statements: &[js::Statement<'a>],
 ) {
     for stmt in statements {
@@ -852,7 +874,8 @@ fn predeclare_function_decls_in_block<'a>(
             && let Some(id) = &func.id
         {
             let loc = span_to_loc(id.span);
-            builder.declare_binding(&id.name, loc, true);
+            let identifier = builder.declare_binding(&id.name, loc, true);
+            maybe_record_binding_identifier_rename(semantic, id, &identifier);
         }
     }
 }
@@ -1045,6 +1068,7 @@ fn lower_uninitialized_var_declarator<'a>(
 
     let loc = span_to_loc(ident.span);
     let identifier = builder.declare_binding(&ident.name, loc.clone(), allow_lexical_shadowing);
+    maybe_record_binding_identifier_rename(semantic, ident, &identifier);
     if kind == hir::InstructionKind::Const {
         builder.mark_binding_const(&ident.name);
     }
@@ -1097,6 +1121,7 @@ fn variable_decl_kind_to_instruction_kind(
 
 fn predeclare_binding_pat<'a>(
     builder: &mut HIRBuilder,
+    semantic: &Semantic<'a>,
     pattern: &js::BindingPattern<'a>,
     kind: hir::InstructionKind,
     allow_lexical_shadowing: bool,
@@ -1104,29 +1129,54 @@ fn predeclare_binding_pat<'a>(
     match pattern {
         js::BindingPattern::BindingIdentifier(ident) => {
             let loc = span_to_loc(ident.span);
-            builder.declare_binding(&ident.name, loc, allow_lexical_shadowing);
+            let identifier = builder.declare_binding(&ident.name, loc, allow_lexical_shadowing);
+            maybe_record_binding_identifier_rename(semantic, ident, &identifier);
             if kind == hir::InstructionKind::Const {
                 builder.mark_binding_const(&ident.name);
             }
         }
         js::BindingPattern::ObjectPattern(obj) => {
             for prop in &obj.properties {
-                predeclare_binding_pat(builder, &prop.value, kind, allow_lexical_shadowing);
+                predeclare_binding_pat(
+                    builder,
+                    semantic,
+                    &prop.value,
+                    kind,
+                    allow_lexical_shadowing,
+                );
             }
             if let Some(rest) = &obj.rest {
-                predeclare_binding_pat(builder, &rest.argument, kind, allow_lexical_shadowing);
+                predeclare_binding_pat(
+                    builder,
+                    semantic,
+                    &rest.argument,
+                    kind,
+                    allow_lexical_shadowing,
+                );
             }
         }
         js::BindingPattern::ArrayPattern(arr) => {
             for elem in arr.elements.iter().flatten() {
-                predeclare_binding_pat(builder, elem, kind, allow_lexical_shadowing);
+                predeclare_binding_pat(builder, semantic, elem, kind, allow_lexical_shadowing);
             }
             if let Some(rest) = &arr.rest {
-                predeclare_binding_pat(builder, &rest.argument, kind, allow_lexical_shadowing);
+                predeclare_binding_pat(
+                    builder,
+                    semantic,
+                    &rest.argument,
+                    kind,
+                    allow_lexical_shadowing,
+                );
             }
         }
         js::BindingPattern::AssignmentPattern(assign) => {
-            predeclare_binding_pat(builder, &assign.left, kind, allow_lexical_shadowing);
+            predeclare_binding_pat(
+                builder,
+                semantic,
+                &assign.left,
+                kind,
+                allow_lexical_shadowing,
+            );
         }
     }
 }
@@ -1145,6 +1195,7 @@ fn lower_binding_pat<'a>(
             let loc = span_to_loc(ident.span);
             let identifier =
                 builder.declare_binding(&ident.name, loc.clone(), allow_lexical_shadowing);
+            maybe_record_binding_identifier_rename(semantic, ident, &identifier);
             if kind == hir::InstructionKind::Const {
                 builder.mark_binding_const(&ident.name);
             }
@@ -1481,6 +1532,7 @@ fn declare_pattern_place<'a>(
 ) -> hir::Place {
     let loc = span_to_loc(ident.span);
     let identifier = builder.declare_binding(&ident.name, loc.clone(), allow_lexical_shadowing);
+    maybe_record_binding_identifier_rename(semantic, ident, &identifier);
     if kind == hir::InstructionKind::Const {
         builder.mark_binding_const(&ident.name);
     }
@@ -2215,7 +2267,13 @@ fn lower_for_of_inner<'a>(
                 "(BuildHIR::lowerStatement) Handle var kinds in ForOfStatement",
             );
             for declarator in &decl.declarations {
-                predeclare_binding_pat(builder, &declarator.id, decl_kind, allow_lexical_shadowing);
+                predeclare_binding_pat(
+                    builder,
+                    semantic,
+                    &declarator.id,
+                    decl_kind,
+                    allow_lexical_shadowing,
+                );
             }
             (Some(decl_kind), allow_lexical_shadowing)
         } else {
@@ -2420,7 +2478,13 @@ fn lower_for_in<'a>(
                 "(BuildHIR::lowerStatement) Handle var kinds in ForInStatement",
             );
             for declarator in &decl.declarations {
-                predeclare_binding_pat(builder, &declarator.id, decl_kind, allow_lexical_shadowing);
+                predeclare_binding_pat(
+                    builder,
+                    semantic,
+                    &declarator.id,
+                    decl_kind,
+                    allow_lexical_shadowing,
+                );
             }
             (Some(decl_kind), allow_lexical_shadowing)
         } else {
@@ -2852,6 +2916,11 @@ fn lower_try<'a>(
                 // Use resolve_binding so that subsequent references to `e` in the
                 // handler body (like `return e;`) resolve to the same identifier.
                 let identifier = builder.resolve_binding(name, loc.clone());
+                if let Some(param) = handler.param.as_ref()
+                    && let js::BindingPattern::BindingIdentifier(ident) = &param.pattern
+                {
+                    maybe_record_binding_identifier_rename(semantic, ident, &identifier);
+                }
                 let named_place = hir::Place {
                     identifier,
                     effect: hir::Effect::Unknown,
