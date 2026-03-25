@@ -1,3 +1,4 @@
 packages:
   - napi
   - napi/binding
+  - napi/binding/npm/*

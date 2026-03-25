@@ -1,6 +1,6 @@
 {
   "name": "oxc-plugin-react-compiler",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "description": "Rust port of babel-plugin-react-compiler for OXC/Vite v8",
   "license": "MIT",
   "type": "module",
@@ -13,7 +13,26 @@
   "files": [
     "dist/"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eve0415/oxc-plugin-react-compiler.git"
+  },
+  "homepage": "https://github.com/eve0415/oxc-plugin-react-compiler",
+  "author": "eve0415",
+  "keywords": [
+    "react",
+    "compiler",
+    "oxc",
+    "vite",
+    "react-compiler"
+  ],
+  "bugs": {
+    "url": "https://github.com/eve0415/oxc-plugin-react-compiler/issues"
+  },
   "dependencies": {
     "@oxc-plugin-react-compiler/binding": "workspace:*"
+  },
+  "peerDependencies": {
+    "vite": ">=8.0.0"
   }
 }

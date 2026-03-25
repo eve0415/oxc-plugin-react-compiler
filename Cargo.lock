@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "oxc_react_compiler"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "hmac",
  "indexmap",
@@ -688,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "oxc_react_compiler_napi"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "napi",
  "napi-build",

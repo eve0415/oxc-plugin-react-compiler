@@ -12,26 +12,6 @@ export default defineConfig({
     inputOptions: {
       external: ["@oxc-plugin-react-compiler/binding", "vite"],
     },
-    plugins: [
-      {
-        name: 'napi-build',
-        async buildStart() {
-          const { NapiCli } = await import('@napi-rs/cli');
-          const cli = new NapiCli();
-          const { task } = await cli.build({
-            manifestPath: 'crates/oxc_react_compiler_napi/Cargo.toml',
-            packageJsonPath: 'napi/binding/package.json',
-            outputDir: 'napi/binding/dist',
-            release: true,
-            platform: true,
-            esm: true,
-            jsBinding: 'oxc-react-compiler.js',
-            dts: 'oxc-react-compiler.d.ts',
-          });
-          await task;
-        },
-      },
-    ],
     deps: {
       onlyBundle: false,
     },

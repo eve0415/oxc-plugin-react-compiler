@@ -1,6 +1,6 @@
 {
   "name": "@oxc-plugin-react-compiler/binding-darwin-arm64",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "cpu": [
     "arm64"
   ],
@@ -10,6 +10,11 @@
   ],
   "description": "Rust port of babel-plugin-react-compiler for OXC/Vite v8",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eve0415/oxc-plugin-react-compiler.git"
+  },
+  "author": "eve0415",
   "os": [
     "darwin"
   ]
