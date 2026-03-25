@@ -311,6 +311,7 @@ fn is_valid_js_identifier_for_expectation(name: &str) -> bool {
 /// Normalize JSX child whitespace: strip single spaces between JSX children.
 /// Babel adds spaces like `<div> {x} {y} </div>`, OXC omits them.
 /// Uses simple string replacement for specific 2-char boundary patterns.
+#[allow(dead_code)]
 fn normalize_jsx_child_whitespace(code: &str) -> String {
     // Replace specific JSX boundary patterns where a single space appears.
     // These are: `> {`, `} {`, `} <`, `> <` (in JSX child context).
@@ -476,6 +477,7 @@ fn normalize_jsx_assignment_parens(code: &str) -> String {
 /// lines (creating an implicit space between preceding text and the element),
 /// while OXC prints everything inline.  Both compilers produce identical
 /// JSXText IR; the difference is purely in the printer's formatting.
+#[allow(dead_code)]
 fn normalize_jsx_text_boundary_space(code: &str) -> String {
     let mut result = String::with_capacity(code.len());
     let bytes = code.as_bytes();
@@ -529,6 +531,7 @@ fn normalize_jsx_expression_container_spacing(code: &str) -> String {
 /// bare space.  Prettier rewrites `{" "}` / `{' '}` to a plain JSX text space
 /// when formatting the upstream expected output, while OXC codegen emits the
 /// expression container literally.  Both are semantically identical in React.
+#[allow(dead_code)]
 fn normalize_jsx_space_expression_container(code: &str) -> String {
     code.replace("{\" \"}", " ").replace("{' '}", " ")
 }
@@ -880,6 +883,7 @@ fn normalize_numeric_leading_zero(code: &str) -> String {
 
 /// Normalize trailing text space before JSX close tag.
 /// `>increment </button>` → `>increment</button>` and `>;{t4}; </>` → `>;{t4};</>`
+#[allow(dead_code)]
 fn normalize_jsx_trailing_text_space_before_close(code: &str) -> String {
     // Strip space between text/expression end and `</`
     let mut result = String::with_capacity(code.len());
