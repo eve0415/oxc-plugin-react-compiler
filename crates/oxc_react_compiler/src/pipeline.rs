@@ -3670,7 +3670,7 @@ pub fn compile(filename: &str, source: &str, options: &PluginOptions) -> Compile
         );
     }
 
-    if FILE_HAD_PIPELINE_ERROR.with(|flag| flag.get()) {
+    if FILE_HAD_PIPELINE_ERROR.with(|flag| flag.get()) && compiled.is_empty() {
         if std::env::var("DEBUG_PIPELINE_ERRORS").is_ok() {
             let last_error = FILE_LAST_PIPELINE_ERROR.with(|cell| cell.borrow().clone());
             eprintln!(

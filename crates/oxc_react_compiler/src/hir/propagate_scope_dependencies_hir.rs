@@ -1060,6 +1060,16 @@ impl DependencyCollectionContext {
         // ref.current access is not a valid dep — truncate to just the ref.
         // When the ref-like-name option is enabled, apply the same rule to
         // named identifiers (ref/*Ref) even if type inference left them as Poly.
+        if self.in_inner_fn
+            && self.component_props_param_decl == Some(dep.identifier.declaration_id)
+            && !dep.path.is_empty()
+        {
+            dep = ReactiveScopeDependency {
+                identifier: dep.identifier.clone(),
+                path: Vec::new(),
+            };
+        }
+
         let truncate_ref_current = dep.path.first().is_some_and(|p| p.property == "current")
             && (is_use_ref_type(&dep.identifier)
                 || (self.enable_treat_ref_like_identifiers_as_refs
