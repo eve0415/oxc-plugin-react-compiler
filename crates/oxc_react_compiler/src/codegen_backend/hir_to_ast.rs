@@ -41,7 +41,8 @@ pub(crate) fn try_lower_function_body_ast<'a>(
             ) || is_self_referential_property_store(instruction, &instruction_map)
                 || is_assignment_value_sensitive_store(instruction, &used_temps)
         })
-    }) {
+    }) || has_reassign_read_sequence(hir_function, &used_temps)
+    {
         return None;
     }
 
@@ -2268,6 +2269,42 @@ fn is_assignment_value_sensitive_store(
             ..
         }
     ) && used_temps.contains(&instruction.lvalue.identifier.id)
+}
+
+fn has_reassign_read_sequence(
+    hir_function: &HIRFunction,
+    used_temps: &HashSet<IdentifierId>,
+) -> bool {
+    hir_function.body.blocks.iter().any(|(_, block)| {
+        block.instructions.windows(2).any(|pair| {
+            let [store_instr, read_instr] = pair else {
+                return false;
+            };
+            let reassigned_decl_id = match &store_instr.value {
+                InstructionValue::StoreLocal { lvalue, .. }
+                | InstructionValue::StoreContext { lvalue, .. }
+                    if lvalue.kind == InstructionKind::Reassign =>
+                {
+                    lvalue.place.identifier.declaration_id
+                }
+                _ => return false,
+            };
+
+            if read_instr.lvalue.identifier.name.is_some()
+                || used_temps.contains(&read_instr.lvalue.identifier.id)
+            {
+                return false;
+            }
+
+            match &read_instr.value {
+                InstructionValue::LoadLocal { place, .. }
+                | InstructionValue::LoadContext { place, .. } => {
+                    place.identifier.declaration_id == reassigned_decl_id
+                }
+                _ => false,
+            }
+        })
+    })
 }
 
 fn collect_terminal_uses(terminal: &Terminal, used: &mut HashSet<IdentifierId>) {
