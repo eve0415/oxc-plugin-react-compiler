@@ -664,6 +664,8 @@ struct DependencyCollectionContext {
     enable_treat_ref_like_identifiers_as_refs: bool,
     /// Declarations produced by `mergeRefs(...)` calls.
     merge_refs_results: HashSet<IdentifierId>,
+    /// Component props parameter declaration id (if any).
+    component_props_param_decl: Option<DeclarationId>,
     /// Source manual-memo deps for the currently visited manual memo callback.
     manual_memo_deps_stack: Vec<Vec<ManualMemoDependency>>,
     preserve_manual_memo_source_deps: bool,
@@ -674,6 +676,7 @@ impl DependencyCollectionContext {
         temporaries: HashMap<IdentifierId, ResolvedDep>,
         processed_instrs_in_optional: HashSet<ProcessedOptionalNode>,
         enable_treat_ref_like_identifiers_as_refs: bool,
+        component_props_param_decl: Option<DeclarationId>,
         preserve_manual_memo_source_deps: bool,
     ) -> Self {
         Self {
@@ -691,6 +694,7 @@ impl DependencyCollectionContext {
             non_local_binding_names: HashMap::new(),
             enable_treat_ref_like_identifiers_as_refs,
             merge_refs_results: HashSet::new(),
+            component_props_param_decl,
             manual_memo_deps_stack: Vec::new(),
             preserve_manual_memo_source_deps,
         }
@@ -1220,6 +1224,13 @@ pub fn propagate_scope_dependencies_hir(func: &mut HIRFunction) {
         temporaries,
         processed_instrs,
         func.env.config().enable_treat_ref_like_identifiers_as_refs,
+        if matches!(func.fn_type, ReactFunctionType::Component) {
+            func.params.first().map(|param| match param {
+                Argument::Place(place) | Argument::Spread(place) => place.identifier.declaration_id,
+            })
+        } else {
+            None
+        },
         !func
             .env
             .config()
@@ -1369,6 +1380,7 @@ pub(crate) fn infer_minimal_dependencies_for_inner_fn(
             .env
             .config()
             .enable_treat_ref_like_identifiers_as_refs,
+        None,
         !lowered
             .env
             .config()
@@ -1748,7 +1760,16 @@ fn handle_instruction(instr: &Instruction, ctx: &mut DependencyCollectionContext
         } => {
             let receiver_dep = ctx.resolve_operand(receiver);
             let property_dep = ctx.resolve_operand(property);
-            ctx.visit_dependency(receiver_dep);
+            let is_redundant_component_props_receiver = !ctx.in_inner_fn
+                && receiver_dep.path.is_empty()
+                && !property_dep.path.is_empty()
+                && receiver_dep.identifier.declaration_id == property_dep.identifier.declaration_id
+                && ctx
+                    .component_props_param_decl
+                    .is_some_and(|decl| decl == receiver_dep.identifier.declaration_id);
+            if !is_redundant_component_props_receiver {
+                ctx.visit_dependency(receiver_dep);
+            }
             ctx.visit_dependency(property_dep);
             for arg in args {
                 match arg {
