@@ -1490,12 +1490,17 @@ fn run_hir_pipeline(
     trace_pass!("infer_types");
     type_inference::infer_types(&mut hir_func);
 
-    // Post-type-inference validation — bail on error
-    run_validation!(validate_hooks_usage::validate_hooks_usage(&hir_func));
-    if env_config.validate_no_capitalized_calls.is_some() {
-        run_validation!(
-            validate_no_capitalized_calls::validate_no_capitalized_calls(&hir_func, env_config,)
-        );
+    if !retry_no_memo_mode {
+        // Upstream only runs these validations when inferred memoization is enabled.
+        run_validation!(validate_hooks_usage::validate_hooks_usage(&hir_func));
+        if env_config.validate_no_capitalized_calls.is_some() {
+            run_validation!(
+                validate_no_capitalized_calls::validate_no_capitalized_calls(
+                    &hir_func,
+                    env_config,
+                )
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
