@@ -127,7 +127,7 @@ Each Rust module corresponds to an upstream TypeScript file. When debugging a pa
 
 ## Development Notes
 
-- Rust edition 2024, OXC v0.120.0
+- Rust edition 2024, OXC v0.122.0
 - All internal modules use `pub(crate)` visibility; only `compile()` and `options` are public
 - Flow syntax preprocessing is an inline function (`preprocess_flow_syntax`) in `pipeline.rs` (Rust-specific; Babel parses Flow natively)
 - Fixture pragmas (first line comments like `// @flow`, `// @compilationMode "all"`) control per-fixture compiler options
