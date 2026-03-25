@@ -1814,8 +1814,8 @@ fn collect_manual_memo_callback_deps(
 ) {
     let mut active: HashMap<u32, Vec<ManualMemoDependency>> = HashMap::new();
     let component_props_place = if matches!(func.fn_type, ReactFunctionType::Component) {
-        func.params.first().and_then(|param| match param {
-            Argument::Place(place) | Argument::Spread(place) => Some(place.clone()),
+        func.params.first().map(|param| match param {
+            Argument::Place(place) | Argument::Spread(place) => place.clone(),
         })
     } else {
         None
@@ -1829,8 +1829,10 @@ fn collect_manual_memo_callback_deps(
             match &instr.value {
                 InstructionValue::FunctionExpression { .. }
                 | InstructionValue::ObjectMethod { .. } => {
-                    function_decl_by_ident
-                        .insert(instr.lvalue.identifier.id, instr.lvalue.identifier.declaration_id);
+                    function_decl_by_ident.insert(
+                        instr.lvalue.identifier.id,
+                        instr.lvalue.identifier.declaration_id,
+                    );
                 }
                 InstructionValue::LoadLocal { place, .. }
                 | InstructionValue::LoadContext { place, .. } => {
@@ -1920,7 +1922,9 @@ fn maybe_record_effect_callback_root_dep(
     else {
         return;
     };
-    let Some(callback_decl_id) = function_decl_by_ident.get(&callback_arg.identifier.id).copied()
+    let Some(callback_decl_id) = function_decl_by_ident
+        .get(&callback_arg.identifier.id)
+        .copied()
     else {
         return;
     };
@@ -1946,10 +1950,9 @@ fn maybe_record_effect_callback_root_dep(
 
     let mut unique_paths: Vec<Vec<DependencyPathEntry>> = Vec::new();
     for path in dep_paths {
-        if !unique_paths
-            .iter()
-            .any(|existing| dependency_path_is_prefix(existing, &path) && existing.len() == path.len())
-        {
+        if !unique_paths.iter().any(|existing| {
+            dependency_path_is_prefix(existing, &path) && existing.len() == path.len()
+        }) {
             unique_paths.push(path);
         }
     }

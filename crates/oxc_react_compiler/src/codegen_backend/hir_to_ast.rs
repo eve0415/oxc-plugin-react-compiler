@@ -616,8 +616,10 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         let mut statements = self.builder.vec();
         for (index, instruction) in block.instructions.iter().enumerate() {
             if index > 0
-                && let Some(statement) = self
-                    .lower_reassign_read_expression_statement(&block.instructions[index - 1], instruction)
+                && let Some(statement) = self.lower_reassign_read_expression_statement(
+                    &block.instructions[index - 1],
+                    instruction,
+                )
             {
                 statements.push(statement);
                 continue;
@@ -1101,10 +1103,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 ..
             } => Some(self.builder.expression_call(
                 SPAN,
-                maybe_parenthesize_call_callee(
-                    self.builder,
-                    self.lower_place(callee, visiting)?,
-                ),
+                maybe_parenthesize_call_callee(self.builder, self.lower_place(callee, visiting)?),
                 NONE,
                 self.lower_arguments(args, visiting)?,
                 *optional,
@@ -2204,10 +2203,9 @@ pub(crate) fn lower_function_expression_ast<'a>(
             builder.alloc(builder.function_body(
                 SPAN,
                 builder.vec(),
-                builder.vec1(builder.statement_expression(
-                    SPAN,
-                    maybe_parenthesize_jsx(builder, expression),
-                )),
+                builder.vec1(
+                    builder.statement_expression(SPAN, maybe_parenthesize_jsx(builder, expression)),
+                ),
             )),
         ));
     }

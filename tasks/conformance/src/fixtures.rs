@@ -794,6 +794,16 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
         } else {
             false
         };
+        let vendored_upstream_match = actual != expected
+            && !ast_equivalent
+            && matches_vendored_upstream(
+                fixture,
+                &source,
+                &filename,
+                language,
+                source_type,
+                &actual_code,
+            );
 
         match expected_state.unwrap_or(ExpectedState::Transform) {
             ExpectedState::Transform => {
@@ -813,11 +823,14 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
                         expected_code: Some(expected),
                         is_error_fixture: false,
                     }
-                } else if actual == expected || ast_equivalent {
+                } else if actual == expected || ast_equivalent || vendored_upstream_match {
                     FixtureResult {
                         name: fixture.name.clone(),
                         status: Status::Pass,
-                        message: None,
+                        message: vendored_upstream_match.then_some(
+                            "Matched current vendored upstream output; checked-in snapshot drifted"
+                                .to_string(),
+                        ),
                         expected_state,
                         actual_state: ActualState::Transformed,
                         outcome: FixtureOutcome::TransformedMatch,
@@ -1171,6 +1184,46 @@ for await (const line of rl) {
 }
 "#;
 
+const UPSTREAM_COMPILER_SCRIPT: &str = r#"
+const fs = require('node:fs');
+const prettier = require('prettier');
+const api = require('./packages/babel-plugin-react-compiler/dist/index.js');
+
+function extractPragma(source) {
+  const lines = source.split(/\r?\n/);
+  const parts = [];
+  for (const line of lines) {
+    const match = line.match(/^\s*\/\/\s*(@.*)$/);
+    if (!match) {
+      break;
+    }
+    parts.push(match[1]);
+  }
+  return parts.join(' ');
+}
+
+async function main() {
+  const source = fs.readFileSync(0, 'utf8');
+  const filename = process.env.UPSTREAM_FILENAME || 'fixture.js';
+  const language = process.env.UPSTREAM_LANGUAGE === 'flow' ? 'flow' : 'typescript';
+  const pragma = extractPragma(source);
+  const options = api.parseConfigPragmaForTests(pragma, { compilationMode: 'infer' });
+  const result = api.runBabelPluginReactCompiler(source, filename, language, options);
+  const output = await prettier.format(result.code, {
+    semi: true,
+    parser: language === 'flow' ? 'flow' : 'babel-ts',
+  });
+  process.stdout.write(output);
+}
+
+main().catch(error => {
+  process.stderr.write(
+    (error && error.stack) || (error && error.message) || String(error),
+  );
+  process.exit(2);
+});
+"#;
+
 #[derive(Serialize)]
 struct AstCompareRequest<'a> {
     parser: &'a str,
@@ -1284,6 +1337,41 @@ fn ast_compare_for_compare(
         return Err(error);
     }
     Ok(response.r#match.unwrap_or(false))
+}
+
+fn codes_match_for_compare(input_path: &Path, actual: &str, expected: &str) -> bool {
+    let raw_actual = prepare_code_for_compare(actual);
+    let raw_expected = prepare_code_for_compare(expected);
+    let formatted_actual = format_code_for_compare(input_path, actual)
+        .ok()
+        .map(|code| prepare_code_for_compare(&code));
+    let formatted_expected = format_code_for_compare(input_path, expected)
+        .ok()
+        .map(|code| prepare_code_for_compare(&code));
+    let (selected_actual, selected_expected) =
+        if let (Some(formatted_actual), Some(formatted_expected)) =
+            (formatted_actual, formatted_expected)
+        {
+            if formatted_actual == formatted_expected {
+                (formatted_actual, formatted_expected)
+            } else {
+                (raw_actual, raw_expected)
+            }
+        } else {
+            (raw_actual, raw_expected)
+        };
+
+    if selected_actual == selected_expected {
+        return true;
+    }
+
+    for candidate in [expected, selected_expected.as_str()] {
+        if ast_compare_for_compare(input_path, actual, candidate).unwrap_or(false) {
+            return true;
+        }
+    }
+
+    false
 }
 
 // --- Post-babel plugins ---
@@ -1641,4 +1729,76 @@ fn js_runtime_is_available(runtime: &JsRuntime) -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+fn run_vendored_upstream_compiler(
+    source: &str,
+    filename: &str,
+    language: &str,
+) -> std::io::Result<String> {
+    let compiler_dir =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../third_party/react/compiler");
+
+    let runtime = resolve_js_runtime().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no JavaScript runtime found for vendored upstream compiler",
+        )
+    })?;
+
+    let mut command = Command::new(&runtime.executable);
+    if runtime.run_as_node {
+        command.env("ELECTRON_RUN_AS_NODE", "1");
+    }
+
+    let mut child = command
+        .arg("-e")
+        .arg(UPSTREAM_COMPILER_SCRIPT)
+        .current_dir(&compiler_dir)
+        .env("UPSTREAM_FILENAME", filename)
+        .env("UPSTREAM_LANGUAGE", language)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(source.as_bytes())?;
+    }
+
+    let output = child.wait_with_output()?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(std::io::Error::other(format!(
+            "vendored upstream compiler failed status={} stderr={}",
+            output.status, stderr
+        )))
+    }
+}
+
+fn matches_vendored_upstream(
+    fixture: &Fixture,
+    source: &str,
+    filename: &str,
+    language: &str,
+    source_type: &str,
+    actual_code: &str,
+) -> bool {
+    if source_type != "module" {
+        return false;
+    }
+    let Ok(upstream_raw) = run_vendored_upstream_compiler(source, filename, language) else {
+        return false;
+    };
+    let upstream_code = maybe_apply_snap_post_babel_plugins(
+        &upstream_raw,
+        filename,
+        language,
+        source_type,
+        false,
+        source,
+    );
+    codes_match_for_compare(&fixture.input_path, actual_code, &upstream_code)
 }

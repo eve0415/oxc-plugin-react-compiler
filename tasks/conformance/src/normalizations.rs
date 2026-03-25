@@ -16,8 +16,6 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_multiline_trailing_commas_before_closers,
         normalize_multiline_switch_cases,
         normalize_ts_object_type_semicolons,
-        normalize_numeric_exponent_literals,
-        normalize_compare_unicode_escapes,
         normalize_fixture_entrypoint_array_spacing,
         normalize_scope_body_blank_lines,
         normalize_top_level_statement_blank_lines,
@@ -25,17 +23,12 @@ fn normalize_for_compare(code: &str) -> String {
         normalize_jsx_assignment_parens,
         normalize_jsx_expression_container_spacing,
         normalize_jsx_residual_close_paren,
-        normalize_import_quotes,
         normalize_function_paren_space,
         normalize_empty_block_newlines,
         normalize_multiline_short_arrays,
         normalize_object_in_array_spacing,
-        normalize_const_string_quotes,
-        normalize_trailing_zero_decimal_literals,
         normalize_empty_block_inner_space,
         normalize_destructuring_brace_spacing,
-        normalize_single_arrow_param_parens,
-        normalize_numeric_leading_zero,
         normalize_optional_call_space,
         normalize_jsx_attr_trailing_space,
         // Strict output normalizations (cosmetic OXC printer differences)
@@ -611,6 +604,7 @@ fn normalize_jsx_residual_close_paren(code: &str) -> String {
 
 /// Normalize import source quotes: single → double.
 /// OXC uses double quotes, Babel uses single quotes for import sources.
+#[allow(dead_code)]
 fn normalize_import_quotes(code: &str) -> String {
     let mut result = String::with_capacity(code.len());
     for line in code.lines() {
@@ -773,6 +767,7 @@ fn normalize_object_in_array_spacing(code: &str) -> String {
 
 /// Normalize all single-quoted strings to double-quoted.
 /// OXC uses double quotes, Babel preserves original single quotes.
+#[allow(dead_code)]
 fn normalize_const_string_quotes(code: &str) -> String {
     let mut result = String::with_capacity(code.len());
     let bytes = code.as_bytes();
@@ -814,6 +809,7 @@ fn normalize_const_string_quotes(code: &str) -> String {
 }
 
 /// Normalize trailing `.0` on decimal literals where the numeric value is unchanged.
+#[allow(dead_code)]
 fn normalize_trailing_zero_decimal_literals(code: &str) -> String {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     let re = RE.get_or_init(|| regex::Regex::new(r"(?P<int>\b\d+)\.0\b").unwrap());
@@ -857,6 +853,7 @@ fn normalize_destructuring_brace_spacing(code: &str) -> String {
 
 /// Normalize single arrow param parens: `(x) =>` → `x =>`.
 /// OXC wraps single arrow params, Babel doesn't.
+#[allow(dead_code)]
 fn normalize_single_arrow_param_parens(code: &str) -> String {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
@@ -868,6 +865,7 @@ fn normalize_single_arrow_param_parens(code: &str) -> String {
 
 /// Normalize `.1` → `0.1` (leading zero in numeric literals).
 /// Uses simple string replacement for common patterns.
+#[allow(dead_code)]
 fn normalize_numeric_leading_zero(code: &str) -> String {
     code.replace(" .1}", " 0.1}")
         .replace(" .1s", " 0.1s")
@@ -1464,6 +1462,7 @@ fn normalize_ts_object_type_semicolons(code: &str) -> String {
     re.replace_all(code, "$1").to_string()
 }
 
+#[allow(dead_code)]
 fn normalize_numeric_exponent_literals(code: &str) -> String {
     let re = regex::Regex::new(r"\b(\d+)e([+-]?\d+)\b").unwrap();
     re.replace_all(code, |caps: &regex::Captures| {
@@ -1500,6 +1499,7 @@ fn normalize_small_array_bracket_spacing(code: &str) -> String {
         .join("\n")
 }
 
+#[allow(dead_code)]
 fn normalize_compare_unicode_escapes(code: &str) -> String {
     let mut result = String::with_capacity(code.len());
     for ch in code.chars() {
@@ -1897,6 +1897,37 @@ mod tests {
             prepare_code_for_compare(expected)
         );
     }
+
+    #[test]
+    fn prepare_code_for_compare_preserves_identifier_renames() {
+        let actual = "const handleError = (result) => result.message;";
+        let expected = "const handleError = (result_0) => result_0.message;";
+        assert_ne!(
+            prepare_code_for_compare(actual),
+            prepare_code_for_compare(expected)
+        );
+    }
+
+    #[test]
+    fn prepare_code_for_compare_preserves_string_literal_spelling() {
+        let actual = "const message = 'verify';";
+        let expected = "const message = \"verify\";";
+        assert_ne!(
+            prepare_code_for_compare(actual),
+            prepare_code_for_compare(expected)
+        );
+    }
+
+    #[test]
+    fn prepare_code_for_compare_preserves_numeric_literal_spelling() {
+        let actual = "const delay = 1e3;";
+        let expected = "const delay = 1000;";
+        assert_ne!(
+            prepare_code_for_compare(actual),
+            prepare_code_for_compare(expected)
+        );
+    }
+
     #[test]
     fn normalize_multiline_call_invocations_collapses_arguments() {
         let input = "foo(bar,\nbaz,\nqux);";
@@ -1910,5 +1941,4 @@ mod tests {
         let expected = "return [item.id, { value: item.value }]";
         assert_eq!(normalize_small_array_bracket_spacing(input), expected);
     }
-
 }
