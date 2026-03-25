@@ -1712,6 +1712,14 @@ fn codegen_instruction_value<'a>(
                     _ => codegen_instruction_value(cx, &seq_instr.value),
                 };
                 if let Some(expr) = expr {
+                    let pure_value_read_later = seq_instr.lvalue.as_ref().is_some_and(|lv| {
+                        let decl = lv.identifier.declaration_id;
+                        !is_side_effecting
+                            && (instructions.iter().any(|other| {
+                                !std::ptr::eq(other, seq_instr)
+                                    && instruction_references_decl(&other.value, decl)
+                            }) || instruction_references_decl(value, decl))
+                    });
                     if let Some(lv) = &seq_instr.lvalue
                         && is_temp_identifier(&lv.identifier)
                     {
@@ -1733,6 +1741,19 @@ fn codegen_instruction_value<'a>(
                                 prefix_exprs.push(expr);
                             }
                         }
+                    } else if let Some(lv) = &seq_instr.lvalue
+                        && pure_value_read_later
+                    {
+                        // Pure sequence-local values can be safely inlined even when
+                        // they later surface as synthetic runtime temps like `t6`.
+                        // Without this, later reads fall through to the synthetic
+                        // identifier fallback and emit invalid code such as
+                        // `let found = t6;` with no matching declaration.
+                        cx.temps.insert(
+                            lv.identifier.declaration_id,
+                            Some(expr.clone_in(cx.allocator)),
+                        );
+                        cx.force_inline_decls.insert(lv.identifier.declaration_id);
                     } else if is_side_effecting {
                         prefix_exprs.push(expr);
                     }

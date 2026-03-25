@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 oxc_react_compiler = { path = "../../crates/oxc_react_compiler" }
 oxc_allocator = { workspace = true }
+oxc_ast = { workspace = true }
 oxc_codegen = { workspace = true }
 oxc_parser = { workspace = true }
 oxc_span = { workspace = true }
