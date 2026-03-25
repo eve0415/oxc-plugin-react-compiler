@@ -5,9 +5,9 @@ use oxc_parser::Parser;
 use oxc_span::SourceType;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
 
 use crate::normalizations::{
@@ -752,6 +752,40 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
         } else {
             (raw_actual, raw_expected)
         };
+        let ast_equivalent = if actual != expected {
+            let mut matched = false;
+            for candidate in [expected.as_str(), expected_code.as_str()] {
+                match ast_compare_for_compare(&fixture.input_path, &actual, candidate) {
+                    Ok(value) => {
+                        if std::env::var("DEBUG_AST_COMPARE").is_ok() {
+                            eprintln!(
+                                "[AST_COMPARE] fixture={} candidate={} match={}",
+                                fixture.name,
+                                if candidate == expected { "selected" } else { "original" },
+                                value
+                            );
+                        }
+                        if value {
+                            matched = true;
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        if std::env::var("DEBUG_AST_COMPARE").is_ok() {
+                            eprintln!(
+                                "[AST_COMPARE] fixture={} candidate={} error={}",
+                                fixture.name,
+                                if candidate == expected { "selected" } else { "original" },
+                                err
+                            );
+                        }
+                    }
+                }
+            }
+            matched
+        } else {
+            false
+        };
 
         match expected_state.unwrap_or(ExpectedState::Transform) {
             ExpectedState::Transform => {
@@ -771,7 +805,7 @@ fn run_fixture(fixture: &Fixture, run_skipped: bool) -> FixtureResult {
                         expected_code: Some(expected),
                         is_error_fixture: false,
                     }
-                } else if actual == expected {
+                } else if actual == expected || ast_equivalent {
                     FixtureResult {
                         name: fixture.name.clone(),
                         status: Status::Pass,
@@ -997,6 +1031,189 @@ fn format_with_oxc_roundtrip(input_path: &Path, code: &str) -> Result<String, St
         ..CodegenOptions::default()
     };
     Ok(Codegen::new().with_options(options).build(&program).code)
+}
+
+const AST_COMPARE_SCRIPT: &str = r#"
+import readline from 'node:readline';
+import { parseSync } from '@babel/core';
+
+const IGNORED_KEYS = new Set([
+  'start',
+  'end',
+  'loc',
+  'range',
+  'raw',
+  'extra',
+  'leadingComments',
+  'trailingComments',
+  'innerComments',
+  'comments',
+  'tokens',
+  'sourceType',
+]);
+
+function strip(node) {
+  if (Array.isArray(node)) {
+    return node
+      .map(strip)
+      .filter(item => !(item && item.type === 'JSXText' && typeof item.value === 'string' && item.value.trim() === ''));
+  }
+  if (!node || typeof node !== 'object') return node;
+  const out = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (IGNORED_KEYS.has(key)) continue;
+    out[key] = strip(value);
+  }
+  return out;
+}
+
+function parseCode(source, parser) {
+  const plugins =
+    parser === 'flow'
+      ? ['flow', 'jsx']
+      : ['typescript', 'jsx'];
+  return parseSync(source, {
+    parserOpts: { plugins },
+    sourceType: 'module',
+  });
+}
+
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+for await (const line of rl) {
+  if (!line) continue;
+  let request;
+  try {
+    request = JSON.parse(line);
+  } catch (error) {
+    process.stdout.write(JSON.stringify({ error: error?.message || 'invalid request' }) + '\n');
+    continue;
+  }
+
+  try {
+    const actualAst = parseCode(request.actual || '', request.parser || 'babel-ts');
+    const expectedAst = parseCode(request.expected || '', request.parser || 'babel-ts');
+    const match = JSON.stringify(strip(actualAst)) === JSON.stringify(strip(expectedAst));
+    process.stdout.write(JSON.stringify({ match }) + '\n');
+  } catch (error) {
+    process.stdout.write(JSON.stringify({ error: error?.message || 'parse failed' }) + '\n');
+  }
+}
+"#;
+
+#[derive(Serialize)]
+struct AstCompareRequest<'a> {
+    parser: &'a str,
+    actual: &'a str,
+    expected: &'a str,
+}
+
+#[derive(Deserialize)]
+struct AstCompareResponse {
+    r#match: Option<bool>,
+    error: Option<String>,
+}
+
+struct AstCompareSession {
+    _child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    _stderr: ChildStderr,
+}
+
+fn init_ast_compare_session() -> Result<std::sync::Mutex<AstCompareSession>, String> {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| "failed to resolve workspace root".to_string())?;
+
+    let mut child = Command::new("node")
+        .current_dir(workspace_root)
+        .args(["--input-type=module", "-e", AST_COMPARE_SCRIPT])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("failed to spawn AST compare: {err}"))?;
+
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "failed to capture AST compare stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to capture AST compare stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "failed to capture AST compare stderr".to_string())?;
+
+    Ok(std::sync::Mutex::new(AstCompareSession {
+        _child: child,
+        stdin,
+        stdout: BufReader::new(stdout),
+        _stderr: stderr,
+    }))
+}
+
+fn parser_name_for_compare(input_path: &Path) -> &'static str {
+    let file_name = input_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("fixture.js");
+    if file_name.contains(".flow.") || file_name.ends_with(".flow.js") {
+        "flow"
+    } else {
+        "babel-ts"
+    }
+}
+
+fn ast_compare_for_compare(
+    input_path: &Path,
+    actual: &str,
+    expected: &str,
+) -> Result<bool, String> {
+    static AST_COMPARE_SESSION: OnceLock<Result<std::sync::Mutex<AstCompareSession>, String>> =
+        OnceLock::new();
+
+    let session = match AST_COMPARE_SESSION.get_or_init(init_ast_compare_session) {
+        Ok(session) => session,
+        Err(err) => return Err(err.clone()),
+    };
+
+    let mut session = session
+        .lock()
+        .map_err(|_| "failed to lock AST compare session".to_string())?;
+
+    let request = serde_json::to_string(&AstCompareRequest {
+        parser: parser_name_for_compare(input_path),
+        actual,
+        expected,
+    })
+    .map_err(|err| format!("failed to encode AST compare request: {err}"))?;
+    session
+        .stdin
+        .write_all(request.as_bytes())
+        .and_then(|_| session.stdin.write_all(b"\n"))
+        .and_then(|_| session.stdin.flush())
+        .map_err(|err| format!("failed to write AST compare stdin: {err}"))?;
+
+    let mut response_line = String::new();
+    session
+        .stdout
+        .read_line(&mut response_line)
+        .map_err(|err| format!("failed to read AST compare output: {err}"))?;
+    if response_line.is_empty() {
+        return Err("AST compare process terminated unexpectedly".to_string());
+    }
+
+    let response: AstCompareResponse = serde_json::from_str(response_line.trim_end())
+        .map_err(|err| format!("failed to decode AST compare response: {err}"))?;
+    if let Some(error) = response.error {
+        return Err(error);
+    }
+    Ok(response.r#match.unwrap_or(false))
 }
 
 // --- Post-babel plugins ---

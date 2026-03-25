@@ -1035,7 +1035,8 @@ fn try_fuse_destructure_into_call<'a>(
             optional,
             ..
         } => {
-            let callee_expr = codegen_place(cx, callee)?;
+            let callee_expr =
+                maybe_parenthesize_call_callee(cx.builder, codegen_place(cx, callee)?);
             let mut arg_exprs = cx.builder.vec();
             for (idx, arg) in args.iter().enumerate() {
                 arg_exprs.push(codegen_arg_or_fused(cx, idx, arg, &assign_expr)?);
@@ -1248,7 +1249,7 @@ fn codegen_instruction_value<'a>(
             SPAN,
             codegen_place(cx, left)?,
             lower_logical_operator(*operator),
-            codegen_place(cx, right)?,
+            maybe_parenthesize_jsx(cx.builder, codegen_place(cx, right)?),
         )),
         InstructionValue::Ternary {
             test,
@@ -1258,8 +1259,8 @@ fn codegen_instruction_value<'a>(
         } => Some(cx.builder.expression_conditional(
             SPAN,
             codegen_place(cx, test)?,
-            codegen_place(cx, consequent)?,
-            codegen_place(cx, alternate)?,
+            maybe_parenthesize_jsx(cx.builder, codegen_place(cx, consequent)?),
+            maybe_parenthesize_jsx(cx.builder, codegen_place(cx, alternate)?),
         )),
         InstructionValue::CallExpression {
             callee,
@@ -1298,8 +1299,10 @@ fn codegen_instruction_value<'a>(
             call_optional,
             ..
         } => {
-            let callee_expr =
-                codegen_method_call_callee(cx, receiver, property, *receiver_optional)?;
+            let callee_expr = maybe_parenthesize_call_callee(
+                cx.builder,
+                codegen_method_call_callee(cx, receiver, property, *receiver_optional)?,
+            );
             // For method calls, the hook name is the property (e.g., obj.useIdentity).
             let is_hook = cx.options.enable_emit_hook_guards
                 && !cx.options.disable_memoization_features
@@ -2464,6 +2467,20 @@ fn maybe_parenthesize_jsx<'a>(
     if matches!(
         &expr,
         ast::Expression::JSXElement(_) | ast::Expression::JSXFragment(_)
+    ) {
+        builder.expression_parenthesized(SPAN, expr)
+    } else {
+        expr
+    }
+}
+
+fn maybe_parenthesize_call_callee<'a>(
+    builder: AstBuilder<'a>,
+    expr: ast::Expression<'a>,
+) -> ast::Expression<'a> {
+    if matches!(
+        &expr,
+        ast::Expression::FunctionExpression(_) | ast::Expression::ArrowFunctionExpression(_)
     ) {
         builder.expression_parenthesized(SPAN, expr)
     } else {
@@ -5126,7 +5143,7 @@ fn lower_function_expression_via_reactive<'a>(
             {
                 if let ast::Statement::ReturnStatement(ret) = &body.statements[0] {
                     if let Some(arg) = &ret.argument {
-                        let expr = arg.clone_in(cx.allocator);
+                        let expr = maybe_parenthesize_jsx(cx.builder, arg.clone_in(cx.allocator));
                         let expr_body = cx.builder.alloc(cx.builder.function_body(
                             SPAN,
                             cx.builder.vec(),
@@ -5317,8 +5334,13 @@ fn wrap_hook_guard_iife<'a>(
             ))),
         );
 
-    cx.builder
-        .expression_call(SPAN, function_expr, NONE, cx.builder.vec(), false)
+    cx.builder.expression_call(
+        SPAN,
+        maybe_parenthesize_call_callee(cx.builder, function_expr),
+        NONE,
+        cx.builder.vec(),
+        false,
+    )
 }
 
 /// Check whether a HIR function body has a side-effecting unnamed temp whose

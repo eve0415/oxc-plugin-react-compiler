@@ -1081,7 +1081,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 SPAN,
                 self.lower_place(left, visiting)?,
                 lower_logical_operator(*operator),
-                self.lower_place(right, visiting)?,
+                maybe_parenthesize_jsx(self.builder, self.lower_place(right, visiting)?),
             )),
             InstructionValue::Ternary {
                 test,
@@ -1091,8 +1091,8 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
             } => Some(self.builder.expression_conditional(
                 SPAN,
                 self.lower_place(test, visiting)?,
-                self.lower_place(consequent, visiting)?,
-                self.lower_place(alternate, visiting)?,
+                maybe_parenthesize_jsx(self.builder, self.lower_place(consequent, visiting)?),
+                maybe_parenthesize_jsx(self.builder, self.lower_place(alternate, visiting)?),
             )),
             InstructionValue::CallExpression {
                 callee,
@@ -1101,7 +1101,10 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 ..
             } => Some(self.builder.expression_call(
                 SPAN,
-                self.lower_place(callee, visiting)?,
+                maybe_parenthesize_call_callee(
+                    self.builder,
+                    self.lower_place(callee, visiting)?,
+                ),
                 NONE,
                 self.lower_arguments(args, visiting)?,
                 *optional,
@@ -1130,7 +1133,7 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
                 )?;
                 Some(self.builder.expression_call(
                     SPAN,
-                    callee,
+                    maybe_parenthesize_call_callee(self.builder, callee),
                     NONE,
                     self.lower_arguments(args, visiting)?,
                     *call_optional,
@@ -2197,7 +2200,10 @@ pub(crate) fn lower_function_expression_ast<'a>(
             builder.alloc(builder.function_body(
                 SPAN,
                 builder.vec(),
-                builder.vec1(builder.statement_expression(SPAN, expression)),
+                builder.vec1(builder.statement_expression(
+                    SPAN,
+                    maybe_parenthesize_jsx(builder, expression),
+                )),
             )),
         ));
     }
@@ -2465,6 +2471,34 @@ fn record_argument_uses(args: &[types::Argument], used: &mut HashSet<IdentifierI
 fn record_temp_use(place: &Place, used: &mut HashSet<IdentifierId>) {
     if place.identifier.name.is_none() {
         used.insert(place.identifier.id);
+    }
+}
+
+fn maybe_parenthesize_jsx<'a>(
+    builder: AstBuilder<'a>,
+    expr: ast::Expression<'a>,
+) -> ast::Expression<'a> {
+    if matches!(
+        &expr,
+        ast::Expression::JSXElement(_) | ast::Expression::JSXFragment(_)
+    ) {
+        builder.expression_parenthesized(SPAN, expr)
+    } else {
+        expr
+    }
+}
+
+fn maybe_parenthesize_call_callee<'a>(
+    builder: AstBuilder<'a>,
+    expr: ast::Expression<'a>,
+) -> ast::Expression<'a> {
+    if matches!(
+        &expr,
+        ast::Expression::FunctionExpression(_) | ast::Expression::ArrowFunctionExpression(_)
+    ) {
+        builder.expression_parenthesized(SPAN, expr)
+    } else {
+        expr
     }
 }
 
