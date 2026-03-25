@@ -207,7 +207,6 @@ fn collect_temporaries_impl(
     inner_fn_context: Option<InstructionId>,
 ) {
     let is_inner_fn = inner_fn_context.is_some();
-    let inner_fn_has_try_catch = is_inner_fn && function_contains_try_catch(func);
     let mut empty_array_temps: HashSet<IdentifierId> = HashSet::new();
     let mut nullish_alias_temps: HashSet<IdentifierId> = HashSet::new();
     let mut nullish_literal_temps: HashSet<IdentifierId> = HashSet::new();
@@ -452,7 +451,7 @@ fn collect_temporaries_impl(
                         .scope
                         .as_ref()
                         .is_some_and(|scope| effective_instr_id >= scope.range.end);
-                    let track_inner_load_context = is_inner_fn && !inner_fn_has_try_catch;
+                    let track_inner_load_context = is_inner_fn;
                     if (track_inner_load_context || is_past_mutable_range)
                         && (!is_inner_fn
                             || func
@@ -577,34 +576,6 @@ fn collect_jsx_consumed_declarations(func: &HIRFunction) -> HashSet<DeclarationI
     out
 }
 
-fn function_contains_try_catch(func: &HIRFunction) -> bool {
-    for (_, block) in &func.body.blocks {
-        if matches!(block.terminal, Terminal::Try { .. }) {
-            return true;
-        }
-        for instr in &block.instructions {
-            let has_catch_lvalue = match &instr.value {
-                InstructionValue::DeclareLocal { lvalue, .. }
-                | InstructionValue::DeclareContext { lvalue, .. } => {
-                    lvalue.kind == InstructionKind::Catch
-                }
-                InstructionValue::StoreLocal { lvalue, .. }
-                | InstructionValue::StoreContext { lvalue, .. } => {
-                    lvalue.kind == InstructionKind::Catch
-                }
-                InstructionValue::Destructure { lvalue, .. } => {
-                    lvalue.kind == InstructionKind::Catch
-                }
-                _ => false,
-            };
-            if has_catch_lvalue {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 /// Resolve a property load through the temporaries sidemap.
 fn get_property(
     object: &Place,
@@ -695,6 +666,9 @@ struct DependencyCollectionContext {
     merge_refs_results: HashSet<IdentifierId>,
     /// Component props parameter declaration id (if any).
     component_props_param_decl: Option<DeclarationId>,
+    /// Source manual-memo deps for the currently visited manual memo callback.
+    manual_memo_deps_stack: Vec<Vec<ManualMemoDependency>>,
+    preserve_manual_memo_source_deps: bool,
 }
 
 impl DependencyCollectionContext {
@@ -703,6 +677,7 @@ impl DependencyCollectionContext {
         processed_instrs_in_optional: HashSet<ProcessedOptionalNode>,
         enable_treat_ref_like_identifiers_as_refs: bool,
         component_props_param_decl: Option<DeclarationId>,
+        preserve_manual_memo_source_deps: bool,
     ) -> Self {
         Self {
             declarations: HashMap::new(),
@@ -720,6 +695,8 @@ impl DependencyCollectionContext {
             enable_treat_ref_like_identifiers_as_refs,
             merge_refs_results: HashSet::new(),
             component_props_param_decl,
+            manual_memo_deps_stack: Vec::new(),
+            preserve_manual_memo_source_deps,
         }
     }
 
@@ -890,6 +867,47 @@ impl DependencyCollectionContext {
             })
     }
 
+    fn push_manual_memo_deps(&mut self, deps: Option<&Vec<ManualMemoDependency>>) -> bool {
+        if let Some(deps) = deps {
+            self.manual_memo_deps_stack.push(deps.clone());
+            true
+        } else {
+            false
+        }
+    }
+
+    fn pop_manual_memo_deps(&mut self, pushed: bool) {
+        if pushed {
+            self.manual_memo_deps_stack.pop();
+        }
+    }
+
+    fn normalize_dep_with_manual_memo_source(&self, dep: &mut ReactiveScopeDependency) {
+        if !self.preserve_manual_memo_source_deps {
+            return;
+        }
+        let Some(source_deps) = self.manual_memo_deps_stack.last() else {
+            return;
+        };
+
+        let best_match = source_deps
+            .iter()
+            .filter_map(|source_dep| match &source_dep.root {
+                ManualMemoRoot::NamedLocal(place)
+                    if place.identifier.declaration_id == dep.identifier.declaration_id
+                        && dependency_path_is_prefix(&source_dep.path, &dep.path) =>
+                {
+                    Some(&source_dep.path)
+                }
+                _ => None,
+            })
+            .max_by_key(|path| path.len());
+
+        if let Some(path) = best_match {
+            dep.path = path.clone();
+        }
+    }
+
     /// Visit an operand place, potentially adding it as a dependency.
     fn visit_operand(&mut self, place: &Place) {
         let dep = self.resolve_operand(place);
@@ -985,6 +1003,7 @@ impl DependencyCollectionContext {
 
     /// Visit a resolved dependency.
     fn visit_dependency(&mut self, mut dep: ReactiveScopeDependency) {
+        self.normalize_dep_with_manual_memo_source(&mut dep);
         if std::env::var("DEBUG_SCOPE_DEPS").is_ok() {
             eprintln!(
                 "[SCOPE_DEP] candidate id={} decl={} name={:?} path={:?}",
@@ -1212,7 +1231,13 @@ pub fn propagate_scope_dependencies_hir(func: &mut HIRFunction) {
         } else {
             None
         },
+        !func
+            .env
+            .config()
+            .validate_preserve_existing_memoization_guarantees,
     );
+    let mut manual_memo_callback_deps = HashMap::new();
+    collect_manual_memo_callback_deps(func, &mut manual_memo_callback_deps);
 
     // Register function parameters
     for param in &func.params {
@@ -1224,7 +1249,7 @@ pub fn propagate_scope_dependencies_hir(func: &mut HIRFunction) {
     }
 
     // Main traversal
-    collect_deps_from_function(func, &scope_infos, &mut ctx);
+    collect_deps_from_function(func, &scope_infos, &manual_memo_callback_deps, &mut ctx);
 
     // Minimize and apply dependencies using ReactiveScopeDependencyTreeHIR
     minimize_and_apply(
@@ -1356,6 +1381,10 @@ pub(crate) fn infer_minimal_dependencies_for_inner_fn(
             .config()
             .enable_treat_ref_like_identifiers_as_refs,
         None,
+        !lowered
+            .env
+            .config()
+            .validate_preserve_existing_memoization_guarantees,
     );
     for context_dep in &lowered.context {
         ctx.declare(&context_dep.identifier, InstructionId(0));
@@ -1375,7 +1404,14 @@ pub(crate) fn infer_minimal_dependencies_for_inner_fn(
     };
     ctx.enter_scope(placeholder_scope.clone());
     let empty_scope_infos: HashMap<BlockId, ScopeBlockInfo> = HashMap::new();
-    collect_deps_from_function(lowered, &empty_scope_infos, &mut ctx);
+    let mut manual_memo_callback_deps = HashMap::new();
+    collect_manual_memo_callback_deps(lowered, &mut manual_memo_callback_deps);
+    collect_deps_from_function(
+        lowered,
+        &empty_scope_infos,
+        &manual_memo_callback_deps,
+        &mut ctx,
+    );
     ctx.exit_scope(&placeholder_scope, false);
 
     let unfiltered = ctx
@@ -1468,6 +1504,7 @@ fn sort_reactive_scope_dependency_for_inner_fn(
 fn collect_deps_from_function(
     func: &HIRFunction,
     scope_infos: &HashMap<BlockId, ScopeBlockInfo>,
+    manual_memo_callback_deps: &HashMap<DeclarationId, Vec<ManualMemoDependency>>,
     ctx: &mut DependencyCollectionContext,
 ) {
     ctx.enter_function(func);
@@ -1506,11 +1543,21 @@ fn collect_deps_from_function(
                 | InstructionValue::ObjectMethod { lowered_func, .. } => {
                     ctx.declare(&instr.lvalue.identifier, instr.id);
 
+                    let pushed_manual_memo_deps = ctx.push_manual_memo_deps(
+                        manual_memo_callback_deps.get(&instr.lvalue.identifier.declaration_id),
+                    );
+
                     // Recursively process inner function
                     let prev_in_inner = ctx.in_inner_fn;
                     ctx.in_inner_fn = true;
-                    collect_deps_from_function(&lowered_func.func, scope_infos, ctx);
+                    collect_deps_from_function(
+                        &lowered_func.func,
+                        scope_infos,
+                        manual_memo_callback_deps,
+                        ctx,
+                    );
                     ctx.in_inner_fn = prev_in_inner;
+                    ctx.pop_manual_memo_deps(pushed_manual_memo_deps);
                 }
                 _ => {
                     handle_instruction(instr, ctx);
@@ -1750,6 +1797,50 @@ fn is_hoisted_lvalue_kind(kind: InstructionKind) -> bool {
             | InstructionKind::HoistedLet
             | InstructionKind::HoistedFunction
     )
+}
+
+fn dependency_path_is_prefix(prefix: &[DependencyPathEntry], path: &[DependencyPathEntry]) -> bool {
+    prefix.len() <= path.len()
+        && prefix
+            .iter()
+            .zip(path.iter())
+            .all(|(a, b)| a.property == b.property && a.optional == b.optional)
+}
+
+fn collect_manual_memo_callback_deps(
+    func: &HIRFunction,
+    out: &mut HashMap<DeclarationId, Vec<ManualMemoDependency>>,
+) {
+    let mut active: HashMap<u32, Vec<ManualMemoDependency>> = HashMap::new();
+
+    for (_block_id, block) in &func.body.blocks {
+        for instr in &block.instructions {
+            match &instr.value {
+                InstructionValue::StartMemoize {
+                    manual_memo_id,
+                    deps: Some(deps),
+                    ..
+                } => {
+                    active.insert(*manual_memo_id, deps.clone());
+                }
+                InstructionValue::FinishMemoize {
+                    manual_memo_id,
+                    decl,
+                    ..
+                } => {
+                    if let Some(deps) = active.get(manual_memo_id) {
+                        out.insert(decl.identifier.declaration_id, deps.clone());
+                    }
+                    active.remove(manual_memo_id);
+                }
+                InstructionValue::FunctionExpression { lowered_func, .. }
+                | InstructionValue::ObjectMethod { lowered_func, .. } => {
+                    collect_manual_memo_callback_deps(&lowered_func.func, out);
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
