@@ -850,6 +850,7 @@ fn try_run_reactive_ast_codegen<'a>(
         param_name_overrides: std::collections::HashMap::new(),
         enable_name_anonymous_functions: cf.enable_name_anonymous_functions,
         enable_memoization_comments: cf.enable_memoization_comments,
+        emit_nested_context_reassign_reads: false,
     };
     let result = crate::codegen_backend::codegen_ast::codegen_reactive_function(
         builder,
@@ -894,6 +895,7 @@ fn try_build_outlined_function_body_from_reactive_ast<'a>(
         param_name_overrides,
         enable_name_anonymous_functions: false,
         enable_memoization_comments: false,
+        emit_nested_context_reassign_reads: false,
     };
     let result = crate::codegen_backend::codegen_ast::codegen_reactive_function(
         builder,

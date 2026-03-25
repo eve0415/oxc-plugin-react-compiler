@@ -38,6 +38,13 @@ pub(crate) fn try_lower_function_body_ast<'a>(
             matches!(
                 instruction.value,
                 InstructionValue::TypeCastExpression { .. }
+                    | InstructionValue::StoreContext {
+                        lvalue: types::LValue {
+                            kind: InstructionKind::Reassign,
+                            ..
+                        },
+                        ..
+                    }
             ) || is_self_referential_property_store(instruction, &instruction_map)
                 || is_assignment_value_sensitive_store(instruction, &used_temps)
         })
@@ -607,7 +614,14 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         let suppressed_declares =
             collect_same_block_suppressed_declare_instruction_ids(&block.instructions);
         let mut statements = self.builder.vec();
-        for instruction in &block.instructions {
+        for (index, instruction) in block.instructions.iter().enumerate() {
+            if index > 0
+                && let Some(statement) = self
+                    .lower_reassign_read_expression_statement(&block.instructions[index - 1], instruction)
+            {
+                statements.push(statement);
+                continue;
+            }
             if let Some(statement) =
                 self.lower_instruction_to_statement(instruction, &suppressed_declares)?
             {
@@ -622,6 +636,43 @@ impl<'a, 'hir> LoweringState<'a, 'hir> {
         )?);
         visiting_blocks.remove(&block_id);
         Some(statements)
+    }
+
+    fn lower_reassign_read_expression_statement(
+        &self,
+        previous: &Instruction,
+        current: &Instruction,
+    ) -> Option<ast::Statement<'a>> {
+        if current.lvalue.identifier.name.is_some()
+            || self.used_temps.contains(&current.lvalue.identifier.id)
+        {
+            return None;
+        }
+
+        let read_place = match &current.value {
+            InstructionValue::LoadLocal { place, .. }
+            | InstructionValue::LoadContext { place, .. } => place,
+            _ => return None,
+        };
+
+        let reassigned_place = match &previous.value {
+            InstructionValue::StoreLocal { lvalue, .. }
+            | InstructionValue::StoreContext { lvalue, .. }
+                if lvalue.kind == InstructionKind::Reassign =>
+            {
+                &lvalue.place
+            }
+            _ => return None,
+        };
+
+        if reassigned_place.identifier.declaration_id != read_place.identifier.declaration_id {
+            return None;
+        }
+
+        Some(
+            self.builder
+                .statement_expression(SPAN, self.lower_place(read_place, &mut HashSet::new())?),
+        )
     }
 
     fn lower_instruction_to_statement(

@@ -1206,6 +1206,7 @@ fn codegen_outlined_function(
                         param_name_overrides: std::collections::HashMap::new(),
                         enable_name_anonymous_functions: false,
                         enable_memoization_comments: false,
+                        emit_nested_context_reassign_reads: false,
                     },
                 )
                 .metadata();
@@ -1249,6 +1250,7 @@ fn codegen_outlined_function(
                 param_name_overrides: std::collections::HashMap::new(),
                 enable_name_anonymous_functions: false,
                 enable_memoization_comments: false,
+                emit_nested_context_reassign_reads: false,
             },
         )
         .metadata();
@@ -2787,6 +2789,7 @@ fn run_reactive_passes(
             param_name_overrides: std::collections::HashMap::new(),
             enable_name_anonymous_functions: env_config.enable_name_anonymous_functions,
             enable_memoization_comments: env_config.enable_memoization_comments,
+            emit_nested_context_reassign_reads: false,
         };
         crate::codegen_backend::codegen_ast::codegen_reactive_function(
             bld,

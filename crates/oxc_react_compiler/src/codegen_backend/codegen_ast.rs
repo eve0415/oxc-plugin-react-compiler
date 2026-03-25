@@ -84,6 +84,10 @@ pub struct CodegenOptions {
     /// Emit memoization annotation comments (e.g., `// check if ...`,
     /// `// Inputs changed, recompute`) matching upstream's `enableMemoizationComments`.
     pub enable_memoization_comments: bool,
+    /// Nested function-expression lowering may need to materialize a trailing
+    /// captured-context read after certain reassignment sequences to match
+    /// upstream callback output.
+    pub emit_nested_context_reassign_reads: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -671,6 +675,42 @@ fn codegen_block_no_reset<'a>(
                 }
                 if let Some(s) = codegen_instruction(cx, instr) {
                     stmts.push(s);
+                }
+                if let InstructionValue::StoreContext { lvalue, .. } = &instr.value
+                    && cx.options.emit_nested_context_reassign_reads
+                    && instr.lvalue.is_none()
+                    && matches!(lvalue.kind, InstructionKind::Reassign)
+                    && lvalue.place.identifier.name.is_some()
+                    && let Some(ReactiveStatement::Instruction(prev_instr)) = i
+                        .checked_sub(1)
+                        .and_then(|prev_index| block_vec.get(prev_index))
+                    && let Some(ReactiveStatement::Instruction(prev_prev_instr)) = i
+                        .checked_sub(2)
+                        .and_then(|prev_index| block_vec.get(prev_index))
+                    && let InstructionValue::LoadContext { place, .. } = &prev_prev_instr.value
+                    && place.identifier.declaration_id == lvalue.place.identifier.declaration_id
+                    && let Some(load_temp) = prev_prev_instr.lvalue.as_ref()
+                    && matches!(
+                        &prev_instr.value,
+                        InstructionValue::BinaryExpression { left, right, .. }
+                            if left.identifier.declaration_id == load_temp.identifier.declaration_id
+                                || right.identifier.declaration_id
+                                    == load_temp.identifier.declaration_id
+                    )
+                    && !matches!(
+                        block_vec.get(i + 1),
+                        Some(ReactiveStatement::Instruction(next_instr))
+                            if matches!(
+                                &next_instr.value,
+                                InstructionValue::LoadLocal { place, .. }
+                                    | InstructionValue::LoadContext { place, .. }
+                                        if place.identifier.declaration_id
+                                            == lvalue.place.identifier.declaration_id
+                            )
+                    )
+                    && let Some(expr) = codegen_place(cx, &lvalue.place)
+                {
+                    stmts.push(cx.builder.statement_expression(SPAN, expr));
                 }
             }
             ReactiveStatement::Terminal(term_stmt) => {
@@ -4973,6 +5013,7 @@ fn lower_function_expression_via_reactive<'a>(
         param_name_overrides: HashMap::new(),
         enable_name_anonymous_functions: cx.options.enable_name_anonymous_functions,
         enable_memoization_comments: cx.options.enable_memoization_comments,
+        emit_nested_context_reassign_reads: true,
     };
 
     let result = codegen_reactive_function(cx.builder, cx.allocator, &reactive_fn, options);
