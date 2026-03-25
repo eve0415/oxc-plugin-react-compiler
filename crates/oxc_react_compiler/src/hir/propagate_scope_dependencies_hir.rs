@@ -1812,6 +1812,40 @@ fn collect_manual_memo_callback_deps(
     out: &mut HashMap<DeclarationId, Vec<ManualMemoDependency>>,
 ) {
     let mut active: HashMap<u32, Vec<ManualMemoDependency>> = HashMap::new();
+    let component_props_place = if matches!(func.fn_type, ReactFunctionType::Component) {
+        func.params.first().and_then(|param| match param {
+            Argument::Place(place) | Argument::Spread(place) => Some(place.clone()),
+        })
+    } else {
+        None
+    };
+    let mut function_decl_by_ident: HashMap<IdentifierId, DeclarationId> = HashMap::new();
+
+    for (_block_id, block) in &func.body.blocks {
+        for instr in &block.instructions {
+            match &instr.value {
+                InstructionValue::FunctionExpression { .. }
+                | InstructionValue::ObjectMethod { .. } => {
+                    function_decl_by_ident
+                        .insert(instr.lvalue.identifier.id, instr.lvalue.identifier.declaration_id);
+                }
+                InstructionValue::LoadLocal { place, .. }
+                | InstructionValue::LoadContext { place, .. } => {
+                    if let Some(decl_id) = function_decl_by_ident.get(&place.identifier.id).copied() {
+                        function_decl_by_ident.insert(instr.lvalue.identifier.id, decl_id);
+                    }
+                }
+                InstructionValue::StoreLocal { lvalue, value, .. }
+                | InstructionValue::StoreContext { lvalue, value, .. } => {
+                    if let Some(decl_id) = function_decl_by_ident.get(&value.identifier.id).copied()
+                    {
+                        function_decl_by_ident.insert(lvalue.place.identifier.id, decl_id);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 
     for (_block_id, block) in &func.body.blocks {
         for instr in &block.instructions {
@@ -1833,6 +1867,36 @@ fn collect_manual_memo_callback_deps(
                     }
                     active.remove(manual_memo_id);
                 }
+                InstructionValue::CallExpression { callee, args, .. } => {
+                    if let Some(props_place) = &component_props_place
+                        && is_effect_like_hook_type(&callee.identifier.type_)
+                        && let Some(Argument::Place(first_arg)) = args.first()
+                        && let Some(decl_id) =
+                            function_decl_by_ident.get(&first_arg.identifier.id).copied()
+                    {
+                        out.entry(decl_id).or_insert_with(|| {
+                            vec![ManualMemoDependency {
+                                root: ManualMemoRoot::NamedLocal(props_place.clone()),
+                                path: Vec::new(),
+                            }]
+                        });
+                    }
+                }
+                InstructionValue::MethodCall { property, args, .. } => {
+                    if let Some(props_place) = &component_props_place
+                        && is_effect_like_hook_type(&property.identifier.type_)
+                        && let Some(Argument::Place(first_arg)) = args.first()
+                        && let Some(decl_id) =
+                            function_decl_by_ident.get(&first_arg.identifier.id).copied()
+                    {
+                        out.entry(decl_id).or_insert_with(|| {
+                            vec![ManualMemoDependency {
+                                root: ManualMemoRoot::NamedLocal(props_place.clone()),
+                                path: Vec::new(),
+                            }]
+                        });
+                    }
+                }
                 InstructionValue::FunctionExpression { lowered_func, .. }
                 | InstructionValue::ObjectMethod { lowered_func, .. } => {
                     collect_manual_memo_callback_deps(&lowered_func.func, out);
@@ -1841,6 +1905,22 @@ fn collect_manual_memo_callback_deps(
             }
         }
     }
+}
+
+fn is_effect_like_hook_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Function {
+            shape_id: Some(shape_id),
+            ..
+        } if matches!(
+            shape_id.as_str(),
+            "BuiltInUseEffectHookId"
+                | "BuiltInUseLayoutEffectHookId"
+                | "BuiltInUseInsertionEffectHookId"
+                | "BuiltInUseImperativeHandleHookId"
+        )
+    )
 }
 
 // ---------------------------------------------------------------------------
