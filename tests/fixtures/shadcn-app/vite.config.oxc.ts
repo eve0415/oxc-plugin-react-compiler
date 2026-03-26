@@ -1,5 +1,6 @@
-import { defineConfig } from 'vite-plus'
-import { reactCompilerOxc } from '../../../napi/src/vite.js'
+import { defineConfig } from 'vite-plus';
+
+import { reactCompilerOxc } from '../../../napi/src/vite.js';
 
 export default defineConfig({
   root: import.meta.dirname,
@@ -12,4 +13,4 @@ export default defineConfig({
     },
   },
   logLevel: 'silent',
-})
+});

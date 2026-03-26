@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 
 const type = process.argv[2];
 if (!type || !['patch', 'minor', 'major'].includes(type)) {
@@ -10,22 +10,11 @@ const napiPkg = JSON.parse(readFileSync('napi/package.json', 'utf8'));
 const prev = napiPkg.version;
 const [major, minor, patch] = prev.split('.').map(Number);
 
-const next =
-  type === 'major'
-    ? `${major + 1}.0.0`
-    : type === 'minor'
-      ? `${major}.${minor + 1}.0`
-      : `${major}.${minor}.${patch + 1}`;
+const next = type === 'major' ? `${major + 1}.0.0` : type === 'minor' ? `${major}.${minor + 1}.0` : `${major}.${minor}.${patch + 1}`;
 
 // 1. Cargo.toml workspace version
 const cargo = readFileSync('Cargo.toml', 'utf8');
-writeFileSync(
-  'Cargo.toml',
-  cargo.replace(
-    /^(version\s*=\s*").+(")/m,
-    `$1${next}$2`,
-  ),
-);
+writeFileSync('Cargo.toml', cargo.replace(/^(version\s*=\s*").+(")/m, `$1${next}$2`));
 
 // 2. napi/package.json — version
 napiPkg.version = next;

@@ -1,24 +1,24 @@
 {
   "name": "@oxc-plugin-react-compiler/binding-linux-x64-gnu",
   "version": "0.0.0",
-  "cpu": [
-    "x64"
-  ],
-  "main": "oxc-react-compiler.linux-x64-gnu.node",
-  "files": [
-    "oxc-react-compiler.linux-x64-gnu.node"
-  ],
   "description": "Rust port of babel-plugin-react-compiler for OXC/Vite v8",
   "license": "MIT",
+  "author": "eve0415",
   "repository": {
     "type": "git",
     "url": "https://github.com/eve0415/oxc-plugin-react-compiler.git"
   },
-  "author": "eve0415",
+  "files": [
+    "oxc-react-compiler.linux-x64-gnu.node"
+  ],
   "os": [
     "linux"
   ],
+  "cpu": [
+    "x64"
+  ],
   "libc": [
     "glibc"
-  ]
+  ],
+  "main": "oxc-react-compiler.linux-x64-gnu.node"
 }

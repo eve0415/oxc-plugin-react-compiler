@@ -1,23 +1,24 @@
-import { useCallback } from 'react'
-import { cn } from '../../lib/utils'
+import { useCallback } from 'react';
+
+import { cn } from '../../lib/utils';
 
 interface SwitchProps {
-  checked: boolean
-  onCheckedChange: (checked: boolean) => void
-  disabled?: boolean
-  className?: string
-  id?: string
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  disabled?: boolean;
+  className?: string;
+  id?: string;
 }
 
 export function Switch({ checked, onCheckedChange, disabled, className, id }: SwitchProps) {
   const handleClick = useCallback(() => {
-    if (!disabled) onCheckedChange(!checked)
-  }, [checked, onCheckedChange, disabled])
+    if (!disabled) onCheckedChange(!checked);
+  }, [checked, onCheckedChange, disabled]);
 
   return (
     <button
       id={id}
-      role="switch"
+      role='switch'
       aria-checked={checked}
       disabled={disabled}
       className={cn(
@@ -36,5 +37,5 @@ export function Switch({ checked, onCheckedChange, disabled, className, id }: Sw
         )}
       />
     </button>
-  )
+  );
 }

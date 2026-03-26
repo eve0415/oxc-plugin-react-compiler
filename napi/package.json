@@ -2,50 +2,42 @@
   "name": "oxc-plugin-react-compiler",
   "version": "0.0.0",
   "description": "Rust port of babel-plugin-react-compiler for OXC/Vite v8",
-  "license": "MIT",
-  "type": "module",
-  "exports": {
-    ".": {
-      "import": "./dist/vite.mjs",
-      "types": "./dist/vite.d.mts"
-    }
+  "keywords": [
+    "compiler",
+    "oxc",
+    "react",
+    "react-compiler",
+    "vite"
+  ],
+  "homepage": "https://github.com/eve0415/oxc-plugin-react-compiler",
+  "bugs": {
+    "url": "https://github.com/eve0415/oxc-plugin-react-compiler/issues"
   },
+  "license": "MIT",
+  "author": "eve0415",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eve0415/oxc-plugin-react-compiler.git"
+  },
+  "files": [
+    "dist/",
+    "npm/"
+  ],
+  "type": "module",
   "imports": {
     "#binding": {
       "types": "./dist/oxc-react-compiler.d.ts",
       "import": "./dist/index.js"
     }
   },
-  "files": [
-    "dist/",
-    "npm/"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/eve0415/oxc-plugin-react-compiler.git"
+  "exports": {
+    ".": {
+      "import": "./dist/vite.mjs",
+      "types": "./dist/vite.d.mts"
+    }
   },
-  "homepage": "https://github.com/eve0415/oxc-plugin-react-compiler",
-  "author": "eve0415",
-  "keywords": [
-    "react",
-    "compiler",
-    "oxc",
-    "vite",
-    "react-compiler"
-  ],
-  "bugs": {
-    "url": "https://github.com/eve0415/oxc-plugin-react-compiler/issues"
-  },
-  "napi": {
-    "binaryName": "oxc-react-compiler",
-    "packageName": "@oxc-plugin-react-compiler/binding",
-    "targets": [
-      "x86_64-apple-darwin",
-      "aarch64-apple-darwin",
-      "x86_64-unknown-linux-gnu",
-      "aarch64-unknown-linux-gnu",
-      "x86_64-pc-windows-msvc"
-    ]
+  "dependencies": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.1.13"
   },
   "peerDependencies": {
     "vite": ">=8.0.0"
@@ -57,7 +49,15 @@
     "@oxc-plugin-react-compiler/binding-linux-x64-gnu": "workspace:*",
     "@oxc-plugin-react-compiler/binding-win32-x64-msvc": "workspace:*"
   },
-  "dependencies": {
-    "vite": "npm:@voidzero-dev/vite-plus-core@0.1.13"
+  "napi": {
+    "binaryName": "oxc-react-compiler",
+    "packageName": "@oxc-plugin-react-compiler/binding",
+    "targets": [
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-pc-windows-msvc"
+    ]
   }
 }

@@ -10,16 +10,17 @@
  * with matching options, and writes the output to .expect.md files.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { transformSync } from '@babel/core';
-import fs from 'fs';
-import path from 'path';
 
 const FIXTURES_DIR = path.resolve('tests/fixtures/compiler');
 
 // Parse pragma comments from the first line of a fixture file.
 // Returns an object with environment config options matching the upstream plugin.
 function parsePragmas(source) {
-  const firstLine = source.split('\n')[0] || '';
+  const firstLine = source.split('\n')[0] ?? '';
   const env = {};
   const pluginOpts = {};
 
@@ -100,13 +101,13 @@ function runBabel(filepath, source) {
       sourceType: 'module',
     });
 
-    if (!result || !result.code) {
+    if (!result?.code) {
       return { error: null, code: null, transformed: false };
     }
 
     return { error: null, code: result.code, transformed: true };
-  } catch (err) {
-    return { error: err.message, code: null, transformed: false };
+  } catch (error) {
+    return { error: error.message, code: null, transformed: false };
   }
 }
 
@@ -145,9 +146,7 @@ function generateExpectMd(babelCode, originalSource) {
 const filterArg = process.argv.find((a, i) => process.argv[i - 1] === '--filter');
 const dryRun = process.argv.includes('--dry-run');
 
-const files = fs.readdirSync(FIXTURES_DIR).filter(f =>
-  f.endsWith('.jsx') || f.endsWith('.tsx')
-);
+const files = fs.readdirSync(FIXTURES_DIR).filter(f => f.endsWith('.jsx') ?? f.endsWith('.tsx'));
 
 let processed = 0;
 let succeeded = 0;
@@ -166,7 +165,7 @@ for (const file of files) {
   const source = fs.readFileSync(filepath, 'utf8');
 
   // Skip fixtures with @skip pragma
-  const firstLine = source.split('\n')[0] || '';
+  const firstLine = source.split('\n')[0] ?? '';
   if (firstLine.includes('@skip')) {
     console.log(`SKIP: ${name} (@skip pragma)`);
     skipped++;
