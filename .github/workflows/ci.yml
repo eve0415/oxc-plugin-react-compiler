@@ -79,6 +79,12 @@ jobs:
           cache: true
           run-install: true
 
+      - name: Build vendored upstream compiler
+        working-directory: third_party/react/compiler
+        run: |
+          yarn install --frozen-lockfile
+          yarn workspace babel-plugin-react-compiler build
+
       - name: Run conformance suite
         run: cargo run --release --bin conformance
 
