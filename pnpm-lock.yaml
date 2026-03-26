@@ -60,6 +60,22 @@ importers:
       vite:
         specifier: npm:@voidzero-dev/vite-plus-core@0.1.14
         version: '@voidzero-dev/vite-plus-core@0.1.14(@types/node@25.5.0)'
+    optionalDependencies:
+      '@oxc-plugin-react-compiler/binding-darwin-arm64':
+        specifier: workspace:*
+        version: link:npm/darwin-arm64
+      '@oxc-plugin-react-compiler/binding-darwin-x64':
+        specifier: workspace:*
+        version: link:npm/darwin-x64
+      '@oxc-plugin-react-compiler/binding-linux-arm64-gnu':
+        specifier: workspace:*
+        version: link:npm/linux-arm64-gnu
+      '@oxc-plugin-react-compiler/binding-linux-x64-gnu':
+        specifier: workspace:*
+        version: link:npm/linux-x64-gnu
+      '@oxc-plugin-react-compiler/binding-win32-x64-msvc':
+        specifier: workspace:*
+        version: link:npm/win32-x64-msvc
 
   napi/npm/darwin-arm64: {}
 

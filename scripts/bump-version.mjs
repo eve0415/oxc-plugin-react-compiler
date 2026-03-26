@@ -27,11 +27,8 @@ writeFileSync(
   ),
 );
 
-// 2. napi/package.json — version + optionalDependencies
+// 2. napi/package.json — version
 napiPkg.version = next;
-for (const dep of Object.keys(napiPkg.optionalDependencies ?? {})) {
-  napiPkg.optionalDependencies[dep] = next;
-}
 writeFileSync('napi/package.json', `${JSON.stringify(napiPkg, null, 2)}\n`);
 
 // 3. napi/npm/*/package.json
