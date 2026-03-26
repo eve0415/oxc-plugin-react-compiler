@@ -1,8 +1,8 @@
 [package]
 name = "conformance"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Conformance test runner for oxc_react_compiler"
 publish = false
 
@@ -13,7 +13,7 @@ oxc_ast = { workspace = true }
 oxc_codegen = { workspace = true }
 oxc_parser = { workspace = true }
 oxc_span = { workspace = true }
-regex = "1.12.3"
-rayon = "1.11.0"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+regex = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

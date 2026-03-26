@@ -140,7 +140,6 @@ target/
 
 # napi
 *.node
-napi/binding/npm/**/*.node
 
 # Test fixture build outputs
 tests/fixtures/*/dist-*/

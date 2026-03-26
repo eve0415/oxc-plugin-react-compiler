@@ -84,22 +84,22 @@ Source → oxc_parser → OXC AST
 
 ### Key Modules
 
-| Module                                         | Responsibility                                                            |
-| ---------------------------------------------- | ------------------------------------------------------------------------- |
-| `hir/build.rs`                                 | Lowers OXC AST → HIR CFG (largest file)                                   |
-| `hir/types.rs`                                 | All IR data structures                                                    |
-| `hir/globals.rs`                               | Known global function/type database                                       |
-| `hir/propagate_scope_dependencies_hir.rs`      | Scope dependency computation                                              |
-| `hir/collect_hoistable_property_loads.rs`      | Hoistable property analysis                                               |
-| `pipeline.rs`                                  | Pass orchestration (second largest file)                                  |
-| `codegen_backend/codegen_ast.rs`               | OXC AST-based codegen (ReactiveFunction → OXC AST)                       |
-| `codegen_backend/module_emitter/`              | Module-level emission (directory module with 7 submodules)                |
-| `codegen_backend/hir_to_ast.rs`                | HIR instruction → OXC AST conversion                                     |
-| `reactive_scopes/build_reactive_function.rs`   | HIR CFG → tree-shaped ReactiveFunction                                    |
-| `optimization/constant_propagation.rs`         | SSA constant folding                                                      |
-| `optimization/dead_code_elimination.rs`        | DCE pass                                                                  |
-| `inference/infer_mutation_aliasing_effects.rs` | Aliasing side-effect analysis                                             |
-| `options.rs`                                   | PluginOptions, EnvironmentConfig, CompilationMode                         |
+| Module                                         | Responsibility                                             |
+| ---------------------------------------------- | ---------------------------------------------------------- |
+| `hir/build.rs`                                 | Lowers OXC AST → HIR CFG (largest file)                    |
+| `hir/types.rs`                                 | All IR data structures                                     |
+| `hir/globals.rs`                               | Known global function/type database                        |
+| `hir/propagate_scope_dependencies_hir.rs`      | Scope dependency computation                               |
+| `hir/collect_hoistable_property_loads.rs`      | Hoistable property analysis                                |
+| `pipeline.rs`                                  | Pass orchestration (second largest file)                   |
+| `codegen_backend/codegen_ast.rs`               | OXC AST-based codegen (ReactiveFunction → OXC AST)         |
+| `codegen_backend/module_emitter/`              | Module-level emission (directory module with 7 submodules) |
+| `codegen_backend/hir_to_ast.rs`                | HIR instruction → OXC AST conversion                       |
+| `reactive_scopes/build_reactive_function.rs`   | HIR CFG → tree-shaped ReactiveFunction                     |
+| `optimization/constant_propagation.rs`         | SSA constant folding                                       |
+| `optimization/dead_code_elimination.rs`        | DCE pass                                                   |
+| `inference/infer_mutation_aliasing_effects.rs` | Aliasing side-effect analysis                              |
+| `options.rs`                                   | PluginOptions, EnvironmentConfig, CompilationMode          |
 
 ### Crate Structure
 
@@ -127,7 +127,7 @@ Each Rust module corresponds to an upstream TypeScript file. When debugging a pa
 
 ## Development Notes
 
-- Rust edition 2024, OXC v0.120.0
+- Rust edition 2024, OXC v0.122.0
 - All internal modules use `pub(crate)` visibility; only `compile()` and `options` are public
 - Flow syntax preprocessing is an inline function (`preprocess_flow_syntax`) in `pipeline.rs` (Rust-specific; Babel parses Flow natively)
 - Fixture pragmas (first line comments like `// @flow`, `// @compilationMode "all"`) control per-fixture compiler options

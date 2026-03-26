@@ -273,4 +273,30 @@ mod tests {
         let func = make_hir_function(vec![block]);
         assert!(validate_no_set_state_in_render(&func).is_ok());
     }
+
+    #[test]
+    fn valid_set_state_in_callback() {
+        let r = crate::test_utils::compile_to_result(
+            "function Component() { const [x, setX] = useState(0); const onClick = () => setX(1); return <div onClick={onClick}>{x}</div>; }",
+        );
+        assert!(r.transformed);
+    }
+
+    #[test]
+    fn set_state_in_render_bails() {
+        let r = crate::test_utils::compile_to_result(
+            "function Component() { const [x, setX] = useState(0); setX(1); return <div>{x}</div>; }",
+        );
+        assert!(!r.transformed);
+    }
+
+    #[test]
+    fn conditional_set_state_does_not_bail() {
+        // Conditional setState is not unconditional -- the validation only catches
+        // direct unconditional calls during render, so this should compile fine.
+        let r = crate::test_utils::compile_to_result(
+            "function Component(props) { const [x, setX] = useState(0); if (props.cond) { setX(1); } return <div>{x}</div>; }",
+        );
+        assert!(r.transformed);
+    }
 }

@@ -984,3 +984,91 @@ pub fn terminal_successors(terminal: &Terminal) -> Vec<BlockId> {
         } => vec![*block, *fallthrough],
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::environment::Environment;
+    use crate::hir::types::{BlockId, IdentifierId, SourceLocation};
+    use crate::options::EnvironmentConfig;
+
+    #[test]
+    fn id_counter_sequential_block_ids() {
+        let mut c = IdCounter::new();
+        assert_eq!(c.next_block_id(), BlockId(0));
+        assert_eq!(c.next_block_id(), BlockId(1));
+    }
+
+    #[test]
+    fn id_counter_sequential_identifier_ids() {
+        let mut c = IdCounter::new();
+        assert_eq!(c.next_identifier_id(), IdentifierId(0));
+        assert_eq!(c.next_identifier_id(), IdentifierId(1));
+        assert_eq!(c.next_identifier_id(), IdentifierId(2));
+    }
+
+    #[test]
+    fn id_counter_observe_block_id_clamps() {
+        let mut c = IdCounter::new();
+        assert_eq!(c.next_block_id(), BlockId(0));
+        c.observe_block_id(BlockId(5));
+        assert_eq!(c.next_block_id(), BlockId(6));
+    }
+
+    #[test]
+    fn id_counter_observe_identifier_id_clamps() {
+        let mut c = IdCounter::new();
+        c.observe_identifier_id_from_ident(IdentifierId(10));
+        assert_eq!(c.next_identifier_id(), IdentifierId(11));
+    }
+
+    #[test]
+    fn builder_starts_without_errors() {
+        let b = HIRBuilder::new(Environment::new(EnvironmentConfig::default()));
+        assert!(!b.has_errors());
+    }
+
+    #[test]
+    fn builder_push_todo_creates_error() {
+        let mut b = HIRBuilder::new(Environment::new(EnvironmentConfig::default()));
+        assert!(!b.has_errors());
+        b.push_todo("not implemented".to_string());
+        assert!(b.has_errors());
+    }
+
+    #[test]
+    fn builder_make_temporary_returns_unique_ids() {
+        let mut b = HIRBuilder::new(Environment::new(EnvironmentConfig::default()));
+        let t1 = b.make_temporary(SourceLocation::Generated);
+        let t2 = b.make_temporary(SourceLocation::Generated);
+        assert_ne!(t1.id, t2.id);
+    }
+
+    #[test]
+    fn builder_binding_resolution_consistent() {
+        let mut b = HIRBuilder::new(Environment::new(EnvironmentConfig::default()));
+        b.enter_binding_scope();
+        let id1 = b.resolve_binding("x", SourceLocation::Generated);
+        let id2 = b.resolve_binding("x", SourceLocation::Generated);
+        assert_eq!(id1.id, id2.id);
+    }
+
+    #[test]
+    fn builder_declare_binding_creates_new() {
+        let mut b = HIRBuilder::new(Environment::new(EnvironmentConfig::default()));
+        b.enter_binding_scope();
+        let decl = b.declare_binding("y", SourceLocation::Generated, true);
+        let resolved = b.resolve_binding("y", SourceLocation::Generated);
+        assert_eq!(decl.id, resolved.id);
+    }
+
+    #[test]
+    fn builder_const_marking() {
+        let mut b = HIRBuilder::new(Environment::new(EnvironmentConfig::default()));
+        b.enter_binding_scope();
+        b.declare_binding("z", SourceLocation::Generated, true);
+        assert!(!b.is_binding_const("z"));
+        b.mark_binding_const("z");
+        assert!(b.is_binding_const("z"));
+    }
+}

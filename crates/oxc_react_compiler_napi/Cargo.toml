@@ -1,8 +1,11 @@
 [package]
 name = "oxc_react_compiler_napi"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
 description = "N-API bindings for oxc_react_compiler"
 
 [lib]
@@ -10,8 +13,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 oxc_react_compiler = { path = "../oxc_react_compiler" }
-napi = { version = "3.8.3", features = ["async"] }
-napi-derive = "3.5.2"
+napi = { workspace = true }
+napi-derive = { workspace = true }
 
 [build-dependencies]
-napi-build = "2.3.1"
+napi-build = { workspace = true }

@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build - ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            runner: macos-26-intel
+
+          - target: aarch64-apple-darwin
+            runner: macos-26
+
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1.15.4
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Build NAPI binding
+        run: vpx napi build --platform --release -p oxc_react_compiler_napi --package-json-path napi/package.json -o napi/dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: binding-${{ matrix.target }}
+          path: napi/dist/*.node
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    runs-on: ubuntu-24.04-arm
+    needs: build
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artifacts
+
+      - name: Move artifacts to platform packages
+        run: vpx napi artifacts --package-json-path napi/package.json --build-output-dir artifacts
+
+      - name: List artifacts
+        run: |
+          echo "=== Platform packages ==="
+          ls -lR napi/npm/
+          echo "=== Dist ==="
+          ls -lR napi/dist/ || true
+
+      - name: Build Vite plugin
+        run: vp pack
+
+      - name: Publish platform packages
+        run: |
+          for pkg in napi/npm/*/; do
+            echo "Publishing $pkg"
+            pnpm publish "$pkg" --provenance --access public --no-git-checks
+          done
+
+      - name: Publish oxc-plugin-react-compiler
+        run: pnpm publish napi/ --provenance --access public --no-git-checks
+
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-24.04-arm
+    needs: publish
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
+        with:
+          generate_release_notes: true

@@ -22,3 +22,31 @@ pub fn set_current_source(source: &str) {
         text.push_str(source);
     });
 }
+
+#[cfg(test)]
+pub(crate) fn get_source_line_starts() -> Vec<u32> {
+    SOURCE_LINE_STARTS.with(|starts| starts.borrow().clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_line_source() {
+        set_current_source("hello");
+        assert_eq!(get_source_line_starts(), vec![0]);
+    }
+
+    #[test]
+    fn multi_line_source() {
+        set_current_source("a\nb\nc");
+        assert_eq!(get_source_line_starts(), vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn empty_source() {
+        set_current_source("");
+        assert_eq!(get_source_line_starts(), vec![0]);
+    }
+}

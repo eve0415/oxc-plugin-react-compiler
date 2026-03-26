@@ -104,3 +104,35 @@ fn rewrite_place(place: &mut Place, rewrites: &HashMap<IdentifierId, Identifier>
         place.identifier = rewrite.clone();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::eliminate_redundant_phi;
+    use crate::ssa::enter_ssa::enter_ssa;
+    use crate::test_utils::parse_and_lower;
+
+    #[test]
+    fn eliminate_phi_basic() {
+        let mut func = parse_and_lower("let x = 1; return x;").expect("lower");
+        enter_ssa(&mut func).expect("enter_ssa");
+        eliminate_redundant_phi(&mut func);
+        assert!(!func.body.blocks.is_empty());
+    }
+
+    #[test]
+    fn eliminate_phi_preserves_needed() {
+        let mut func =
+            parse_and_lower("let x = 1; if (props.a) { x = 2; } return x;").expect("lower");
+        enter_ssa(&mut func).expect("enter_ssa");
+        eliminate_redundant_phi(&mut func);
+        assert!(!func.body.blocks.is_empty());
+    }
+
+    #[test]
+    fn eliminate_phi_simple() {
+        let mut func = parse_and_lower("return props;").expect("lower");
+        enter_ssa(&mut func).expect("enter_ssa");
+        eliminate_redundant_phi(&mut func);
+        assert!(!func.body.blocks.is_empty());
+    }
+}

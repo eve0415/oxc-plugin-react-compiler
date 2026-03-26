@@ -699,3 +699,31 @@ pub(super) fn wrap_params_at_commas(params: &str) -> String {
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_utils::compile_to_result;
+
+    #[test]
+    fn postprocess_no_crash() {
+        let result =
+            compile_to_result("function Component(props) { return <div>{props.x}</div>; }");
+        assert!(!result.code.is_empty(), "output should be non-empty");
+    }
+
+    #[test]
+    fn postprocess_round_trip() {
+        let result = compile_to_result(
+            "function Component(props) { const x = props.a + 1; return <div>{x}</div>; }",
+        );
+        assert!(result.transformed, "should be transformed");
+        let allocator = oxc_allocator::Allocator::default();
+        let source_type = oxc_span::SourceType::mjs().with_jsx(true);
+        let parsed = oxc_parser::Parser::new(&allocator, &result.code, source_type).parse();
+        assert!(
+            parsed.errors.is_empty(),
+            "re-parse failed: {:?}",
+            parsed.errors
+        );
+    }
+}

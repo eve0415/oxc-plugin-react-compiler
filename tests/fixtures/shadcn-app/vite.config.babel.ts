@@ -1,5 +1,5 @@
-import { defineConfig } from 'vite-plus'
-import babel from '@rolldown/plugin-babel'
+import babel from '@rolldown/plugin-babel';
+import { defineConfig } from 'vite-plus';
 
 export default defineConfig({
   root: import.meta.dirname,
@@ -17,4 +17,4 @@ export default defineConfig({
     },
   },
   logLevel: 'silent',
-})
+});

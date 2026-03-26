@@ -2281,3 +2281,38 @@ fn normalize_hook_name(name: &str) -> &str {
     let tail = name.rsplit_once('.').map_or(name, |(_, tail)| tail);
     tail.rsplit_once('$').map_or(tail, |(_, tail)| tail)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::infer_types;
+    use crate::ssa::eliminate_redundant_phi::eliminate_redundant_phi;
+    use crate::ssa::enter_ssa::enter_ssa;
+    use crate::test_utils::parse_and_lower;
+
+    #[test]
+    fn infer_types_basic() {
+        let mut func = parse_and_lower("let x = 1; return x;").expect("lower");
+        enter_ssa(&mut func).expect("enter_ssa");
+        eliminate_redundant_phi(&mut func);
+        infer_types(&mut func);
+        assert!(!func.body.blocks.is_empty());
+    }
+
+    #[test]
+    fn infer_types_binary_expression() {
+        let mut func = parse_and_lower("return props.a + 1;").expect("lower");
+        enter_ssa(&mut func).expect("enter_ssa");
+        eliminate_redundant_phi(&mut func);
+        infer_types(&mut func);
+        assert!(!func.body.blocks.is_empty());
+    }
+
+    #[test]
+    fn infer_types_call_expression() {
+        let mut func = parse_and_lower("return foo(props.a);").expect("lower");
+        enter_ssa(&mut func).expect("enter_ssa");
+        eliminate_redundant_phi(&mut func);
+        infer_types(&mut func);
+        assert!(!func.body.blocks.is_empty());
+    }
+}

@@ -2101,3 +2101,27 @@ pub(super) fn convert_expression_to_export_default_kind<'a>(
         other => panic!("unsupported export default gated expression: {:?}", other),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_utils::compile_to_result;
+
+    #[test]
+    fn function_replacement_declaration() {
+        let result =
+            compile_to_result("function Component(props) { return <div>{props.x}</div>; }");
+        assert!(result.transformed, "should be transformed");
+    }
+
+    #[test]
+    fn function_replacement_arrow() {
+        let mut options = crate::options::PluginOptions::default();
+        options.compilation_mode = crate::options::CompilationMode::All;
+        let result = crate::compile(
+            "test.jsx",
+            "const Component = (props) => <div>{props.x}</div>;",
+            &options,
+        );
+        assert!(!result.code.is_empty(), "output should be non-empty");
+    }
+}

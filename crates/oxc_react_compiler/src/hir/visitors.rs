@@ -611,3 +611,166 @@ fn map_pattern_places(pattern: &mut Pattern, f: &mut impl FnMut(&mut Place)) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tp(id: u32, name: &str) -> Place {
+        Place {
+            identifier: Identifier {
+                id: IdentifierId(id),
+                declaration_id: DeclarationId(id),
+                name: Some(IdentifierName::Named(name.to_string())),
+                mutable_range: MutableRange::default(),
+                scope: None,
+                type_: Type::Poly,
+                loc: SourceLocation::Generated,
+            },
+            effect: Effect::Read,
+            reactive: false,
+            loc: SourceLocation::Generated,
+        }
+    }
+
+    fn make_instr(value: InstructionValue) -> Instruction {
+        Instruction {
+            id: InstructionId(0),
+            lvalue: tp(999, "$tmp"),
+            value,
+            loc: SourceLocation::Generated,
+            effects: None,
+        }
+    }
+
+    #[test]
+    fn operand_visitor_load_local() {
+        let instr = make_instr(InstructionValue::LoadLocal {
+            place: tp(1, "a"),
+            loc: SourceLocation::Generated,
+        });
+        let mut count = 0;
+        for_each_instruction_operand(&instr, |_| count += 1);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn operand_visitor_binary_expression() {
+        let instr = make_instr(InstructionValue::BinaryExpression {
+            operator: BinaryOperator::Add,
+            left: tp(1, "a"),
+            right: tp(2, "b"),
+            loc: SourceLocation::Generated,
+        });
+        let mut count = 0;
+        for_each_instruction_operand(&instr, |_| count += 1);
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn operand_visitor_primitive() {
+        let instr = make_instr(InstructionValue::Primitive {
+            value: PrimitiveValue::Number(42.0),
+            loc: SourceLocation::Generated,
+        });
+        let mut count = 0;
+        for_each_instruction_operand(&instr, |_| count += 1);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn operand_visitor_store_local() {
+        let instr = make_instr(InstructionValue::StoreLocal {
+            lvalue: LValue {
+                place: tp(1, "x"),
+                kind: InstructionKind::Reassign,
+            },
+            value: tp(2, "y"),
+            loc: SourceLocation::Generated,
+        });
+        let mut count = 0;
+        for_each_instruction_operand(&instr, |_| count += 1);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn operand_visitor_unary() {
+        let instr = make_instr(InstructionValue::UnaryExpression {
+            operator: UnaryOperator::Not,
+            value: tp(1, "a"),
+            loc: SourceLocation::Generated,
+        });
+        let mut count = 0;
+        for_each_instruction_operand(&instr, |_| count += 1);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn terminal_visitor_return() {
+        let terminal = Terminal::Return {
+            value: tp(1, "ret"),
+            return_variant: ReturnVariant::Explicit,
+            id: InstructionId(0),
+            loc: SourceLocation::Generated,
+        };
+        let mut count = 0;
+        for_each_terminal_operand(&terminal, |_| count += 1);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn terminal_visitor_if() {
+        let terminal = Terminal::If {
+            test: tp(1, "cond"),
+            consequent: BlockId(1),
+            alternate: BlockId(2),
+            fallthrough: BlockId(3),
+            id: InstructionId(0),
+            loc: SourceLocation::Generated,
+        };
+        let mut count = 0;
+        for_each_terminal_operand(&terminal, |_| count += 1);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn terminal_visitor_goto() {
+        let terminal = Terminal::Goto {
+            block: BlockId(1),
+            variant: GotoVariant::Break,
+            id: InstructionId(0),
+            loc: SourceLocation::Generated,
+        };
+        let mut count = 0;
+        for_each_terminal_operand(&terminal, |_| count += 1);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn lvalue_visitor_store_local() {
+        let instr = make_instr(InstructionValue::StoreLocal {
+            lvalue: LValue {
+                place: tp(1, "x"),
+                kind: InstructionKind::Reassign,
+            },
+            value: tp(2, "y"),
+            loc: SourceLocation::Generated,
+        });
+        let mut count = 0;
+        for_each_instruction_lvalue(&instr, |_| count += 1);
+        // 1 for instr.lvalue + 1 for StoreLocal's lvalue.place = 2
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn lvalue_visitor_primitive() {
+        let instr = make_instr(InstructionValue::Primitive {
+            value: PrimitiveValue::Null,
+            loc: SourceLocation::Generated,
+        });
+        let mut count = 0;
+        for_each_instruction_lvalue(&instr, |_| count += 1);
+        // Only instr.lvalue, no additional lvalues from Primitive
+        assert_eq!(count, 1);
+    }
+}

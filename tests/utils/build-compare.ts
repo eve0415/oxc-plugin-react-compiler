@@ -36,7 +36,7 @@ export const collectJsFiles = async (dir: string): Promise<string[]> => {
   } catch {
     // Directory may not exist yet.
   }
-  return results.sort();
+  return results.toSorted();
 };
 
 export const normalizeJsChunkKey = (pathFromRoot: string): string => {
@@ -54,19 +54,13 @@ export const readJsOutputs = async (dir: string): Promise<Map<string, JsOutputFi
   return outputs;
 };
 
-export const compareExactJsOutputs = async (
-  expectedDir: string,
-  actualDir: string,
-): Promise<JsMismatchDiagnostic[]> => {
-  const [expectedFiles, actualFiles] = await Promise.all([
-    readJsOutputs(expectedDir),
-    readJsOutputs(actualDir),
-  ]);
+export const compareExactJsOutputs = async (expectedDir: string, actualDir: string): Promise<JsMismatchDiagnostic[]> => {
+  const [expectedFiles, actualFiles] = await Promise.all([readJsOutputs(expectedDir), readJsOutputs(actualDir)]);
 
   const allKeys = new Set([...expectedFiles.keys(), ...actualFiles.keys()]);
   const mismatches: JsMismatchDiagnostic[] = [];
 
-  for (const key of [...allKeys].sort()) {
+  for (const key of [...allKeys].toSorted()) {
     const expected = expectedFiles.get(key);
     const actual = actualFiles.get(key);
 
@@ -116,38 +110,24 @@ export const compareExactJsOutputs = async (
       expectedLine,
       actualLine,
       astDifferenceCount: astResult.differences.length,
-      astDifferencesPreview: astResult.differences
-        .slice(0, 5)
-        .map(
-          (diff) =>
-            `${diff.path}: ${diff.kind} (${diff.expected ?? 'N/A'} -> ${diff.actual ?? 'N/A'})`,
-        ),
+      astDifferencesPreview: astResult.differences.slice(0, 5).map(diff => `${diff.path}: ${diff.kind} (${diff.expected ?? 'N/A'} -> ${diff.actual ?? 'N/A'})`),
     });
   }
 
   return mismatches;
 };
 
-export const logExactMismatchSummary = (
-  label: string,
-  mismatches: JsMismatchDiagnostic[],
-): void => {
+export const logExactMismatchSummary = (label: string, mismatches: JsMismatchDiagnostic[]): void => {
   if (mismatches.length === 0) {
     return;
   }
 
   console.log(`\n  ${label}: ${String(mismatches.length)} exact JS mismatch(es)`);
   for (const mismatch of mismatches.slice(0, 10)) {
-    console.log(
-      `    ${mismatch.key} — ${String(mismatch.expectedBytes)} bytes vs ${String(mismatch.actualBytes)} bytes`,
-    );
+    console.log(`    ${mismatch.key} — ${String(mismatch.expectedBytes)} bytes vs ${String(mismatch.actualBytes)} bytes`);
     if (mismatch.firstDiffLine !== undefined) {
-      console.log(
-        `      line ${String(mismatch.firstDiffLine)} expected: ${mismatch.expectedLine ?? ''}`,
-      );
-      console.log(
-        `      line ${String(mismatch.firstDiffLine)} actual:   ${mismatch.actualLine ?? ''}`,
-      );
+      console.log(`      line ${String(mismatch.firstDiffLine)} expected: ${mismatch.expectedLine ?? ''}`);
+      console.log(`      line ${String(mismatch.firstDiffLine)} actual:   ${mismatch.actualLine ?? ''}`);
     }
     if (mismatch.astDifferenceCount >= 0) {
       console.log(`      AST differences: ${String(mismatch.astDifferenceCount)}`);

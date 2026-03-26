@@ -5775,3 +5775,44 @@ fn collect_preferred_decl_names_in_terminal(
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_utils::compile_to_result;
+
+    #[test]
+    fn codegen_simple_component() {
+        let result =
+            compile_to_result("function Component(props) { return <div>{props.x}</div>; }");
+        assert!(result.transformed, "simple component should be transformed");
+        assert!(!result.code.is_empty(), "output code should be non-empty");
+    }
+
+    #[test]
+    fn codegen_with_memoization() {
+        let result = compile_to_result(
+            "function Component(props) { const x = props.a + 1; return <div>{x}</div>; }",
+        );
+        assert!(result.transformed, "should be transformed");
+        assert!(result.code.contains("$["), "should contain cache check");
+    }
+
+    #[test]
+    fn codegen_multiple_scopes() {
+        let result = compile_to_result(
+            r#"function Component(props) { const a = props.x; const b = props.y; return <div>{a}{b}</div>; }"#,
+        );
+        assert!(result.transformed, "should be transformed");
+    }
+
+    #[test]
+    fn codegen_preserves_jsx() {
+        let result =
+            compile_to_result(r#"function Component() { return <div className="test" />; }"#);
+        assert!(result.transformed, "JSX component should be transformed");
+        assert!(
+            result.code.contains("className"),
+            "should preserve className"
+        );
+    }
+}

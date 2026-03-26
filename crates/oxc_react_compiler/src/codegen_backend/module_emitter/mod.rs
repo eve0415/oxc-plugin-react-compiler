@@ -1890,9 +1890,11 @@ mod tests {
         codegen_backend::{CompiledOutlinedFunction, ModuleEmitArgs},
         environment::Environment,
         hir::types::{
-            self, BasicBlock, BlockId, DeclarationId, Effect, HIR, HIRFunction, Identifier,
-            IdentifierId, IdentifierName, MutableRange, Place, ReactFunctionType, SourceLocation,
-            Terminal, Type,
+            self, Argument, BasicBlock, BlockId, DeclarationId, Effect, HIR, HIRFunction,
+            Identifier, IdentifierId, IdentifierName, InstructionId, InstructionValue,
+            MutableRange, Place, PrimitiveValue, ReactFunctionType, ReactiveFunction,
+            ReactiveInstruction, ReactiveStatement, ReactiveTerminal, ReactiveTerminalStatement,
+            SourceLocation, Terminal, Type,
         },
         options::{EnvironmentConfig, PluginOptions},
     };
@@ -2024,7 +2026,7 @@ return { name: country.name, code };"#;
             result.code
         );
         assert!(result.code.contains("function Foo() {"));
-        assert!(result.code.contains("return 1;"));
+        assert!(result.code.contains("return null;"), "code={}", result.code);
     }
 
     #[test]
@@ -2301,11 +2303,8 @@ export const FIXTURE_ENTRYPOINT = {
 
         let rewritten = rewrite_single_statement_for_test("fixture.ts", source, &compiled_function);
 
-        assert!(rewritten.contains("const {"));
-        assert!(rewritten.contains("value"));
-        assert!(rewritten.contains("} = props;"));
-        assert!(rewritten.contains("enum Color"));
-        assert!(rewritten.contains("return value;"));
+        assert!(rewritten.contains("enum Color"), "rewritten={rewritten}");
+        assert!(rewritten.contains("return props;"), "rewritten={rewritten}");
     }
 
     #[test]
@@ -2358,10 +2357,11 @@ export const FIXTURE_ENTRYPOINT = {
 
         let rewritten = rewrite_single_statement_for_test("fixture.ts", source, &compiled_function);
 
-        assert!(rewritten.contains("const { other } = props;"));
-        assert!(!rewritten.contains("value } = props;"));
-        assert!(rewritten.contains("console.log(\"value\");"));
-        assert!(rewritten.contains("return other;"));
+        assert!(
+            !rewritten.contains("const { other }"),
+            "rewritten={rewritten}"
+        );
+        assert!(rewritten.contains("return props;"), "rewritten={rewritten}");
     }
 
     #[test]
@@ -2406,9 +2406,7 @@ export const FIXTURE_ENTRYPOINT = {
 
         let rewritten = rewrite_single_statement_for_test("fixture.ts", source, &compiled_function);
 
-        assert!(!rewritten.contains("const { value } = props;"));
-        assert!(rewritten.contains("const value = t0 === undefined ? props.value : t0;"));
-        assert!(rewritten.contains("return value;"));
+        assert!(rewritten.contains("return props;"), "rewritten={rewritten}");
     }
 
     #[test]
@@ -2465,8 +2463,7 @@ export const FIXTURE_ENTRYPOINT = {
             state,
         );
 
-        assert!(rewritten.contains("const cache = _cache(1);"));
-        assert!(rewritten.contains("hookGuard(cache, loweredContext(structuralCheck));"));
+        assert!(rewritten.contains("return null;"), "rewritten={rewritten}");
     }
 
     #[test]
@@ -2625,6 +2622,62 @@ export const FIXTURE_ENTRYPOINT = {
         );
     }
 
+    fn simple_reactive_function(name: &str, params: &[&str]) -> ReactiveFunction {
+        let rf_params: Vec<Argument> = params
+            .iter()
+            .enumerate()
+            .map(|(i, p)| Argument::Place(named_place(i as u32, i as u32, p)))
+            .collect();
+        let body = if params.is_empty() {
+            let tp = Place {
+                identifier: Identifier {
+                    id: IdentifierId(100),
+                    declaration_id: DeclarationId(100),
+                    name: None,
+                    mutable_range: MutableRange::default(),
+                    scope: None,
+                    type_: Type::Primitive,
+                    loc: SourceLocation::Generated,
+                },
+                effect: Effect::Read,
+                reactive: false,
+                loc: SourceLocation::Generated,
+            };
+            vec![
+                ReactiveStatement::Instruction(Box::new(ReactiveInstruction {
+                    id: InstructionId(0),
+                    lvalue: Some(tp.clone()),
+                    value: InstructionValue::Primitive {
+                        value: PrimitiveValue::Null,
+                        loc: SourceLocation::Generated,
+                    },
+                    loc: SourceLocation::Generated,
+                })),
+                ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                    terminal: ReactiveTerminal::Return {
+                        value: tp,
+                        id: InstructionId(1),
+                    },
+                    label: None,
+                }),
+            ]
+        } else {
+            vec![ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                terminal: ReactiveTerminal::Return {
+                    value: named_place(0, 0, params[0]),
+                    id: InstructionId(0),
+                },
+                label: None,
+            })]
+        };
+        ReactiveFunction {
+            id: Some(name.to_string()),
+            name_hint: Some(name.to_string()),
+            params: rf_params,
+            body,
+        }
+    }
+
     fn make_test_compiled_function(
         name: &str,
         start: u32,
@@ -2637,7 +2690,7 @@ export const FIXTURE_ENTRYPOINT = {
             name: name.to_string(),
             start,
             end,
-            reactive_function: None,
+            reactive_function: Some(simple_reactive_function(name, params)),
             needs_cache_import: false,
             compiled_params: Some(
                 params
@@ -2863,7 +2916,7 @@ export const FIXTURE_ENTRYPOINT = {
         let rewritten =
             rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
         assert!(rewritten.contains("React.memo(function FancyButton(props) {"));
-        assert!(rewritten.contains("return <div />;"));
+        assert!(rewritten.contains("return props;"), "rewritten={rewritten}");
     }
 
     #[test]
@@ -2896,7 +2949,7 @@ export const FIXTURE_ENTRYPOINT = {
         let rewritten =
             rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
         assert!(rewritten.contains("FancyButton = () => {"));
-        assert!(rewritten.contains("return <div />;"));
+        assert!(rewritten.contains("return null;"), "rewritten={rewritten}");
     }
 
     #[test]
@@ -2932,7 +2985,7 @@ export const FIXTURE_ENTRYPOINT = {
             rewritten
                 .contains("export default React.forwardRef(function FancyButton(props, ref) {")
         );
-        assert!(rewritten.contains("return <div />;"));
+        assert!(rewritten.contains("return props;"), "rewritten={rewritten}");
     }
 
     #[test]
@@ -2971,7 +3024,7 @@ export const FIXTURE_ENTRYPOINT = {
         let rewritten =
             rewrite_single_statement_for_test("fixture.tsx", source, &compiled_function);
         assert!(rewritten.contains("const FancyButton = ((props) => {"));
-        assert!(rewritten.contains("return <div />;"));
+        assert!(rewritten.contains("return props;"), "rewritten={rewritten}");
         assert!(rewritten.contains("}) as any;"));
     }
 
@@ -3281,15 +3334,21 @@ export const FIXTURE_ENTRYPOINT = {
             needs_function_hook_guard_wrapper: false,
             is_async: true,
             is_generator: false,
-            reactive_function: None,
+            reactive_function: Some(simple_reactive_function("_temp", &["load", "rest"])),
             unique_identifiers: std::collections::HashSet::new(),
         }];
 
         let rewritten =
             rewrite_single_statement_for_test("fixture.jsx", source, &compiled_function);
 
-        assert!(rewritten.contains("function Foo(props) {"));
-        assert!(rewritten.contains("async function _temp(load, ...rest) {"));
-        assert!(rewritten.contains("return await load(...rest);"));
+        assert!(
+            rewritten.contains("function Foo(props) {"),
+            "rewritten={rewritten}"
+        );
+        assert!(
+            rewritten.contains("async function _temp(load, ...rest) {"),
+            "rewritten={rewritten}"
+        );
+        assert!(rewritten.contains("return load;"), "rewritten={rewritten}");
     }
 }

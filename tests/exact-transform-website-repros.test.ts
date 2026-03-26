@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 
-import babelPluginModule from 'babel-plugin-react-compiler';
 import { parseSync, transformSync } from '@babel/core';
+import babelPluginModule from 'babel-plugin-react-compiler';
 import { describe, expect, it } from 'vite-plus/test';
 
 import { transform as oxcTransform } from '../napi/binding/dist/index.js';

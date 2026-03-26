@@ -1075,3 +1075,24 @@ pub(super) fn conditional_expression_is_undefined_fallback(
     expression_references_identifier(&conditional.consequent, ident)
         || expression_references_identifier(&conditional.alternate, ident)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_utils::compile_to_result;
+
+    #[test]
+    fn instrumentation_no_crash_default() {
+        let result =
+            compile_to_result("function Component(props) { return <div>{props.x}</div>; }");
+        assert!(!result.code.is_empty(), "output should be non-empty");
+    }
+
+    #[test]
+    fn instrumentation_preserves_output() {
+        let result = compile_to_result(
+            "function Component(props) { const x = props.a + 1; return <div>{x}</div>; }",
+        );
+        assert!(result.transformed, "should be transformed");
+        assert!(!result.code.is_empty(), "should produce valid code");
+    }
+}

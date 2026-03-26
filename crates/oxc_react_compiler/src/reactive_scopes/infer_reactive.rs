@@ -699,3 +699,30 @@ fn is_stable_type_container_identifier(identifier: &Identifier) -> bool {
         )
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_utils::compile_to_result;
+
+    #[test]
+    fn reactive_prop_deps() {
+        let r = compile_to_result(
+            "function Component(props) { const x = props.a + 1; return <div>{x}</div>; }",
+        );
+        assert!(r.transformed);
+    }
+
+    #[test]
+    fn reactive_state() {
+        let r = compile_to_result(
+            "function Component() { const [x, setX] = useState(0); return <div onClick={() => setX(1)}>{x}</div>; }",
+        );
+        assert!(r.transformed);
+    }
+
+    #[test]
+    fn reactive_constant() {
+        let r = compile_to_result("function Component() { const x = 42; return <div>{x}</div>; }");
+        assert!(r.transformed);
+    }
+}

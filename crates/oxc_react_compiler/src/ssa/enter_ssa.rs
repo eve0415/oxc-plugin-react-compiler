@@ -647,3 +647,38 @@ impl SSAContext {
         self.pending_error.take()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::enter_ssa;
+    use crate::test_utils::parse_and_lower;
+
+    #[test]
+    fn enter_ssa_basic() {
+        let mut func = parse_and_lower("let x = 1; return x;").expect("lower");
+        enter_ssa(&mut func).expect("enter_ssa should succeed");
+        assert!(!func.body.blocks.is_empty());
+    }
+
+    #[test]
+    fn enter_ssa_branch_creates_phi() {
+        let mut func =
+            parse_and_lower("let x = 1; if (props.a) { x = 2; } return x;").expect("lower");
+        enter_ssa(&mut func).expect("enter_ssa should succeed");
+        assert!(func.body.blocks.iter().any(|(_, b)| !b.phis.is_empty()));
+    }
+
+    #[test]
+    fn enter_ssa_params() {
+        let mut func = parse_and_lower("return props;").expect("lower");
+        enter_ssa(&mut func).expect("enter_ssa should succeed");
+        assert!(!func.params.is_empty());
+    }
+
+    #[test]
+    fn enter_ssa_empty() {
+        let mut func = parse_and_lower("function Empty() {}").expect("lower");
+        enter_ssa(&mut func).expect("enter_ssa should succeed");
+        assert!(!func.body.blocks.is_empty());
+    }
+}
