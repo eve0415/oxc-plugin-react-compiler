@@ -51,10 +51,13 @@
     "vite": ">=8.0.0"
   },
   "optionalDependencies": {
-    "@oxc-plugin-react-compiler/binding-darwin-x64": "0.0.0",
     "@oxc-plugin-react-compiler/binding-darwin-arm64": "0.0.0",
-    "@oxc-plugin-react-compiler/binding-linux-x64-gnu": "0.0.0",
+    "@oxc-plugin-react-compiler/binding-darwin-x64": "0.0.0",
     "@oxc-plugin-react-compiler/binding-linux-arm64-gnu": "0.0.0",
+    "@oxc-plugin-react-compiler/binding-linux-x64-gnu": "0.0.0",
     "@oxc-plugin-react-compiler/binding-win32-x64-msvc": "0.0.0"
+  },
+  "dependencies": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.1.13"
   }
 }

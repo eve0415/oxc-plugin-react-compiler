@@ -20,13 +20,13 @@
     "@types/node": "25.5.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "@typescript/native-preview": "7.0.0-dev.20260322.1",
+    "@typescript/native-preview": "7.0.0-dev.20260325.1",
     "acorn": "8.16.0",
     "babel-plugin-react-compiler": "1.0.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "vite": "npm:@voidzero-dev/vite-plus-core@0.1.13",
-    "vite-plus": "0.1.13",
+    "vite-plus": "0.1.14",
     "vitest": "npm:@voidzero-dev/vite-plus-test@0.1.13"
   },
   "devEngines": {
@@ -42,8 +42,8 @@
   "packageManager": "pnpm@10.33.0",
   "pnpm": {
     "overrides": {
-      "vite": "npm:@voidzero-dev/vite-plus-core@0.1.13",
-      "vitest": "npm:@voidzero-dev/vite-plus-test@0.1.13"
+      "vite": "npm:@voidzero-dev/vite-plus-core@0.1.14",
+      "vitest": "npm:@voidzero-dev/vite-plus-test@0.1.14"
     }
   }
 }
