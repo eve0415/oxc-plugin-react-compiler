@@ -82,7 +82,7 @@ jobs:
       - name: Build vendored upstream compiler
         working-directory: third_party/react/compiler
         run: |
-          yarn install --frozen-lockfile
+          yarn install --frozen-lockfile --ignore-scripts
           yarn workspace babel-plugin-react-compiler build
 
       - name: Run conformance suite
