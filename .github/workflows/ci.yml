@@ -132,6 +132,9 @@ jobs:
           cache: true
           run-install: true
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+
       - name: Build NAPI binding
         run: pnpm exec napi build --platform --release -p oxc_react_compiler_napi --package-json-path napi/package.json -o napi/dist
 
@@ -150,6 +153,9 @@ jobs:
           node-version-file: package.json
           cache: true
           run-install: true
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
       - name: Audit dependencies
         run: pnpm audit --audit-level=high
