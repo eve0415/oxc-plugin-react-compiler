@@ -30,10 +30,15 @@
     "vitest": "npm:@voidzero-dev/vite-plus-test@0.1.13"
   },
   "devEngines": {
-    "packageManager": {
-      "name": "pnpm",
-      "version": "10.33.0"
-    },
+    "packageManager": [
+      {
+        "name": "pnpm",
+        "version": "10.33.0"
+      },
+      {
+        "name": "npm"
+      }
+    ],
     "runtime": {
       "name": "node",
       "version": "24.14.x"
