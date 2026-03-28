@@ -12,7 +12,7 @@ jobs:
     permissions:
       contents: read
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-apple-darwin
@@ -38,7 +38,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1.15.4
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+        uses: voidzero-dev/setup-vp@624fe22ccfe9204a526ac8139186d34297453722 # v1.0.0
         with:
           node-version-file: package.json
           cache: true
@@ -61,21 +61,46 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+        uses: voidzero-dev/setup-vp@624fe22ccfe9204a526ac8139186d34297453722 # v1.0.0
         with:
           node-version-file: package.json
           cache: true
           run-install: true
 
+      - name: Configure npm authentication
+        run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> .npmrc
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Download all artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
+
+      - name: Verify all artifacts exist
+        run: |
+          missing=0
+          for f in \
+            artifacts/binding-x86_64-apple-darwin/oxc-react-compiler.darwin-x64.node \
+            artifacts/binding-aarch64-apple-darwin/oxc-react-compiler.darwin-arm64.node \
+            artifacts/binding-x86_64-unknown-linux-gnu/oxc-react-compiler.linux-x64-gnu.node \
+            artifacts/binding-aarch64-unknown-linux-gnu/oxc-react-compiler.linux-arm64-gnu.node \
+            artifacts/binding-x86_64-pc-windows-msvc/oxc-react-compiler.win32-x64-msvc.node; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing artifact: $f"
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 1 ]; then
+            exit 1
+          fi
+          echo "All 5 platform artifacts verified."
 
       - name: Move artifacts to platform packages
         run: vpx napi artifacts --package-json-path napi/package.json --build-output-dir artifacts
@@ -96,9 +121,28 @@ jobs:
             echo "Publishing $pkg"
             pnpm publish "$pkg" --provenance --access public --no-git-checks
           done
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish oxc-plugin-react-compiler
         run: pnpm publish napi/ --provenance --access public --no-git-checks
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Pack tarballs for attestation
+        run: |
+          mkdir -p attestation-subjects
+          for pkg in napi/npm/*/; do
+            pnpm pack "$pkg" --pack-destination attestation-subjects
+          done
+          pnpm pack napi/ --pack-destination attestation-subjects
+          echo "=== Attestation subjects ==="
+          ls -l attestation-subjects/
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: attestation-subjects/*.tgz
 
   release:
     name: GitHub Release
