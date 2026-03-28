@@ -113,31 +113,6 @@ jobs:
       - name: Typecheck
         run: vp check --no-lint
 
-  napi-windows:
-    name: NAPI Build (Windows)
-    runs-on: windows-2025
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1.15.4
-
-      - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@624fe22ccfe9204a526ac8139186d34297453722 # v1.0.0
-        with:
-          node-version-file: package.json
-          cache: true
-          run-install: true
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # 5.0.0
-
-      - name: Build NAPI binding
-        run: pnpm exec napi build --platform --release -p oxc_react_compiler_napi --package-json-path napi/package.json -o napi/dist
-
   audit:
     name: Audit
     runs-on: ubuntu-24.04-arm
@@ -182,7 +157,7 @@ jobs:
       - name: Generate coverage
         run: |
           cargo llvm-cov --package oxc_react_compiler --no-report
-          cargo llvm-cov report --output-type text 2>&1 | tee coverage.txt
+          cargo llvm-cov report --text 2>&1 | tee coverage.txt
           echo '## Coverage Report' > coverage.md
           echo '' >> coverage.md
           echo '```' >> coverage.md
