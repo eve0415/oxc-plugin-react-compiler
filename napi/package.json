@@ -35,8 +35,8 @@
       "types": "./dist/vite.d.mts"
     }
   },
-  "dependencies": {
-    "vite": "npm:@voidzero-dev/vite-plus-core@0.1.13"
+  "devDependencies": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.1.14"
   },
   "peerDependencies": {
     "vite": ">=8.0.0"
