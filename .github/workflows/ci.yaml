@@ -89,26 +89,7 @@ jobs:
         run: cargo run --release --bin conformance
 
   check:
-    name: Check (Lint + Format + Typecheck)
-    runs-on: ubuntu-24.04-arm
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@624fe22ccfe9204a526ac8139186d34297453722 # v1.0.0
-        with:
-          node-version-file: package.json
-          cache: true
-          run-install: true
-
-      - name: Run vp check
-        run: vp check
-
-  napi:
-    name: NAPI Build & Typecheck
+    name: Check
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
@@ -126,11 +107,14 @@ jobs:
           cache: true
           run-install: true
 
-      - name: Build NAPI binding
-        run: vpx napi build --platform --release -p oxc_react_compiler_napi --package-json-path napi/package.json -o napi/dist
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # 5.0.0
 
-      - name: Typecheck
-        run: vp check --no-lint
+      - name: Build NAPI binding
+        run: pnpm exec napi build --platform --release -p oxc_react_compiler_napi --package-json-path napi/package.json -o napi/dist
+
+      - name: Run vp check
+        run: vp check
 
   audit:
     name: Audit

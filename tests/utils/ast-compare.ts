@@ -77,8 +77,8 @@ const walk = (a: unknown, b: unknown, path: string, diffs: Difference[]): void =
       diffs.push({
         path,
         kind: 'value_mismatch',
-        expected: String(a),
-        actual: String(b),
+        expected: String(a as boolean | number | string | symbol | bigint | undefined),
+        actual: String(b as boolean | number | string | symbol | bigint | undefined),
       });
     }
     return;
