@@ -124,13 +124,9 @@ jobs:
             pnpm publish "$pkg" --provenance --access public --no-git-checks || echo "::warning::Skipped $pkg (already published or error)"
             sleep 10
           done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish oxc-plugin-react-compiler
         run: pnpm publish napi/ --provenance --access public --no-git-checks || echo "::warning::Skipped main package (already published or error)"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Pack tarballs for attestation
         run: |
