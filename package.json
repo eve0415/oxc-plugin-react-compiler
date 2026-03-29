@@ -8,7 +8,7 @@
     ]
   },
   "scripts": {
-    "prebuild": "pnpm exec napi build --platform --release -p oxc_react_compiler_napi --package-json-path napi/package.json -o napi/dist",
+    "prebuild": "pnpm exec napi build --platform --release -p oxc_react_compiler_napi --package-json-path napi/package.json -o napi/dist && mv napi/dist/index.js napi/dist/index.cjs",
     "fix": "vp lint --type-aware --type-check --fix --fix-suggestions --fix-dangerously && vp fmt",
     "prepare": "vp config",
     "bump": "node scripts/bump-version.ts"
