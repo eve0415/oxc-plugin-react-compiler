@@ -136,11 +136,13 @@ jobs:
         run: |
           mkdir -p attestation-subjects
           for pkg in napi/npm/*/; do
-            pnpm pack "$pkg" --pack-destination attestation-subjects --ignore-scripts
+            pnpm pack "$pkg" --pack-destination attestation-subjects
           done
-          pnpm pack napi/ --pack-destination attestation-subjects --ignore-scripts
+          pnpm pack napi/ --pack-destination attestation-subjects
           echo "=== Attestation subjects ==="
           ls -l attestation-subjects/
+        env:
+          npm_config_ignore_scripts: true
 
       - name: Attest build provenance
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
