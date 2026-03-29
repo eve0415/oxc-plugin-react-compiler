@@ -1,23 +1,52 @@
 # oxc-plugin-react-compiler
 
+[![npm version](https://img.shields.io/npm/v/oxc-plugin-react-compiler)](https://www.npmjs.com/package/oxc-plugin-react-compiler)
+[![license](https://img.shields.io/npm/l/oxc-plugin-react-compiler)](LICENSE)
+
 > [!WARNING]
-> **Early Development Phase**: This project is in its very early stages and is **NOT** ready for production use.
+> **Experimental**: This project may have edge cases where behavior differs from the official React Compiler plugin. If you encounter any differences, please [open an issue](https://github.com/eve0415/oxc-plugin-react-compiler/issues/new) with a detailed description and a minimal reproduction so we can investigate.
 
 ## About the Project
 
 `oxc-plugin-react-compiler` is an experimental project aiming to port the original [`babel-plugin-react-compiler`](https://github.com/facebook/react/tree/main/compiler) to a Rust-based implementation on top of the [OXC](https://github.com/oxc-project/oxc) toolchain.
 
 > [!NOTE]
-> **Disclaimer:** This is a community-driven project (still very new!). It is **not** an official project from the React team or OXC, and we are not affiliated with Meta, the React core team, or the OXC project.
+> **Disclaimer:** This is a community-driven project. It is **not** an official project from the React team or OXC, and we are not affiliated with Meta, the React core team, or the OXC project.
 
 The primary goal is to achieve **exact behavior** alignment with the original React Compiler implementation while leveraging the performance benefits of Rust.
 
 ## Current Status
 
-We have achieved a significant milestone in conformance testing: **1752 parity successes, 0 parity failures, 0 skipped**. This was verified by running the `conformance` test suite against the upstream React Compiler fixtures (`cargo run --release --bin conformance -- --update --verbose`). While still experimental, this demonstrates near-complete behavioral alignment with the original implementation.
+We have achieved **100% conformance parity** with the upstream React Compiler. This was verified by running the full conformance test suite against all upstream fixtures. While still experimental, this demonstrates complete behavioral alignment with the original implementation.
+
+## Installation
+
+```bash
+npm install oxc-plugin-react-compiler
+```
 
 > [!NOTE]
-> The npm package (`oxc-plugin-react-compiler`) is not yet published. To try it, build from source.
+> This plugin requires **Vite 8.0 or later**.
+
+## Usage
+
+```ts
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import { reactCompilerOxc } from 'oxc-plugin-react-compiler'
+
+export default defineConfig({
+  plugins: [
+    reactCompilerOxc({
+      // compilationMode: 'infer',  // 'infer' | 'annotation' | 'all'
+      // panicThreshold: 'none',    // 'none' | 'all'
+      // target: '19',              // React version to target
+      // sources: ['src/'],         // string[] | ((id: string) => boolean)
+    }),
+    react(),
+  ],
+})
+```
 
 ## Experimental Nature
 
@@ -27,14 +56,16 @@ This project serves as an experiment to explore AI-assisted development in compl
 
 - [x] Primitive implementation proving viability in Rust.
 - [x] Align behavior exactly with the upstream React Compiler (verified via conformance tests).
-- [x] Provide seamless integration with **Vite v8** via the included Vite plugin (`napi/vite.js`).
+- [x] Provide seamless integration with **Vite v8** via the included Vite plugin.
+- [x] Publish to npm for easy installation.
+- [ ] Source map support.
 - [ ] Future exploration: Add support for SWC alongside OXC.
 
 ## Architecture Overview
 
 - **`crates/oxc_react_compiler/`**: Core compiler implementation (HIR, inference, reactive scopes, optimization, codegen).
 - **`crates/oxc_react_compiler_napi/`**: N-API bindings to expose the Rust implementation to JavaScript.
-- **`napi/`**: JavaScript wrapper + Vite v8 plugin (`vite.js`).
+- **`napi/`**: JavaScript wrapper + Vite v8 plugin.
 - **`tasks/conformance/`**: Test harness ensuring parity with upstream React Compiler fixtures.
 
 ## Acknowledgements & Credits
@@ -48,6 +79,8 @@ This project wouldn't be possible without the incredible work of the following t
 ## Support the Project
 
 If you find this project interesting or useful, please consider giving it a ⭐ on GitHub! Your support helps show that there is interest in a high-performance, Rust-based React Compiler.
+
+Found a bug or unexpected behavior? Please [open an issue](https://github.com/eve0415/oxc-plugin-react-compiler/issues/new) — detailed reports help us improve.
 
 ## License
 
