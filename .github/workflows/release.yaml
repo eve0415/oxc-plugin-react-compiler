@@ -122,6 +122,7 @@ jobs:
           for pkg in napi/npm/*/; do
             echo "Publishing $pkg"
             pnpm publish "$pkg" --provenance --access public --no-git-checks || echo "::warning::Skipped $pkg (already published or error)"
+            sleep 10
           done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -135,9 +136,9 @@ jobs:
         run: |
           mkdir -p attestation-subjects
           for pkg in napi/npm/*/; do
-            pnpm pack "$pkg" --pack-destination attestation-subjects
+            pnpm pack "$pkg" --pack-destination attestation-subjects --ignore-scripts
           done
-          pnpm pack napi/ --pack-destination attestation-subjects
+          pnpm pack napi/ --pack-destination attestation-subjects --ignore-scripts
           echo "=== Attestation subjects ==="
           ls -l attestation-subjects/
 
