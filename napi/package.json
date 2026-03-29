@@ -1,6 +1,6 @@
 {
   "name": "oxc-plugin-react-compiler",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "Rust port of babel-plugin-react-compiler for OXC/Vite v8",
   "keywords": [
     "compiler",
