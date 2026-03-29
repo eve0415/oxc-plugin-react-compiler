@@ -1,6 +1,6 @@
 {
   "name": "@oxc-plugin-react-compiler/binding-linux-arm64-gnu",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Rust port of babel-plugin-react-compiler for OXC/Vite v8",
   "license": "MIT",
   "author": "eve0415",
