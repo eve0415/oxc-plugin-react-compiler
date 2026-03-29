@@ -15,20 +15,20 @@
   },
   "devDependencies": {
     "@babel/core": "7.29.0",
-    "@napi-rs/cli": "^3.5.1",
+    "@napi-rs/cli": "^3.6.0",
     "@rolldown/plugin-babel": "0.2.2",
     "@types/babel__core": "^7.20.5",
     "@types/node": "25.5.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "@typescript/native-preview": "7.0.0-dev.20260325.1",
+    "@typescript/native-preview": "7.0.0-dev.20260328.1",
     "acorn": "8.16.0",
     "babel-plugin-react-compiler": "1.0.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "vite": "npm:@voidzero-dev/vite-plus-core@0.1.13",
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.1.14",
     "vite-plus": "0.1.14",
-    "vitest": "npm:@voidzero-dev/vite-plus-test@0.1.13"
+    "vitest": "npm:@voidzero-dev/vite-plus-test@0.1.14"
   },
   "devEngines": {
     "packageManager": [
