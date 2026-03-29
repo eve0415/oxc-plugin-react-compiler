@@ -6,6 +6,12 @@ import { describe, expect, it } from 'vite-plus/test';
 
 import { collectJsFiles, compareExactJsOutputs, logExactMismatchSummary } from './utils/build-compare.js';
 
+const median = (arr: number[]): number => {
+  const s = [...arr].toSorted((a, b) => a - b);
+  return s.at(Math.floor(s.length / 2)) ?? 0;
+};
+const avg = (arr: number[]): number => arr.reduce((a, b) => a + b, 0) / arr.length;
+
 const fixtureDir = join(import.meta.dirname, 'fixtures/shadcn-app');
 
 const buildOnce = async (configFile: string): Promise<number> => {
@@ -39,6 +45,7 @@ describe('build comparison: shadcn-style app (~25 components)', { timeout: 120_0
     const babelTimes: number[] = [];
     const runs = 5;
 
+    /* eslint-disable no-await-in-loop -- sequential execution required for accurate benchmarking */
     for (let i = 0; i < runs; i++) {
       await rm(join(fixtureDir, 'dist-oxc'), { recursive: true, force: true });
       const t = await buildOnce('vite.config.oxc.ts');
@@ -50,12 +57,7 @@ describe('build comparison: shadcn-style app (~25 components)', { timeout: 120_0
       const t = await buildOnce('vite.config.babel.ts');
       babelTimes.push(t);
     }
-
-    const median = (arr: number[]) => {
-      const s = [...arr].toSorted((a, b) => a - b);
-      return s[Math.floor(s.length / 2)]!;
-    };
-    const avg = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length;
+    /* eslint-enable no-await-in-loop */
 
     const oxcMedian = median(oxcTimes);
     const babelMedian = median(babelTimes);

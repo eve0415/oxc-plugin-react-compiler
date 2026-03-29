@@ -26,7 +26,7 @@
   "type": "module",
   "imports": {
     "#binding": {
-      "types": "./dist/oxc-react-compiler.d.ts",
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
   },

@@ -77,8 +77,10 @@ const walk = (a: unknown, b: unknown, path: string, diffs: Difference[]): void =
       diffs.push({
         path,
         kind: 'value_mismatch',
+        /* eslint-disable @typescript-eslint/no-base-to-string -- guarded by typeof !== 'object' above */
         expected: String(a),
         actual: String(b),
+        /* eslint-enable @typescript-eslint/no-base-to-string */
       });
     }
     return;

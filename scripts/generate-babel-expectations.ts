@@ -3,12 +3,14 @@
  * babel-plugin-react-compiler on each fixture input.
  *
  * Usage:
- *   node scripts/generate-babel-expectations.mjs [--filter pattern]
+ *   node scripts/generate-babel-expectations.ts [--filter pattern]
  *
  * This reads each .jsx/.tsx file in tests/fixtures/compiler/,
  * parses pragmas from the first line, runs babel-plugin-react-compiler
  * with matching options, and writes the output to .expect.md files.
  */
+
+import type { ParserOptions } from '@babel/core';
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,20 +19,32 @@ import { transformSync } from '@babel/core';
 
 const FIXTURES_DIR = path.resolve('tests/fixtures/compiler');
 
+interface PragmaResult {
+  env: Record<string, boolean>;
+  pluginOpts: Record<string, string>;
+  isFlow: boolean;
+}
+
 // Parse pragma comments from the first line of a fixture file.
 // Returns an object with environment config options matching the upstream plugin.
-function parsePragmas(source) {
+const parsePragmas = (source: string): PragmaResult => {
   const firstLine = source.split('\n')[0] ?? '';
-  const env = {};
-  const pluginOpts = {};
+  const env: Record<string, boolean> = {};
+  const pluginOpts: Record<string, string> = {};
 
   // compilationMode
   const modeMatch = firstLine.match(/@compilationMode\(["']?(\w+)["']?\)/);
-  if (modeMatch) pluginOpts.compilationMode = modeMatch[1];
+  if (modeMatch?.[1] !== undefined) {
+    const [, modeValue] = modeMatch;
+    pluginOpts['compilationMode'] = modeValue;
+  }
 
   // panicThreshold
   const panicMatch = firstLine.match(/@panicThreshold\(["']?(\w+)["']?\)/);
-  if (panicMatch) pluginOpts.panicThreshold = panicMatch[1];
+  if (panicMatch?.[1] !== undefined) {
+    const [, panicValue] = panicMatch;
+    pluginOpts['panicThreshold'] = panicValue;
+  }
 
   // Boolean environment flags
   const boolFlags = [
@@ -74,15 +88,21 @@ function parsePragmas(source) {
   const isFlow = firstLine.includes('@flow');
 
   return { env, pluginOpts, isFlow };
+};
+
+interface BabelResult {
+  error: string | null;
+  code: string | null;
+  transformed: boolean;
 }
 
-function runBabel(filepath, source) {
+const runBabel = (filepath: string, source: string): BabelResult => {
   const { env, pluginOpts, isFlow } = parsePragmas(source);
 
   const ext = path.extname(filepath);
   const isTS = ext === '.ts' || ext === '.tsx';
 
-  const parserPlugins = ['jsx'];
+  const parserPlugins: NonNullable<ParserOptions['plugins']> = ['jsx'];
   if (isTS) parserPlugins.push('typescript');
   if (isFlow) parserPlugins.push('flow');
 
@@ -101,28 +121,18 @@ function runBabel(filepath, source) {
       sourceType: 'module',
     });
 
-    if (!result?.code) {
+    if (result?.code === undefined || result.code === null) {
       return { error: null, code: null, transformed: false };
     }
 
     return { error: null, code: result.code, transformed: true };
-  } catch (error) {
-    return { error: error.message, code: null, transformed: false };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { error: message, code: null, transformed: false };
   }
-}
+};
 
-function generateExpectMd(babelCode, originalSource) {
-  // Extract the first few comment lines as documentation
-  const lines = originalSource.split('\n');
-  const commentLines = [];
-  for (const line of lines) {
-    if (line.startsWith('//')) {
-      commentLines.push(line);
-    } else {
-      break;
-    }
-  }
-
+const generateExpectMd = (babelCode: string, originalSource: string): string => {
   let md = '';
 
   // Input section
@@ -140,13 +150,13 @@ function generateExpectMd(babelCode, originalSource) {
   md += '```\n';
 
   return md;
-}
+};
 
 // Main
-const filterArg = process.argv.find((a, i) => process.argv[i - 1] === '--filter');
+const filterArg = process.argv.find((_, i) => process.argv[i - 1] === '--filter');
 const dryRun = process.argv.includes('--dry-run');
 
-const files = fs.readdirSync(FIXTURES_DIR).filter(f => f.endsWith('.jsx') ?? f.endsWith('.tsx'));
+const files = fs.readdirSync(FIXTURES_DIR).filter(f => f.endsWith('.jsx') || f.endsWith('.tsx'));
 
 let processed = 0;
 let succeeded = 0;
@@ -156,7 +166,7 @@ let skipped = 0;
 for (const file of files) {
   const name = file.replace(/\.(jsx|tsx)$/, '');
 
-  if (filterArg && !name.includes(filterArg)) {
+  if (filterArg !== undefined && !name.includes(filterArg)) {
     skipped++;
     continue;
   }
@@ -175,13 +185,13 @@ for (const file of files) {
   const result = runBabel(filepath, source);
   processed++;
 
-  if (result.error) {
+  if (result.error !== null) {
     console.log(`ERROR: ${name} — ${result.error.split('\n')[0]}`);
     failed++;
     continue;
   }
 
-  if (!result.transformed || !result.code) {
+  if (!result.transformed || result.code === null) {
     console.log(`BAIL: ${name} — compiler did not transform`);
     failed++;
     continue;
@@ -191,7 +201,7 @@ for (const file of files) {
   const expectPath = path.join(FIXTURES_DIR, `${name}.expect.md`);
 
   if (dryRun) {
-    console.log(`WOULD WRITE: ${name} (${result.code.length} chars)`);
+    console.log(`WOULD WRITE: ${name} (${String(result.code.length)} chars)`);
   } else {
     fs.writeFileSync(expectPath, expectMd);
     console.log(`OK: ${name}`);
@@ -199,4 +209,4 @@ for (const file of files) {
   succeeded++;
 }
 
-console.log(`\nProcessed: ${processed}, OK: ${succeeded}, Failed: ${failed}, Skipped: ${skipped}`);
+console.log(`\nProcessed: ${String(processed)}, OK: ${String(succeeded)}, Failed: ${String(failed)}, Skipped: ${String(skipped)}`);

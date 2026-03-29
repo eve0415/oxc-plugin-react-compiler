@@ -88,8 +88,8 @@ jobs:
       - name: Run conformance suite
         run: cargo run --release --bin conformance
 
-  napi:
-    name: NAPI Build & Typecheck
+  check:
+    name: Check
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
@@ -107,11 +107,14 @@ jobs:
           cache: true
           run-install: true
 
-      - name: Build NAPI binding
-        run: vpx napi build --platform --release -p oxc_react_compiler_napi --package-json-path napi/package.json -o napi/dist
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # 5.0.0
 
-      - name: Typecheck
-        run: vp check --no-lint
+      - name: Build NAPI binding
+        run: pnpm exec napi build --platform --release -p oxc_react_compiler_napi --package-json-path napi/package.json -o napi/dist
+
+      - name: Run vp check
+        run: vp check
 
   audit:
     name: Audit
@@ -128,6 +131,9 @@ jobs:
           node-version-file: package.json
           cache: true
           run-install: true
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # 5.0.0
 
       - name: Audit dependencies
         run: pnpm audit --audit-level=high
@@ -147,19 +153,35 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1.15.4
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@06203676c62f0d3c765be3f2fcfbebbcb02d09f5 # v2.69.6
+        uses: taiki-e/install-action@a164de717a0ee9284c2d9db1c6016a4c339cd333 # v2.69.14
         with:
           tool: cargo-llvm-cov
 
       - name: Generate coverage
         run: |
           cargo llvm-cov --package oxc_react_compiler --no-report
-          cargo llvm-cov report --output-type text 2>&1 | tee coverage.txt
-          echo '## Coverage Report' > coverage.md
-          echo '' >> coverage.md
-          echo '```' >> coverage.md
-          cat coverage.txt >> coverage.md
-          echo '```' >> coverage.md
+          cargo llvm-cov report --text 2>&1 | tee coverage.txt
+          {
+            echo '## Coverage Report'
+            echo ''
+            echo '```'
+            cat coverage.txt
+            echo '```'
+          } > coverage.md
+          # Truncate if too large for GitHub's 65536 char comment limit
+          if [ "$(wc -c < coverage.md)" -gt 60000 ]; then
+            {
+              echo '## Coverage Report'
+              echo ''
+              echo '> Truncated to fit GitHub comment limits. See CI logs for full report.'
+              echo ''
+              echo '```'
+              head -2 coverage.txt
+              echo '  ...'
+              tail -2 coverage.txt
+              echo '```'
+            } > coverage.md
+          fi
 
       - name: Post coverage comment
         uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3.0.2
