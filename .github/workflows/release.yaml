@@ -110,6 +110,9 @@ jobs:
       - name: Move artifacts to platform packages
         run: pnpm exec napi artifacts --package-json-path napi/package.json --build-output-dir artifacts --npm-dir napi/npm
 
+      - name: Build Vite plugin
+        run: vp pack
+
       - name: Copy NAPI JS loader to dist
         run: cp artifacts/binding-aarch64-unknown-linux-gnu/index.js artifacts/binding-aarch64-unknown-linux-gnu/index.d.ts napi/dist/
 
@@ -118,10 +121,7 @@ jobs:
           echo "=== Platform packages ==="
           ls -lR napi/npm/
           echo "=== Dist ==="
-          ls -lR napi/dist/ || true
-
-      - name: Build Vite plugin
-        run: vp pack
+          ls -lR napi/dist/
 
       - name: Publish platform packages
         run: |
