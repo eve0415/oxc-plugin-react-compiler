@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "conformance"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "oxc_allocator",
  "oxc_ast",
@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "oxc_react_compiler"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "hmac",
  "indexmap",
@@ -688,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "oxc_react_compiler_napi"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "napi",
  "napi-build",
