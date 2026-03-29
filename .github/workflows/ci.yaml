@@ -161,11 +161,27 @@ jobs:
         run: |
           cargo llvm-cov --package oxc_react_compiler --no-report
           cargo llvm-cov report --text 2>&1 | tee coverage.txt
-          echo '## Coverage Report' > coverage.md
-          echo '' >> coverage.md
-          echo '```' >> coverage.md
-          cat coverage.txt >> coverage.md
-          echo '```' >> coverage.md
+          {
+            echo '## Coverage Report'
+            echo ''
+            echo '```'
+            cat coverage.txt
+            echo '```'
+          } > coverage.md
+          # Truncate if too large for GitHub's 65536 char comment limit
+          if [ "$(wc -c < coverage.md)" -gt 60000 ]; then
+            {
+              echo '## Coverage Report'
+              echo ''
+              echo '> Truncated to fit GitHub comment limits. See CI logs for full report.'
+              echo ''
+              echo '```'
+              head -2 coverage.txt
+              echo '  ...'
+              tail -2 coverage.txt
+              echo '```'
+            } > coverage.md
+          fi
 
       - name: Post coverage comment
         uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3.0.2
