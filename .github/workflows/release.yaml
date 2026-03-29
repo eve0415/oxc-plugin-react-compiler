@@ -105,7 +105,7 @@ jobs:
           echo "All 5 platform artifacts verified."
 
       - name: Move artifacts to platform packages
-        run: vpx napi artifacts --package-json-path napi/package.json --build-output-dir artifacts
+        run: pnpm exec napi artifacts --package-json-path napi/package.json --build-output-dir artifacts --npm-dir napi/npm
 
       - name: List artifacts
         run: |

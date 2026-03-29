@@ -8,7 +8,7 @@
     ]
   },
   "scripts": {
-    "prebuild": "napi build --platform --release --manifest-path ../crates/oxc_react_compiler_napi/Cargo.toml --cwd napi -o dist",
+    "prebuild": "pnpm exec napi build --platform --release -p oxc_react_compiler_napi --package-json-path napi/package.json -o napi/dist",
     "fix": "vp lint --type-aware --type-check --fix --fix-suggestions --fix-dangerously && vp fmt",
     "prepare": "vp config",
     "bump": "node scripts/bump-version.ts"
