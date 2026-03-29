@@ -33,7 +33,7 @@ export default defineConfig({
     },
   },
   lint: {
-    ignorePatterns: ['third_party/**', 'tests/fixtures/**'],
+    ignorePatterns: ['third_party/**', 'tests/fixtures/**', 'napi/dist/**'],
     plugins: ['eslint', 'typescript', 'unicorn', 'oxc', 'import', 'react', 'react-perf', 'jsx-a11y', 'vitest'],
     settings: {
       vitest: {

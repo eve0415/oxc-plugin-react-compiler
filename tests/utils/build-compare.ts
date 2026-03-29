@@ -45,13 +45,15 @@ export const normalizeJsChunkKey = (pathFromRoot: string): string => {
 };
 
 export const readJsOutputs = async (dir: string): Promise<Map<string, JsOutputFile>> => {
-  const outputs = new Map<string, JsOutputFile>();
-  for (const filePath of await collectJsFiles(dir)) {
-    const key = normalizeJsChunkKey(relative(dir, filePath));
-    const source = await readFile(filePath, 'utf8');
-    outputs.set(key, { key, path: filePath, source });
-  }
-  return outputs;
+  const files = await collectJsFiles(dir);
+  const entries = await Promise.all(
+    files.map(async filePath => {
+      const key = normalizeJsChunkKey(relative(dir, filePath));
+      const source = await readFile(filePath, 'utf8');
+      return [key, { key, path: filePath, source }] as const;
+    }),
+  );
+  return new Map(entries);
 };
 
 export const compareExactJsOutputs = async (expectedDir: string, actualDir: string): Promise<JsMismatchDiagnostic[]> => {

@@ -1,18 +1,19 @@
+import type { ParserOptions } from '@babel/core';
+
 import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 
 import { parseSync, transformSync } from '@babel/core';
-import babelPluginModule from 'babel-plugin-react-compiler';
+import BabelPluginReactCompiler from 'babel-plugin-react-compiler';
 import { describe, expect, it } from 'vite-plus/test';
 
-import { transform as oxcTransform } from '../napi/binding/dist/index.js';
+import { transform as oxcTransform } from '../napi/dist/index.js';
 
 import { compareAST } from './utils/ast-compare.js';
 
 const fixtureDir = join(import.meta.dirname, 'fixtures/compiler');
-const babelPlugin = babelPluginModule.default ?? babelPluginModule;
 
-const parserPluginsFor = (filePath: string): string[] => {
+const parserPluginsFor = (filePath: string): ParserOptions['plugins'] => {
   const ext = extname(filePath);
   if (ext === '.ts' || ext === '.tsx') return ['jsx', 'typescript'];
   return ['jsx'];
@@ -27,7 +28,7 @@ const transformFixture = async (filename: string) => {
     transformSync(source, {
       filename: fullPath,
       parserOpts: { plugins: parserPlugins },
-      plugins: [[babelPlugin, {}]],
+      plugins: [[BabelPluginReactCompiler, {}]],
       sourceType: 'module',
     })?.code ?? '';
 
