@@ -45,8 +45,10 @@ use instrumentation::{
     prepend_synthesized_default_param_cache_statements, try_lower_compiled_statement_ast,
     wrap_function_hook_guard_body, wrap_hook_guard_body,
 };
+#[cfg(test)]
+use postprocess::codegen_program;
 use postprocess::{
-    build_inserted_import_statement, build_runtime_import_merge_statement, codegen_program,
+    build_inserted_import_statement, build_runtime_import_merge_statement,
     codegen_program_with_source_map, compact_simple_jsx_object_attributes,
     fix_gating_ternary_fallback_arrow_jsx, fix_gating_ternary_line_breaks,
     fix_jsx_assignment_parens, fix_oxc_array_trailing_space,
@@ -372,8 +374,7 @@ fn try_emit_module(
         args.program.directives.clone_in(&allocator),
         body,
     );
-    let (mut code, raw_sourcemap) =
-        codegen_program_with_source_map(&program, Some(args.filename));
+    let (mut code, raw_sourcemap) = codegen_program_with_source_map(&program, Some(args.filename));
 
     // Track line count changes from post-processing for sourcemap adjustment.
     let mut line_delta: i32 = 0;

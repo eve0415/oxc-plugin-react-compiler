@@ -23,3 +23,6 @@ oxc_syntax = { workspace = true }
 indexmap = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

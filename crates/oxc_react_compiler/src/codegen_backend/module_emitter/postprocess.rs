@@ -725,4 +725,77 @@ mod tests {
             parsed.errors
         );
     }
+
+    #[test]
+    fn sourcemap_is_generated() {
+        let result =
+            compile_to_result("function Component(props) { return <div>{props.x}</div>; }");
+        assert!(result.transformed, "should be transformed");
+        assert!(
+            result.map.is_some(),
+            "sourcemap should be generated for transformed code"
+        );
+    }
+
+    #[test]
+    fn sourcemap_is_valid_json() {
+        let result = compile_to_result(
+            "function Component(props) { const x = props.a + 1; return <div>{x}</div>; }",
+        );
+        let map_json = result.map.as_ref().expect("sourcemap should exist");
+        let parsed: serde_json::Value =
+            serde_json::from_str(map_json).expect("sourcemap should be valid JSON");
+        assert_eq!(parsed["version"], 3, "sourcemap version should be 3");
+        assert!(
+            parsed["mappings"].is_string(),
+            "sourcemap should have mappings field"
+        );
+        assert!(
+            parsed["sources"].is_array(),
+            "sourcemap should have sources array"
+        );
+    }
+
+    #[test]
+    fn sourcemap_contains_source_content() {
+        let source = "function Component(props) { return <div>{props.x}</div>; }";
+        let result = compile_to_result(source);
+        let map_json = result.map.as_ref().expect("sourcemap should exist");
+        let parsed: serde_json::Value =
+            serde_json::from_str(map_json).expect("sourcemap should be valid JSON");
+        let sources_content = parsed["sourcesContent"]
+            .as_array()
+            .expect("should have sourcesContent");
+        assert!(
+            !sources_content.is_empty(),
+            "sourcesContent should not be empty"
+        );
+        assert_eq!(
+            sources_content[0].as_str().unwrap(),
+            source,
+            "sourcesContent should contain the original source"
+        );
+    }
+
+    #[test]
+    fn sourcemap_has_nonempty_mappings() {
+        let result = compile_to_result(
+            "function Component(props) { const x = props.a + 1; return <div>{x}</div>; }",
+        );
+        let map_json = result.map.as_ref().expect("sourcemap should exist");
+        let parsed: serde_json::Value = serde_json::from_str(map_json).unwrap();
+        let mappings = parsed["mappings"].as_str().unwrap();
+        assert!(
+            !mappings.is_empty(),
+            "sourcemap mappings should not be empty"
+        );
+    }
+
+    #[test]
+    fn no_sourcemap_when_not_transformed() {
+        // A function that doesn't look like a component shouldn't be transformed.
+        let result = compile_to_result("function helper(x) { return x + 1; }");
+        assert!(!result.transformed);
+        assert!(result.map.is_none(), "no sourcemap for untransformed code");
+    }
 }
