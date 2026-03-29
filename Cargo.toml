@@ -27,7 +27,7 @@ oxc_syntax = { version = "0.122.0" }
 
 indexmap = "2.13.0"
 hmac = "0.12.1"
-sha2 = "0.11.0"
+sha2 = "0.10.9"
 regex = "1.12.3"
 rayon = "1.11.0"
 serde = { version = "1.0.228", features = ["derive"] }
