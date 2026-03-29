@@ -52,6 +52,8 @@ pub enum SourceLocation {
 pub struct SourceRange {
     pub start: SourcePosition,
     pub end: SourcePosition,
+    /// Original OXC byte-offset span from the parser, preserved for sourcemap generation.
+    pub original_span: oxc_span::Span,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]

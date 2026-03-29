@@ -6385,11 +6385,13 @@ pub fn span_to_loc(span: Span) -> hir::SourceLocation {
                     line: 0,
                     column: span.end,
                 },
+                original_span: span,
             });
         }
         hir::SourceLocation::Source(hir::SourceRange {
             start: offset_to_line_col(span.start, &line_starts),
             end: offset_to_line_col(span.end, &line_starts),
+            original_span: span,
         })
     })
 }

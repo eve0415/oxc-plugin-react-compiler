@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use oxc_allocator::{Allocator, CloneIn};
 use oxc_ast::{AstBuilder, NONE, ast};
 use oxc_parser::Parser;
-use oxc_span::SPAN;
+use oxc_span::{SPAN, Span};
 use oxc_syntax::identifier::is_identifier_name;
 use oxc_syntax::number::NumberBase;
 use oxc_syntax::operator::{AssignmentOperator, BinaryOperator, LogicalOperator};
@@ -189,9 +189,25 @@ struct CodegenContext<'a> {
     /// DeclarationIds corresponding to JSXText instruction values, used to
     /// distinguish JSXText from StringLiteral when lowering JSX children.
     jsx_text_decl_ids: HashSet<DeclarationId>,
+    /// Original source span of the instruction currently being codegen'd.
+    /// Used to set spans on generated AST nodes for sourcemap generation.
+    current_span: Span,
+}
+
+/// Convert a `SourceLocation` to an OXC `Span` for sourcemap generation.
+fn loc_to_span(loc: &SourceLocation) -> Span {
+    match loc {
+        SourceLocation::Source(range) => range.original_span,
+        SourceLocation::Generated => SPAN,
+    }
 }
 
 impl<'a> CodegenContext<'a> {
+    /// Return the current source span for generated AST nodes.
+    fn span(&self) -> Span {
+        self.current_span
+    }
+
     /// Resolve an identifier's display name, checking decl_names overrides first.
     /// Records an invariant error if the identifier is unnamed, matching upstream
     /// `convertIdentifier()` invariant (CompilerError.ts:2922-2939).
@@ -234,11 +250,11 @@ impl<'a> CodegenContext<'a> {
     fn cache_access(&self, index: u32) -> ast::Expression<'a> {
         ast::Expression::from(
             self.builder.member_expression_computed(
-                SPAN,
+                self.span(),
                 self.builder
-                    .expression_identifier(SPAN, self.builder.ident(&self.cache_binding)),
+                    .expression_identifier(self.span(), self.builder.ident(&self.cache_binding)),
                 self.builder.expression_numeric_literal(
-                    SPAN,
+                    self.span(),
                     f64::from(index),
                     None,
                     NumberBase::Decimal,
@@ -250,15 +266,15 @@ impl<'a> CodegenContext<'a> {
 
     fn cache_assign(&self, index: u32, value: ast::Expression<'a>) -> ast::Expression<'a> {
         self.builder.expression_assignment(
-            SPAN,
+            self.span(),
             AssignmentOperator::Assign,
             ast::AssignmentTarget::from(ast::SimpleAssignmentTarget::from(
                 self.builder.member_expression_computed(
-                    SPAN,
+                    self.span(),
                     self.builder
-                        .expression_identifier(SPAN, self.builder.ident(&self.cache_binding)),
+                        .expression_identifier(self.span(), self.builder.ident(&self.cache_binding)),
                     self.builder.expression_numeric_literal(
-                        SPAN,
+                        self.span(),
                         f64::from(index),
                         None,
                         NumberBase::Decimal,
@@ -272,20 +288,20 @@ impl<'a> CodegenContext<'a> {
 
     fn sentinel_expr(&self) -> ast::Expression<'a> {
         self.builder.expression_call(
-            SPAN,
+            self.span(),
             ast::Expression::from(
                 self.builder.member_expression_static(
-                    SPAN,
+                    self.span(),
                     self.builder
-                        .expression_identifier(SPAN, self.builder.ident("Symbol")),
-                    self.builder.identifier_name(SPAN, "for"),
+                        .expression_identifier(self.span(), self.builder.ident("Symbol")),
+                    self.builder.identifier_name(self.span(), "for"),
                     false,
                 ),
             ),
             NONE,
             self.builder
                 .vec1(ast::Argument::from(self.builder.expression_string_literal(
-                    SPAN,
+                    self.span(),
                     self.builder.atom(MEMO_CACHE_SENTINEL),
                     None,
                 ))),
@@ -295,20 +311,20 @@ impl<'a> CodegenContext<'a> {
 
     fn early_return_sentinel_expr(&self) -> ast::Expression<'a> {
         self.builder.expression_call(
-            SPAN,
+            self.span(),
             ast::Expression::from(
                 self.builder.member_expression_static(
-                    SPAN,
+                    self.span(),
                     self.builder
-                        .expression_identifier(SPAN, self.builder.ident("Symbol")),
-                    self.builder.identifier_name(SPAN, "for"),
+                        .expression_identifier(self.span(), self.builder.ident("Symbol")),
+                    self.builder.identifier_name(self.span(), "for"),
                     false,
                 ),
             ),
             NONE,
             self.builder
                 .vec1(ast::Argument::from(self.builder.expression_string_literal(
-                    SPAN,
+                    self.span(),
                     self.builder.atom(EARLY_RETURN_SENTINEL),
                     None,
                 ))),
@@ -318,7 +334,7 @@ impl<'a> CodegenContext<'a> {
 
     fn ident_expr(&self, name: &str) -> ast::Expression<'a> {
         self.builder
-            .expression_identifier(SPAN, self.builder.ident(name))
+            .expression_identifier(self.span(), self.builder.ident(name))
     }
 
     /// Create an expression statement that acts as a comment marker.
@@ -327,9 +343,9 @@ impl<'a> CodegenContext<'a> {
     fn memo_comment_stmt(&self, text: &str) -> ast::Statement<'a> {
         let marker = format!("{MEMO_COMMENT_MARKER}:{text}");
         self.builder.statement_expression(
-            SPAN,
+            self.span(),
             self.builder
-                .expression_string_literal(SPAN, self.builder.atom(&marker), None),
+                .expression_string_literal(self.span(), self.builder.atom(&marker), None),
         )
     }
 
@@ -406,6 +422,7 @@ pub fn codegen_reactive_function<'a>(
         force_inline_decls: HashSet::new(),
         codegen_error: None,
         jsx_text_decl_ids: HashSet::new(),
+        current_span: SPAN,
     };
 
     // Pre-collect preferred names: scan body for named references to
@@ -710,7 +727,7 @@ fn codegen_block_no_reset<'a>(
                     )
                     && let Some(expr) = codegen_place(cx, &lvalue.place)
                 {
-                    stmts.push(cx.builder.statement_expression(SPAN, expr));
+                    stmts.push(cx.builder.statement_expression(cx.span(), expr));
                 }
             }
             ReactiveStatement::Terminal(term_stmt) => {
@@ -753,21 +770,21 @@ fn codegen_block_no_reset<'a>(
                             // TryStatement: wrap in block to preserve
                             // catch binding lexical scope
                             ast::Statement::TryStatement(_) => {
-                                cx.builder.statement_block(SPAN, cx.builder.vec1(stmt))
+                                cx.builder.statement_block(cx.span(), cx.builder.vec1(stmt))
                             }
                             // Other single statement: use directly
                             _ => stmt,
                         }
                     } else {
                         cx.builder.statement_block(
-                            SPAN,
+                            cx.span(),
                             cx.builder.vec_from_iter(terminal_stmts.drain(..)),
                         )
                     };
                     let labeled = cx.builder.statement_labeled(
-                        SPAN,
+                        cx.span(),
                         cx.builder
-                            .label_identifier(SPAN, crate_label_name(label.id)),
+                            .label_identifier(cx.span(), crate_label_name(label.id)),
                         body,
                     );
                     terminal_stmts.insert(0, labeled);
@@ -987,9 +1004,9 @@ fn try_fuse_destructure_into_call<'a>(
     let rhs_expr = codegen_place(cx, value)?;
     let target = build_assignment_target_from_pattern(cx, &lvalue.pattern)?;
     let assign_expr = cx.builder.expression_parenthesized(
-        SPAN,
+        cx.span(),
         cx.builder
-            .expression_assignment(SPAN, AssignmentOperator::Assign, target, rhs_expr),
+            .expression_assignment(cx.span(), AssignmentOperator::Assign, target, rhs_expr),
     );
 
     // Helper: codegen a single argument, substituting at the fused index.
@@ -1005,7 +1022,7 @@ fn try_fuse_destructure_into_call<'a>(
                 Argument::Place(place) => Some(ast::Argument::from(codegen_place(cx, place)?)),
                 Argument::Spread(place) => Some(
                     cx.builder
-                        .argument_spread_element(SPAN, codegen_place(cx, place)?),
+                        .argument_spread_element(cx.span(), codegen_place(cx, place)?),
                 ),
             }
         }
@@ -1027,7 +1044,7 @@ fn try_fuse_destructure_into_call<'a>(
                 arg_exprs.push(codegen_arg_or_fused(cx, idx, arg, &assign_expr)?);
             }
             cx.builder
-                .expression_call(SPAN, callee, NONE, arg_exprs, *call_optional)
+                .expression_call(cx.span(), callee, NONE, arg_exprs, *call_optional)
         }
         InstructionValue::CallExpression {
             callee,
@@ -1042,12 +1059,12 @@ fn try_fuse_destructure_into_call<'a>(
                 arg_exprs.push(codegen_arg_or_fused(cx, idx, arg, &assign_expr)?);
             }
             cx.builder
-                .expression_call(SPAN, callee_expr, NONE, arg_exprs, *optional)
+                .expression_call(cx.span(), callee_expr, NONE, arg_exprs, *optional)
         }
         _ => return None,
     };
 
-    Some(cx.builder.statement_expression(SPAN, call_expr))
+    Some(cx.builder.statement_expression(cx.span(), call_expr))
 }
 
 // ---------------------------------------------------------------------------
@@ -1058,6 +1075,8 @@ fn codegen_instruction<'a>(
     cx: &mut CodegenContext<'a>,
     instr: &ReactiveInstruction,
 ) -> Option<ast::Statement<'a>> {
+    // Set current span from instruction's source location for sourcemap generation.
+    cx.current_span = loc_to_span(&instr.loc);
     // ── Statement-level variants (self-contained, use InstructionValue's lvalue) ──
     match &instr.value {
         InstructionValue::DeclareLocal { lvalue, .. }
@@ -1074,12 +1093,12 @@ fn codegen_instruction<'a>(
                 let rhs = codegen_place(cx, value)?;
                 let assign_name = identifier_name(&lvalue.place.identifier);
                 let assign_expr = cx.builder.expression_assignment(
-                    SPAN,
+                    cx.span(),
                     AssignmentOperator::Assign,
                     ast::AssignmentTarget::from(
                         cx.builder
                             .simple_assignment_target_assignment_target_identifier(
-                                SPAN,
+                                cx.span(),
                                 cx.builder.ident(&assign_name),
                             ),
                     ),
@@ -1101,12 +1120,12 @@ fn codegen_instruction<'a>(
                 let rhs = codegen_place(cx, value)?;
                 let assign_name = identifier_name(&lvalue.place.identifier);
                 let assign_expr = cx.builder.expression_assignment(
-                    SPAN,
+                    cx.span(),
                     AssignmentOperator::Assign,
                     ast::AssignmentTarget::from(
                         cx.builder
                             .simple_assignment_target_assignment_target_identifier(
-                                SPAN,
+                                cx.span(),
                                 cx.builder.ident(&assign_name),
                             ),
                     ),
@@ -1135,7 +1154,7 @@ fn codegen_instruction<'a>(
             return codegen_destructure(cx, lvalue, value);
         }
         InstructionValue::Debugger { .. } => {
-            return Some(cx.builder.statement_debugger(SPAN));
+            return Some(cx.builder.statement_debugger(cx.span()));
         }
         InstructionValue::StartMemoize { .. } | InstructionValue::FinishMemoize { .. } => {
             return None;
@@ -1161,7 +1180,7 @@ fn codegen_instruction<'a>(
         if is_pure_expression(&expr) {
             return None;
         }
-        return Some(cx.builder.statement_expression(SPAN, expr));
+        return Some(cx.builder.statement_expression(cx.span(), expr));
     };
 
     let decl_id = lvalue.identifier.declaration_id;
@@ -1228,7 +1247,7 @@ fn codegen_instruction_value<'a>(
             right,
             ..
         } => Some(cx.builder.expression_binary(
-            SPAN,
+            cx.span(),
             codegen_place(cx, left)?,
             lower_binary_operator(*operator),
             codegen_place(cx, right)?,
@@ -1236,7 +1255,7 @@ fn codegen_instruction_value<'a>(
         InstructionValue::UnaryExpression {
             operator, value, ..
         } => Some(cx.builder.expression_unary(
-            SPAN,
+            cx.span(),
             lower_unary_operator(*operator),
             codegen_place(cx, value)?,
         )),
@@ -1246,7 +1265,7 @@ fn codegen_instruction_value<'a>(
             right,
             ..
         } => Some(cx.builder.expression_logical(
-            SPAN,
+            cx.span(),
             codegen_place(cx, left)?,
             lower_logical_operator(*operator),
             maybe_parenthesize_jsx(cx.builder, codegen_place(cx, right)?),
@@ -1257,7 +1276,7 @@ fn codegen_instruction_value<'a>(
             alternate,
             ..
         } => Some(cx.builder.expression_conditional(
-            SPAN,
+            cx.span(),
             codegen_place(cx, test)?,
             maybe_parenthesize_jsx(cx.builder, codegen_place(cx, consequent)?),
             maybe_parenthesize_jsx(cx.builder, codegen_place(cx, alternate)?),
@@ -1273,7 +1292,7 @@ fn codegen_instruction_value<'a>(
                 && !cx.options.disable_memoization_features
                 && expr_is_hook_name(&callee_expr);
             let call_expr = cx.builder.expression_call(
-                SPAN,
+                cx.span(),
                 callee_expr,
                 NONE,
                 codegen_arguments(cx, args)?,
@@ -1286,7 +1305,7 @@ fn codegen_instruction_value<'a>(
             }
         }
         InstructionValue::NewExpression { callee, args, .. } => Some(cx.builder.expression_new(
-            SPAN,
+            cx.span(),
             codegen_place(cx, callee)?,
             NONE,
             codegen_arguments(cx, args)?,
@@ -1308,7 +1327,7 @@ fn codegen_instruction_value<'a>(
                 && !cx.options.disable_memoization_features
                 && method_property_is_hook_name(&callee_expr);
             let call_expr = cx.builder.expression_call(
-                SPAN,
+                cx.span(),
                 callee_expr,
                 NONE,
                 codegen_arguments(cx, args)?,
@@ -1329,21 +1348,21 @@ fn codegen_instruction_value<'a>(
             let inner = codegen_place(cx, value)?;
             let ts_type = parse_ts_type(cx.allocator, &cx.builder, type_annotation);
             match type_annotation_kind {
-                TypeAnnotationKind::As => Some(cx.builder.expression_ts_as(SPAN, inner, ts_type)),
+                TypeAnnotationKind::As => Some(cx.builder.expression_ts_as(cx.span(), inner, ts_type)),
                 TypeAnnotationKind::Satisfies => {
-                    Some(cx.builder.expression_ts_satisfies(SPAN, inner, ts_type))
+                    Some(cx.builder.expression_ts_satisfies(cx.span(), inner, ts_type))
                 }
                 TypeAnnotationKind::Cast => {
                     // Flow cast: emit `__REACT_COMPILER_FLOW_CAST__<T>(value)`.
                     // module_emitter restores this to `(value: T)` syntax.
                     let type_args = cx
                         .builder
-                        .alloc_ts_type_parameter_instantiation(SPAN, cx.builder.vec1(ts_type));
+                        .alloc_ts_type_parameter_instantiation(cx.span(), cx.builder.vec1(ts_type));
                     Some(
                         cx.builder.expression_call(
-                            SPAN,
+                            cx.span(),
                             cx.builder.expression_identifier(
-                                SPAN,
+                                cx.span(),
                                 cx.builder.ident(FLOW_CAST_MARKER_HELPER),
                             ),
                             Some(type_args),
@@ -1356,11 +1375,11 @@ fn codegen_instruction_value<'a>(
         }
         InstructionValue::ArrayExpression { elements, .. } => Some(
             cx.builder
-                .expression_array(SPAN, codegen_array_elements(cx, elements)?),
+                .expression_array(cx.span(), codegen_array_elements(cx, elements)?),
         ),
         InstructionValue::ObjectExpression { properties, .. } => Some(
             cx.builder
-                .expression_object(SPAN, codegen_object_properties(cx, properties)?),
+                .expression_object(cx.span(), codegen_object_properties(cx, properties)?),
         ),
         InstructionValue::TemplateLiteral {
             quasis, subexprs, ..
@@ -1371,11 +1390,11 @@ fn codegen_instruction_value<'a>(
             }
             Some(
                 cx.builder.expression_template_literal(
-                    SPAN,
+                    cx.span(),
                     cx.builder
                         .vec_from_iter(quasis.iter().enumerate().map(|(index, quasi)| {
                             cx.builder.template_element(
-                                SPAN,
+                                cx.span(),
                                 ast::TemplateElementValue {
                                     raw: cx.builder.atom(&quasi.raw),
                                     cooked: quasi.cooked.as_deref().map(|c| cx.builder.atom(c)),
@@ -1472,7 +1491,7 @@ fn codegen_instruction_value<'a>(
             )
         }
         InstructionValue::JSXText { value, .. } => Some(cx.builder.expression_string_literal(
-            SPAN,
+            cx.span(),
             cx.builder.atom(value),
             None,
         )),
@@ -1499,7 +1518,7 @@ fn codegen_instruction_value<'a>(
             ..
         } => Some(ast::Expression::from(
             cx.builder.member_expression_computed(
-                SPAN,
+                cx.span(),
                 codegen_place(cx, object)?,
                 codegen_place(cx, property)?,
                 *optional,
@@ -1521,7 +1540,7 @@ fn codegen_instruction_value<'a>(
                     &mut HashSet::new(),
                 )?;
             Some(cx.builder.expression_assignment(
-                SPAN,
+                cx.span(),
                 AssignmentOperator::Assign,
                 target,
                 codegen_place(cx, value)?,
@@ -1533,11 +1552,11 @@ fn codegen_instruction_value<'a>(
             value,
             ..
         } => Some(cx.builder.expression_assignment(
-            SPAN,
+            cx.span(),
             AssignmentOperator::Assign,
             ast::AssignmentTarget::from(ast::SimpleAssignmentTarget::from(
                 cx.builder.member_expression_computed(
-                    SPAN,
+                    cx.span(),
                     codegen_place(cx, object)?,
                     codegen_place(cx, property)?,
                     false,
@@ -1550,7 +1569,7 @@ fn codegen_instruction_value<'a>(
         } => {
             let cx_ptr = cx as *mut CodegenContext<'a>;
             Some(cx.builder.expression_unary(
-                SPAN,
+                cx.span(),
                 oxc_syntax::operator::UnaryOperator::Delete,
                 super::super::codegen_backend::hir_to_ast::lower_property_load(
                     cx.builder,
@@ -1565,10 +1584,10 @@ fn codegen_instruction_value<'a>(
         InstructionValue::ComputedDelete {
             object, property, ..
         } => Some(cx.builder.expression_unary(
-            SPAN,
+            cx.span(),
             oxc_syntax::operator::UnaryOperator::Delete,
             ast::Expression::from(cx.builder.member_expression_computed(
-                SPAN,
+                cx.span(),
                 codegen_place(cx, object)?,
                 codegen_place(cx, property)?,
                 false,
@@ -1576,12 +1595,12 @@ fn codegen_instruction_value<'a>(
         )),
         InstructionValue::StoreGlobal { name, value, .. } => Some(
             cx.builder.expression_assignment(
-                SPAN,
+                cx.span(),
                 AssignmentOperator::Assign,
                 ast::AssignmentTarget::from(
                     cx.builder
                         .simple_assignment_target_assignment_target_identifier(
-                            SPAN,
+                            cx.span(),
                             cx.builder.ident(name),
                         ),
                 ),
@@ -1593,7 +1612,7 @@ fn codegen_instruction_value<'a>(
         } => {
             let target = codegen_simple_assignment_target(cx, lvalue)?;
             Some(cx.builder.expression_update(
-                SPAN,
+                cx.span(),
                 lower_update_operator(*operation),
                 true,
                 target,
@@ -1604,7 +1623,7 @@ fn codegen_instruction_value<'a>(
         } => {
             let target = codegen_simple_assignment_target(cx, lvalue)?;
             Some(cx.builder.expression_update(
-                SPAN,
+                cx.span(),
                 lower_update_operator(*operation),
                 false,
                 target,
@@ -1619,16 +1638,16 @@ fn codegen_instruction_value<'a>(
                 },
                 flags: re_flags,
             };
-            Some(cx.builder.expression_reg_exp_literal(SPAN, regex, None))
+            Some(cx.builder.expression_reg_exp_literal(cx.span(), regex, None))
         }
         InstructionValue::TaggedTemplateExpression {
             tag, raw, cooked, ..
         } => {
             let tag_expr = codegen_place(cx, tag)?;
             let quasi = cx.builder.template_literal(
-                SPAN,
+                cx.span(),
                 cx.builder.vec1(cx.builder.template_element(
-                    SPAN,
+                    cx.span(),
                     ast::TemplateElementValue {
                         raw: cx.builder.atom(raw),
                         cooked: cooked.as_ref().map(|v| cx.builder.atom(v)),
@@ -1640,11 +1659,11 @@ fn codegen_instruction_value<'a>(
             );
             Some(
                 cx.builder
-                    .expression_tagged_template(SPAN, tag_expr, NONE, quasi),
+                    .expression_tagged_template(cx.span(), tag_expr, NONE, quasi),
             )
         }
         InstructionValue::Await { value, .. } => {
-            Some(cx.builder.expression_await(SPAN, codegen_place(cx, value)?))
+            Some(cx.builder.expression_await(cx.span(), codegen_place(cx, value)?))
         }
         InstructionValue::GetIterator { collection, .. } => codegen_place(cx, collection),
         InstructionValue::IteratorNext { collection, .. } => codegen_place(cx, collection),
@@ -1696,12 +1715,12 @@ fn codegen_instruction_value<'a>(
                             rhs.map(|rhs_expr| {
                                 let name = identifier_name(&store_lv.place.identifier);
                                 cx.builder.expression_assignment(
-                                    SPAN,
+                                    cx.span(),
                                     AssignmentOperator::Assign,
                                     ast::AssignmentTarget::from(
                                         cx.builder
                                             .simple_assignment_target_assignment_target_identifier(
-                                                SPAN,
+                                                cx.span(),
                                                 cx.builder.ident(&name),
                                             ),
                                     ),
@@ -1802,7 +1821,7 @@ fn codegen_instruction_value<'a>(
                 } else {
                     Some(
                         cx.builder
-                            .expression_sequence(SPAN, cx.builder.vec_from_iter(prefix_exprs)),
+                            .expression_sequence(cx.span(), cx.builder.vec_from_iter(prefix_exprs)),
                     )
                 }
             } else {
@@ -1815,7 +1834,7 @@ fn codegen_instruction_value<'a>(
                     prefix_exprs.push(final_expr);
                     Some(
                         cx.builder
-                            .expression_sequence(SPAN, cx.builder.vec_from_iter(prefix_exprs)),
+                            .expression_sequence(cx.span(), cx.builder.vec_from_iter(prefix_exprs)),
                     )
                 }
             }
@@ -1830,13 +1849,13 @@ fn codegen_instruction_value<'a>(
             Some(match expr {
                 ast::Expression::StaticMemberExpression(m) => cx
                     .builder
-                    .expression_chain(SPAN, ast::ChainElement::StaticMemberExpression(m)),
+                    .expression_chain(cx.span(), ast::ChainElement::StaticMemberExpression(m)),
                 ast::Expression::ComputedMemberExpression(m) => cx
                     .builder
-                    .expression_chain(SPAN, ast::ChainElement::ComputedMemberExpression(m)),
+                    .expression_chain(cx.span(), ast::ChainElement::ComputedMemberExpression(m)),
                 ast::Expression::CallExpression(c) => cx
                     .builder
-                    .expression_chain(SPAN, ast::ChainElement::CallExpression(c)),
+                    .expression_chain(cx.span(), ast::ChainElement::CallExpression(c)),
                 other => other,
             })
         }
@@ -1846,18 +1865,18 @@ fn codegen_instruction_value<'a>(
             right,
             ..
         } => Some(cx.builder.expression_logical(
-            SPAN,
+            cx.span(),
             codegen_instruction_value(cx, left)?,
             lower_logical_operator(*operator),
             codegen_instruction_value(cx, right)?,
         )),
         InstructionValue::MetaProperty { meta, property, .. } => Some(
             cx.builder.expression_meta_property(
-                SPAN,
+                cx.span(),
                 cx.builder
-                    .identifier_name(SPAN, cx.builder.ident(meta.as_str())),
+                    .identifier_name(cx.span(), cx.builder.ident(meta.as_str())),
                 cx.builder
-                    .identifier_name(SPAN, cx.builder.ident(property.as_str())),
+                    .identifier_name(cx.span(), cx.builder.ident(property.as_str())),
             ),
         ),
         // Statement-level variants handled in codegen_instruction before reaching here.
@@ -1892,23 +1911,23 @@ fn codegen_declare<'a>(cx: &mut CodegenContext<'a>, lvalue: &LValue) -> Option<a
             decl_id,
         )
         .map(|js_value: String| match js_value.as_str() {
-            "null" => cx.builder.expression_null_literal(SPAN),
+            "null" => cx.builder.expression_null_literal(cx.span()),
             "undefined" => cx
                 .builder
-                .expression_identifier(SPAN, cx.builder.ident("undefined")),
-            "true" => cx.builder.expression_boolean_literal(SPAN, true),
-            "false" => cx.builder.expression_boolean_literal(SPAN, false),
+                .expression_identifier(cx.span(), cx.builder.ident("undefined")),
+            "true" => cx.builder.expression_boolean_literal(cx.span(), true),
+            "false" => cx.builder.expression_boolean_literal(cx.span(), false),
             s => {
                 if let Ok(n) = s.parse::<f64>() {
                     cx.builder.expression_numeric_literal(
-                        SPAN,
+                        cx.span(),
                         n,
                         None,
                         oxc_syntax::number::NumberBase::Decimal,
                     )
                 } else {
                     cx.builder
-                        .expression_string_literal(SPAN, cx.builder.atom(s), None)
+                        .expression_string_literal(cx.span(), cx.builder.atom(s), None)
                 }
             }
         });
@@ -1972,7 +1991,7 @@ fn codegen_store<'a>(
         {
             if let ast::Expression::FunctionExpression(func_alloc) = expr {
                 let mut func = func_alloc.unbox();
-                func.id = Some(cx.builder.binding_identifier(SPAN, cx.builder.ident(&name)));
+                func.id = Some(cx.builder.binding_identifier(cx.span(), cx.builder.ident(&name)));
                 func.r#type = ast::FunctionType::FunctionDeclaration;
                 cx.declared.insert(id);
                 Some(ast::Statement::FunctionDeclaration(cx.builder.alloc(func)))
@@ -2023,10 +2042,10 @@ fn codegen_destructure<'a>(
         let pattern = build_binding_pattern_from_pattern(cx, &lvalue.pattern)?;
         Some(ast::Statement::VariableDeclaration(
             cx.builder.alloc_variable_declaration(
-                SPAN,
+                cx.span(),
                 kind,
                 cx.builder.vec1(cx.builder.variable_declarator(
-                    SPAN,
+                    cx.span(),
                     kind,
                     pattern,
                     NONE,
@@ -2041,9 +2060,9 @@ fn codegen_destructure<'a>(
         let target = build_assignment_target_from_pattern(cx, &lvalue.pattern)?;
         Some(
             cx.builder.statement_expression(
-                SPAN,
+                cx.span(),
                 cx.builder
-                    .expression_assignment(SPAN, AssignmentOperator::Assign, target, rhs),
+                    .expression_assignment(cx.span(), AssignmentOperator::Assign, target, rhs),
             ),
         )
     }
@@ -2067,7 +2086,7 @@ fn build_binding_pattern_from_pattern<'a>(
                         cx.declared.insert(place.identifier.id);
                         elements.push(Some(
                             cx.builder
-                                .binding_pattern_binding_identifier(SPAN, cx.builder.ident(&name)),
+                                .binding_pattern_binding_identifier(cx.span(), cx.builder.ident(&name)),
                         ));
                     }
                     ArrayElement::Spread(place) => {
@@ -2078,9 +2097,9 @@ fn build_binding_pattern_from_pattern<'a>(
                         cx.declared.insert(place.identifier.id);
                         rest =
                             Some(cx.builder.alloc_binding_rest_element(
-                                SPAN,
+                                cx.span(),
                                 cx.builder.binding_pattern_binding_identifier(
-                                    SPAN,
+                                    cx.span(),
                                     cx.builder.ident(&name),
                                 ),
                             ));
@@ -2095,7 +2114,7 @@ fn build_binding_pattern_from_pattern<'a>(
             }
             Some(
                 cx.builder
-                    .binding_pattern_array_pattern(SPAN, elements, rest),
+                    .binding_pattern_array_pattern(cx.span(), elements, rest),
             )
         }
         Pattern::Object(obj) => {
@@ -2113,10 +2132,10 @@ fn build_binding_pattern_from_pattern<'a>(
                         // Never use shorthand — upstream Babel always emits
                         // explicit `key: value` pairs in destructuring patterns.
                         properties.push(cx.builder.binding_property(
-                            SPAN,
+                            cx.span(),
                             key,
                             cx.builder.binding_pattern_binding_identifier(
-                                SPAN,
+                                cx.span(),
                                 cx.builder.ident(&target_name),
                             ),
                             false,
@@ -2131,9 +2150,9 @@ fn build_binding_pattern_from_pattern<'a>(
                         cx.declared.insert(place.identifier.id);
                         rest =
                             Some(cx.builder.alloc_binding_rest_element(
-                                SPAN,
+                                cx.span(),
                                 cx.builder.binding_pattern_binding_identifier(
-                                    SPAN,
+                                    cx.span(),
                                     cx.builder.ident(&name),
                                 ),
                             ));
@@ -2142,7 +2161,7 @@ fn build_binding_pattern_from_pattern<'a>(
             }
             Some(
                 cx.builder
-                    .binding_pattern_object_pattern(SPAN, properties, rest),
+                    .binding_pattern_object_pattern(cx.span(), properties, rest),
             )
         }
     }
@@ -2167,7 +2186,7 @@ fn build_assignment_target_from_pattern<'a>(
                             ast::AssignmentTarget::from(
                                 cx.builder
                                     .simple_assignment_target_assignment_target_identifier(
-                                        SPAN,
+                                        cx.span(),
                                         cx.builder.ident(&name),
                                     ),
                             ),
@@ -2180,11 +2199,11 @@ fn build_assignment_target_from_pattern<'a>(
                         let name = identifier_name(&place.identifier);
                         rest = Some(
                             cx.builder.alloc_assignment_target_rest(
-                                SPAN,
+                                cx.span(),
                                 ast::AssignmentTarget::from(
                                     cx.builder
                                         .simple_assignment_target_assignment_target_identifier(
-                                            SPAN,
+                                            cx.span(),
                                             cx.builder.ident(&name),
                                         ),
                                 ),
@@ -2201,7 +2220,7 @@ fn build_assignment_target_from_pattern<'a>(
             }
             Some(ast::AssignmentTarget::from(
                 cx.builder
-                    .assignment_target_pattern_array_assignment_target(SPAN, elements, rest),
+                    .assignment_target_pattern_array_assignment_target(cx.span(), elements, rest),
             ))
         }
         Pattern::Object(obj) => {
@@ -2221,9 +2240,9 @@ fn build_assignment_target_from_pattern<'a>(
                             properties.push(
                                 cx.builder
                                     .assignment_target_property_assignment_target_property_identifier(
-                                        SPAN,
+                                        cx.span(),
                                         cx.builder.identifier_reference(
-                                            SPAN,
+                                            cx.span(),
                                             cx.builder.ident(&target_name),
                                         ),
                                         None,
@@ -2235,13 +2254,13 @@ fn build_assignment_target_from_pattern<'a>(
                         properties.push(
                             cx.builder
                                 .assignment_target_property_assignment_target_property_property(
-                                SPAN,
+                                cx.span(),
                                 key,
                                 ast::AssignmentTargetMaybeDefault::from(
                                     ast::AssignmentTarget::from(
                                         cx.builder
                                             .simple_assignment_target_assignment_target_identifier(
-                                                SPAN,
+                                                cx.span(),
                                                 cx.builder.ident(&target_name),
                                             ),
                                     ),
@@ -2257,11 +2276,11 @@ fn build_assignment_target_from_pattern<'a>(
                         let name = identifier_name(&place.identifier);
                         rest = Some(
                             cx.builder.alloc_assignment_target_rest(
-                                SPAN,
+                                cx.span(),
                                 ast::AssignmentTarget::from(
                                     cx.builder
                                         .simple_assignment_target_assignment_target_identifier(
-                                            SPAN,
+                                            cx.span(),
                                             cx.builder.ident(&name),
                                         ),
                                 ),
@@ -2272,7 +2291,7 @@ fn build_assignment_target_from_pattern<'a>(
             }
             Some(ast::AssignmentTarget::from(
                 cx.builder
-                    .assignment_target_pattern_object_assignment_target(SPAN, properties, rest),
+                    .assignment_target_pattern_object_assignment_target(cx.span(), properties, rest),
             ))
         }
     }
@@ -2285,7 +2304,7 @@ fn build_property_key_for_pattern<'a>(
     match key {
         ObjectPropertyKey::Identifier(name) => Some((
             cx.builder
-                .property_key_static_identifier(SPAN, cx.builder.ident(name)),
+                .property_key_static_identifier(cx.span(), cx.builder.ident(name)),
             false,
         )),
         ObjectPropertyKey::String(name) if is_identifier_name(name) => {
@@ -2294,14 +2313,14 @@ fn build_property_key_for_pattern<'a>(
             Some((
                 ast::PropertyKey::from(
                     cx.builder
-                        .expression_identifier(SPAN, cx.builder.ident(name)),
+                        .expression_identifier(cx.span(), cx.builder.ident(name)),
                 ),
                 false,
             ))
         }
         ObjectPropertyKey::String(name) => Some((
             ast::PropertyKey::from(cx.builder.expression_string_literal(
-                SPAN,
+                cx.span(),
                 cx.builder.atom(name),
                 None,
             )),
@@ -2309,7 +2328,7 @@ fn build_property_key_for_pattern<'a>(
         )),
         ObjectPropertyKey::Number(val) => Some((
             ast::PropertyKey::from(cx.builder.expression_numeric_literal(
-                SPAN,
+                cx.span(),
                 *val,
                 None,
                 NumberBase::Decimal,
@@ -2495,14 +2514,14 @@ fn emit_assignment_stmt<'a>(
 ) -> ast::Statement<'a> {
     let expr = maybe_parenthesize_jsx(cx.builder, expr);
     cx.builder.statement_expression(
-        SPAN,
+        cx.span(),
         cx.builder.expression_assignment(
-            SPAN,
+            cx.span(),
             AssignmentOperator::Assign,
             ast::AssignmentTarget::from(
                 cx.builder
                     .simple_assignment_target_assignment_target_identifier(
-                        SPAN,
+                        cx.span(),
                         cx.builder.ident(name),
                     ),
             ),
@@ -2525,7 +2544,7 @@ fn emit_var_decl_stmt_inner<'a>(
             if let Some(expr) = init {
                 return emit_assignment_stmt(cx, name, expr);
             }
-            return cx.builder.statement_empty(SPAN);
+            return cx.builder.statement_empty(cx.span());
         }
         // Non-temp: allow new declaration (block-scoped shadowing is valid JS).
     }
@@ -2537,14 +2556,14 @@ fn emit_var_decl_stmt_inner<'a>(
     let init = init.map(|e| maybe_parenthesize_jsx(cx.builder, e));
     let pattern = cx
         .builder
-        .binding_pattern_binding_identifier(SPAN, cx.builder.ident(name));
+        .binding_pattern_binding_identifier(cx.span(), cx.builder.ident(name));
     ast::Statement::VariableDeclaration(
         cx.builder.alloc_variable_declaration(
-            SPAN,
+            cx.span(),
             kind,
             cx.builder.vec1(
                 cx.builder
-                    .variable_declarator(SPAN, kind, pattern, NONE, init, false),
+                    .variable_declarator(cx.span(), kind, pattern, NONE, init, false),
             ),
             false,
         ),
@@ -2635,13 +2654,13 @@ fn codegen_terminal<'a>(
             let expr = expr.filter(
                 |e| !matches!(e, ast::Expression::Identifier(id) if id.name == "undefined"),
             );
-            vec![cx.builder.statement_return(SPAN, expr)]
+            vec![cx.builder.statement_return(cx.span(), expr)]
         }
         ReactiveTerminal::Throw { value, .. } => {
             let Some(expr) = codegen_place(cx, value) else {
                 return vec![];
             };
-            vec![cx.builder.statement_throw(SPAN, expr)]
+            vec![cx.builder.statement_throw(cx.span(), expr)]
         }
         ReactiveTerminal::Break {
             target,
@@ -2652,11 +2671,11 @@ fn codegen_terminal<'a>(
                 return vec![];
             }
             let label = if *target_kind == ReactiveTerminalTargetKind::Labeled {
-                Some(cx.builder.label_identifier(SPAN, crate_label_name(*target)))
+                Some(cx.builder.label_identifier(cx.span(), crate_label_name(*target)))
             } else {
                 None
             };
-            vec![cx.builder.statement_break(SPAN, label)]
+            vec![cx.builder.statement_break(cx.span(), label)]
         }
         ReactiveTerminal::Continue {
             target,
@@ -2667,11 +2686,11 @@ fn codegen_terminal<'a>(
                 return vec![];
             }
             let label = if *target_kind == ReactiveTerminalTargetKind::Labeled {
-                Some(cx.builder.label_identifier(SPAN, crate_label_name(*target)))
+                Some(cx.builder.label_identifier(cx.span(), crate_label_name(*target)))
             } else {
                 None
             };
-            vec![cx.builder.statement_continue(SPAN, label)]
+            vec![cx.builder.statement_continue(cx.span(), label)]
         }
         ReactiveTerminal::If {
             test,
@@ -2697,28 +2716,28 @@ fn codegen_terminal<'a>(
                 && alternate_result.as_ref().is_some_and(|a| a.is_empty())
             {
                 return vec![cx.builder.statement_if(
-                    SPAN,
+                    cx.span(),
                     test_expr,
-                    cx.builder.statement_block(SPAN, cx.builder.vec()),
+                    cx.builder.statement_block(cx.span(), cx.builder.vec()),
                     None,
                 )];
             }
             let consequent_block = cx
                 .builder
-                .statement_block(SPAN, cx.builder.vec_from_iter(consequent_stmts));
+                .statement_block(cx.span(), cx.builder.vec_from_iter(consequent_stmts));
             let alternate_stmt = alternate_result.and_then(|alt_stmts| {
                 if alt_stmts.is_empty() {
                     None // Skip empty else clauses
                 } else {
                     Some(
                         cx.builder
-                            .statement_block(SPAN, cx.builder.vec_from_iter(alt_stmts)),
+                            .statement_block(cx.span(), cx.builder.vec_from_iter(alt_stmts)),
                     )
                 }
             });
             vec![
                 cx.builder
-                    .statement_if(SPAN, test_expr, consequent_block, alternate_stmt),
+                    .statement_if(cx.span(), test_expr, consequent_block, alternate_stmt),
             ]
         }
         ReactiveTerminal::Switch { test, cases, .. } => {
@@ -2747,14 +2766,14 @@ fn codegen_terminal<'a>(
                 } else {
                     cx.builder.vec1(
                         cx.builder
-                            .statement_block(SPAN, cx.builder.vec_from_iter(consequent)),
+                            .statement_block(cx.span(), cx.builder.vec_from_iter(consequent)),
                     )
                 };
-                switch_cases.push(cx.builder.switch_case(SPAN, test_expr, wrapped));
+                switch_cases.push(cx.builder.switch_case(cx.span(), test_expr, wrapped));
             }
             vec![
                 cx.builder
-                    .statement_switch(SPAN, discriminant, switch_cases),
+                    .statement_switch(cx.span(), discriminant, switch_cases),
             ]
         }
         ReactiveTerminal::While {
@@ -2768,8 +2787,8 @@ fn codegen_terminal<'a>(
             cx.pop_name_scope();
             let body = cx
                 .builder
-                .statement_block(SPAN, cx.builder.vec_from_iter(body_stmts));
-            vec![cx.builder.statement_while(SPAN, test_expr, body)]
+                .statement_block(cx.span(), cx.builder.vec_from_iter(body_stmts));
+            vec![cx.builder.statement_while(cx.span(), test_expr, body)]
         }
         ReactiveTerminal::DoWhile {
             test, loop_block, ..
@@ -2782,8 +2801,8 @@ fn codegen_terminal<'a>(
             cx.pop_name_scope();
             let body = cx
                 .builder
-                .statement_block(SPAN, cx.builder.vec_from_iter(body_stmts));
-            vec![cx.builder.statement_do_while(SPAN, body, test_expr)]
+                .statement_block(cx.span(), cx.builder.vec_from_iter(body_stmts));
+            vec![cx.builder.statement_do_while(cx.span(), body, test_expr)]
         }
         ReactiveTerminal::For {
             init,
@@ -2842,7 +2861,7 @@ fn codegen_terminal<'a>(
                         {
                             if let Some(val) = codegen_place(cx, place) {
                                 Some(cx.builder.expression_sequence(
-                                    SPAN,
+                                    cx.span(),
                                     cx.builder.vec_from_array([assign, val]),
                                 ))
                             } else {
@@ -2865,12 +2884,12 @@ fn codegen_terminal<'a>(
                             if let Some(rhs) = codegen_place(cx, value) {
                                 let name = identifier_name(&lvalue.place.identifier);
                                 Some(cx.builder.expression_assignment(
-                                    SPAN,
+                                    cx.span(),
                                     AssignmentOperator::Assign,
                                     ast::AssignmentTarget::from(
                                         cx.builder
                                             .simple_assignment_target_assignment_target_identifier(
-                                                SPAN,
+                                                cx.span(),
                                                 cx.builder.ident(&name),
                                             ),
                                     ),
@@ -2907,10 +2926,10 @@ fn codegen_terminal<'a>(
             cx.pop_name_scope();
             let body = cx
                 .builder
-                .statement_block(SPAN, cx.builder.vec_from_iter(body_stmts));
+                .statement_block(cx.span(), cx.builder.vec_from_iter(body_stmts));
             vec![
                 cx.builder
-                    .statement_for(SPAN, for_init, test_expr, update_expr, body),
+                    .statement_for(cx.span(), for_init, test_expr, update_expr, body),
             ]
         }
         ReactiveTerminal::ForOf {
@@ -2935,8 +2954,8 @@ fn codegen_terminal<'a>(
             cx.pop_name_scope();
             let body = cx
                 .builder
-                .statement_block(SPAN, cx.builder.vec_from_iter(body_stmts));
-            vec![cx.builder.statement_for_of(SPAN, false, left, right, body)]
+                .statement_block(cx.span(), cx.builder.vec_from_iter(body_stmts));
+            vec![cx.builder.statement_for_of(cx.span(), false, left, right, body)]
         }
         ReactiveTerminal::ForIn {
             init, loop_block, ..
@@ -2957,8 +2976,8 @@ fn codegen_terminal<'a>(
             cx.pop_name_scope();
             let body = cx
                 .builder
-                .statement_block(SPAN, cx.builder.vec_from_iter(body_stmts));
-            vec![cx.builder.statement_for_in(SPAN, left, right, body)]
+                .statement_block(cx.span(), cx.builder.vec_from_iter(body_stmts));
+            vec![cx.builder.statement_for_in(cx.span(), left, right, body)]
         }
         ReactiveTerminal::Label { block, .. } => codegen_block(cx, block),
         ReactiveTerminal::Try {
@@ -2970,15 +2989,15 @@ fn codegen_terminal<'a>(
             let try_stmts = codegen_block(cx, block);
             let try_block = cx
                 .builder
-                .block_statement(SPAN, cx.builder.vec_from_iter(try_stmts));
+                .block_statement(cx.span(), cx.builder.vec_from_iter(try_stmts));
 
             let catch_param = handler_binding.as_ref().and_then(|binding| {
                 let name = binding.identifier.name.as_ref()?.value();
                 Some(
                     cx.builder.catch_parameter(
-                        SPAN,
+                        cx.span(),
                         cx.builder
-                            .binding_pattern_binding_identifier(SPAN, cx.builder.ident(name)),
+                            .binding_pattern_binding_identifier(cx.span(), cx.builder.ident(name)),
                         NONE,
                     ),
                 )
@@ -2987,11 +3006,11 @@ fn codegen_terminal<'a>(
             let catch_stmts = codegen_block(cx, handler);
             let catch_body = cx
                 .builder
-                .block_statement(SPAN, cx.builder.vec_from_iter(catch_stmts));
-            let catch_clause = cx.builder.alloc_catch_clause(SPAN, catch_param, catch_body);
+                .block_statement(cx.span(), cx.builder.vec_from_iter(catch_stmts));
+            let catch_clause = cx.builder.alloc_catch_clause(cx.span(), catch_param, catch_body);
 
             vec![cx.builder.statement_try(
-                SPAN,
+                cx.span(),
                 try_block,
                 Some(catch_clause),
                 Option::<oxc_allocator::Box<'_, ast::BlockStatement<'_>>>::None,
@@ -3261,13 +3280,13 @@ fn codegen_reactive_scope<'a>(
                 let dep_expr = dep_expr_ref.clone_in(cx.allocator);
                 let pattern = cx
                     .builder
-                    .binding_pattern_binding_identifier(SPAN, cx.builder.ident(&temp_name));
+                    .binding_pattern_binding_identifier(cx.span(), cx.builder.ident(&temp_name));
                 stmts.push(ast::Statement::VariableDeclaration(
                     cx.builder.alloc_variable_declaration(
-                        SPAN,
+                        cx.span(),
                         ast::VariableDeclarationKind::Const,
                         cx.builder.vec1(cx.builder.variable_declarator(
-                            SPAN,
+                            cx.span(),
                             ast::VariableDeclarationKind::Const,
                             pattern,
                             NONE,
@@ -3349,13 +3368,13 @@ fn codegen_reactive_scope<'a>(
             cx.register_scoped_name(emit_name);
             let pattern = cx
                 .builder
-                .binding_pattern_binding_identifier(SPAN, cx.builder.ident(emit_name));
+                .binding_pattern_binding_identifier(cx.span(), cx.builder.ident(emit_name));
             scope_decl_stmts.push(ast::Statement::VariableDeclaration(
                 cx.builder.alloc_variable_declaration(
-                    SPAN,
+                    cx.span(),
                     ast::VariableDeclarationKind::Let,
                     cx.builder.vec1(cx.builder.variable_declarator(
-                        SPAN,
+                        cx.span(),
                         ast::VariableDeclarationKind::Let,
                         pattern,
                         NONE,
@@ -3386,13 +3405,13 @@ fn codegen_reactive_scope<'a>(
                     cx.register_scoped_name(&name_str);
                     let pattern = cx
                         .builder
-                        .binding_pattern_binding_identifier(SPAN, cx.builder.ident(name.value()));
+                        .binding_pattern_binding_identifier(cx.span(), cx.builder.ident(name.value()));
                     scope_decl_stmts.push(ast::Statement::VariableDeclaration(
                         cx.builder.alloc_variable_declaration(
-                            SPAN,
+                            cx.span(),
                             ast::VariableDeclarationKind::Let,
                             cx.builder.vec1(cx.builder.variable_declarator(
-                                SPAN,
+                                cx.span(),
                                 ast::VariableDeclarationKind::Let,
                                 pattern,
                                 NONE,
@@ -3531,7 +3550,7 @@ fn codegen_reactive_scope<'a>(
             .iter()
             .map(|(slot, dep_expr)| {
                 cx.builder.expression_binary(
-                    SPAN,
+                    cx.span(),
                     cx.cache_access(*slot),
                     oxc_syntax::operator::BinaryOperator::StrictInequality,
                     dep_expr.clone_in(cx.allocator),
@@ -3539,7 +3558,7 @@ fn codegen_reactive_scope<'a>(
             })
             .reduce(|left, right| {
                 cx.builder.expression_logical(
-                    SPAN,
+                    cx.span(),
                     left,
                     oxc_syntax::operator::LogicalOperator::Or,
                     right,
@@ -3558,13 +3577,13 @@ fn codegen_reactive_scope<'a>(
         // 2. let condition = deps_test;
         let condition_pattern = cx
             .builder
-            .binding_pattern_binding_identifier(SPAN, cx.builder.ident("condition"));
+            .binding_pattern_binding_identifier(cx.span(), cx.builder.ident("condition"));
         block_stmts.push(ast::Statement::VariableDeclaration(
             cx.builder.alloc_variable_declaration(
-                SPAN,
+                cx.span(),
                 ast::VariableDeclarationKind::Let,
                 cx.builder.vec1(cx.builder.variable_declarator(
-                    SPAN,
+                    cx.span(),
                     ast::VariableDeclarationKind::Let,
                     condition_pattern,
                     NONE,
@@ -3581,13 +3600,13 @@ fn codegen_reactive_scope<'a>(
             let old_name = format!("old${name}");
             let old_pattern = cx
                 .builder
-                .binding_pattern_binding_identifier(SPAN, cx.builder.ident(&old_name));
+                .binding_pattern_binding_identifier(cx.span(), cx.builder.ident(&old_name));
             cached_check_stmts.push(ast::Statement::VariableDeclaration(
                 cx.builder.alloc_variable_declaration(
-                    SPAN,
+                    cx.span(),
                     ast::VariableDeclarationKind::Let,
                     cx.builder.vec1(cx.builder.variable_declarator(
-                        SPAN,
+                        cx.span(),
                         ast::VariableDeclarationKind::Let,
                         old_pattern,
                         NONE,
@@ -3605,14 +3624,14 @@ fn codegen_reactive_scope<'a>(
         if !cached_check_stmts.is_empty() {
             block_stmts.push(
                 cx.builder.statement_if(
-                    SPAN,
+                    cx.span(),
                     cx.builder.expression_unary(
-                        SPAN,
+                        cx.span(),
                         oxc_syntax::operator::UnaryOperator::LogicalNot,
                         cx.ident_expr("condition"),
                     ),
                     cx.builder
-                        .statement_block(SPAN, cx.builder.vec_from_iter(cached_check_stmts)),
+                        .statement_block(cx.span(), cx.builder.vec_from_iter(cached_check_stmts)),
                     None,
                 ),
             );
@@ -3622,13 +3641,13 @@ fn codegen_reactive_scope<'a>(
         for (slot, dep_expr) in deps {
             block_stmts.push(
                 cx.builder
-                    .statement_expression(SPAN, cx.cache_assign(slot, dep_expr)),
+                    .statement_expression(cx.span(), cx.cache_assign(slot, dep_expr)),
             );
         }
         for (name, slot) in &all_outputs {
             block_stmts.push(
                 cx.builder
-                    .statement_expression(SPAN, cx.cache_assign(*slot, cx.ident_expr(name))),
+                    .statement_expression(cx.span(), cx.cache_assign(*slot, cx.ident_expr(name))),
             );
         }
 
@@ -3648,14 +3667,14 @@ fn codegen_reactive_scope<'a>(
             ));
             recompute_stmts.push(
                 cx.builder.statement_expression(
-                    SPAN,
+                    cx.span(),
                     cx.builder.expression_assignment(
-                        SPAN,
+                        cx.span(),
                         AssignmentOperator::Assign,
                         ast::AssignmentTarget::from(
                             cx.builder
                                 .simple_assignment_target_assignment_target_identifier(
-                                    SPAN,
+                                    cx.span(),
                                     cx.builder.ident(name),
                                 ),
                         ),
@@ -3667,10 +3686,10 @@ fn codegen_reactive_scope<'a>(
 
         block_stmts.push(
             cx.builder.statement_if(
-                SPAN,
+                cx.span(),
                 cx.ident_expr("condition"),
                 cx.builder
-                    .statement_block(SPAN, cx.builder.vec_from_iter(recompute_stmts)),
+                    .statement_block(cx.span(), cx.builder.vec_from_iter(recompute_stmts)),
                 None,
             ),
         );
@@ -3678,7 +3697,7 @@ fn codegen_reactive_scope<'a>(
         // Wrap in a block statement.
         stmts.push(
             cx.builder
-                .statement_block(SPAN, cx.builder.vec_from_iter(block_stmts)),
+                .statement_block(cx.span(), cx.builder.vec_from_iter(block_stmts)),
         );
         return stmts;
     }
@@ -3694,7 +3713,7 @@ fn codegen_reactive_scope<'a>(
         };
 
         let mut test = cx.builder.expression_binary(
-            SPAN,
+            cx.span(),
             cx.cache_access(sentinel_slot),
             oxc_syntax::operator::BinaryOperator::StrictEquality,
             cx.sentinel_expr(),
@@ -3703,10 +3722,10 @@ fn codegen_reactive_scope<'a>(
         // disable_memoization_for_debugging: always recompute (append `|| true`)
         if cx.options.disable_memoization_for_debugging {
             test = cx.builder.expression_logical(
-                SPAN,
+                cx.span(),
                 test,
                 LogicalOperator::Or,
-                cx.builder.expression_boolean_literal(SPAN, true),
+                cx.builder.expression_boolean_literal(cx.span(), true),
             );
         }
 
@@ -3714,14 +3733,14 @@ fn codegen_reactive_scope<'a>(
         for (name, slot) in &output_slots {
             else_body.push(
                 cx.builder.statement_expression(
-                    SPAN,
+                    cx.span(),
                     cx.builder.expression_assignment(
-                        SPAN,
+                        cx.span(),
                         AssignmentOperator::Assign,
                         ast::AssignmentTarget::from(
                             cx.builder
                                 .simple_assignment_target_assignment_target_identifier(
-                                    SPAN,
+                                    cx.span(),
                                     cx.builder.ident(name),
                                 ),
                         ),
@@ -3733,14 +3752,14 @@ fn codegen_reactive_scope<'a>(
         for (name, slot) in &reassign_slots {
             else_body.push(
                 cx.builder.statement_expression(
-                    SPAN,
+                    cx.span(),
                     cx.builder.expression_assignment(
-                        SPAN,
+                        cx.span(),
                         AssignmentOperator::Assign,
                         ast::AssignmentTarget::from(
                             cx.builder
                                 .simple_assignment_target_assignment_target_identifier(
-                                    SPAN,
+                                    cx.span(),
                                     cx.builder.ident(name),
                                 ),
                         ),
@@ -3754,13 +3773,13 @@ fn codegen_reactive_scope<'a>(
         for (name, slot) in &output_slots {
             if_body.push(
                 cx.builder
-                    .statement_expression(SPAN, cx.cache_assign(*slot, cx.ident_expr(name))),
+                    .statement_expression(cx.span(), cx.cache_assign(*slot, cx.ident_expr(name))),
             );
         }
         for (name, slot) in &reassign_slots {
             if_body.push(
                 cx.builder
-                    .statement_expression(SPAN, cx.cache_assign(*slot, cx.ident_expr(name))),
+                    .statement_expression(cx.span(), cx.cache_assign(*slot, cx.ident_expr(name))),
             );
         }
 
@@ -3785,16 +3804,16 @@ fn codegen_reactive_scope<'a>(
         } else {
             Some(
                 cx.builder
-                    .statement_block(SPAN, cx.builder.vec_from_iter(else_body)),
+                    .statement_block(cx.span(), cx.builder.vec_from_iter(else_body)),
             )
         };
 
         stmts.push(
             cx.builder.statement_if(
-                SPAN,
+                cx.span(),
                 test,
                 cx.builder
-                    .statement_block(SPAN, cx.builder.vec_from_iter(if_body)),
+                    .statement_block(cx.span(), cx.builder.vec_from_iter(if_body)),
                 else_stmt,
             ),
         );
@@ -3805,20 +3824,20 @@ fn codegen_reactive_scope<'a>(
         for (i, (slot, dep_expr)) in deps.iter().enumerate() {
             let var_name = cx.synthesize_name(&format!("c_{i}"));
             let comparison = cx.builder.expression_binary(
-                SPAN,
+                cx.span(),
                 cx.cache_access(*slot),
                 oxc_syntax::operator::BinaryOperator::StrictInequality,
                 dep_expr.clone_in(cx.allocator),
             );
             let pattern = cx
                 .builder
-                .binding_pattern_binding_identifier(SPAN, cx.builder.ident(&var_name));
+                .binding_pattern_binding_identifier(cx.span(), cx.builder.ident(&var_name));
             stmts.push(ast::Statement::VariableDeclaration(
                 cx.builder.alloc_variable_declaration(
-                    SPAN,
+                    cx.span(),
                     ast::VariableDeclarationKind::Const,
                     cx.builder.vec1(cx.builder.variable_declarator(
-                        SPAN,
+                        cx.span(),
                         ast::VariableDeclarationKind::Const,
                         pattern,
                         NONE,
@@ -3839,7 +3858,7 @@ fn codegen_reactive_scope<'a>(
             .map(|name| cx.ident_expr(name))
             .reduce(|left, right| {
                 cx.builder.expression_logical(
-                    SPAN,
+                    cx.span(),
                     left,
                     oxc_syntax::operator::LogicalOperator::Or,
                     right,
@@ -3849,10 +3868,10 @@ fn codegen_reactive_scope<'a>(
 
         if cx.options.disable_memoization_for_debugging {
             test = cx.builder.expression_logical(
-                SPAN,
+                cx.span(),
                 test,
                 LogicalOperator::Or,
-                cx.builder.expression_boolean_literal(SPAN, true),
+                cx.builder.expression_boolean_literal(cx.span(), true),
             );
         }
 
@@ -3861,19 +3880,19 @@ fn codegen_reactive_scope<'a>(
         for (slot, dep_expr) in deps {
             if_body.push(
                 cx.builder
-                    .statement_expression(SPAN, cx.cache_assign(slot, dep_expr)),
+                    .statement_expression(cx.span(), cx.cache_assign(slot, dep_expr)),
             );
         }
         for (name, slot) in &output_slots {
             if_body.push(
                 cx.builder
-                    .statement_expression(SPAN, cx.cache_assign(*slot, cx.ident_expr(name))),
+                    .statement_expression(cx.span(), cx.cache_assign(*slot, cx.ident_expr(name))),
             );
         }
         for (name, slot) in &reassign_slots {
             if_body.push(
                 cx.builder
-                    .statement_expression(SPAN, cx.cache_assign(*slot, cx.ident_expr(name))),
+                    .statement_expression(cx.span(), cx.cache_assign(*slot, cx.ident_expr(name))),
             );
         }
 
@@ -3882,14 +3901,14 @@ fn codegen_reactive_scope<'a>(
         for (name, slot) in &output_slots {
             else_body.push(
                 cx.builder.statement_expression(
-                    SPAN,
+                    cx.span(),
                     cx.builder.expression_assignment(
-                        SPAN,
+                        cx.span(),
                         AssignmentOperator::Assign,
                         ast::AssignmentTarget::from(
                             cx.builder
                                 .simple_assignment_target_assignment_target_identifier(
-                                    SPAN,
+                                    cx.span(),
                                     cx.builder.ident(name),
                                 ),
                         ),
@@ -3901,14 +3920,14 @@ fn codegen_reactive_scope<'a>(
         for (name, slot) in &reassign_slots {
             else_body.push(
                 cx.builder.statement_expression(
-                    SPAN,
+                    cx.span(),
                     cx.builder.expression_assignment(
-                        SPAN,
+                        cx.span(),
                         AssignmentOperator::Assign,
                         ast::AssignmentTarget::from(
                             cx.builder
                                 .simple_assignment_target_assignment_target_identifier(
-                                    SPAN,
+                                    cx.span(),
                                     cx.builder.ident(name),
                                 ),
                         ),
@@ -3945,16 +3964,16 @@ fn codegen_reactive_scope<'a>(
         } else {
             Some(
                 cx.builder
-                    .statement_block(SPAN, cx.builder.vec_from_iter(else_body)),
+                    .statement_block(cx.span(), cx.builder.vec_from_iter(else_body)),
             )
         };
 
         stmts.push(
             cx.builder.statement_if(
-                SPAN,
+                cx.span(),
                 test,
                 cx.builder
-                    .statement_block(SPAN, cx.builder.vec_from_iter(if_body)),
+                    .statement_block(cx.span(), cx.builder.vec_from_iter(if_body)),
                 else_stmt,
             ),
         );
@@ -3964,7 +3983,7 @@ fn codegen_reactive_scope<'a>(
         let mut test_parts: Vec<ast::Expression<'a>> = Vec::new();
         for (slot, dep_expr) in &deps {
             test_parts.push(cx.builder.expression_binary(
-                SPAN,
+                cx.span(),
                 cx.cache_access(*slot),
                 oxc_syntax::operator::BinaryOperator::StrictInequality,
                 dep_expr.clone_in(cx.allocator),
@@ -3975,7 +3994,7 @@ fn codegen_reactive_scope<'a>(
             .into_iter()
             .reduce(|left, right| {
                 cx.builder.expression_logical(
-                    SPAN,
+                    cx.span(),
                     left,
                     oxc_syntax::operator::LogicalOperator::Or,
                     right,
@@ -3986,10 +4005,10 @@ fn codegen_reactive_scope<'a>(
         // disable_memoization_for_debugging: always recompute (append `|| true`)
         if cx.options.disable_memoization_for_debugging {
             test = cx.builder.expression_logical(
-                SPAN,
+                cx.span(),
                 test,
                 LogicalOperator::Or,
-                cx.builder.expression_boolean_literal(SPAN, true),
+                cx.builder.expression_boolean_literal(cx.span(), true),
             );
         }
 
@@ -3999,20 +4018,20 @@ fn codegen_reactive_scope<'a>(
         for (slot, dep_expr) in deps {
             if_body.push(
                 cx.builder
-                    .statement_expression(SPAN, cx.cache_assign(slot, dep_expr)),
+                    .statement_expression(cx.span(), cx.cache_assign(slot, dep_expr)),
             );
         }
         // Store outputs.
         for (name, slot) in &output_slots {
             if_body.push(
                 cx.builder
-                    .statement_expression(SPAN, cx.cache_assign(*slot, cx.ident_expr(name))),
+                    .statement_expression(cx.span(), cx.cache_assign(*slot, cx.ident_expr(name))),
             );
         }
         for (name, slot) in &reassign_slots {
             if_body.push(
                 cx.builder
-                    .statement_expression(SPAN, cx.cache_assign(*slot, cx.ident_expr(name))),
+                    .statement_expression(cx.span(), cx.cache_assign(*slot, cx.ident_expr(name))),
             );
         }
 
@@ -4021,14 +4040,14 @@ fn codegen_reactive_scope<'a>(
         for (name, slot) in &output_slots {
             else_body.push(
                 cx.builder.statement_expression(
-                    SPAN,
+                    cx.span(),
                     cx.builder.expression_assignment(
-                        SPAN,
+                        cx.span(),
                         AssignmentOperator::Assign,
                         ast::AssignmentTarget::from(
                             cx.builder
                                 .simple_assignment_target_assignment_target_identifier(
-                                    SPAN,
+                                    cx.span(),
                                     cx.builder.ident(name),
                                 ),
                         ),
@@ -4040,14 +4059,14 @@ fn codegen_reactive_scope<'a>(
         for (name, slot) in &reassign_slots {
             else_body.push(
                 cx.builder.statement_expression(
-                    SPAN,
+                    cx.span(),
                     cx.builder.expression_assignment(
-                        SPAN,
+                        cx.span(),
                         AssignmentOperator::Assign,
                         ast::AssignmentTarget::from(
                             cx.builder
                                 .simple_assignment_target_assignment_target_identifier(
-                                    SPAN,
+                                    cx.span(),
                                     cx.builder.ident(name),
                                 ),
                         ),
@@ -4084,16 +4103,16 @@ fn codegen_reactive_scope<'a>(
         } else {
             Some(
                 cx.builder
-                    .statement_block(SPAN, cx.builder.vec_from_iter(else_body)),
+                    .statement_block(cx.span(), cx.builder.vec_from_iter(else_body)),
             )
         };
 
         stmts.push(
             cx.builder.statement_if(
-                SPAN,
+                cx.span(),
                 test,
                 cx.builder
-                    .statement_block(SPAN, cx.builder.vec_from_iter(if_body)),
+                    .statement_block(cx.span(), cx.builder.vec_from_iter(if_body)),
                 else_stmt,
             ),
         );
@@ -4108,20 +4127,20 @@ fn codegen_reactive_scope<'a>(
             .map(|n| n.value().to_string())
             .unwrap_or_else(|| format!("t{}", early_return.value.id.0));
         let test = cx.builder.expression_binary(
-            SPAN,
+            cx.span(),
             cx.ident_expr(&name),
             oxc_syntax::operator::BinaryOperator::StrictInequality,
             cx.early_return_sentinel_expr(),
         );
         stmts.push(
             cx.builder.statement_if(
-                SPAN,
+                cx.span(),
                 test,
                 cx.builder.statement_block(
-                    SPAN,
+                    cx.span(),
                     cx.builder.vec1(
                         cx.builder
-                            .statement_return(SPAN, Some(cx.ident_expr(&name))),
+                            .statement_return(cx.span(), Some(cx.ident_expr(&name))),
                     ),
                 ),
                 None,
@@ -4199,30 +4218,30 @@ fn codegen_dependency_expr<'a>(
             let num_val = entry.property.parse::<f64>().unwrap();
             expr = ast::Expression::from(
                 cx.builder.member_expression_computed(
-                    SPAN,
+                    cx.span(),
                     expr,
                     cx.builder
-                        .expression_numeric_literal(SPAN, num_val, None, NumberBase::Decimal),
+                        .expression_numeric_literal(cx.span(), num_val, None, NumberBase::Decimal),
                     entry.optional,
                 ),
             );
         } else if entry.optional {
             expr = ast::Expression::from(
                 cx.builder.member_expression_static(
-                    SPAN,
+                    cx.span(),
                     expr,
                     cx.builder
-                        .identifier_name(SPAN, cx.builder.ident(entry.property.as_str())),
+                        .identifier_name(cx.span(), cx.builder.ident(entry.property.as_str())),
                     true,
                 ),
             );
         } else {
             expr = ast::Expression::from(
                 cx.builder.member_expression_static(
-                    SPAN,
+                    cx.span(),
                     expr,
                     cx.builder
-                        .identifier_name(SPAN, cx.builder.ident(entry.property.as_str())),
+                        .identifier_name(cx.span(), cx.builder.ident(entry.property.as_str())),
                     false,
                 ),
             );
@@ -4244,7 +4263,7 @@ fn codegen_arguments<'a>(
             Argument::Spread(place) => {
                 lowered.push(
                     cx.builder
-                        .argument_spread_element(SPAN, codegen_place(cx, place)?),
+                        .argument_spread_element(cx.span(), codegen_place(cx, place)?),
                 );
             }
         }
@@ -4277,10 +4296,10 @@ fn codegen_method_call_callee<'a>(
     {
         return Some(ast::Expression::from(
             cx.builder.member_expression_static(
-                SPAN,
+                cx.span(),
                 codegen_place(cx, receiver)?,
                 cx.builder
-                    .identifier_name(SPAN, cx.builder.ident(lit.value.as_str())),
+                    .identifier_name(cx.span(), cx.builder.ident(lit.value.as_str())),
                 receiver_optional,
             ),
         ));
@@ -4310,8 +4329,8 @@ fn codegen_array_elements<'a>(
             }
             ArrayElement::Spread(place) => cx
                 .builder
-                .array_expression_element_spread_element(SPAN, codegen_place(cx, place)?),
-            ArrayElement::Hole => cx.builder.array_expression_element_elision(SPAN),
+                .array_expression_element_spread_element(cx.span(), codegen_place(cx, place)?),
+            ArrayElement::Hole => cx.builder.array_expression_element_elision(cx.span()),
         };
         lowered.push(el);
     }
@@ -4327,13 +4346,13 @@ fn codegen_object_properties<'a>(
         let prop = match property {
             ObjectPropertyOrSpread::Spread(place) => cx
                 .builder
-                .object_property_kind_spread_property(SPAN, codegen_place(cx, place)?),
+                .object_property_kind_spread_property(cx.span(), codegen_place(cx, place)?),
             ObjectPropertyOrSpread::Property(property) => {
                 let value = codegen_place(cx, &property.place)?;
                 let (key, shorthand, computed) =
                     codegen_object_property_key(cx, &property.key, &value)?;
                 cx.builder.object_property_kind_object_property(
-                    SPAN,
+                    cx.span(),
                     ast::PropertyKind::Init,
                     key,
                     value,
@@ -4359,7 +4378,7 @@ fn codegen_object_property_key<'a>(
             // `key: value` pairs (e.g., `{ ref: ref }` not `{ ref }`).
             Some((
                 cx.builder
-                    .property_key_static_identifier(SPAN, cx.builder.ident(name)),
+                    .property_key_static_identifier(cx.span(), cx.builder.ident(name)),
                 false,
                 false,
             ))
@@ -4376,7 +4395,7 @@ fn codegen_object_property_key<'a>(
             Some((
                 ast::PropertyKey::from(
                     cx.builder
-                        .expression_identifier(SPAN, cx.builder.ident(name)),
+                        .expression_identifier(cx.span(), cx.builder.ident(name)),
                 ),
                 false,
                 false,
@@ -4384,7 +4403,7 @@ fn codegen_object_property_key<'a>(
         }
         ObjectPropertyKey::String(name) => Some((
             ast::PropertyKey::from(cx.builder.expression_string_literal(
-                SPAN,
+                cx.span(),
                 cx.builder.atom(name),
                 None,
             )),
@@ -4393,7 +4412,7 @@ fn codegen_object_property_key<'a>(
         )),
         ObjectPropertyKey::Number(val) => Some((
             ast::PropertyKey::from(cx.builder.expression_numeric_literal(
-                SPAN,
+                cx.span(),
                 *val,
                 None,
                 NumberBase::Decimal,
@@ -4579,14 +4598,14 @@ fn reconstruct_for_init<'a>(
                     let name = ident.name.to_string();
                     let pattern = cx
                         .builder
-                        .binding_pattern_binding_identifier(SPAN, cx.builder.ident(&name));
+                        .binding_pattern_binding_identifier(cx.span(), cx.builder.ident(&name));
                     let kind = ast::VariableDeclarationKind::Let;
                     return Some(ast::ForStatementInit::VariableDeclaration(
                         cx.builder.alloc_variable_declaration(
-                            SPAN,
+                            cx.span(),
                             kind,
                             cx.builder.vec1(cx.builder.variable_declarator(
-                                SPAN,
+                                cx.span(),
                                 kind,
                                 pattern,
                                 NONE,
@@ -4664,12 +4683,12 @@ fn reconstruct_for_init<'a>(
     for d in declarators {
         oxc_declarators.push(
             cx.builder
-                .variable_declarator(SPAN, kind, d.id, NONE, d.init, false),
+                .variable_declarator(cx.span(), kind, d.id, NONE, d.init, false),
         );
     }
     Some(ast::ForStatementInit::VariableDeclaration(
         cx.builder
-            .alloc_variable_declaration(SPAN, kind, oxc_declarators, false),
+            .alloc_variable_declaration(cx.span(), kind, oxc_declarators, false),
     ))
 }
 
@@ -4787,12 +4806,12 @@ fn fuse_scope_body_ternaries<'a>(cx: &mut CodegenContext<'a>, stmts: &mut Vec<as
                                 temp_decls.insert(name.clone(), init.clone_in(cx.allocator));
                                 // Emit as assignment expression for sequence.
                                 let assign = cx.builder.expression_assignment(
-                                    SPAN,
+                                    cx.span(),
                                     AssignmentOperator::Assign,
                                     ast::AssignmentTarget::from(
                                         cx.builder
                                             .simple_assignment_target_assignment_target_identifier(
-                                                SPAN,
+                                                cx.span(),
                                                 cx.builder.ident(&name),
                                             ),
                                     ),
@@ -4866,25 +4885,25 @@ fn fuse_scope_body_ternaries<'a>(cx: &mut CodegenContext<'a>, stmts: &mut Vec<as
                 if !setup_exprs.is_empty() {
                     let cons = std::mem::replace(
                         &mut cond.consequent,
-                        cx.builder.expression_null_literal(SPAN),
+                        cx.builder.expression_null_literal(cx.span()),
                     );
                     setup_exprs.push(cons);
                     cond.consequent = cx
                         .builder
-                        .expression_sequence(SPAN, cx.builder.vec_from_iter(setup_exprs));
+                        .expression_sequence(cx.span(), cx.builder.vec_from_iter(setup_exprs));
                 }
 
                 // Build alternate sequence: (setup2, ALT_EXPR)
                 if !alt_setup.is_empty() {
                     let alt = std::mem::replace(
                         &mut cond.alternate,
-                        cx.builder.expression_null_literal(SPAN),
+                        cx.builder.expression_null_literal(cx.span()),
                     );
                     let mut alt_seq = alt_setup;
                     alt_seq.push(alt);
                     cond.alternate = cx
                         .builder
-                        .expression_sequence(SPAN, cx.builder.vec_from_iter(alt_seq));
+                        .expression_sequence(cx.span(), cx.builder.vec_from_iter(alt_seq));
                 }
 
                 // Skip normal fusion since we handled it here.
@@ -4896,12 +4915,12 @@ fn fuse_scope_body_ternaries<'a>(cx: &mut CodegenContext<'a>, stmts: &mut Vec<as
             if !setup_exprs.is_empty() {
                 let original_consequent = std::mem::replace(
                     &mut cond.consequent,
-                    cx.builder.expression_null_literal(SPAN),
+                    cx.builder.expression_null_literal(cx.span()),
                 );
                 setup_exprs.push(original_consequent);
                 cond.consequent = cx
                     .builder
-                    .expression_sequence(SPAN, cx.builder.vec_from_iter(setup_exprs));
+                    .expression_sequence(cx.span(), cx.builder.vec_from_iter(setup_exprs));
             }
         }
 
@@ -4977,32 +4996,32 @@ fn build_structural_check_call<'a>(
     args.push(ast::Argument::from(old_expr));
     args.push(ast::Argument::from(new_expr));
     args.push(ast::Argument::from(cx.builder.expression_string_literal(
-        SPAN,
+        cx.span(),
         cx.builder.atom(var_name),
         None,
     )));
     args.push(ast::Argument::from(cx.builder.expression_string_literal(
-        SPAN,
+        cx.span(),
         cx.builder.atom(&fn_name),
         None,
     )));
     args.push(ast::Argument::from(cx.builder.expression_string_literal(
-        SPAN,
+        cx.span(),
         cx.builder.atom(phase),
         None,
     )));
     args.push(ast::Argument::from(cx.builder.expression_string_literal(
-        SPAN,
+        cx.span(),
         cx.builder.atom(loc),
         None,
     )));
 
     cx.builder.statement_expression(
-        SPAN,
+        cx.span(),
         cx.builder.expression_call(
-            SPAN,
+            cx.span(),
             cx.builder
-                .expression_identifier(SPAN, cx.builder.ident(STRUCTURAL_CHECK_IDENT)),
+                .expression_identifier(cx.span(), cx.builder.ident(STRUCTURAL_CHECK_IDENT)),
             NONE,
             args,
             false,
@@ -5061,9 +5080,9 @@ fn lower_function_expression_via_reactive<'a>(
     for directive in &hir_func.directives {
         directives.push(
             cx.builder.directive(
-                SPAN,
+                cx.span(),
                 cx.builder
-                    .string_literal(SPAN, cx.builder.atom(directive), None),
+                    .string_literal(cx.span(), cx.builder.atom(directive), None),
                 cx.builder.atom(directive),
             ),
         );
@@ -5088,16 +5107,16 @@ fn lower_function_expression_via_reactive<'a>(
     {
         let name = ident.name.as_str();
         let trailing = cx.builder.statement_expression(
-            SPAN,
+            cx.span(),
             cx.builder
-                .expression_identifier(SPAN, cx.builder.ident(name)),
+                .expression_identifier(cx.span(), cx.builder.ident(name)),
         );
         body_stmts.push(trailing);
     }
 
     let body = cx
         .builder
-        .alloc(cx.builder.function_body(SPAN, directives, body_stmts));
+        .alloc(cx.builder.function_body(cx.span(), directives, body_stmts));
 
     // Build params from the reactive function's param list.
     let mut param_items = cx.builder.vec();
@@ -5115,20 +5134,20 @@ fn lower_function_expression_via_reactive<'a>(
             .unwrap_or_else(|| format!("t{}", place.identifier.id.0));
         let pattern = cx
             .builder
-            .binding_pattern_binding_identifier(SPAN, cx.builder.ident(&param_name));
+            .binding_pattern_binding_identifier(cx.span(), cx.builder.ident(&param_name));
         if is_spread {
             rest_param = Some(cx.builder.alloc_formal_parameter_rest(
-                SPAN,
+                cx.span(),
                 cx.builder.vec(),
-                cx.builder.binding_rest_element(SPAN, pattern),
+                cx.builder.binding_rest_element(cx.span(), pattern),
                 NONE,
             ));
         } else {
-            param_items.push(cx.builder.plain_formal_parameter(SPAN, pattern));
+            param_items.push(cx.builder.plain_formal_parameter(cx.span(), pattern));
         }
     }
     let params = cx.builder.formal_parameters(
-        SPAN,
+        cx.span(),
         ast::FormalParameterKind::FormalParameter,
         param_items,
         rest_param,
@@ -5152,9 +5171,9 @@ fn lower_function_expression_via_reactive<'a>(
                             let expr =
                                 maybe_parenthesize_jsx(cx.builder, arg.clone_in(cx.allocator));
                             let expr_body = cx.builder.alloc(cx.builder.function_body(
-                                SPAN,
+                                cx.span(),
                                 cx.builder.vec(),
-                                cx.builder.vec1(cx.builder.statement_expression(SPAN, expr)),
+                                cx.builder.vec1(cx.builder.statement_expression(cx.span(), expr)),
                             ));
                             (true, expr_body)
                         }
@@ -5168,7 +5187,7 @@ fn lower_function_expression_via_reactive<'a>(
                 (false, body)
             };
             Some(cx.builder.expression_arrow_function(
-                SPAN,
+                cx.span(),
                 is_expression,
                 hir_func.async_,
                 NONE,
@@ -5178,9 +5197,9 @@ fn lower_function_expression_via_reactive<'a>(
             ))
         }
         _ => Some(cx.builder.expression_function(
-            SPAN,
+            cx.span(),
             ast::FunctionType::FunctionExpression,
-            name.map(|n| cx.builder.binding_identifier(SPAN, cx.builder.atom(n))),
+            name.map(|n| cx.builder.binding_identifier(cx.span(), cx.builder.atom(n))),
             hir_func.generator,
             hir_func.async_,
             false,
@@ -5269,15 +5288,15 @@ fn wrap_hook_guard_iife<'a>(
     cx.needs_function_hook_guard_wrapper = true;
 
     let guard_allow = cx.builder.statement_expression(
-        SPAN,
+        cx.span(),
         cx.builder.expression_call(
-            SPAN,
+            cx.span(),
             cx.builder
-                .expression_identifier(SPAN, cx.builder.ident(HOOK_GUARD_IDENT)),
+                .expression_identifier(cx.span(), cx.builder.ident(HOOK_GUARD_IDENT)),
             NONE,
             cx.builder
                 .vec1(ast::Argument::from(cx.builder.expression_numeric_literal(
-                    SPAN,
+                    cx.span(),
                     HOOK_GUARD_ALLOW as f64,
                     None,
                     NumberBase::Decimal,
@@ -5286,18 +5305,18 @@ fn wrap_hook_guard_iife<'a>(
         ),
     );
 
-    let return_stmt = cx.builder.statement_return(SPAN, Some(call_expr));
+    let return_stmt = cx.builder.statement_return(cx.span(), Some(call_expr));
 
     let guard_disallow = cx.builder.statement_expression(
-        SPAN,
+        cx.span(),
         cx.builder.expression_call(
-            SPAN,
+            cx.span(),
             cx.builder
-                .expression_identifier(SPAN, cx.builder.ident(HOOK_GUARD_IDENT)),
+                .expression_identifier(cx.span(), cx.builder.ident(HOOK_GUARD_IDENT)),
             NONE,
             cx.builder
                 .vec1(ast::Argument::from(cx.builder.expression_numeric_literal(
-                    SPAN,
+                    cx.span(),
                     HOOK_GUARD_DISALLOW as f64,
                     None,
                     NumberBase::Decimal,
@@ -5309,18 +5328,18 @@ fn wrap_hook_guard_iife<'a>(
     let try_body = cx.builder.vec_from_iter([guard_allow, return_stmt]);
 
     let try_stmt = cx.builder.statement_try(
-        SPAN,
-        cx.builder.alloc_block_statement(SPAN, try_body),
+        cx.span(),
+        cx.builder.alloc_block_statement(cx.span(), try_body),
         Option::<oxc_allocator::Box<'_, ast::CatchClause<'_>>>::None,
         Some(
             cx.builder
-                .alloc_block_statement(SPAN, cx.builder.vec1(guard_disallow)),
+                .alloc_block_statement(cx.span(), cx.builder.vec1(guard_disallow)),
         ),
     );
 
     let function_expr =
         cx.builder.expression_function(
-            SPAN,
+            cx.span(),
             ast::FunctionType::FunctionExpression,
             None,
             false,
@@ -5329,21 +5348,21 @@ fn wrap_hook_guard_iife<'a>(
             NONE,
             NONE,
             cx.builder.alloc(cx.builder.formal_parameters(
-                SPAN,
+                cx.span(),
                 ast::FormalParameterKind::FormalParameter,
                 cx.builder.vec(),
                 Option::<oxc_allocator::Box<'_, ast::FormalParameterRest<'_>>>::None,
             )),
             NONE,
             Some(cx.builder.alloc(cx.builder.function_body(
-                SPAN,
+                cx.span(),
                 cx.builder.vec(),
                 cx.builder.vec1(try_stmt),
             ))),
         );
 
     cx.builder.expression_call(
-        SPAN,
+        cx.span(),
         maybe_parenthesize_call_callee(cx.builder, function_expr),
         NONE,
         cx.builder.vec(),
