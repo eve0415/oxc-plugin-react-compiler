@@ -134,10 +134,11 @@ jobs:
       - name: Pack tarballs for attestation
         run: |
           mkdir -p attestation-subjects
+          dest="$(pwd)/attestation-subjects"
           for pkg in napi/npm/*/; do
-            pnpm pack "$pkg" --pack-destination attestation-subjects
+            (cd "$pkg" && pnpm pack --pack-destination "$dest")
           done
-          pnpm pack napi/ --pack-destination attestation-subjects
+          (cd napi && pnpm pack --pack-destination "$dest")
           echo "=== Attestation subjects ==="
           ls -l attestation-subjects/
         env:
