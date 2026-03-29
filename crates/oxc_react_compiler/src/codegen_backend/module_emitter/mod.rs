@@ -47,8 +47,9 @@ use instrumentation::{
 };
 use postprocess::{
     build_inserted_import_statement, build_runtime_import_merge_statement, codegen_program,
-    compact_simple_jsx_object_attributes, fix_gating_ternary_fallback_arrow_jsx,
-    fix_gating_ternary_line_breaks, fix_jsx_assignment_parens, fix_oxc_array_trailing_space,
+    codegen_program_with_source_map, compact_simple_jsx_object_attributes,
+    fix_gating_ternary_fallback_arrow_jsx, fix_gating_ternary_line_breaks,
+    fix_jsx_assignment_parens, fix_oxc_array_trailing_space,
     fix_unoptimized_function_param_wrapping, parse_statements,
 };
 use transform_flag::{canonicalize_initializer_expressions_in_statements, compute_transform_state};
@@ -371,26 +372,91 @@ fn try_emit_module(
         args.program.directives.clone_in(&allocator),
         body,
     );
-    let mut code = codegen_program(&program);
-    code = apply_internal_blank_line_markers(&code);
-    code = apply_memo_comment_markers(&code);
-    code = apply_blank_line_markers(state.source_type, &code, &blank_line_before);
-    code = transfer_blank_lines_from_original_source(&code, args.source, compiled);
-    code = move_leading_comment_to_import_trailing(&code, args.source);
-    if code.contains(FLOW_CAST_MARKER_HELPER) {
-        code = restore_flow_cast_marker_calls(&code);
+    let (mut code, raw_sourcemap) =
+        codegen_program_with_source_map(&program, Some(args.filename));
+
+    // Track line count changes from post-processing for sourcemap adjustment.
+    let mut line_delta: i32 = 0;
+    macro_rules! track_lines {
+        ($code:expr, $transform:expr) => {{
+            let before = $code.as_bytes().iter().filter(|&&b| b == b'\n').count();
+            $code = $transform;
+            let after = $code.as_bytes().iter().filter(|&&b| b == b'\n').count();
+            line_delta += after as i32 - before as i32;
+        }};
     }
-    code = compact_simple_jsx_object_attributes(&code);
-    code = fix_oxc_array_trailing_space(&code);
-    code = fix_gating_ternary_line_breaks(&code);
-    code = fix_gating_ternary_fallback_arrow_jsx(&code);
-    code = fix_unoptimized_function_param_wrapping(&code);
-    code = fix_jsx_assignment_parens(&code);
+
+    track_lines!(code, apply_internal_blank_line_markers(&code));
+    track_lines!(code, apply_memo_comment_markers(&code));
+    track_lines!(
+        code,
+        apply_blank_line_markers(state.source_type, &code, &blank_line_before)
+    );
+    track_lines!(
+        code,
+        transfer_blank_lines_from_original_source(&code, args.source, compiled)
+    );
+    track_lines!(
+        code,
+        move_leading_comment_to_import_trailing(&code, args.source)
+    );
+    if code.contains(FLOW_CAST_MARKER_HELPER) {
+        track_lines!(code, restore_flow_cast_marker_calls(&code));
+    }
+    track_lines!(code, compact_simple_jsx_object_attributes(&code));
+    track_lines!(code, fix_oxc_array_trailing_space(&code));
+    track_lines!(code, fix_gating_ternary_line_breaks(&code));
+    track_lines!(code, fix_gating_ternary_fallback_arrow_jsx(&code));
+    track_lines!(code, fix_unoptimized_function_param_wrapping(&code));
+    track_lines!(code, fix_jsx_assignment_parens(&code));
+
+    let map = raw_sourcemap.map(|sm| adjust_sourcemap(sm, line_delta).to_json_string());
+
     Ok(CompileResult {
         transformed: true,
         code,
-        map: None,
+        map,
     })
+}
+
+/// Adjust sourcemap token positions after post-processing transforms that
+/// add or remove lines. Applies a uniform line delta to all generated-side
+/// line positions. Column-level accuracy on modified lines is accepted as
+/// approximate (design decision: line-level accuracy is sufficient).
+/// Adjust sourcemap token positions after post-processing transforms that
+/// add or remove lines. Applies a uniform line delta to all generated-side
+/// line positions. Column-level accuracy on modified lines is accepted as
+/// approximate (design decision: line-level accuracy is sufficient).
+fn adjust_sourcemap(sm: oxc_sourcemap::SourceMap, line_delta: i32) -> oxc_sourcemap::SourceMap {
+    if line_delta == 0 {
+        return sm;
+    }
+    use std::sync::Arc;
+    let tokens: Vec<oxc_sourcemap::Token> = sm
+        .get_tokens()
+        .map(|t| {
+            let new_dst_line = (t.get_dst_line() as i64 + line_delta as i64).max(0) as u32;
+            oxc_sourcemap::Token::new(
+                new_dst_line,
+                t.get_dst_col(),
+                t.get_src_line(),
+                t.get_src_col(),
+                t.get_source_id(),
+                t.get_name_id(),
+            )
+        })
+        .collect();
+    oxc_sourcemap::SourceMap::new(
+        sm.get_file().map(|s| Arc::from(s.as_ref())),
+        sm.get_names().map(|s| Arc::from(s.as_ref())).collect(),
+        sm.get_source_root().map(|s| s.to_string()),
+        sm.get_sources().map(|s| Arc::from(s.as_ref())).collect(),
+        sm.get_source_contents()
+            .map(|c| c.map(|s| Arc::from(s.as_ref())))
+            .collect(),
+        tokens.into_boxed_slice(),
+        None,
+    )
 }
 
 fn build_render_state(args: ModuleEmitArgs<'_>, compiled: &[CompiledFunction]) -> AstRenderState {

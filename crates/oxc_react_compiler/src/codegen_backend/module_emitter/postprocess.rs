@@ -125,7 +125,7 @@ pub(super) fn codegen_program(program: &ast::Program<'_>) -> String {
 pub(super) fn codegen_program_with_source_map(
     program: &ast::Program<'_>,
     source_map_path: Option<&str>,
-) -> (String, Option<String>) {
+) -> (String, Option<oxc_sourcemap::SourceMap>) {
     let options = CodegenOptions {
         indent_char: IndentChar::Space,
         indent_width: 2,
@@ -133,8 +133,7 @@ pub(super) fn codegen_program_with_source_map(
         ..CodegenOptions::default()
     };
     let result = Codegen::new().with_options(options).build(program);
-    let map = result.map.map(|sm| sm.to_json_string());
-    (result.code, map)
+    (result.code, result.map)
 }
 
 pub(super) fn compact_simple_jsx_object_attributes(code: &str) -> String {
