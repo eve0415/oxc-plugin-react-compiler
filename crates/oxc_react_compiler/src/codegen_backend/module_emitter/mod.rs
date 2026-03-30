@@ -378,7 +378,8 @@ fn try_emit_module(
     };
     let (mut code, raw_sourcemap) = codegen_program_with_source_map(&program, source_map_path);
 
-    // Track line count changes from post-processing for sourcemap adjustment.
+    // Remaining Category A/B post-processing transforms (markers, blank lines, comments).
+    // These will be migrated to AST-level in Phase 2; for now, track line deltas.
     let mut line_delta: i32 = 0;
     macro_rules! track_lines {
         ($code:expr, $transform:expr) => {{
@@ -406,8 +407,6 @@ fn try_emit_module(
     if code.contains(FLOW_CAST_MARKER_HELPER) {
         track_lines!(code, restore_flow_cast_marker_calls(&code));
     }
-    // Category C cosmetic transforms removed for sourcemap accuracy.
-    // Conformance normalization handles these formatting differences.
 
     let map = raw_sourcemap.map(|sm| adjust_sourcemap(sm, line_delta).to_json_string());
 
