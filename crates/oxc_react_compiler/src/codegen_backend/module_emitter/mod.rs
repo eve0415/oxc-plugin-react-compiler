@@ -374,7 +374,12 @@ fn try_emit_module(
         args.program.directives.clone_in(&allocator),
         body,
     );
-    let (mut code, raw_sourcemap) = codegen_program_with_source_map(&program, Some(args.filename));
+    let source_map_path = if args.options.source_map {
+        Some(args.filename)
+    } else {
+        None
+    };
+    let (mut code, raw_sourcemap) = codegen_program_with_source_map(&program, source_map_path);
 
     // Track line count changes from post-processing for sourcemap adjustment.
     let mut line_delta: i32 = 0;

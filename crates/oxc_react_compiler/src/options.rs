@@ -68,6 +68,8 @@ pub struct PluginOptions {
     /// Whether to report suppression errors for Flow suppressions.
     /// Set via `@flowSuppressions` / `@enableFlowSuppressions` pragma.
     pub flow_suppressions: bool,
+    /// Whether to generate source maps for transformed output.
+    pub source_map: bool,
 }
 
 impl Default for PluginOptions {
@@ -84,6 +86,7 @@ impl Default for PluginOptions {
             no_emit: false,
             eslint_suppression_rules: None,
             flow_suppressions: true, // upstream default is true
+            source_map: true,
         }
     }
 }
