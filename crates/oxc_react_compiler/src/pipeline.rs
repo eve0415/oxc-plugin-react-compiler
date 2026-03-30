@@ -7938,10 +7938,7 @@ fn check_body_for_unused_directives(
     for directive in &body.directives {
         let value = directive.expression.value.as_str();
         if OPT_OUT_DIRECTIVES.contains(&value)
-            || options
-                .custom_opt_out_directives
-                .iter()
-                .any(|d| d == value)
+            || options.custom_opt_out_directives.iter().any(|d| d == value)
         {
             diagnostics.push(CompilerDiagnostic {
                 severity: crate::error::DiagnosticSeverity::InvalidReact,
@@ -8005,12 +8002,8 @@ fn lint_statement<'a>(
                     {
                         return;
                     }
-                    if !should_compile_function(
-                        name,
-                        body,
-                        &func.params,
-                        options.compilation_mode,
-                    ) {
+                    if !should_compile_function(name, body, &func.params, options.compilation_mode)
+                    {
                         return;
                     }
                     diagnostics.extend(lint_function(
@@ -8153,12 +8146,7 @@ fn lint_var_declarator<'a>(
                 {
                     return;
                 }
-                if !should_compile_function(
-                    fn_name,
-                    body,
-                    &func.params,
-                    options.compilation_mode,
-                ) {
+                if !should_compile_function(fn_name, body, &func.params, options.compilation_mode) {
                     return;
                 }
                 diagnostics.extend(lint_function(
@@ -8322,6 +8310,189 @@ mod tests {
         assert_eq!(
             extract_emitted_directives(body),
             vec!["\"use no forget\"", "\"use memo\""]
+        );
+    }
+
+    // ── Lint integration tests ─────────────────────────────
+
+    #[test]
+    fn lint_basic_produces_diagnostics() {
+        let source = r#"function Component() {
+  const ref = useRef(null);
+  console.log(ref.current);
+  return <div />;
+}"#;
+        let opts = PluginOptions::default();
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        assert!(
+            !diagnostics.is_empty(),
+            "should produce diagnostics for ref access in render"
+        );
+    }
+
+    #[test]
+    fn lint_module_opt_out_returns_empty() {
+        let source = r#"'use no memo';
+function Component() {
+  const ref = useRef(null);
+  console.log(ref.current);
+  return <div />;
+}"#;
+        let opts = PluginOptions::default();
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        assert!(
+            diagnostics.is_empty(),
+            "should skip file with module-level 'use no memo'"
+        );
+    }
+
+    #[test]
+    fn lint_function_opt_out_skips_function() {
+        let source = r#"function GoodComponent() {
+  return <div />;
+}
+function BadComponent() {
+  'use no memo';
+  const ref = useRef(null);
+  console.log(ref.current);
+  return <div />;
+}"#;
+        let opts = PluginOptions::default();
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        // BadComponent has 'use no memo' so its ref access violation should be skipped.
+        // GoodComponent is clean, so the only diagnostics would be from BadComponent if not skipped.
+        // Since BadComponent is opted out and GoodComponent is clean, we should get unused directive diagnostics.
+        let has_ref_diag = diagnostics
+            .iter()
+            .any(|d| d.category == crate::error::ErrorCategory::Refs);
+        assert!(
+            !has_ref_diag,
+            "should not report ref access for opted-out function"
+        );
+    }
+
+    #[test]
+    fn lint_compilation_mode_annotation_skips_non_annotated() {
+        let source = r#"function Component() {
+  const ref = useRef(null);
+  console.log(ref.current);
+  return <div />;
+}"#;
+        let opts = PluginOptions {
+            compilation_mode: crate::options::CompilationMode::Annotation,
+            ..PluginOptions::default()
+        };
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        assert!(
+            diagnostics.is_empty(),
+            "should skip non-annotated function in Annotation mode"
+        );
+    }
+
+    #[test]
+    fn lint_compilation_mode_annotation_lints_annotated() {
+        let source = r#"function Component() {
+  'use memo';
+  const ref = useRef(null);
+  console.log(ref.current);
+  return <div />;
+}"#;
+        let opts = PluginOptions {
+            compilation_mode: crate::options::CompilationMode::Annotation,
+            ..PluginOptions::default()
+        };
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        assert!(
+            !diagnostics.is_empty(),
+            "should lint annotated function in Annotation mode"
+        );
+    }
+
+    #[test]
+    fn lint_unused_directive_detection() {
+        let source = r#"function Component() {
+  'use no forget';
+  return <div>Hello</div>;
+}"#;
+        let opts = PluginOptions::default();
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        let unused = diagnostics
+            .iter()
+            .filter(|d| d.category == crate::error::ErrorCategory::UnusedDirective)
+            .collect::<Vec<_>>();
+        assert!(
+            !unused.is_empty(),
+            "should report unused 'use no forget' directive"
+        );
+        assert!(
+            unused[0].message.contains("Unused"),
+            "message should mention unused"
+        );
+    }
+
+    #[test]
+    fn lint_unused_directive_not_reported_when_errors_exist() {
+        // This function has both an error (ref access in render) and an opt-out directive.
+        // When a function has opt-out, it's skipped from linting, so no errors are collected.
+        // But since the function is opted out, unused directive detection won't be confused.
+        //
+        // For the file-level check: if ANY function has errors, unused directives aren't reported.
+        // Let's test with two functions: one clean with opt-out, one with errors.
+        let source = r#"function BadComponent() {
+  const ref = useRef(null);
+  console.log(ref.current);
+  return <div />;
+}
+function GoodComponent() {
+  'use no forget';
+  return <div />;
+}"#;
+        let opts = PluginOptions::default();
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        // BadComponent has errors -> all_diagnostics is non-empty
+        // -> unused directive detection is skipped entirely
+        let unused = diagnostics
+            .iter()
+            .filter(|d| d.category == crate::error::ErrorCategory::UnusedDirective)
+            .count();
+        assert_eq!(
+            unused, 0,
+            "should NOT report unused directives when file has other errors"
+        );
+    }
+
+    #[test]
+    fn lint_env_config_affects_validation() {
+        let source = r#"function Component() {
+  const [x, setX] = useState(0);
+  useEffect(() => {
+    setX(1);
+  }, []);
+  return x;
+}"#;
+        // With validate_no_set_state_in_effects=false, no errors should be reported for setState in effect
+        let opts_off = PluginOptions {
+            environment: crate::options::EnvironmentConfig {
+                validate_no_set_state_in_effects: false,
+                ..crate::options::EnvironmentConfig::default()
+            },
+            ..PluginOptions::default()
+        };
+        let diags_off = super::lint("test.jsx", source, &opts_off);
+
+        let opts_on = PluginOptions {
+            environment: crate::options::EnvironmentConfig {
+                validate_no_set_state_in_effects: true,
+                ..crate::options::EnvironmentConfig::default()
+            },
+            ..PluginOptions::default()
+        };
+        let diags_on = super::lint("test.jsx", source, &opts_on);
+
+        // When validation is on, we may get more diagnostics than when it's off
+        assert!(
+            diags_on.len() >= diags_off.len(),
+            "enabling setState-in-effect validation should produce same or more diagnostics"
         );
     }
 }

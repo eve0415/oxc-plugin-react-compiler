@@ -1,6 +1,7 @@
 {
   "type": "module",
   "imports": {
+    "#binding": "./napi/dist/index.js",
     "#*": [
       "./src/*",
       "./src/*.ts",
@@ -24,6 +25,7 @@
     "@typescript/native-preview": "7.0.0-dev.20260328.1",
     "acorn": "8.16.0",
     "babel-plugin-react-compiler": "1.0.0",
+    "eslint": "^10.1.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "vite": "npm:@voidzero-dev/vite-plus-core@0.1.14",

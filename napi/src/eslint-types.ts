@@ -15,11 +15,12 @@ export interface NapiRelatedDiagnostic {
   endColumn: number;
 }
 
-/** A suggestion for fixing the diagnostic. */
+/** A suggestion for fixing the diagnostic (as returned by the NAPI binding). */
 export interface NapiSuggestion {
   description: string;
   op: string;
-  range: [number, number];
+  rangeStart: number;
+  rangeEnd: number;
   text?: string;
 }
 

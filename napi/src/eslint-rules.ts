@@ -38,31 +38,32 @@ const RULE_DEFINITIONS: RuleDefinition[] = [
 
 const makeSuggestions = (suggestions: NapiSuggestion[]): Rule.SuggestionReportDescriptor[] =>
   suggestions.map(suggestion => {
+    const range: [number, number] = [suggestion.rangeStart, suggestion.rangeEnd];
     switch (suggestion.op) {
       case 'insert-before':
         return {
           desc: suggestion.description,
-          fix: (fixer: Rule.RuleFixer) => fixer.insertTextBeforeRange(suggestion.range, suggestion.text ?? ''),
+          fix: (fixer: Rule.RuleFixer) => fixer.insertTextBeforeRange(range, suggestion.text ?? ''),
         };
       case 'insert-after':
         return {
           desc: suggestion.description,
-          fix: (fixer: Rule.RuleFixer) => fixer.insertTextAfterRange(suggestion.range, suggestion.text ?? ''),
+          fix: (fixer: Rule.RuleFixer) => fixer.insertTextAfterRange(range, suggestion.text ?? ''),
         };
       case 'replace':
         return {
           desc: suggestion.description,
-          fix: (fixer: Rule.RuleFixer) => fixer.replaceTextRange(suggestion.range, suggestion.text ?? ''),
+          fix: (fixer: Rule.RuleFixer) => fixer.replaceTextRange(range, suggestion.text ?? ''),
         };
       case 'remove':
         return {
           desc: suggestion.description,
-          fix: (fixer: Rule.RuleFixer) => fixer.removeRange(suggestion.range),
+          fix: (fixer: Rule.RuleFixer) => fixer.removeRange(range),
         };
       default:
         return {
           desc: suggestion.description,
-          fix: (fixer: Rule.RuleFixer) => fixer.replaceTextRange(suggestion.range, suggestion.text ?? ''),
+          fix: (fixer: Rule.RuleFixer) => fixer.replaceTextRange(range, suggestion.text ?? ''),
         };
     }
   });
@@ -205,7 +206,7 @@ const noUnusedDirectivesRule: Rule.RuleModule = {
           end: { line: diag.endLine ?? diag.startLine, column: diag.endColumn ?? diag.startColumn },
         },
         fix: hasFix
-          ? (fixer: Rule.RuleFixer) => fixer.removeRange(diag.suggestions[0].range)
+          ? (fixer: Rule.RuleFixer) => fixer.removeRange([diag.suggestions[0].rangeStart, diag.suggestions[0].rangeEnd])
           : undefined,
       });
     }

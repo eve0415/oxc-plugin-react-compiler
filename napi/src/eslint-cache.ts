@@ -1,8 +1,27 @@
+import { createRequire } from 'node:module';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import type { NapiLintDiagnostic, OxcReactCompilerOptions } from './eslint-types';
 
 const CACHE_SIZE = 20;
 const cache = new Map<string, { sourceText: string; optionsKey: string; diagnostics: NapiLintDiagnostic[] }>();
 const insertionOrder: string[] = [];
+
+type LintFn = (filename: string, source: string, options?: OxcReactCompilerOptions) => NapiLintDiagnostic[];
+
+let _lint: LintFn | undefined;
+const getLint = (): LintFn => {
+  if (_lint != null) return _lint;
+  // Load the native binding from the dist directory.
+  // createRequire is used for ESM→CJS interop with the .node binary loader.
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const bindingPath = resolve(__dirname, '..', 'dist', 'index.js');
+  const req = createRequire(bindingPath);
+  const binding = req(bindingPath) as { lint: LintFn };
+  _lint = binding.lint;
+  return _lint;
+};
 
 export const getLintResults = (
   filename: string,
@@ -15,11 +34,7 @@ export const getLintResults = (
     return entry.diagnostics;
   }
 
-  // Dynamic import to avoid loading native binding until needed.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { lint } = require('#binding') as {
-    lint: (filename: string, source: string, options?: OxcReactCompilerOptions) => NapiLintDiagnostic[];
-  };
+  const lint = getLint();
   const diagnostics = lint(filename, sourceText, options);
 
   // Evict oldest entry if at capacity

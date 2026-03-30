@@ -27,4 +27,4 @@ const configs: Record<string, Linter.Config> = {
 };
 
 export { configs, meta, rules };
-export default { meta, rules, configs };
+export default { meta, rules, configs } as { meta: typeof meta; rules: typeof rules; configs: typeof configs };
