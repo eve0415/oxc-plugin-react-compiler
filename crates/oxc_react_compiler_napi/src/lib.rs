@@ -403,9 +403,26 @@ pub struct NapiLintDiagnostic {
 // ── Conversion helpers ───────────────────────────────────────────
 
 fn convert_diagnostic(diag: oxc_react_compiler::error::LintDiagnostic) -> NapiLintDiagnostic {
+    // Enrich message with related diagnostic locations (always-on)
+    let message = if diag.related.is_empty() {
+        diag.message
+    } else {
+        let mut msg = diag.message;
+        for r in &diag.related {
+            use std::fmt::Write;
+            write!(
+                msg,
+                " (see also: line {}, col {} -- {})",
+                r.start_line, r.start_column, r.message
+            )
+            .unwrap();
+        }
+        msg
+    };
+
     NapiLintDiagnostic {
         category: format!("{:?}", diag.category),
-        message: diag.message,
+        message,
         severity: diag.severity.to_string(),
         start_line: if diag.has_location {
             Some(diag.start_line)
