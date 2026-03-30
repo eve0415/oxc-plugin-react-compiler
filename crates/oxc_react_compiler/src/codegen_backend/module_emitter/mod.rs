@@ -364,11 +364,25 @@ fn try_emit_module(
         blank_line_before.push(false);
     }
 
+    // Filter out comments inside compiled function bodies. The compiler
+    // reconstructs function bodies from the IR, so arbitrary original
+    // comments (e.g., $FlowFixMe) within compiled regions are not
+    // preserved — matching upstream Babel behavior.
+    let filtered_comments = {
+        let mut comments = args.program.comments.clone_in(&allocator);
+        comments.retain(|comment| {
+            !compiled
+                .iter()
+                .any(|cf| comment.span.start > cf.start && comment.span.end < cf.end)
+        });
+        comments
+    };
+
     let program = builder.program(
         SPAN,
         state.source_type,
         allocator.alloc_str(args.source),
-        args.program.comments.clone_in(&allocator),
+        filtered_comments,
         args.program.hashbang.clone_in(&allocator),
         args.program.directives.clone_in(&allocator),
         body,
