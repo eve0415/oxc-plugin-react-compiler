@@ -1444,7 +1444,6 @@ function MyComponent(props) {
             let src_line = token.get_src_line() as usize;
             let src_col = token.get_src_col() as usize;
             let dst_line = token.get_dst_line() as usize;
-            let dst_col = token.get_dst_col() as usize;
 
             // Verify source line is within bounds.
             assert!(
@@ -1540,7 +1539,6 @@ function MyComponent(props) {
             let src_line = token.get_src_line() as usize;
             let src_col = token.get_src_col() as usize;
             let dst_line = token.get_dst_line() as usize;
-            let dst_col = token.get_dst_col() as usize;
 
             assert!(
                 src_line < source_lines.len(),
@@ -1663,8 +1661,9 @@ function MyComponent(props) {
 
     #[test]
     fn roundtrip_catch_forloop_same_name() {
-        let source =
-            include_str!("../../../../../tests/fixtures/compiler/catch-forloop-same-name-variable.jsx");
+        let source = include_str!(
+            "../../../../../tests/fixtures/compiler/catch-forloop-same-name-variable.jsx"
+        );
         validate_sourcemap_round_trip(source, "catch-forloop-same-name-variable.jsx");
     }
 
@@ -1678,8 +1677,9 @@ function MyComponent(props) {
 
     #[test]
     fn roundtrip_local_function_extra_memo() {
-        let source =
-            include_str!("../../../../../tests/fixtures/compiler/local-function-call-extra-memo.jsx");
+        let source = include_str!(
+            "../../../../../tests/fixtures/compiler/local-function-call-extra-memo.jsx"
+        );
         validate_sourcemap_round_trip(source, "local-function-call-extra-memo.jsx");
     }
 
@@ -1701,25 +1701,22 @@ function MyComponent(props) {
 
     #[test]
     fn roundtrip_shadcn_dialog() {
-        let source = include_str!(
-            "../../../../../tests/fixtures/shadcn-app/src/components/ui/Dialog.tsx"
-        );
+        let source =
+            include_str!("../../../../../tests/fixtures/shadcn-app/src/components/ui/Dialog.tsx");
         validate_sourcemap_round_trip(source, "Dialog.tsx");
     }
 
     #[test]
     fn roundtrip_shadcn_dashboard() {
-        let source = include_str!(
-            "../../../../../tests/fixtures/shadcn-app/src/components/Dashboard.tsx"
-        );
+        let source =
+            include_str!("../../../../../tests/fixtures/shadcn-app/src/components/Dashboard.tsx");
         validate_sourcemap_round_trip(source, "Dashboard.tsx");
     }
 
     #[test]
     fn roundtrip_shadcn_button() {
-        let source = include_str!(
-            "../../../../../tests/fixtures/shadcn-app/src/components/ui/Button.tsx"
-        );
+        let source =
+            include_str!("../../../../../tests/fixtures/shadcn-app/src/components/ui/Button.tsx");
         validate_sourcemap_round_trip(source, "Button.tsx");
     }
 
