@@ -808,4 +808,339 @@ mod tests {
         assert!(!result.transformed);
         assert!(result.map.is_none(), "no sourcemap for untransformed code");
     }
+
+    #[test]
+    fn sourcemap_disabled_via_option() {
+        let source = "function Component(props) { return <div>{props.x}</div>; }";
+        let options = crate::options::PluginOptions {
+            source_map: false,
+            ..crate::options::PluginOptions::default()
+        };
+        let result = crate::compile("test.js", source, &options);
+        assert!(result.transformed, "should still transform");
+        assert!(
+            result.map.is_none(),
+            "no sourcemap when source_map option is false"
+        );
+    }
+
+    #[test]
+    fn sourcemap_has_debug_id() {
+        let result =
+            compile_to_result("function Component(props) { return <div>{props.x}</div>; }");
+        let map_json = result.map.as_ref().expect("sourcemap should exist");
+        let parsed: serde_json::Value = serde_json::from_str(map_json).unwrap();
+        let debug_id = parsed["debugId"]
+            .as_str()
+            .expect("sourcemap should have debugId");
+        // UUID v4 format: 8-4-4-4-12 hex chars
+        assert_eq!(debug_id.len(), 36, "debugId should be 36 chars (UUID)");
+        assert_eq!(
+            debug_id.chars().filter(|c| *c == '-').count(),
+            4,
+            "debugId should have 4 dashes"
+        );
+    }
+
+    // --- Token-level verification helpers ---
+
+    /// Decode a sourcemap JSON string and return the SourceMap object.
+    fn decode_sourcemap(json: &str) -> oxc_sourcemap::SourceMap {
+        oxc_sourcemap::SourceMap::from_json_string(json).expect("valid sourcemap JSON")
+    }
+
+    /// Find a token in the generated code that maps to the given source line (0-based).
+    /// Returns (generated_line, generated_col, source_line, source_col).
+    fn find_token_for_source_line(
+        sm: &oxc_sourcemap::SourceMap,
+        src_line: u32,
+    ) -> Option<(u32, u32, u32, u32)> {
+        sm.get_tokens().find_map(|t| {
+            if t.get_src_line() == src_line {
+                Some((
+                    t.get_dst_line(),
+                    t.get_dst_col(),
+                    t.get_src_line(),
+                    t.get_src_col(),
+                ))
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Check that a specific source line has at least one mapping in the sourcemap.
+    fn assert_source_line_mapped(sm: &oxc_sourcemap::SourceMap, src_line: u32, desc: &str) {
+        assert!(
+            find_token_for_source_line(sm, src_line).is_some(),
+            "source line {} ({}) should have a mapping",
+            src_line,
+            desc
+        );
+    }
+
+    /// Check that generated code at a given line (0-based) maps back to the
+    /// expected source line (0-based). Finds any token on the generated line
+    /// and checks its source position.
+    #[allow(dead_code)]
+    fn assert_generated_line_maps_to(
+        sm: &oxc_sourcemap::SourceMap,
+        gen_line: u32,
+        expected_src_line: u32,
+        desc: &str,
+    ) {
+        let token = sm
+            .get_tokens()
+            .find(|t| t.get_dst_line() == gen_line)
+            .unwrap_or_else(|| panic!("no token found at generated line {} ({})", gen_line, desc));
+        assert_eq!(
+            token.get_src_line(),
+            expected_src_line,
+            "generated line {} ({}) should map to source line {}, but maps to {}",
+            gen_line,
+            desc,
+            expected_src_line,
+            token.get_src_line()
+        );
+    }
+
+    // --- Token-level verification tests ---
+
+    #[test]
+    fn sourcemap_simple_component_tokens() {
+        // Fixture 1: simple component with basic JSX
+        let source = r#"function Component(props) {
+  return <div>{props.x}</div>;
+}"#;
+        let result = compile_to_result(source);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        // Source line 0: function declaration
+        assert_source_line_mapped(&sm, 0, "function Component declaration");
+        // Source line 1: return statement with JSX
+        assert_source_line_mapped(&sm, 1, "return <div>{props.x}</div>");
+    }
+
+    #[test]
+    fn sourcemap_multiple_reactive_scopes() {
+        // Fixture 2: component with multiple reactive scopes (cache guards visible)
+        let source = r#"function Component(props) {
+  const a = props.x + 1;
+  const b = props.y * 2;
+  return <div a={a} b={b} />;
+}"#;
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        // All source lines should have mappings
+        assert_source_line_mapped(&sm, 0, "function declaration");
+        assert_source_line_mapped(&sm, 1, "const a = props.x + 1");
+        assert_source_line_mapped(&sm, 2, "const b = props.y * 2");
+        assert_source_line_mapped(&sm, 3, "return JSX");
+    }
+
+    #[test]
+    fn sourcemap_hooks_and_closures() {
+        // Fixture 3: hooks + closures (variable renaming visible)
+        let source = r#"function Component(props) {
+  const [count, setCount] = useState(0);
+  const handler = () => {
+    setCount(count + 1);
+  };
+  return <button onClick={handler}>{count}</button>;
+}"#;
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        assert_source_line_mapped(&sm, 0, "function declaration");
+        assert_source_line_mapped(&sm, 1, "useState");
+        assert_source_line_mapped(&sm, 2, "handler arrow function");
+    }
+
+    #[test]
+    fn sourcemap_multi_function_file() {
+        // Fixture 4: multiple functions in one file
+        let source = r#"function ComponentA(props) {
+  return <div>{props.a}</div>;
+}
+
+function ComponentB(props) {
+  return <span>{props.b}</span>;
+}"#;
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        // Both function declarations should be mapped
+        assert_source_line_mapped(&sm, 0, "ComponentA declaration");
+        assert_source_line_mapped(&sm, 4, "ComponentB declaration");
+    }
+
+    #[test]
+    fn sourcemap_partial_compilation() {
+        // Fixture 5: one function bails out, one compiles
+        let source = r#"function helper(x) { return x + 1; }
+function Component(props) {
+  return <div>{props.x}</div>;
+}"#;
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        // Both should have mappings (identity for untouched, correct for compiled)
+        assert_source_line_mapped(&sm, 0, "helper (untouched)");
+        assert_source_line_mapped(&sm, 1, "Component declaration");
+    }
+
+    #[test]
+    fn sourcemap_typescript() {
+        // Fixture 7: TypeScript with type annotations
+        let source = r#"function Component(props: { x: number }) {
+  const y: number = props.x + 1;
+  return <div>{y}</div>;
+}"#;
+        let mut options = crate::options::PluginOptions::default();
+        options.compilation_mode = crate::options::CompilationMode::Infer;
+        let result = crate::compile("test.tsx", source, &options);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        assert_source_line_mapped(&sm, 0, "function with TS types");
+        assert_source_line_mapped(&sm, 1, "typed const");
+    }
+
+    #[test]
+    fn sourcemap_nested_components() {
+        // Fixture 8: nested components
+        let source = r#"function Outer(props) {
+  function Inner() {
+    return <span>inner</span>;
+  }
+  return <div><Inner /></div>;
+}"#;
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        assert_source_line_mapped(&sm, 0, "Outer declaration");
+        assert_source_line_mapped(&sm, 1, "Inner declaration");
+    }
+
+    #[test]
+    fn sourcemap_conditional_rendering() {
+        // Fixture 10: conditional rendering with if/else
+        let source = r#"function Component(props) {
+  const x = props.a;
+  if (x) {
+    return <div>yes</div>;
+  }
+  return <span>no</span>;
+}"#;
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        assert_source_line_mapped(&sm, 0, "function declaration");
+        assert_source_line_mapped(&sm, 1, "const x");
+    }
+
+    #[test]
+    fn sourcemap_complex_jsx() {
+        // Fixture 11: complex JSX (fragments, spread props)
+        let source = r#"function Component(props) {
+  const extra = { className: "foo" };
+  return (
+    <>
+      <div {...extra}>{props.children}</div>
+      <span key="a">text</span>
+    </>
+  );
+}"#;
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        assert_source_line_mapped(&sm, 0, "function declaration");
+        assert_source_line_mapped(&sm, 1, "const extra");
+    }
+
+    #[test]
+    fn sourcemap_for_loop() {
+        // Extra: for loop with mutation
+        let source = r#"function Component(props) {
+  const items = [];
+  for (let i = 0; i < props.count; i++) {
+    items.push(i);
+  }
+  return <div>{items.length}</div>;
+}"#;
+        let mut options = crate::options::PluginOptions::default();
+        options.compilation_mode = crate::options::CompilationMode::All;
+        let result = crate::compile("test.js", source, &options);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        assert_source_line_mapped(&sm, 0, "function declaration");
+        assert_source_line_mapped(&sm, 2, "for loop");
+    }
+
+    #[test]
+    fn sourcemap_token_count_reasonable() {
+        // Verify that sourcemaps have a reasonable number of tokens
+        // (not zero, not absurdly high)
+        let source = r#"function Component(props) {
+  const x = props.a + 1;
+  return <div>{x}</div>;
+}"#;
+        let result = compile_to_result(source);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+        let token_count = sm.get_tokens().count();
+        assert!(
+            token_count > 5,
+            "sourcemap should have more than 5 tokens, got {}",
+            token_count
+        );
+        assert!(
+            token_count < 500,
+            "sourcemap should have fewer than 500 tokens, got {}",
+            token_count
+        );
+    }
+
+    #[test]
+    fn sourcemap_all_tokens_have_valid_source() {
+        // All tokens should reference a valid source index
+        let source = "function Component(props) { return <div>{props.x}</div>; }";
+        let result = compile_to_result(source);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+        let source_count = sm.get_sources().count() as u32;
+        for token in sm.get_tokens() {
+            if let Some(src_id) = token.get_source_id() {
+                assert!(
+                    src_id < source_count,
+                    "token source_id {} exceeds source count {}",
+                    src_id,
+                    source_count
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sourcemap_unique_debug_ids() {
+        // Two compilations should produce different debugIds
+        let source = "function Component(props) { return <div>{props.x}</div>; }";
+        let result1 = compile_to_result(source);
+        let result2 = compile_to_result(source);
+        let parsed1: serde_json::Value =
+            serde_json::from_str(result1.map.as_ref().unwrap()).unwrap();
+        let parsed2: serde_json::Value =
+            serde_json::from_str(result2.map.as_ref().unwrap()).unwrap();
+        assert_ne!(
+            parsed1["debugId"], parsed2["debugId"],
+            "different compilations should have different debugIds"
+        );
+    }
 }
