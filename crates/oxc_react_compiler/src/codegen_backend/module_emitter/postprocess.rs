@@ -1263,4 +1263,138 @@ function Component(props) {
             "virtual source should be in sources array"
         );
     }
+
+    #[test]
+    fn sourcemap_partial_compilation_identity_mapping() {
+        // When one function bails out and another compiles, the untouched
+        // function's code should still have sourcemap entries pointing to
+        // correct source positions (identity mapping).
+        let source = r#"function helper(x) { return x + 1; }
+function Component(props) {
+  return <div>{props.x}</div>;
+}"#;
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        // The helper function (untouched) is at source line 0.
+        // Verify it has tokens mapping to source line 0.
+        assert_source_line_mapped(&sm, 0, "helper function (untouched)");
+
+        // The Component (compiled) is at source line 1.
+        assert_source_line_mapped(&sm, 1, "Component function (compiled)");
+
+        // Verify tokens for the helper map to approximately the same generated line
+        // (identity-ish mapping — the helper should be near the top of output too).
+        let helper_tokens: Vec<_> = sm.get_tokens().filter(|t| t.get_src_line() == 0).collect();
+        assert!(
+            !helper_tokens.is_empty(),
+            "helper function should have sourcemap tokens"
+        );
+        // The first token for source line 0 should be at generated line 0 or close to it
+        let first_helper_gen_line = helper_tokens[0].get_dst_line();
+        assert!(
+            first_helper_gen_line <= 2,
+            "helper function should be near the top of generated output, got line {}",
+            first_helper_gen_line
+        );
+    }
+
+    #[test]
+    fn sourcemap_hoc_pattern() {
+        // Fixture 9: Higher-order component pattern
+        let source = r#"function withLogging(WrappedComponent) {
+  function EnhancedComponent(props) {
+    console.log("render");
+    return <WrappedComponent {...props} />;
+  }
+  return EnhancedComponent;
+}
+function MyComponent(props) {
+  return <div>{props.name}</div>;
+}"#;
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        // Both function declarations should have mappings
+        assert_source_line_mapped(&sm, 0, "withLogging declaration");
+        assert_source_line_mapped(&sm, 7, "MyComponent declaration");
+    }
+
+    #[test]
+    fn sourcemap_token_positions_monotonic() {
+        // Generated lines in sourcemap tokens should be monotonically non-decreasing
+        // (sourcemaps require tokens to be ordered by generated position).
+        let result = compile_to_result(
+            "function Component(props) { const x = props.a + 1; return <div>{x}</div>; }",
+        );
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+        let mut prev_line = 0u32;
+        let mut prev_col = 0u32;
+        for token in sm.get_tokens() {
+            let line = token.get_dst_line();
+            let col = token.get_dst_col();
+            if line == prev_line {
+                assert!(
+                    col >= prev_col,
+                    "tokens on same generated line should have non-decreasing columns: \
+                     prev={}:{}, curr={}:{}",
+                    prev_line,
+                    prev_col,
+                    line,
+                    col
+                );
+            } else {
+                assert!(
+                    line >= prev_line,
+                    "generated lines should be non-decreasing: prev={}, curr={}",
+                    prev_line,
+                    line
+                );
+            }
+            prev_line = line;
+            prev_col = col;
+        }
+    }
+
+    #[test]
+    fn sourcemap_manual_token_verification() {
+        // Manual verification: compile a known source and check specific token mappings.
+        // Source is on one line so we can verify precisely.
+        let source = "function Component(props) {\n  return <div>{props.x}</div>;\n}";
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        // Collect all user-source tokens (exclude virtual generated source)
+        let sources: Vec<_> = sm.get_sources().collect();
+        let virtual_idx = sources
+            .iter()
+            .position(|s| s.as_ref() == "compiler://react-compiler/generated")
+            .map(|i| i as u32);
+
+        let user_tokens: Vec<_> = sm
+            .get_tokens()
+            .filter(|t| t.get_source_id() != virtual_idx)
+            .collect();
+
+        // There should be user tokens (not all generated)
+        assert!(
+            !user_tokens.is_empty(),
+            "should have user-source tokens, not all generated"
+        );
+
+        // At least one token should map to source line 0 (function declaration)
+        assert!(
+            user_tokens.iter().any(|t| t.get_src_line() == 0),
+            "should have tokens mapping to function declaration (line 0)"
+        );
+
+        // At least one token should map to source line 1 (return statement)
+        assert!(
+            user_tokens.iter().any(|t| t.get_src_line() == 1),
+            "should have tokens mapping to return statement (line 1)"
+        );
+    }
 }
