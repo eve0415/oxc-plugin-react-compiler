@@ -7758,6 +7758,236 @@ fn byte_offset_to_line_col(offset: u32, line_starts: &[u32]) -> (u32, u32) {
     ((line as u32) + 1, column) // 1-based line, 0-based column
 }
 
+// =========================================================================
+// ESLint suppression comment parsing (matching upstream Suppression.ts)
+// =========================================================================
+
+/// Default ESLint rules that cause function-level bailout when suppressed.
+/// Matches upstream `DEFAULT_ESLINT_SUPPRESSIONS` in Program.ts.
+const DEFAULT_ESLINT_SUPPRESSION_RULES: &[&str] =
+    &["react-hooks/exhaustive-deps", "react-hooks/rules-of-hooks"];
+
+/// A range in the source where an ESLint suppression is active.
+struct SuppressionRange {
+    /// Byte offset of the disable comment start.
+    disable_start: u32,
+    /// Byte offset of the disable comment end.
+    disable_end: u32,
+    /// Byte offset of the enable comment end, or None if the suppression
+    /// extends to the end of the file.
+    enable_end: Option<u32>,
+    /// Trimmed text of the disable comment (for diagnostic messages).
+    comment_text: String,
+}
+
+/// Check whether a comment body matches `eslint-disable-next-line <rule>`.
+fn is_disable_next_line(comment_body: &str, rules: &[&str]) -> bool {
+    let trimmed = comment_body.trim();
+    let Some(rest) = trimmed.strip_prefix("eslint-disable-next-line") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    if rest.is_empty() {
+        return false;
+    }
+    rules.iter().any(|rule| rest.contains(rule))
+}
+
+/// Check whether a comment body matches `eslint-disable <rule>` (block open).
+fn is_disable_block(comment_body: &str, rules: &[&str]) -> bool {
+    let trimmed = comment_body.trim();
+    let Some(rest) = trimmed.strip_prefix("eslint-disable") else {
+        return false;
+    };
+    // Reject eslint-disable-next-line and eslint-disable-line
+    if rest.starts_with('-') {
+        return false;
+    }
+    let rest = rest.trim_start();
+    if rest.is_empty() {
+        return false;
+    }
+    rules.iter().any(|rule| rest.contains(rule))
+}
+
+/// Check whether a comment body matches `eslint-enable <rule>` (block close).
+fn is_enable_block(comment_body: &str, rules: &[&str]) -> bool {
+    let trimmed = comment_body.trim();
+    let Some(rest) = trimmed.strip_prefix("eslint-enable") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    if rest.is_empty() {
+        return false;
+    }
+    rules.iter().any(|rule| rest.contains(rule))
+}
+
+/// Scan source text for ESLint suppression comments, returning ranges.
+/// Supports `eslint-disable-next-line` and `eslint-disable`/`eslint-enable` pairs.
+fn find_eslint_suppressions(source: &str, rules: &[&str]) -> Vec<SuppressionRange> {
+    if rules.is_empty() {
+        return Vec::new();
+    }
+
+    let mut ranges = Vec::new();
+    let bytes = source.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    // Track pending eslint-disable block (only one at a time, matching upstream)
+    let mut pending_disable: Option<(u32, u32, String)> = None; // (start, end, text)
+
+    while i < len {
+        if bytes[i] == b'/' && i + 1 < len {
+            if bytes[i + 1] == b'/' {
+                // Line comment: // ...
+                let comment_start = i as u32;
+                let body_start = i + 2;
+                let line_end = bytes[body_start..]
+                    .iter()
+                    .position(|&b| b == b'\n')
+                    .map_or(len, |p| body_start + p);
+                let comment_end = line_end as u32;
+                let body = &source[body_start..line_end];
+
+                if is_disable_next_line(body, rules) {
+                    ranges.push(SuppressionRange {
+                        disable_start: comment_start,
+                        disable_end: comment_end,
+                        enable_end: Some(comment_end),
+                        comment_text: body.trim().to_string(),
+                    });
+                } else if is_disable_block(body, rules) {
+                    if pending_disable.is_none() {
+                        pending_disable =
+                            Some((comment_start, comment_end, body.trim().to_string()));
+                    }
+                } else if is_enable_block(body, rules)
+                    && let Some((ds, de, text)) = pending_disable.take()
+                {
+                    ranges.push(SuppressionRange {
+                        disable_start: ds,
+                        disable_end: de,
+                        enable_end: Some(comment_end),
+                        comment_text: text,
+                    });
+                }
+                i = line_end;
+                continue;
+            } else if bytes[i + 1] == b'*' {
+                // Block comment: /* ... */
+                let comment_start = i as u32;
+                let body_start = i + 2;
+                let block_end = source[body_start..]
+                    .find("*/")
+                    .map_or(len, |p| body_start + p + 2);
+                let comment_end = block_end as u32;
+                let body = &source[body_start..block_end.saturating_sub(2)];
+
+                if is_disable_next_line(body, rules) {
+                    ranges.push(SuppressionRange {
+                        disable_start: comment_start,
+                        disable_end: comment_end,
+                        enable_end: Some(comment_end),
+                        comment_text: body.trim().to_string(),
+                    });
+                } else if is_disable_block(body, rules) {
+                    if pending_disable.is_none() {
+                        pending_disable =
+                            Some((comment_start, comment_end, body.trim().to_string()));
+                    }
+                } else if is_enable_block(body, rules)
+                    && let Some((ds, de, text)) = pending_disable.take()
+                {
+                    ranges.push(SuppressionRange {
+                        disable_start: ds,
+                        disable_end: de,
+                        enable_end: Some(comment_end),
+                        comment_text: text,
+                    });
+                }
+                i = block_end;
+                continue;
+            }
+        }
+        // Skip string literals to avoid matching inside strings
+        if bytes[i] == b'"' || bytes[i] == b'\'' || bytes[i] == b'`' {
+            let quote = bytes[i];
+            i += 1;
+            while i < len && bytes[i] != quote {
+                if bytes[i] == b'\\' {
+                    i += 1; // skip escaped char
+                }
+                i += 1;
+            }
+            if i < len {
+                i += 1; // skip closing quote
+            }
+            continue;
+        }
+        i += 1;
+    }
+
+    // If there's a pending eslint-disable without a matching eslint-enable,
+    // it affects the rest of the file.
+    if let Some((ds, de, text)) = pending_disable.take() {
+        ranges.push(SuppressionRange {
+            disable_start: ds,
+            disable_end: de,
+            enable_end: None, // rest of file
+            comment_text: text,
+        });
+    }
+
+    ranges
+}
+
+/// Check whether any suppression range affects the given function span.
+/// A suppression affects a function if it is within the function body or wraps it.
+fn filter_suppressions_for_function(
+    suppressions: &[SuppressionRange],
+    fn_start: u32,
+    fn_end: u32,
+) -> Vec<&SuppressionRange> {
+    suppressions
+        .iter()
+        .filter(|s| {
+            let effective_end = s.enable_end.unwrap_or(u32::MAX);
+            // Suppression is within the function
+            let within = s.disable_start > fn_start && effective_end < fn_end;
+            // Suppression wraps the function
+            let wraps = s.disable_start < fn_start && effective_end > fn_end;
+            within || wraps
+        })
+        .collect()
+}
+
+/// Create suppression diagnostics for a function that is being skipped.
+fn make_suppression_diagnostics(matching: &[&SuppressionRange]) -> Vec<CompilerDiagnostic> {
+    matching
+        .iter()
+        .map(|s| CompilerDiagnostic {
+            severity: crate::error::DiagnosticSeverity::InvalidReact,
+            message: format!(
+                "React Compiler has skipped optimizing this component because one or more React ESLint rules were disabled. React Compiler only works when your components follow all the rules of React, disabling them may result in unexpected or incorrect behavior. Found suppression `{}`",
+                s.comment_text
+            ),
+            category: ErrorCategory::Suppression,
+            span: Some(oxc_span::Span::new(s.disable_start, s.disable_end)),
+            related: vec![crate::error::RelatedDiagnostic {
+                message: "Found React rule suppression".to_string(),
+                span: Some(oxc_span::Span::new(s.disable_start, s.disable_end)),
+            }],
+            suggestions: vec![crate::error::CompilerSuggestion::Remove {
+                description: "Remove the ESLint suppression and address the React error"
+                    .to_string(),
+                range: (s.disable_start, s.disable_end),
+            }],
+        })
+        .collect()
+}
+
 /// Lint a single source file. Runs the full compilation pipeline in lint mode
 /// on every function, collecting all diagnostics.
 pub fn lint(filename: &str, source: &str, options: &PluginOptions) -> Vec<LintDiagnostic> {
@@ -7832,11 +8062,25 @@ pub fn lint(filename: &str, source: &str, options: &PluginOptions) -> Vec<LintDi
     let semantic_ret = oxc_semantic::SemanticBuilder::new().build(&program);
     let semantic = semantic_ret.semantic;
 
+    // Find ESLint suppression comments (matching upstream Suppression.ts)
+    let suppression_rules: Vec<&str> = match &options.eslint_suppression_rules {
+        Some(rules) => rules.iter().map(String::as_str).collect(),
+        None => DEFAULT_ESLINT_SUPPRESSION_RULES.to_vec(),
+    };
+    let suppressions = find_eslint_suppressions(source, &suppression_rules);
+
     let mut all_diagnostics = Vec::new();
 
     // Lint every function in the program
     for stmt in &program.body {
-        lint_statement(stmt, source, &semantic, &options, &mut all_diagnostics);
+        lint_statement(
+            stmt,
+            source,
+            &semantic,
+            &options,
+            &suppressions,
+            &mut all_diagnostics,
+        );
     }
 
     // Unused directive detection: only when file has zero other diagnostics (matches upstream)
@@ -7961,6 +8205,7 @@ fn lint_statement<'a>(
     source: &str,
     semantic: &oxc_semantic::Semantic<'a>,
     options: &PluginOptions,
+    suppressions: &[SuppressionRange],
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
     match stmt {
@@ -7974,6 +8219,12 @@ fn lint_statement<'a>(
                     return;
                 }
                 if !should_compile_function(name, body, &func.params, options.compilation_mode) {
+                    return;
+                }
+                let matching =
+                    filter_suppressions_for_function(suppressions, func.span.start, func.span.end);
+                if !matching.is_empty() {
+                    diagnostics.extend(make_suppression_diagnostics(&matching));
                     return;
                 }
                 diagnostics.extend(lint_function(
@@ -8006,6 +8257,15 @@ fn lint_statement<'a>(
                     {
                         return;
                     }
+                    let matching = filter_suppressions_for_function(
+                        suppressions,
+                        func.span.start,
+                        func.span.end,
+                    );
+                    if !matching.is_empty() {
+                        diagnostics.extend(make_suppression_diagnostics(&matching));
+                        return;
+                    }
                     diagnostics.extend(lint_function(
                         body,
                         &func.params,
@@ -8033,6 +8293,15 @@ fn lint_statement<'a>(
                 ) {
                     return;
                 }
+                let matching = filter_suppressions_for_function(
+                    suppressions,
+                    arrow.span.start,
+                    arrow.span.end,
+                );
+                if !matching.is_empty() {
+                    diagnostics.extend(make_suppression_diagnostics(&matching));
+                    return;
+                }
                 diagnostics.extend(lint_function(
                     &arrow.body,
                     &arrow.params,
@@ -8049,12 +8318,12 @@ fn lint_statement<'a>(
         },
         ast::Statement::ExportNamedDeclaration(export) => {
             if let Some(decl) = &export.declaration {
-                lint_declaration(decl, source, semantic, options, diagnostics);
+                lint_declaration(decl, source, semantic, options, suppressions, diagnostics);
             }
         }
         ast::Statement::VariableDeclaration(var_decl) => {
             for decl in &var_decl.declarations {
-                lint_var_declarator(decl, source, semantic, options, diagnostics);
+                lint_var_declarator(decl, source, semantic, options, suppressions, diagnostics);
             }
         }
         _ => {}
@@ -8066,6 +8335,7 @@ fn lint_declaration<'a>(
     source: &str,
     semantic: &oxc_semantic::Semantic<'a>,
     options: &PluginOptions,
+    suppressions: &[SuppressionRange],
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
     match decl {
@@ -8079,6 +8349,12 @@ fn lint_declaration<'a>(
                     return;
                 }
                 if !should_compile_function(name, body, &func.params, options.compilation_mode) {
+                    return;
+                }
+                let matching =
+                    filter_suppressions_for_function(suppressions, func.span.start, func.span.end);
+                if !matching.is_empty() {
+                    diagnostics.extend(make_suppression_diagnostics(&matching));
                     return;
                 }
                 diagnostics.extend(lint_function(
@@ -8096,7 +8372,7 @@ fn lint_declaration<'a>(
         }
         ast::Declaration::VariableDeclaration(var_decl) => {
             for decl in &var_decl.declarations {
-                lint_var_declarator(decl, source, semantic, options, diagnostics);
+                lint_var_declarator(decl, source, semantic, options, suppressions, diagnostics);
             }
         }
         _ => {}
@@ -8108,6 +8384,7 @@ fn lint_var_declarator<'a>(
     source: &str,
     semantic: &oxc_semantic::Semantic<'a>,
     options: &PluginOptions,
+    suppressions: &[SuppressionRange],
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
     let name = match &decl.id {
@@ -8124,6 +8401,12 @@ fn lint_var_declarator<'a>(
             }
             if !should_compile_function(name, &arrow.body, &arrow.params, options.compilation_mode)
             {
+                return;
+            }
+            let matching =
+                filter_suppressions_for_function(suppressions, arrow.span.start, arrow.span.end);
+            if !matching.is_empty() {
+                diagnostics.extend(make_suppression_diagnostics(&matching));
                 return;
             }
             diagnostics.extend(lint_function(
@@ -8147,6 +8430,12 @@ fn lint_var_declarator<'a>(
                     return;
                 }
                 if !should_compile_function(fn_name, body, &func.params, options.compilation_mode) {
+                    return;
+                }
+                let matching =
+                    filter_suppressions_for_function(suppressions, func.span.start, func.span.end);
+                if !matching.is_empty() {
+                    diagnostics.extend(make_suppression_diagnostics(&matching));
                     return;
                 }
                 diagnostics.extend(lint_function(
@@ -8493,6 +8782,151 @@ function GoodComponent() {
         assert!(
             diags_on.len() >= diags_off.len(),
             "enabling setState-in-effect validation should produce same or more diagnostics"
+        );
+    }
+
+    // ── ESLint suppression tests ──────────────────────────────────────
+
+    #[test]
+    fn lint_suppression_eslint_disable_next_line() {
+        let source = r#"function Component() {
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const x = useMemo(() => 1);
+  return <div>{x}</div>;
+}"#;
+        let opts = PluginOptions::default();
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        let suppression = diagnostics
+            .iter()
+            .filter(|d| d.category == crate::error::ErrorCategory::Suppression)
+            .count();
+        assert!(
+            suppression > 0,
+            "should emit Suppression diagnostic for eslint-disable-next-line"
+        );
+    }
+
+    #[test]
+    fn lint_suppression_eslint_disable_enable_block() {
+        let source = r#"/* eslint-disable react-hooks/rules-of-hooks */
+function Component() {
+  const x = useState(0);
+  return <div>{x}</div>;
+}
+/* eslint-enable react-hooks/rules-of-hooks */"#;
+        let opts = PluginOptions::default();
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        let suppression = diagnostics
+            .iter()
+            .filter(|d| d.category == crate::error::ErrorCategory::Suppression)
+            .count();
+        assert!(
+            suppression > 0,
+            "should emit Suppression diagnostic for eslint-disable/enable block"
+        );
+    }
+
+    #[test]
+    fn lint_suppression_empty_rules_disables_checking() {
+        let source = r#"function Component() {
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const x = useMemo(() => 1);
+  return <div>{x}</div>;
+}"#;
+        let opts = PluginOptions {
+            eslint_suppression_rules: Some(vec![]),
+            ..PluginOptions::default()
+        };
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        let suppression = diagnostics
+            .iter()
+            .filter(|d| d.category == crate::error::ErrorCategory::Suppression)
+            .count();
+        assert_eq!(
+            suppression, 0,
+            "empty eslintSuppressionRules should disable suppression checking"
+        );
+    }
+
+    #[test]
+    fn lint_suppression_default_rules() {
+        // Verify default rules (react-hooks/*) are used when eslintSuppressionRules is None
+        let source = r#"function Component() {
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const x = useState(0);
+  return <div>{x}</div>;
+}"#;
+        let opts = PluginOptions {
+            eslint_suppression_rules: None,
+            ..PluginOptions::default()
+        };
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        let suppression = diagnostics
+            .iter()
+            .filter(|d| d.category == crate::error::ErrorCategory::Suppression)
+            .count();
+        assert!(
+            suppression > 0,
+            "None eslintSuppressionRules should use default rules"
+        );
+    }
+
+    #[test]
+    fn lint_suppression_wraps_function() {
+        let source = r#"/* eslint-disable react-hooks/exhaustive-deps */
+function Component() {
+  return <div />;
+}"#;
+        let opts = PluginOptions::default();
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        let suppression = diagnostics
+            .iter()
+            .filter(|d| d.category == crate::error::ErrorCategory::Suppression)
+            .count();
+        assert!(
+            suppression > 0,
+            "suppression wrapping a function should still trigger diagnostic"
+        );
+    }
+
+    #[test]
+    fn lint_suppression_unrelated_rule_ignored() {
+        let source = r#"function Component() {
+  // eslint-disable-next-line no-unused-vars
+  const x = 1;
+  return <div>{x}</div>;
+}"#;
+        let opts = PluginOptions::default();
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        let suppression = diagnostics
+            .iter()
+            .filter(|d| d.category == crate::error::ErrorCategory::Suppression)
+            .count();
+        assert_eq!(
+            suppression, 0,
+            "unrelated eslint-disable rule should not trigger suppression"
+        );
+    }
+
+    #[test]
+    fn lint_suppression_custom_rules() {
+        let source = r#"function Component() {
+  // eslint-disable-next-line my-custom-rule
+  const x = useState(0);
+  return <div>{x}</div>;
+}"#;
+        let opts = PluginOptions {
+            eslint_suppression_rules: Some(vec!["my-custom-rule".to_string()]),
+            ..PluginOptions::default()
+        };
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        let suppression = diagnostics
+            .iter()
+            .filter(|d| d.category == crate::error::ErrorCategory::Suppression)
+            .count();
+        assert!(
+            suppression > 0,
+            "custom eslintSuppressionRules should trigger suppression"
         );
     }
 }
