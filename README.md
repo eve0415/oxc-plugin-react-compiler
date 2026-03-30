@@ -31,9 +31,9 @@ npm install oxc-plugin-react-compiler
 ## Usage
 
 ```ts
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import { reactCompilerOxc } from 'oxc-plugin-react-compiler'
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import { reactCompilerOxc } from 'oxc-plugin-react-compiler';
 
 export default defineConfig({
   plugins: [
@@ -45,7 +45,7 @@ export default defineConfig({
     }),
     react(),
   ],
-})
+});
 ```
 
 ## Experimental Nature
@@ -58,7 +58,7 @@ This project serves as an experiment to explore AI-assisted development in compl
 - [x] Align behavior exactly with the upstream React Compiler (verified via conformance tests).
 - [x] Provide seamless integration with **Vite v8** via the included Vite plugin.
 - [x] Publish to npm for easy installation.
-- [ ] Source map support.
+- [x] Source map support.
 - [ ] Future exploration: Add support for SWC alongside OXC.
 
 ## Architecture Overview
