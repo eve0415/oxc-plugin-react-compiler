@@ -1658,4 +1658,82 @@ function MyComponent(props) {
         );
         validate_sourcemap_round_trip(source, "aliased-nested-scope-fn-expr.tsx");
     }
+
+    // --- Round-trip tests: custom compiler fixtures (tests/fixtures/compiler/) ---
+
+    #[test]
+    fn roundtrip_catch_forloop_same_name() {
+        let source =
+            include_str!("../../../../../tests/fixtures/compiler/catch-forloop-same-name-variable.jsx");
+        validate_sourcemap_round_trip(source, "catch-forloop-same-name-variable.jsx");
+    }
+
+    #[test]
+    fn roundtrip_closure_scope_leak() {
+        let source = include_str!(
+            "../../../../../tests/fixtures/compiler/closure-multiple-calls-scope-leak.jsx"
+        );
+        validate_sourcemap_round_trip(source, "closure-multiple-calls-scope-leak.jsx");
+    }
+
+    #[test]
+    fn roundtrip_local_function_extra_memo() {
+        let source =
+            include_str!("../../../../../tests/fixtures/compiler/local-function-call-extra-memo.jsx");
+        validate_sourcemap_round_trip(source, "local-function-call-extra-memo.jsx");
+    }
+
+    #[test]
+    fn roundtrip_conditional_extra_scope() {
+        let source =
+            include_str!("../../../../../tests/fixtures/compiler/conditional-expr-extra-scope.jsx");
+        validate_sourcemap_round_trip(source, "conditional-expr-extra-scope.jsx");
+    }
+
+    #[test]
+    fn roundtrip_labeled_block_scoping_tsx() {
+        let source =
+            include_str!("../../../../../tests/fixtures/compiler/labeled-block-scoping.tsx");
+        validate_sourcemap_round_trip(source, "labeled-block-scoping.tsx");
+    }
+
+    // --- Round-trip tests: shadcn real-world components ---
+
+    #[test]
+    fn roundtrip_shadcn_dialog() {
+        let source = include_str!(
+            "../../../../../tests/fixtures/shadcn-app/src/components/ui/Dialog.tsx"
+        );
+        validate_sourcemap_round_trip(source, "Dialog.tsx");
+    }
+
+    #[test]
+    fn roundtrip_shadcn_dashboard() {
+        let source = include_str!(
+            "../../../../../tests/fixtures/shadcn-app/src/components/Dashboard.tsx"
+        );
+        validate_sourcemap_round_trip(source, "Dashboard.tsx");
+    }
+
+    #[test]
+    fn roundtrip_shadcn_button() {
+        let source = include_str!(
+            "../../../../../tests/fixtures/shadcn-app/src/components/ui/Button.tsx"
+        );
+        validate_sourcemap_round_trip(source, "Button.tsx");
+    }
+
+    #[test]
+    fn roundtrip_shadcn_tabs() {
+        let source =
+            include_str!("../../../../../tests/fixtures/shadcn-app/src/components/ui/Tabs.tsx");
+        validate_sourcemap_round_trip(source, "Tabs.tsx");
+    }
+
+    #[test]
+    fn roundtrip_shadcn_select() {
+        let source =
+            include_str!("../../../../../tests/fixtures/shadcn-app/src/components/ui/Select.tsx");
+        validate_sourcemap_round_trip(source, "Select.tsx");
+    }
 }
