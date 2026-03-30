@@ -3619,7 +3619,7 @@ fn compute_effects_for_legacy_signature(
     lvalue: &Place,
     receiver: &Place,
     args: &[ApplyArg],
-    _loc: &SourceLocation,
+    loc: &SourceLocation,
 ) -> Vec<AliasingEffect> {
     let debug_apply = std::env::var("DEBUG_APPLY_SIGNATURE").is_ok();
     let return_value_reason = signature.return_value_reason.unwrap_or(ValueReason::Other);
@@ -3645,7 +3645,10 @@ fn compute_effects_for_legacy_signature(
                         .unwrap_or(" ".to_string())
                 ),
                 category: ErrorCategory::Immutability,
-                span: None,
+                span: match loc {
+                    SourceLocation::Source(range) => Some(range.original_span),
+                    SourceLocation::Generated => None,
+                },
                 ..Default::default()
             },
         });

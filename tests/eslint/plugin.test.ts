@@ -1,4 +1,7 @@
+import type { Rule } from 'eslint';
+
 import { describe, it, expect } from 'vite-plus/test';
+import { RuleTester } from 'eslint';
 
 import { configs, meta, rules } from '../../napi/src/eslint.js';
 import { normalizeIndent, testRule } from './shared-utils.js';
@@ -59,5 +62,69 @@ describe('plugin recommended rules', () => {
       },
     ],
     invalid: [],
+  });
+});
+
+/**
+ * TestRecommendedRules: aggregates all recommended rules and runs them together.
+ * Port of upstream's TestRecommendedRules pattern — catches cross-rule interactions.
+ */
+const TestRecommendedRules: Rule.RuleModule = {
+  meta: {
+    type: 'problem',
+    schema: [{ type: 'object', additionalProperties: true }],
+  },
+  create(context) {
+    const recommendedRuleEntries = Object.entries(configs.recommended.rules ?? {});
+    for (const [fullName] of recommendedRuleEntries) {
+      const shortName = fullName.replace('oxc-react-compiler/', '');
+      const ruleModule = rules[shortName];
+      if (ruleModule) {
+        ruleModule.create(context);
+      }
+    }
+    return {};
+  },
+};
+
+describe('aggregated recommended rules', () => {
+  const tester = new RuleTester({
+    languageOptions: {
+      ecmaVersion: 2024,
+      sourceType: 'module',
+      parserOptions: { ecmaFeatures: { jsx: true } },
+    },
+  });
+
+  it('valid: simple component passes all recommended rules', () => {
+    tester.run('aggregated', TestRecommendedRules, {
+      valid: [
+        {
+          name: 'Simple valid component',
+          code: normalizeIndent`
+            function Component() {
+              return <div>Hello</div>;
+            }
+          `,
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  it('valid: class does not crash aggregated rules', () => {
+    tester.run('aggregated', TestRecommendedRules, {
+      valid: [
+        {
+          name: 'Class does not crash',
+          code: normalizeIndent`
+            class Foo {
+              bar() {}
+            }
+          `,
+        },
+      ],
+      invalid: [],
+    });
   });
 });
