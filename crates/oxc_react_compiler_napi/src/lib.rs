@@ -54,8 +54,44 @@ pub struct NapiEnvironmentConfig {
     pub enable_reset_cache_on_source_file_changes: Option<bool>,
     pub throw_unknown_exception_testonly: Option<bool>,
 
-    // Complex configs (hook pattern only — complex nested configs skipped for NAPI)
+    // Complex configs
     pub hook_pattern: Option<String>,
+    pub infer_effect_dependencies: Option<Vec<NapiInferEffectDepsConfig>>,
+    pub inline_jsx_transform: Option<NapiInlineJsxTransformConfig>,
+    pub lower_context_access: Option<NapiLowerContextAccessConfig>,
+    pub custom_macros: Option<Vec<NapiCustomMacroConfig>>,
+}
+
+/// Upstream-compatible shape: `{ function: { source, importSpecifierName }, autodepsIndex }`
+#[napi(object)]
+pub struct NapiInferEffectDepsConfig {
+    pub function: NapiExternalFunction,
+    pub autodeps_index: u32,
+}
+
+#[napi(object)]
+pub struct NapiExternalFunction {
+    pub source: String,
+    pub import_specifier_name: String,
+}
+
+#[napi(object)]
+pub struct NapiInlineJsxTransformConfig {
+    pub element_symbol: String,
+    pub global_dev_var: String,
+}
+
+#[napi(object)]
+pub struct NapiLowerContextAccessConfig {
+    pub module: String,
+    pub imported_name: String,
+}
+
+/// Custom macro config. `props` is `['*']` for wildcard, `['name']` for named property.
+#[napi(object)]
+pub struct NapiCustomMacroConfig {
+    pub name: String,
+    pub props: Vec<String>,
 }
 
 fn merge_env_config(
@@ -134,6 +170,55 @@ fn merge_env_config(
     // Hook pattern
     if let Some(v) = n.hook_pattern {
         env.hook_pattern = Some(v);
+    }
+
+    // Complex configs
+    if let Some(v) = n.infer_effect_dependencies {
+        use oxc_react_compiler::options::InferEffectDepsConfig;
+        env.infer_effect_dependencies = Some(
+            v.into_iter()
+                .map(|c| InferEffectDepsConfig {
+                    function_module: c.function.source,
+                    function_name: c.function.import_specifier_name,
+                    autodeps_index: c.autodeps_index as usize,
+                })
+                .collect(),
+        );
+    }
+    if let Some(v) = n.inline_jsx_transform {
+        use oxc_react_compiler::options::InlineJsxTransformConfig;
+        env.inline_jsx_transform = Some(InlineJsxTransformConfig {
+            element_symbol: v.element_symbol,
+            global_dev_var: v.global_dev_var,
+        });
+    }
+    if let Some(v) = n.lower_context_access {
+        use oxc_react_compiler::options::LowerContextAccessConfig;
+        env.lower_context_access = Some(LowerContextAccessConfig {
+            module: v.module,
+            imported_name: v.imported_name,
+        });
+    }
+    if let Some(v) = n.custom_macros {
+        use oxc_react_compiler::options::{CustomMacroConfig, MacroProp};
+        env.custom_macros = Some(
+            v.into_iter()
+                .map(|c| CustomMacroConfig {
+                    name: c.name,
+                    props: c
+                        .props
+                        .into_iter()
+                        .map(|p| {
+                            if p == "*" {
+                                MacroProp::Wildcard
+                            } else {
+                                MacroProp::Name(p)
+                            }
+                        })
+                        .collect(),
+                })
+                .collect(),
+        );
     }
 
     env

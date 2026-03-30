@@ -71,6 +71,13 @@ export interface OxcReactCompilerEnvironment {
   enableTreatRefLikeIdentifiersAsRefs?: boolean;
   enableTreatSetIdentifiersAsStateSetters?: boolean;
   hookPattern?: string;
+  inferEffectDependencies?: Array<{
+    function: { source: string; importSpecifierName: string };
+    autodepsIndex: number;
+  }>;
+  inlineJsxTransform?: { elementSymbol: string; globalDevVar: string };
+  lowerContextAccess?: { module: string; importedName: string };
+  customMacros?: Array<{ name: string; props: Array<string | '*'> }>;
   [key: string]: unknown;
 }
 
