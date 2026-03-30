@@ -47,3 +47,42 @@ export interface RuleDefinition {
   description: string;
   recommended: boolean;
 }
+
+/** Environment configuration for the React Compiler. */
+export interface OxcReactCompilerEnvironment {
+  validateHooksUsage?: boolean;
+  validateRefAccessDuringRender?: boolean;
+  validateNoSetStateInRender?: boolean;
+  validateNoSetStateInEffects?: boolean;
+  validateNoDerivedComputationsInEffects?: boolean;
+  validateNoJsxInTryStatements?: boolean;
+  validateStaticComponents?: boolean;
+  validateMemoizedEffectDependencies?: boolean;
+  validateNoCapitalizedCalls?: string[];
+  validateNoImpureFunctionsInRender?: boolean;
+  validateNoFreezingKnownMutableFunctions?: boolean;
+  validateNoVoidUseMemo?: boolean;
+  validateBlocklistedImports?: string[];
+  validatePreserveExistingMemoizationGuarantees?: boolean;
+  validateNoDynamicallyCreatedComponentsOrHooks?: boolean;
+  enableFire?: boolean;
+  enableUseTypeAnnotations?: boolean;
+  enableTreatRefLikeIdentifiersAsRefs?: boolean;
+  enableTreatSetIdentifiersAsStateSetters?: boolean;
+  hookPattern?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Options accepted by each ESLint rule via `context.options[0]`.
+ * Mirrors upstream's PluginOptions structure.
+ */
+export interface OxcReactCompilerOptions {
+  compilationMode?: 'infer' | 'annotation' | 'all';
+  target?: string;
+  environment?: OxcReactCompilerEnvironment;
+  customOptOutDirectives?: string[];
+  ignoreUseNoForget?: boolean;
+  eslintSuppressionRules?: string[];
+  flowSuppressions?: boolean;
+}

@@ -1,6 +1,6 @@
 import type { Linter, Rule } from 'eslint';
 
-import type { ErrorSeverity, NapiSuggestion, RuleDefinition } from './eslint-types';
+import type { ErrorSeverity, NapiSuggestion, OxcReactCompilerOptions, RuleDefinition } from './eslint-types';
 import { getLintResults } from './eslint-cache';
 
 // ── Rule definition table (26 ErrorCategory rules) ─────────────────
@@ -67,6 +67,52 @@ const makeSuggestions = (suggestions: NapiSuggestion[]): Rule.SuggestionReportDe
     }
   });
 
+// ── ESLint suppression comment parsing ────────────────────────────
+
+const DISABLE_NEXT_LINE_RE = /eslint-disable-next-line\s+(.+)/;
+const DISABLE_LINE_RE = /eslint-disable-line\s+(.+)/;
+
+/**
+ * Build a set of line numbers where specific ESLint rules are suppressed.
+ * Returns a Set of line numbers where compiler diagnostics should be skipped.
+ */
+function buildSuppressionLines(
+  sourceCode: { getAllComments: () => Array<{ value: string; loc?: { start: { line: number }; end: { line: number } } }> },
+  eslintSuppressionRules: string[],
+): Set<number> {
+  const suppressedLines = new Set<number>();
+  if (eslintSuppressionRules.length === 0) return suppressedLines;
+
+  const ruleSet = new Set(eslintSuppressionRules);
+  const comments = sourceCode.getAllComments();
+
+  for (const comment of comments) {
+    if (comment.loc == null) continue;
+    const value = comment.value.trim();
+
+    // eslint-disable-next-line rule1, rule2
+    const nextLineMatch = DISABLE_NEXT_LINE_RE.exec(value);
+    if (nextLineMatch != null) {
+      const rules = nextLineMatch[1].split(',').map(r => r.trim());
+      if (rules.some(r => ruleSet.has(r))) {
+        suppressedLines.add(comment.loc.end.line + 1);
+      }
+      continue;
+    }
+
+    // eslint-disable-line rule1, rule2
+    const lineMatch = DISABLE_LINE_RE.exec(value);
+    if (lineMatch != null) {
+      const rules = lineMatch[1].split(',').map(r => r.trim());
+      if (rules.some(r => ruleSet.has(r))) {
+        suppressedLines.add(comment.loc.start.line);
+      }
+    }
+  }
+
+  return suppressedLines;
+}
+
 // ── makeRule factory ───────────────────────────────────────────────
 
 const makeRule = (ruleDef: RuleDefinition): Rule.RuleModule => ({
@@ -83,14 +129,27 @@ const makeRule = (ruleDef: RuleDefinition): Rule.RuleModule => ({
   create(context: Rule.RuleContext): Rule.RuleListener {
     const sourceCode = context.sourceCode ?? context.getSourceCode();
     const filename = context.filename ?? context.getFilename();
+    const userOpts = (context.options[0] ?? {}) as OxcReactCompilerOptions;
 
-    const diagnostics = getLintResults(filename, sourceCode.text);
+    const diagnostics = getLintResults(filename, sourceCode.text, userOpts);
+
+    // Build suppression lines if eslintSuppressionRules is configured
+    const eslintSuppressionRules = userOpts.eslintSuppressionRules ?? [];
+    const suppressedLines =
+      eslintSuppressionRules.length > 0
+        ? buildSuppressionLines(sourceCode as Parameters<typeof buildSuppressionLines>[0], eslintSuppressionRules)
+        : null;
 
     for (const diag of diagnostics) {
       if (diag.category !== ruleDef.category) {
         continue;
       }
       if (diag.startLine == null || diag.startColumn == null) {
+        continue;
+      }
+
+      // Skip if line is suppressed by an eslint-disable comment for a configured rule
+      if (suppressedLines != null && suppressedLines.has(diag.startLine)) {
         continue;
       }
 
@@ -108,7 +167,7 @@ const makeRule = (ruleDef: RuleDefinition): Rule.RuleModule => ({
   },
 });
 
-// ── no-unused-directives (special rule) ────────────────────────────
+// ── no-unused-directives (special rule — auto-fix) ────────────────
 
 const noUnusedDirectivesRule: Rule.RuleModule = {
   meta: {
@@ -124,8 +183,9 @@ const noUnusedDirectivesRule: Rule.RuleModule = {
   create(context: Rule.RuleContext): Rule.RuleListener {
     const sourceCode = context.sourceCode ?? context.getSourceCode();
     const filename = context.filename ?? context.getFilename();
+    const userOpts = (context.options[0] ?? {}) as OxcReactCompilerOptions;
 
-    const diagnostics = getLintResults(filename, sourceCode.text);
+    const diagnostics = getLintResults(filename, sourceCode.text, userOpts);
 
     for (const diag of diagnostics) {
       if (diag.category !== 'UnusedDirective') {
@@ -135,13 +195,18 @@ const noUnusedDirectivesRule: Rule.RuleModule = {
         continue;
       }
 
+      // Auto-fix: remove the unused directive
+      const hasFix = diag.suggestions.length > 0 && diag.suggestions[0].op === 'remove';
+
       context.report({
         message: diag.message,
         loc: {
           start: { line: diag.startLine, column: diag.startColumn },
           end: { line: diag.endLine ?? diag.startLine, column: diag.endColumn ?? diag.startColumn },
         },
-        suggest: makeSuggestions(diag.suggestions),
+        fix: hasFix
+          ? (fixer: Rule.RuleFixer) => fixer.removeRange(diag.suggestions[0].range)
+          : undefined,
       });
     }
 
