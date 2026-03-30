@@ -3571,4 +3571,169 @@ export const FIXTURE_ENTRYPOINT = {
         );
         assert!(rewritten.contains("return load;"), "rewritten={rewritten}");
     }
+
+    // --- Unit tests for adjust_sourcemap_positional ---
+
+    /// Build a SourceMap with tokens at the given (dst_line, dst_col, src_line, src_col) positions.
+    fn build_test_sourcemap(tokens: &[(u32, u32, u32, u32)]) -> oxc_sourcemap::SourceMap {
+        use std::sync::Arc;
+        let tokens: Vec<oxc_sourcemap::Token> = tokens
+            .iter()
+            .map(|&(dl, dc, sl, sc)| oxc_sourcemap::Token::new(dl, dc, sl, sc, Some(0), None))
+            .collect();
+        oxc_sourcemap::SourceMap::new(
+            Some(Arc::from("test.jsx")),
+            vec![],
+            None,
+            vec![Arc::from("test.jsx")],
+            vec![Some(Arc::from(""))],
+            tokens.into_boxed_slice(),
+            None,
+        )
+    }
+
+    #[test]
+    fn adjust_sourcemap_no_edits() {
+        let sm = build_test_sourcemap(&[(0, 0, 0, 0), (3, 5, 2, 4), (7, 0, 5, 0)]);
+        let result = super::adjust_sourcemap_positional(sm, &[]);
+        let tokens: Vec<_> = result.get_tokens().collect();
+        assert_eq!(tokens[0].get_dst_line(), 0);
+        assert_eq!(tokens[1].get_dst_line(), 3);
+        assert_eq!(tokens[2].get_dst_line(), 7);
+    }
+
+    #[test]
+    fn adjust_sourcemap_single_insertion() {
+        // Insert 2 lines at line 5. Tokens at 0-4 unchanged, tokens at 5+ shifted by +2.
+        let sm = build_test_sourcemap(&[(2, 0, 1, 0), (5, 0, 3, 0), (8, 0, 6, 0)]);
+        let edits = [super::LineEdit { line: 5, delta: 2 }];
+        let result = super::adjust_sourcemap_positional(sm, &edits);
+        let tokens: Vec<_> = result.get_tokens().collect();
+        assert_eq!(tokens[0].get_dst_line(), 2, "before edit: unchanged");
+        assert_eq!(tokens[1].get_dst_line(), 7, "at edit line: shifted +2");
+        assert_eq!(tokens[2].get_dst_line(), 10, "after edit line: shifted +2");
+    }
+
+    #[test]
+    fn adjust_sourcemap_single_removal() {
+        // Remove 1 line at line 3. Tokens at 0-2 unchanged, tokens at 3+ shifted by -1.
+        let sm = build_test_sourcemap(&[(1, 0, 0, 0), (3, 0, 2, 0), (6, 0, 4, 0)]);
+        let edits = [super::LineEdit { line: 3, delta: -1 }];
+        let result = super::adjust_sourcemap_positional(sm, &edits);
+        let tokens: Vec<_> = result.get_tokens().collect();
+        assert_eq!(tokens[0].get_dst_line(), 1, "before edit: unchanged");
+        assert_eq!(tokens[1].get_dst_line(), 2, "at edit line: shifted -1");
+        assert_eq!(tokens[2].get_dst_line(), 5, "after edit: shifted -1");
+    }
+
+    #[test]
+    fn adjust_sourcemap_multiple_cumulative_edits() {
+        // Edit 1: +3 at line 2, Edit 2: -1 at line 7.
+        // Token at line 1: delta=0 → line 1
+        // Token at line 4: delta=3 (edit1 applies) → line 7
+        // Token at line 10: delta=3+(-1)=2 (both apply) → line 12
+        let sm = build_test_sourcemap(&[(1, 0, 0, 0), (4, 0, 2, 0), (10, 0, 7, 0)]);
+        let edits = [
+            super::LineEdit { line: 2, delta: 3 },
+            super::LineEdit { line: 7, delta: -1 },
+        ];
+        let result = super::adjust_sourcemap_positional(sm, &edits);
+        let tokens: Vec<_> = result.get_tokens().collect();
+        assert_eq!(tokens[0].get_dst_line(), 1, "before all edits");
+        assert_eq!(tokens[1].get_dst_line(), 7, "after edit1 only");
+        assert_eq!(tokens[2].get_dst_line(), 12, "after both edits");
+    }
+
+    #[test]
+    fn adjust_sourcemap_negative_clamp() {
+        // Large negative delta pushes token below line 0. Should clamp to 0.
+        let sm = build_test_sourcemap(&[(1, 5, 0, 0)]);
+        let edits = [super::LineEdit { line: 0, delta: -10 }];
+        let result = super::adjust_sourcemap_positional(sm, &edits);
+        let tokens: Vec<_> = result.get_tokens().collect();
+        assert_eq!(tokens[0].get_dst_line(), 0, "clamped to 0");
+        assert_eq!(tokens[0].get_dst_col(), 5, "column preserved");
+    }
+
+    #[test]
+    fn adjust_sourcemap_source_fields_preserved() {
+        // After adjustment, src_line, src_col, source_id, name_id must not change.
+        let sm = build_test_sourcemap(&[(5, 3, 10, 7)]);
+        let edits = [super::LineEdit { line: 2, delta: 4 }];
+        let result = super::adjust_sourcemap_positional(sm, &edits);
+        let token = result.get_tokens().next().unwrap();
+        assert_eq!(token.get_dst_line(), 9, "dst_line adjusted");
+        assert_eq!(token.get_src_line(), 10, "src_line unchanged");
+        assert_eq!(token.get_src_col(), 7, "src_col unchanged");
+        assert_eq!(token.get_source_id(), Some(0), "source_id unchanged");
+    }
+
+    #[test]
+    fn adjust_sourcemap_token_at_exact_boundary() {
+        // Token at exactly the edit line should receive the delta (inclusive).
+        let sm = build_test_sourcemap(&[(5, 0, 3, 0)]);
+        let edits = [super::LineEdit { line: 5, delta: 3 }];
+        let result = super::adjust_sourcemap_positional(sm, &edits);
+        let token = result.get_tokens().next().unwrap();
+        assert_eq!(token.get_dst_line(), 8, "token at edit line gets delta");
+    }
+
+    // --- Unit tests for collect_line_edits ---
+
+    #[test]
+    fn collect_line_edits_no_change() {
+        let before = "line1\nline2\nline3\n";
+        let after = "line1\nline2\nline3\n";
+        let mut edits = vec![];
+        super::collect_line_edits(before, after, &mut edits);
+        assert!(edits.is_empty(), "no edits for identical strings");
+    }
+
+    #[test]
+    fn collect_line_edits_single_insertion() {
+        let before = "aaa\nbbb\nccc\n";
+        let after = "aaa\nbbb\nNEW\nccc\n";
+        let mut edits = vec![];
+        super::collect_line_edits(before, after, &mut edits);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].delta, 1, "one line inserted");
+    }
+
+    #[test]
+    fn collect_line_edits_single_removal() {
+        let before = "aaa\nbbb\nccc\n";
+        let after = "aaa\nccc\n";
+        let mut edits = vec![];
+        super::collect_line_edits(before, after, &mut edits);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].delta, -1, "one line removed");
+    }
+
+    #[test]
+    fn collect_line_edits_multi_line_insertion() {
+        let before = "aaa\nbbb\n";
+        let after = "aaa\nNEW1\nNEW2\nbbb\n";
+        let mut edits = vec![];
+        super::collect_line_edits(before, after, &mut edits);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].delta, 2, "two lines inserted");
+    }
+
+    #[test]
+    fn collect_line_edits_cumulative_offset() {
+        // Simulate two sequential transforms:
+        // Transform 1: insert 1 line at start
+        let v0 = "aaa\nbbb\n";
+        let v1 = "NEW\naaa\nbbb\n";
+        let mut edits = vec![];
+        super::collect_line_edits(v0, v1, &mut edits);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].delta, 1);
+
+        // Transform 2: insert 1 line at end (relative to v1)
+        let v2 = "NEW\naaa\nbbb\nEND\n";
+        super::collect_line_edits(v1, v2, &mut edits);
+        assert_eq!(edits.len(), 2);
+        assert_eq!(edits[1].delta, 1);
+    }
 }
