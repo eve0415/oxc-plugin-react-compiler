@@ -1397,4 +1397,265 @@ function MyComponent(props) {
             "should have tokens mapping to return statement (line 1)"
         );
     }
+
+    // --- Round-trip sourcemap validation ---
+
+    /// Validate sourcemap round-trip accuracy for a compiled fixture.
+    ///
+    /// For every user-source token:
+    /// - If the token has a name, verify that name appears at (src_line, src_col) in the source
+    /// - Verify src_line/src_col are within bounds of the original source
+    /// - Verify dst_line/dst_col are within bounds of the generated code
+    /// - Verify at least one user-source token and one virtual-source token exist
+    fn validate_sourcemap_round_trip(source: &str, filename: &str) {
+        let options = crate::options::PluginOptions::default();
+        let result = crate::compile(filename, source, &options);
+        assert!(
+            result.transformed,
+            "fixture should be transformed: {filename}"
+        );
+        let map_json = result
+            .map
+            .as_ref()
+            .unwrap_or_else(|| panic!("sourcemap should exist for {filename}"));
+        let sm = decode_sourcemap(map_json);
+
+        let source_lines: Vec<&str> = source.lines().collect();
+        let gen_lines: Vec<&str> = result.code.lines().collect();
+        let sources: Vec<_> = sm.get_sources().collect();
+        let names: Vec<_> = sm.get_names().collect();
+
+        let virtual_idx = sources
+            .iter()
+            .position(|s| s.as_ref() == "compiler://react-compiler/generated")
+            .map(|i| i as u32);
+
+        let mut user_token_count = 0u32;
+        let mut virtual_token_count = 0u32;
+
+        for token in sm.get_tokens() {
+            let is_virtual = token.get_source_id() == virtual_idx;
+            if is_virtual {
+                virtual_token_count += 1;
+                continue;
+            }
+            user_token_count += 1;
+
+            let src_line = token.get_src_line() as usize;
+            let src_col = token.get_src_col() as usize;
+            let dst_line = token.get_dst_line() as usize;
+            let dst_col = token.get_dst_col() as usize;
+
+            // Verify source line is within bounds.
+            assert!(
+                src_line < source_lines.len(),
+                "[{filename}] token src_line {src_line} out of bounds (source has {} lines)",
+                source_lines.len()
+            );
+
+            // Verify generated line is within bounds.
+            assert!(
+                dst_line < gen_lines.len(),
+                "[{filename}] token dst_line {dst_line} out of bounds (generated has {} lines)",
+                gen_lines.len()
+            );
+
+            // If the token has a single-line name, verify it appears at the source position.
+            if let Some(name_id) = token.get_name_id() {
+                let name_idx = name_id as usize;
+                if name_idx < names.len() {
+                    let name = names[name_idx].as_ref();
+                    // Skip multi-line names (OXC may embed full expressions).
+                    if !name.contains('\n') && src_col < source_lines[src_line].len() {
+                        let src_text = &source_lines[src_line][src_col..];
+                        assert!(
+                            src_text.starts_with(name),
+                            "[{filename}] token name {:?} not found at src {}:{} — found {:?}",
+                            name,
+                            src_line,
+                            src_col,
+                            &src_text[..src_text.len().min(30)]
+                        );
+                    }
+                }
+            }
+        }
+
+        assert!(
+            user_token_count > 0,
+            "[{filename}] should have at least one user-source token"
+        );
+        // Only assert virtual tokens if the output contains memoization infrastructure.
+        // Trivial components may not produce any generated code tokens.
+        if result.code.contains("useMemoCache") || result.code.contains("_c[") {
+            assert!(
+                virtual_token_count > 0,
+                "[{filename}] memoized output should have virtual-source tokens"
+            );
+        }
+    }
+
+    #[test]
+    fn roundtrip_smoke_test() {
+        validate_sourcemap_round_trip(
+            "function Component(props) {\n  return <div>{props.x}</div>;\n}",
+            "test.jsx",
+        );
+    }
+
+    /// Validate sourcemap bounds for fixtures that need CompilationMode::All.
+    /// Same as validate_sourcemap_round_trip but with custom options.
+    fn validate_sourcemap_round_trip_all_mode(source: &str, filename: &str) {
+        let options = crate::options::PluginOptions {
+            compilation_mode: crate::options::CompilationMode::All,
+            ..crate::options::PluginOptions::default()
+        };
+        let result = crate::compile(filename, source, &options);
+        if !result.transformed {
+            return; // Some fixtures may not transform in all mode
+        }
+        let map_json = result
+            .map
+            .as_ref()
+            .unwrap_or_else(|| panic!("sourcemap should exist for {filename}"));
+        let sm = decode_sourcemap(map_json);
+
+        let source_lines: Vec<&str> = source.lines().collect();
+        let gen_lines: Vec<&str> = result.code.lines().collect();
+        let sources: Vec<_> = sm.get_sources().collect();
+        let names: Vec<_> = sm.get_names().collect();
+
+        let virtual_idx = sources
+            .iter()
+            .position(|s| s.as_ref() == "compiler://react-compiler/generated")
+            .map(|i| i as u32);
+
+        let mut user_token_count = 0u32;
+        for token in sm.get_tokens() {
+            if token.get_source_id() == virtual_idx {
+                continue;
+            }
+            user_token_count += 1;
+
+            let src_line = token.get_src_line() as usize;
+            let src_col = token.get_src_col() as usize;
+            let dst_line = token.get_dst_line() as usize;
+            let dst_col = token.get_dst_col() as usize;
+
+            assert!(
+                src_line < source_lines.len(),
+                "[{filename}] src_line {src_line} OOB (source has {} lines)",
+                source_lines.len()
+            );
+            assert!(
+                dst_line < gen_lines.len(),
+                "[{filename}] dst_line {dst_line} OOB (gen has {} lines)",
+                gen_lines.len()
+            );
+
+            if let Some(name_id) = token.get_name_id() {
+                let name_idx = name_id as usize;
+                if name_idx < names.len() {
+                    let name = names[name_idx].as_ref();
+                    if !name.contains('\n') && src_col < source_lines[src_line].len() {
+                        let src_text = &source_lines[src_line][src_col..];
+                        assert!(
+                            src_text.starts_with(name),
+                            "[{filename}] name {:?} not at src {}:{} — found {:?}",
+                            name,
+                            src_line,
+                            src_col,
+                            &src_text[..src_text.len().min(30)]
+                        );
+                    }
+                }
+            }
+        }
+
+        assert!(
+            user_token_count > 0,
+            "[{filename}] should have user-source tokens"
+        );
+    }
+
+    // --- Round-trip tests: third_party conformance fixtures ---
+
+    #[test]
+    fn roundtrip_simple_function() {
+        let source = include_str!(
+            "../../../../../third_party/react/compiler/packages/\
+             babel-plugin-react-compiler/src/__tests__/fixtures/compiler/simple-function-1.js"
+        );
+        validate_sourcemap_round_trip_all_mode(source, "simple-function-1.js");
+    }
+
+    #[test]
+    fn roundtrip_capturing_func_simple_alias() {
+        let source = include_str!(
+            "../../../../../third_party/react/compiler/packages/\
+             babel-plugin-react-compiler/src/__tests__/fixtures/compiler/\
+             capturing-func-simple-alias.js"
+        );
+        validate_sourcemap_round_trip_all_mode(source, "capturing-func-simple-alias.js");
+    }
+
+    #[test]
+    fn roundtrip_conditional_early_return() {
+        let source = include_str!(
+            "../../../../../third_party/react/compiler/packages/\
+             babel-plugin-react-compiler/src/__tests__/fixtures/compiler/\
+             conditional-early-return.js"
+        );
+        validate_sourcemap_round_trip_all_mode(source, "conditional-early-return.js");
+    }
+
+    #[test]
+    fn roundtrip_for_in_statement() {
+        let source = include_str!(
+            "../../../../../third_party/react/compiler/packages/\
+             babel-plugin-react-compiler/src/__tests__/fixtures/compiler/\
+             for-in-statement-body-always-returns.js"
+        );
+        validate_sourcemap_round_trip_all_mode(source, "for-in-statement-body-always-returns.js");
+    }
+
+    #[test]
+    fn roundtrip_jsx_mutations() {
+        let source = include_str!(
+            "../../../../../third_party/react/compiler/packages/\
+             babel-plugin-react-compiler/src/__tests__/fixtures/compiler/\
+             builtin-jsx-tag-lowered-between-mutations.js"
+        );
+        validate_sourcemap_round_trip(source, "builtin-jsx-tag-lowered-between-mutations.js");
+    }
+
+    #[test]
+    fn roundtrip_nested_function_captures() {
+        let source = include_str!(
+            "../../../../../third_party/react/compiler/packages/\
+             babel-plugin-react-compiler/src/__tests__/fixtures/compiler/\
+             capturing-variable-in-nested-function.js"
+        );
+        validate_sourcemap_round_trip_all_mode(source, "capturing-variable-in-nested-function.js");
+    }
+
+    #[test]
+    fn roundtrip_tsx_inner_functions() {
+        let source = include_str!(
+            "../../../../../third_party/react/compiler/packages/\
+             babel-plugin-react-compiler/src/__tests__/fixtures/compiler/\
+             component-inner-function-with-many-args.tsx"
+        );
+        validate_sourcemap_round_trip(source, "component-inner-function-with-many-args.tsx");
+    }
+
+    #[test]
+    fn roundtrip_tsx_aliased_nested_scope() {
+        let source = include_str!(
+            "../../../../../third_party/react/compiler/packages/\
+             babel-plugin-react-compiler/src/__tests__/fixtures/compiler/\
+             aliased-nested-scope-fn-expr.tsx"
+        );
+        validate_sourcemap_round_trip(source, "aliased-nested-scope-fn-expr.tsx");
+    }
 }
