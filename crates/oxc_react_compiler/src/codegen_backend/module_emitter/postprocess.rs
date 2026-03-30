@@ -136,6 +136,7 @@ pub(super) fn codegen_program_with_source_map(
     (result.code, result.map)
 }
 
+#[allow(dead_code)] // Retained for conformance normalization
 pub(super) fn compact_simple_jsx_object_attributes(code: &str) -> String {
     let mut result = String::with_capacity(code.len());
     let mut cursor = 0usize;
@@ -209,6 +210,7 @@ pub(super) fn compact_single_statement(code: &str) -> String {
 /// Pattern: `import ...;\nimport ...;\n// comment\n` → `import ...;\nimport ...; // comment\n`
 // Fix OXC's trailing space before `]` in single-line arrays.
 // OXC emits `[0, 1, 2 ]` where Babel emits `[0, 1, 2]`.
+#[allow(dead_code)] // Retained for conformance normalization
 pub(super) fn fix_oxc_array_trailing_space(code: &str) -> String {
     if !code.contains(" ]") {
         return code.to_string();
@@ -265,6 +267,7 @@ pub(super) fn fix_oxc_array_trailing_space(code: &str) -> String {
 ///   `} : function F(`     → `}\n: function F(`
 ///   `test() ? (p) =>{`    → `test()\n? (p) =>{`
 ///   `} : (p) =>expr`      → `}\n: (p) =>expr`
+#[allow(dead_code)] // Retained for conformance normalization
 pub(super) fn fix_gating_ternary_line_breaks(code: &str) -> String {
     // Only apply when the code contains a gating ternary.
     if !code.contains("() ? function ") && !code.contains("() ? (") && !code.contains("() ? ") {
@@ -350,6 +353,7 @@ fn contains_arrow_start(text: &str) -> bool {
 ///   `: params =><Tag>\n<Child></Child>\n</Tag>;`
 /// This collapses it to:
 ///   `: params =><Tag><Child></Child></Tag>;`
+#[allow(dead_code)] // Retained for conformance normalization
 pub(super) fn fix_gating_ternary_fallback_arrow_jsx(code: &str) -> String {
     // Quick bail: only applies when we have a ternary alternate with arrow + JSX
     if !code.contains(": ") || !code.contains("=>") {
@@ -409,6 +413,7 @@ pub(super) fn fix_gating_ternary_fallback_arrow_jsx(code: &str) -> String {
 /// retain Flow/TS type annotations) across multiple lines. OXC puts them on one line.
 /// E.g. `function F_unoptimized(p1: T1, p2: T2): R{` becomes:
 ///       `function F_unoptimized(p1: T1,\np2: T2): R{`
+#[allow(dead_code)] // Retained for conformance normalization
 pub(super) fn fix_unoptimized_function_param_wrapping(code: &str) -> String {
     if !code.contains("_unoptimized(") {
         return code.to_string();
@@ -459,6 +464,7 @@ pub(super) fn fix_unoptimized_function_param_wrapping(code: &str) -> String {
 ///
 /// Simple cases like `t0 = <div>{bool}</div>` (single expression child, no attrs)
 /// are left unwrapped.
+#[allow(dead_code)] // Retained for conformance normalization
 pub(super) fn fix_jsx_assignment_parens(code: &str) -> String {
     // Quick bail: if no JSX assignments exist, return early
     if !code.contains("= <") {
@@ -481,6 +487,7 @@ pub(super) fn fix_jsx_assignment_parens(code: &str) -> String {
 /// Try to wrap JSX in an assignment on a single line with `( ... )`.
 /// Returns `Some(wrapped_line)` if the line matches the pattern and the JSX
 /// is complex enough to need wrapping, `None` otherwise.
+#[allow(dead_code)]
 fn try_wrap_jsx_assignment_parens(line: &str) -> Option<String> {
     let trimmed = line.trim();
 
@@ -531,6 +538,7 @@ fn try_wrap_jsx_assignment_parens(line: &str) -> Option<String> {
 /// 1. Attributes on the opening tag, OR
 /// 2. Child JSX elements (nested `<` after the opening tag's `>`), OR
 /// 3. Multiple expression children (`{...}` appearing 2+ times)
+#[allow(dead_code)]
 fn jsx_needs_parens(jsx: &str) -> bool {
     let bytes = jsx.as_bytes();
     if bytes.is_empty() || bytes[0] != b'<' {
@@ -634,6 +642,7 @@ fn jsx_needs_parens(jsx: &str) -> bool {
 
 /// Find the position of the matching `)` for a string starting after `(`.
 /// Handles nested parens and angle brackets.
+#[allow(dead_code)]
 fn find_matching_close_paren(s: &str) -> Option<usize> {
     let mut depth = 1u32;
     let mut angle_depth = 0u32;
@@ -656,6 +665,7 @@ fn find_matching_close_paren(s: &str) -> Option<usize> {
 
 /// Wrap parameters at top-level comma boundaries.
 /// Replaces `, ` with `,\n` at the top level (not inside `<>` or `()`).
+#[allow(dead_code)] // Retained for conformance normalization
 pub(super) fn wrap_params_at_commas(params: &str) -> String {
     let mut result = String::with_capacity(params.len() + 8);
     let mut paren_depth = 0u32;

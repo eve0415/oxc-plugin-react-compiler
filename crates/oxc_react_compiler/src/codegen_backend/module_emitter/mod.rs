@@ -49,10 +49,7 @@ use instrumentation::{
 use postprocess::codegen_program;
 use postprocess::{
     build_inserted_import_statement, build_runtime_import_merge_statement,
-    codegen_program_with_source_map, compact_simple_jsx_object_attributes,
-    fix_gating_ternary_fallback_arrow_jsx, fix_gating_ternary_line_breaks,
-    fix_jsx_assignment_parens, fix_oxc_array_trailing_space,
-    fix_unoptimized_function_param_wrapping, parse_statements,
+    codegen_program_with_source_map, parse_statements,
 };
 use transform_flag::{canonicalize_initializer_expressions_in_statements, compute_transform_state};
 
@@ -409,12 +406,8 @@ fn try_emit_module(
     if code.contains(FLOW_CAST_MARKER_HELPER) {
         track_lines!(code, restore_flow_cast_marker_calls(&code));
     }
-    track_lines!(code, compact_simple_jsx_object_attributes(&code));
-    track_lines!(code, fix_oxc_array_trailing_space(&code));
-    track_lines!(code, fix_gating_ternary_line_breaks(&code));
-    track_lines!(code, fix_gating_ternary_fallback_arrow_jsx(&code));
-    track_lines!(code, fix_unoptimized_function_param_wrapping(&code));
-    track_lines!(code, fix_jsx_assignment_parens(&code));
+    // Category C cosmetic transforms removed for sourcemap accuracy.
+    // Conformance normalization handles these formatting differences.
 
     let map = raw_sourcemap.map(|sm| adjust_sourcemap(sm, line_delta).to_json_string());
 
