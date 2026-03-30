@@ -21,11 +21,15 @@ testRule('no-unused-directives', rules['no-unused-directives'], {
           return <div>Hello</div>;
         }
       `,
-      // The fix removes the directive expression statement; leading whitespace remains
-      output: '\nfunction Component() {\n  \n  return <div>Hello</div>;\n}\n',
       errors: [
         {
           message: "Unused 'use no forget' directive",
+          suggestions: [
+            {
+              desc: 'Remove the directive',
+              output: '\nfunction Component() {\n  \n  return <div>Hello</div>;\n}\n',
+            },
+          ],
         },
       ],
     },
@@ -37,10 +41,15 @@ testRule('no-unused-directives', rules['no-unused-directives'], {
           return <div>Hello</div>;
         }
       `,
-      output: '\nfunction Component() {\n  \n  return <div>Hello</div>;\n}\n',
       errors: [
         {
           message: "Unused 'use no memo' directive",
+          suggestions: [
+            {
+              desc: 'Remove the directive',
+              output: '\nfunction Component() {\n  \n  return <div>Hello</div>;\n}\n',
+            },
+          ],
         },
       ],
     },

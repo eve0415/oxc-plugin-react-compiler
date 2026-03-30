@@ -196,7 +196,6 @@ const noUnusedDirectivesRule: Rule.RuleModule = {
         continue;
       }
 
-      // Auto-fix: remove the unused directive
       const hasFix = diag.suggestions.length > 0 && diag.suggestions[0].op === 'remove';
 
       context.report({
@@ -205,9 +204,15 @@ const noUnusedDirectivesRule: Rule.RuleModule = {
           start: { line: diag.startLine, column: diag.startColumn },
           end: { line: diag.endLine ?? diag.startLine, column: diag.endColumn ?? diag.startColumn },
         },
-        fix: hasFix
-          ? (fixer: Rule.RuleFixer) => fixer.removeRange([diag.suggestions[0].rangeStart, diag.suggestions[0].rangeEnd])
-          : undefined,
+        suggest: hasFix
+          ? [
+              {
+                desc: 'Remove the directive',
+                fix: (fixer: Rule.RuleFixer) =>
+                  fixer.removeRange([diag.suggestions[0].rangeStart, diag.suggestions[0].rangeEnd]),
+              },
+            ]
+          : [],
       });
     }
 
