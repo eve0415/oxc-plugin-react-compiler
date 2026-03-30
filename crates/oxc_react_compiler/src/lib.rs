@@ -37,8 +37,8 @@ pub fn compile(filename: &str, source: &str, options: &options::PluginOptions) -
 ///
 /// Returns a list of structured diagnostics with source locations, categories,
 /// and optional auto-fix suggestions.
-pub fn lint(filename: &str, source: &str) -> Vec<error::LintDiagnostic> {
-    pipeline::lint(filename, source)
+pub fn lint(filename: &str, source: &str, options: &options::PluginOptions) -> Vec<error::LintDiagnostic> {
+    pipeline::lint(filename, source, options)
 }
 
 /// Result of compiling a file.

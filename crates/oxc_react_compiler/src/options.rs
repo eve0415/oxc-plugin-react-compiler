@@ -3,7 +3,8 @@
 //! Port of `PluginOptions.ts` and related config from upstream.
 
 /// How the compiler decides which functions to compile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum CompilationMode {
     /// Compile functions that React can use (components and hooks), inferred by usage.
     #[default]
@@ -15,7 +16,8 @@ pub enum CompilationMode {
 }
 
 /// When to panic (throw) vs silently bail out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PanicThreshold {
     /// Never panic; always bail out silently.
     #[default]
@@ -25,20 +27,23 @@ pub enum PanicThreshold {
 }
 
 /// Configuration for gating compiled output behind a feature flag import.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GatingConfig {
     pub source: String,
     pub import_specifier_name: String,
 }
 
 /// Configuration for dynamic gating via `use memo if(...)`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DynamicGatingConfig {
     pub source: String,
 }
 
 /// Top-level plugin options.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct PluginOptions {
     pub compilation_mode: CompilationMode,
     pub panic_threshold: PanicThreshold,
@@ -94,7 +99,8 @@ impl Default for PluginOptions {
 /// Environment configuration — controls how the compiler types known APIs.
 ///
 /// Port of `EnvironmentConfigSchema` from upstream `Environment.ts`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct EnvironmentConfig {
     // --- Validation flags ---
     /// Enable validation of hooks usage (rules of hooks).
@@ -218,21 +224,24 @@ pub struct EnvironmentConfig {
 }
 
 /// Configuration for inline JSX transform.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InlineJsxTransformConfig {
     pub element_symbol: String,
     pub global_dev_var: String,
 }
 
 /// Configuration for lowering context access.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LowerContextAccessConfig {
     pub module: String,
     pub imported_name: String,
 }
 
 /// Configuration for automatic effect dependency inference.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InferEffectDepsConfig {
     pub function_module: String,
     pub function_name: String,
@@ -240,7 +249,8 @@ pub struct InferEffectDepsConfig {
 }
 
 /// A property segment in a custom macro path.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum MacroProp {
     /// A named property (e.g., `a` in `idx.a`).
     Name(String),
@@ -249,7 +259,8 @@ pub enum MacroProp {
 }
 
 /// Configuration for a custom macro.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CustomMacroConfig {
     /// The root identifier name (e.g., `cx`, `idx`).
     pub name: String,

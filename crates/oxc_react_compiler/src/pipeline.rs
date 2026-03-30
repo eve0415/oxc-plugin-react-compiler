@@ -7444,33 +7444,6 @@ fn check_var_init_for_dynamic_components(
 // Lint pipeline — collect diagnostics without emitting code
 // =========================================================================
 
-/// Lint options matching upstream's eslint-plugin-react-compiler COMPILER_OPTIONS.
-fn lint_options() -> PluginOptions {
-    use crate::options::*;
-    PluginOptions {
-        compilation_mode: CompilationMode::All,
-        panic_threshold: PanicThreshold::None,
-        no_emit: true,
-        flow_suppressions: false,
-        source_map: false,
-        environment: EnvironmentConfig {
-            validate_hooks_usage: true,
-            validate_ref_access_during_render: true,
-            validate_no_set_state_in_render: true,
-            validate_no_set_state_in_effects: true,
-            validate_no_derived_computations_in_effects: true,
-            validate_no_jsx_in_try_statements: true,
-            validate_no_impure_functions_in_render: true,
-            validate_static_components: true,
-            validate_no_freezing_known_mutable_functions: true,
-            validate_no_void_use_memo: true,
-            validate_no_capitalized_calls: Some(Vec::new()),
-            ..EnvironmentConfig::default()
-        },
-        ..PluginOptions::default()
-    }
-}
-
 /// Run the HIR pipeline in lint mode, collecting all diagnostics instead of bailing.
 fn run_hir_pipeline_lint(
     mut hir_func: HIRFunction,
@@ -7787,8 +7760,11 @@ fn byte_offset_to_line_col(offset: u32, line_starts: &[u32]) -> (u32, u32) {
 
 /// Lint a single source file. Runs the full compilation pipeline in lint mode
 /// on every function, collecting all diagnostics.
-pub fn lint(filename: &str, source: &str) -> Vec<LintDiagnostic> {
-    let options = lint_options();
+pub fn lint(filename: &str, source: &str, options: &PluginOptions) -> Vec<LintDiagnostic> {
+    // Force lint-mode overrides
+    let mut options = options.clone();
+    options.no_emit = true;
+    options.panic_threshold = crate::options::PanicThreshold::None;
 
     crate::source_lines::set_current_source(source);
     CURRENT_FILENAME.with(|cell| *cell.borrow_mut() = filename.to_string());
@@ -7845,16 +7821,27 @@ pub fn lint(filename: &str, source: &str) -> Vec<LintDiagnostic> {
         return Vec::new();
     }
 
+    // Module-level opt-out: 'use no memo' / 'use no forget' / custom directives
+    if !options.ignore_use_no_forget
+        && has_module_scope_opt_out(&program, &options.custom_opt_out_directives)
+    {
+        return Vec::new();
+    }
+
     // Build semantic
     let semantic_ret = oxc_semantic::SemanticBuilder::new().build(&program);
     let semantic = semantic_ret.semantic;
 
     let mut all_diagnostics = Vec::new();
-    let env_config = &options.environment;
 
     // Lint every function in the program
     for stmt in &program.body {
-        lint_statement(stmt, source, &semantic, env_config, &mut all_diagnostics);
+        lint_statement(stmt, source, &semantic, &options, &mut all_diagnostics);
+    }
+
+    // Unused directive detection: only when file has zero other diagnostics (matches upstream)
+    if all_diagnostics.is_empty() {
+        collect_unused_directives(&program, &options, &mut all_diagnostics);
     }
 
     // Convert to LintDiagnostic with line:column info
@@ -7864,12 +7851,119 @@ pub fn lint(filename: &str, source: &str) -> Vec<LintDiagnostic> {
         .collect()
 }
 
+/// Collect unused opt-out directives from all functions in the program.
+/// Only called when the file has zero other diagnostics (matching upstream behavior).
+fn collect_unused_directives(
+    program: &ast::Program<'_>,
+    options: &PluginOptions,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    for stmt in &program.body {
+        collect_unused_directives_in_stmt(stmt, options, diagnostics);
+    }
+}
+
+fn collect_unused_directives_in_stmt(
+    stmt: &ast::Statement<'_>,
+    options: &PluginOptions,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    match stmt {
+        ast::Statement::FunctionDeclaration(func) => {
+            if let Some(body) = func.body.as_ref() {
+                check_body_for_unused_directives(body, options, diagnostics);
+            }
+        }
+        ast::Statement::ExportDefaultDeclaration(export) => match &export.declaration {
+            ast::ExportDefaultDeclarationKind::FunctionDeclaration(func) => {
+                if let Some(body) = func.body.as_ref() {
+                    check_body_for_unused_directives(body, options, diagnostics);
+                }
+            }
+            ast::ExportDefaultDeclarationKind::ArrowFunctionExpression(arrow) => {
+                check_body_for_unused_directives(&arrow.body, options, diagnostics);
+            }
+            _ => {}
+        },
+        ast::Statement::ExportNamedDeclaration(export) => {
+            if let Some(decl) = &export.declaration {
+                match decl {
+                    ast::Declaration::FunctionDeclaration(func) => {
+                        if let Some(body) = func.body.as_ref() {
+                            check_body_for_unused_directives(body, options, diagnostics);
+                        }
+                    }
+                    ast::Declaration::VariableDeclaration(var_decl) => {
+                        for d in &var_decl.declarations {
+                            check_var_declarator_for_unused_directives(d, options, diagnostics);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ast::Statement::VariableDeclaration(var_decl) => {
+            for d in &var_decl.declarations {
+                check_var_declarator_for_unused_directives(d, options, diagnostics);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn check_var_declarator_for_unused_directives(
+    decl: &ast::VariableDeclarator<'_>,
+    options: &PluginOptions,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    let Some(init) = &decl.init else { return };
+    match init {
+        ast::Expression::ArrowFunctionExpression(arrow) => {
+            check_body_for_unused_directives(&arrow.body, options, diagnostics);
+        }
+        ast::Expression::FunctionExpression(func) => {
+            if let Some(body) = func.body.as_ref() {
+                check_body_for_unused_directives(body, options, diagnostics);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn check_body_for_unused_directives(
+    body: &ast::FunctionBody<'_>,
+    options: &PluginOptions,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    for directive in &body.directives {
+        let value = directive.expression.value.as_str();
+        if OPT_OUT_DIRECTIVES.contains(&value)
+            || options
+                .custom_opt_out_directives
+                .iter()
+                .any(|d| d == value)
+        {
+            diagnostics.push(CompilerDiagnostic {
+                severity: crate::error::DiagnosticSeverity::InvalidReact,
+                message: format!("Unused '{value}' directive"),
+                category: ErrorCategory::UnusedDirective,
+                span: Some(directive.span),
+                related: Vec::new(),
+                suggestions: vec![crate::error::CompilerSuggestion::Remove {
+                    description: "Remove the directive".to_string(),
+                    range: (directive.span.start, directive.span.end),
+                }],
+            });
+        }
+    }
+}
+
 /// Recursively lint functions within a statement.
 fn lint_statement<'a>(
     stmt: &ast::Statement<'a>,
     source: &str,
     semantic: &oxc_semantic::Semantic<'a>,
-    env_config: &crate::options::EnvironmentConfig,
+    options: &PluginOptions,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
     match stmt {
@@ -7877,6 +7971,14 @@ fn lint_statement<'a>(
             if let Some(name) = func.id.as_ref().map(|id| id.name.as_str())
                 && let Some(body) = func.body.as_ref()
             {
+                if !options.ignore_use_no_forget
+                    && has_function_opt_out(body, &options.custom_opt_out_directives)
+                {
+                    return;
+                }
+                if !should_compile_function(name, body, &func.params, options.compilation_mode) {
+                    return;
+                }
                 diagnostics.extend(lint_function(
                     body,
                     &func.params,
@@ -7886,7 +7988,7 @@ fn lint_statement<'a>(
                     func.r#async,
                     source,
                     semantic,
-                    env_config,
+                    &options.environment,
                 ));
             }
         }
@@ -7898,6 +8000,19 @@ fn lint_statement<'a>(
                     .map(|id| id.name.as_str())
                     .unwrap_or("Component");
                 if let Some(body) = func.body.as_ref() {
+                    if !options.ignore_use_no_forget
+                        && has_function_opt_out(body, &options.custom_opt_out_directives)
+                    {
+                        return;
+                    }
+                    if !should_compile_function(
+                        name,
+                        body,
+                        &func.params,
+                        options.compilation_mode,
+                    ) {
+                        return;
+                    }
                     diagnostics.extend(lint_function(
                         body,
                         &func.params,
@@ -7907,11 +8022,24 @@ fn lint_statement<'a>(
                         func.r#async,
                         source,
                         semantic,
-                        env_config,
+                        &options.environment,
                     ));
                 }
             }
             ast::ExportDefaultDeclarationKind::ArrowFunctionExpression(arrow) => {
+                if !options.ignore_use_no_forget
+                    && has_function_opt_out(&arrow.body, &options.custom_opt_out_directives)
+                {
+                    return;
+                }
+                if !should_compile_function(
+                    "Component",
+                    &arrow.body,
+                    &arrow.params,
+                    options.compilation_mode,
+                ) {
+                    return;
+                }
                 diagnostics.extend(lint_function(
                     &arrow.body,
                     &arrow.params,
@@ -7921,19 +8049,19 @@ fn lint_statement<'a>(
                     arrow.r#async,
                     source,
                     semantic,
-                    env_config,
+                    &options.environment,
                 ));
             }
             _ => {}
         },
         ast::Statement::ExportNamedDeclaration(export) => {
             if let Some(decl) = &export.declaration {
-                lint_declaration(decl, source, semantic, env_config, diagnostics);
+                lint_declaration(decl, source, semantic, options, diagnostics);
             }
         }
         ast::Statement::VariableDeclaration(var_decl) => {
             for decl in &var_decl.declarations {
-                lint_var_declarator(decl, source, semantic, env_config, diagnostics);
+                lint_var_declarator(decl, source, semantic, options, diagnostics);
             }
         }
         _ => {}
@@ -7944,7 +8072,7 @@ fn lint_declaration<'a>(
     decl: &ast::Declaration<'a>,
     source: &str,
     semantic: &oxc_semantic::Semantic<'a>,
-    env_config: &crate::options::EnvironmentConfig,
+    options: &PluginOptions,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
     match decl {
@@ -7952,6 +8080,14 @@ fn lint_declaration<'a>(
             if let Some(name) = func.id.as_ref().map(|id| id.name.as_str())
                 && let Some(body) = func.body.as_ref()
             {
+                if !options.ignore_use_no_forget
+                    && has_function_opt_out(body, &options.custom_opt_out_directives)
+                {
+                    return;
+                }
+                if !should_compile_function(name, body, &func.params, options.compilation_mode) {
+                    return;
+                }
                 diagnostics.extend(lint_function(
                     body,
                     &func.params,
@@ -7961,13 +8097,13 @@ fn lint_declaration<'a>(
                     func.r#async,
                     source,
                     semantic,
-                    env_config,
+                    &options.environment,
                 ));
             }
         }
         ast::Declaration::VariableDeclaration(var_decl) => {
             for decl in &var_decl.declarations {
-                lint_var_declarator(decl, source, semantic, env_config, diagnostics);
+                lint_var_declarator(decl, source, semantic, options, diagnostics);
             }
         }
         _ => {}
@@ -7978,7 +8114,7 @@ fn lint_var_declarator<'a>(
     decl: &ast::VariableDeclarator<'a>,
     source: &str,
     semantic: &oxc_semantic::Semantic<'a>,
-    env_config: &crate::options::EnvironmentConfig,
+    options: &PluginOptions,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
     let name = match &decl.id {
@@ -7988,6 +8124,15 @@ fn lint_var_declarator<'a>(
     let Some(init) = &decl.init else { return };
     match init {
         ast::Expression::ArrowFunctionExpression(arrow) => {
+            if !options.ignore_use_no_forget
+                && has_function_opt_out(&arrow.body, &options.custom_opt_out_directives)
+            {
+                return;
+            }
+            if !should_compile_function(name, &arrow.body, &arrow.params, options.compilation_mode)
+            {
+                return;
+            }
             diagnostics.extend(lint_function(
                 &arrow.body,
                 &arrow.params,
@@ -7997,12 +8142,25 @@ fn lint_var_declarator<'a>(
                 arrow.r#async,
                 source,
                 semantic,
-                env_config,
+                &options.environment,
             ));
         }
         ast::Expression::FunctionExpression(func) => {
             let fn_name = func.id.as_ref().map(|id| id.name.as_str()).unwrap_or(name);
             if let Some(body) = func.body.as_ref() {
+                if !options.ignore_use_no_forget
+                    && has_function_opt_out(body, &options.custom_opt_out_directives)
+                {
+                    return;
+                }
+                if !should_compile_function(
+                    fn_name,
+                    body,
+                    &func.params,
+                    options.compilation_mode,
+                ) {
+                    return;
+                }
                 diagnostics.extend(lint_function(
                     body,
                     &func.params,
@@ -8012,7 +8170,7 @@ fn lint_var_declarator<'a>(
                     func.r#async,
                     source,
                     semantic,
-                    env_config,
+                    &options.environment,
                 ));
             }
         }
