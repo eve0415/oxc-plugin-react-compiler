@@ -3648,7 +3648,10 @@ export const FIXTURE_ENTRYPOINT = {
     fn adjust_sourcemap_negative_clamp() {
         // Large negative delta pushes token below line 0. Should clamp to 0.
         let sm = build_test_sourcemap(&[(1, 5, 0, 0)]);
-        let edits = [super::LineEdit { line: 0, delta: -10 }];
+        let edits = [super::LineEdit {
+            line: 0,
+            delta: -10,
+        }];
         let result = super::adjust_sourcemap_positional(sm, &edits);
         let tokens: Vec<_> = result.get_tokens().collect();
         assert_eq!(tokens[0].get_dst_line(), 0, "clamped to 0");

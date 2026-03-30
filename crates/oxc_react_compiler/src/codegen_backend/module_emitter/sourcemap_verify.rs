@@ -184,8 +184,7 @@ function Component(props) {
         );
 
         for token in &helper_tokens {
-            let drift =
-                (token.get_dst_line() as i64 - token.get_src_line() as i64).unsigned_abs();
+            let drift = (token.get_dst_line() as i64 - token.get_src_line() as i64).unsigned_abs();
             assert!(
                 drift <= 2,
                 "helper token at src_line {} mapped to dst_line {} — drift {} exceeds ±2",
