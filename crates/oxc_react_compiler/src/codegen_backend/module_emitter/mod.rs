@@ -19,6 +19,8 @@ mod flow_cast;
 mod function_replacement;
 mod instrumentation;
 mod postprocess;
+#[cfg(test)]
+mod sourcemap_verify;
 mod transform_flag;
 
 #[allow(unused_imports)]
