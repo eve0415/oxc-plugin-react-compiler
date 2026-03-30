@@ -128,3 +128,59 @@ describe('aggregated recommended rules', () => {
     });
   });
 });
+
+describe('options passthrough', () => {
+  testRule('capitalized-calls-with-options', rules['capitalized-calls'], {
+    valid: [
+      {
+        name: 'Capitalized call is fine when validation is off (default)',
+        code: normalizeIndent`
+          function Component() {
+            const x = Foo();
+            return <div>{x}</div>;
+          }
+        `,
+        // No options → validateNoCapitalizedCalls is None → validation off
+      },
+    ],
+    invalid: [
+      {
+        name: 'Capitalized call is flagged when validation is explicitly enabled',
+        code: normalizeIndent`
+          function Component() {
+            const x = Foo();
+            return <div>{x}</div>;
+          }
+        `,
+        options: [{ environment: { validateNoCapitalizedCalls: [] } }],
+        errors: [{ message: /Capitalized/ }],
+      },
+    ],
+  });
+
+  testRule('infer-effect-deps-passthrough', rules['set-state-in-render'], {
+    valid: [
+      {
+        name: 'inferEffectDependencies config is accepted without error',
+        code: normalizeIndent`
+          function Component() {
+            return <div>Hello</div>;
+          }
+        `,
+        options: [
+          {
+            environment: {
+              inferEffectDependencies: [
+                {
+                  function: { source: 'shared-runtime', importSpecifierName: 'useSpecialEffect' },
+                  autodepsIndex: 1,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+    invalid: [],
+  });
+});
