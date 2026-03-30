@@ -1,11 +1,12 @@
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 
 import type { NapiLintDiagnostic, OxcReactCompilerOptions } from './eslint-types';
 
 const CACHE_SIZE = 20;
-const cache = new Map<string, { sourceText: string; optionsKey: string; diagnostics: NapiLintDiagnostic[] }>();
+const cache = new Map<string, { sourceText: string; options: OxcReactCompilerOptions | undefined; diagnostics: NapiLintDiagnostic[] }>();
 const insertionOrder: string[] = [];
 
 type LintFn = (filename: string, source: string, options?: OxcReactCompilerOptions) => NapiLintDiagnostic[];
@@ -28,9 +29,8 @@ export const getLintResults = (
   sourceText: string,
   options?: OxcReactCompilerOptions,
 ): NapiLintDiagnostic[] => {
-  const optionsKey = options != null ? JSON.stringify(options) : '';
   const entry = cache.get(filename);
-  if (entry != null && entry.sourceText === sourceText && entry.optionsKey === optionsKey) {
+  if (entry != null && entry.sourceText === sourceText && isDeepStrictEqual(entry.options, options)) {
     return entry.diagnostics;
   }
 
@@ -45,7 +45,7 @@ export const getLintResults = (
     }
   }
 
-  cache.set(filename, { sourceText, optionsKey, diagnostics });
+  cache.set(filename, { sourceText, options, diagnostics });
   const idx = insertionOrder.indexOf(filename);
   if (idx >= 0) {
     insertionOrder.splice(idx, 1);
