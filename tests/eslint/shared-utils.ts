@@ -1,7 +1,8 @@
-import type { Rule } from 'eslint';
+import type { Rule, RuleTester as RuleTesterType } from 'eslint';
 
 import { describe, it } from 'vite-plus/test';
 import { RuleTester } from 'eslint';
+import tsParser from '@typescript-eslint/parser';
 
 /**
  * Template tag that normalizes indentation to match the first non-empty line.
@@ -28,6 +29,14 @@ export const normalizeIndent = (strings: TemplateStringsArray, ...values: unknow
 };
 
 /**
+ * Escape a string for use in a RegExp, then wrap it in a RegExp.
+ * Port of upstream's makeTestCaseError from shared-utils.ts.
+ */
+export const makeTestCaseError = (reason: string): RuleTesterType.TestCaseError => ({
+  message: new RegExp(reason.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+});
+
+/**
  * Run ESLint RuleTester within a vitest describe/it block.
  */
 export const testRule = (
@@ -48,6 +57,42 @@ export const testRule = (
     },
   });
 
+  runTests(name, rule, tester, tests);
+};
+
+/**
+ * Run ESLint RuleTester for TypeScript files within a vitest describe/it block.
+ * Uses @typescript-eslint/parser with filename 'test.tsx'.
+ */
+export const testRuleTs = (
+  name: string,
+  rule: Rule.RuleModule,
+  tests: {
+    valid: RuleTester.ValidTestCase[];
+    invalid: RuleTester.InvalidTestCase[];
+  },
+): void => {
+  const tester = new RuleTester({
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: {
+        ecmaFeatures: { jsx: true },
+      },
+    },
+  });
+
+  runTests(name, rule, tester, tests);
+};
+
+const runTests = (
+  name: string,
+  rule: Rule.RuleModule,
+  tester: RuleTester,
+  tests: {
+    valid: RuleTester.ValidTestCase[];
+    invalid: RuleTester.InvalidTestCase[];
+  },
+): void => {
   describe(name, () => {
     for (const testCase of tests.valid) {
       const testName = typeof testCase === 'string' ? testCase.slice(0, 50) : (testCase.name ?? 'valid case');
