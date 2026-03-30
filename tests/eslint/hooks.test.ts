@@ -22,6 +22,19 @@ testRule('hooks', rules['hooks'], {
         }
       `,
     },
+    {
+      name: 'Flow suppression deduplicates hooks error',
+      code: normalizeIndent`
+        function Component(props) {
+          if (props.cond) {
+            // $FlowFixMe[react-rule-hook]
+            useState(0);
+          }
+          return <div />;
+        }
+      `,
+      options: [{ flowSuppressions: true }],
+    },
   ],
   invalid: [
     {
@@ -34,6 +47,20 @@ testRule('hooks', rules['hooks'], {
           return <div />;
         }
       `,
+      errors: [makeTestCaseError('Hooks must always be called in a consistent order')],
+    },
+    {
+      name: 'Flow suppression with wrong code does not suppress',
+      code: normalizeIndent`
+        function Component(props) {
+          if (props.cond) {
+            // $FlowFixMe[react-rule-other]
+            useState(0);
+          }
+          return <div />;
+        }
+      `,
+      options: [{ flowSuppressions: true }],
       errors: [makeTestCaseError('Hooks must always be called in a consistent order')],
     },
     {

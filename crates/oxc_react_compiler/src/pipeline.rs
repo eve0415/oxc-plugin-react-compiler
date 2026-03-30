@@ -8083,6 +8083,35 @@ pub fn lint(filename: &str, source: &str, options: &PluginOptions) -> Vec<LintDi
         );
     }
 
+    // Per-diagnostic Flow suppression dedup (matching upstream RunReactCompiler.ts).
+    // Only suppress Hooks (react-rule-hook) and Refs (react-rule-unsafe-ref).
+    if options.flow_suppressions {
+        let flow_supps = find_flow_suppressions(source);
+        if !flow_supps.is_empty() {
+            let line_starts = build_line_starts(source);
+            all_diagnostics.retain(|diag| {
+                let span = match diag.span {
+                    Some(s) => s,
+                    None => return true, // keep diagnostics without location
+                };
+                let (diag_line, _) = byte_offset_to_line_col(span.start, &line_starts);
+                for supp in &flow_supps {
+                    // Suppression on line N suppresses diagnostics on line N and N+1
+                    if (diag_line == supp.line || diag_line == supp.line + 1)
+                        && matches!(
+                            (&diag.category, supp.code.as_str()),
+                            (ErrorCategory::Hooks, "react-rule-hook")
+                                | (ErrorCategory::Refs, "react-rule-unsafe-ref")
+                        )
+                    {
+                        return false; // suppress this diagnostic
+                    }
+                }
+                true
+            });
+        }
+    }
+
     // Unused directive detection: only when file has zero other diagnostics (matches upstream)
     if all_diagnostics.is_empty() {
         collect_unused_directives(&program, &options, &mut all_diagnostics);
@@ -8093,6 +8122,35 @@ pub fn lint(filename: &str, source: &str, options: &PluginOptions) -> Vec<LintDi
         .into_iter()
         .map(|d| compiler_diag_to_lint_diag(d, source))
         .collect()
+}
+
+/// A parsed Flow suppression comment with its line number and suppression code.
+struct FlowSuppression {
+    line: u32,
+    code: String,
+}
+
+/// Parse `$FlowFixMe[code]`, `$FlowExpectedError[code]`, `$FlowIssue[code]` from source.
+fn find_flow_suppressions(source: &str) -> Vec<FlowSuppression> {
+    let mut result = Vec::new();
+    for (line_idx, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        // Check for Flow suppression prefixes in comments
+        for prefix in &["$FlowFixMe", "$FlowExpectedError", "$FlowIssue"] {
+            if let Some(pos) = trimmed.find(prefix) {
+                let rest = &trimmed[pos + prefix.len()..];
+                // Extract [code] bracket
+                if rest.starts_with('[') && let Some(end) = rest.find(']') {
+                    let code = &rest[1..end];
+                    result.push(FlowSuppression {
+                        line: (line_idx + 1) as u32, // 1-based
+                        code: code.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    result
 }
 
 /// Collect unused opt-out directives from all functions in the program.
