@@ -1,12 +1,145 @@
 //! N-API bindings for oxc_react_compiler.
 
-use std::cell::RefCell;
-use std::collections::VecDeque;
-use std::hash::{DefaultHasher, Hash, Hasher};
-
 use napi_derive::napi;
 
-// ── Transform API (existing) ──────────────────────────────────────
+// ── Shared Environment Config ────────────────────────────────────
+
+#[napi(object)]
+pub struct NapiEnvironmentConfig {
+    // Validation flags
+    pub validate_hooks_usage: Option<bool>,
+    pub validate_ref_access_during_render: Option<bool>,
+    pub validate_no_set_state_in_render: Option<bool>,
+    pub validate_no_set_state_in_effects: Option<bool>,
+    pub validate_no_derived_computations_in_effects: Option<bool>,
+    pub validate_no_jsx_in_try_statements: Option<bool>,
+    pub validate_static_components: Option<bool>,
+    pub validate_memoized_effect_dependencies: Option<bool>,
+    pub validate_no_capitalized_calls: Option<Vec<String>>,
+    pub validate_no_impure_functions_in_render: Option<bool>,
+    pub validate_no_freezing_known_mutable_functions: Option<bool>,
+    pub validate_no_void_use_memo: Option<bool>,
+    pub validate_blocklisted_imports: Option<Vec<String>>,
+    pub validate_preserve_existing_memoization_guarantees: Option<bool>,
+    pub assert_valid_mutable_ranges: Option<bool>,
+    pub validate_no_dynamically_created_components_or_hooks: Option<bool>,
+
+    // Feature flags
+    pub enable_emit_freeze: Option<bool>,
+    pub enable_emit_hook_guards: Option<bool>,
+    pub enable_instruction_reordering: Option<bool>,
+    pub enable_function_outlining: Option<bool>,
+    pub enable_jsx_outlining: Option<bool>,
+    pub enable_emit_instrument_forget: Option<bool>,
+    pub enable_change_variable_codegen: Option<bool>,
+    pub enable_memoization_comments: Option<bool>,
+    pub enable_fire: Option<bool>,
+    pub enable_name_anonymous_functions: Option<bool>,
+    pub enable_preserve_existing_memoization_guarantees: Option<bool>,
+    pub enable_preserve_existing_manual_use_memo: Option<bool>,
+    pub enable_use_type_annotations: Option<bool>,
+    pub enable_optional_dependencies: Option<bool>,
+    pub enable_assume_hooks_follow_rules_of_react: Option<bool>,
+    pub enable_transitively_freeze_function_expressions: Option<bool>,
+    pub enable_treat_function_deps_as_conditional: Option<bool>,
+    pub enable_treat_ref_like_identifiers_as_refs: Option<bool>,
+    pub enable_treat_set_identifiers_as_state_setters: Option<bool>,
+    pub enable_custom_type_definition_for_reanimated: Option<bool>,
+    pub enable_allow_set_state_from_refs_in_effects: Option<bool>,
+    pub disable_memoization_for_debugging: Option<bool>,
+    pub enable_new_mutation_aliasing_model: Option<bool>,
+    pub enable_propagate_deps_in_hir: Option<bool>,
+    pub enable_reactive_scopes_in_hir: Option<bool>,
+    pub enable_change_detection_for_debugging: Option<bool>,
+    pub enable_reset_cache_on_source_file_changes: Option<bool>,
+    pub throw_unknown_exception_testonly: Option<bool>,
+
+    // Complex configs (hook pattern only — complex nested configs skipped for NAPI)
+    pub hook_pattern: Option<String>,
+}
+
+fn merge_env_config(
+    napi: Option<NapiEnvironmentConfig>,
+) -> oxc_react_compiler::options::EnvironmentConfig {
+    use oxc_react_compiler::options::EnvironmentConfig;
+    let mut env = EnvironmentConfig::default();
+    let Some(n) = napi else { return env };
+
+    macro_rules! merge {
+        ($field:ident) => {
+            if let Some(v) = n.$field {
+                env.$field = v;
+            }
+        };
+    }
+
+    // Validation flags
+    merge!(validate_hooks_usage);
+    merge!(validate_ref_access_during_render);
+    merge!(validate_no_set_state_in_render);
+    merge!(validate_no_set_state_in_effects);
+    merge!(validate_no_derived_computations_in_effects);
+    merge!(validate_no_jsx_in_try_statements);
+    merge!(validate_static_components);
+    merge!(validate_memoized_effect_dependencies);
+    merge!(validate_no_impure_functions_in_render);
+    merge!(validate_no_freezing_known_mutable_functions);
+    merge!(validate_no_void_use_memo);
+    merge!(validate_preserve_existing_memoization_guarantees);
+    merge!(assert_valid_mutable_ranges);
+    merge!(validate_no_dynamically_created_components_or_hooks);
+
+    // Option<Vec<String>> fields
+    if let Some(v) = n.validate_no_capitalized_calls {
+        env.validate_no_capitalized_calls = Some(v);
+    }
+    if let Some(v) = n.validate_blocklisted_imports {
+        env.validate_blocklisted_imports = Some(v);
+    }
+
+    // Feature flags
+    merge!(enable_emit_freeze);
+    merge!(enable_emit_hook_guards);
+    merge!(enable_instruction_reordering);
+    merge!(enable_function_outlining);
+    merge!(enable_jsx_outlining);
+    merge!(enable_emit_instrument_forget);
+    merge!(enable_change_variable_codegen);
+    merge!(enable_memoization_comments);
+    merge!(enable_fire);
+    merge!(enable_name_anonymous_functions);
+    merge!(enable_preserve_existing_memoization_guarantees);
+    merge!(enable_preserve_existing_manual_use_memo);
+    merge!(enable_use_type_annotations);
+    merge!(enable_optional_dependencies);
+    merge!(enable_assume_hooks_follow_rules_of_react);
+    merge!(enable_transitively_freeze_function_expressions);
+    merge!(enable_treat_function_deps_as_conditional);
+    merge!(enable_treat_ref_like_identifiers_as_refs);
+    merge!(enable_treat_set_identifiers_as_state_setters);
+    merge!(enable_custom_type_definition_for_reanimated);
+    merge!(enable_allow_set_state_from_refs_in_effects);
+    merge!(disable_memoization_for_debugging);
+    merge!(enable_new_mutation_aliasing_model);
+    merge!(enable_propagate_deps_in_hir);
+    merge!(enable_reactive_scopes_in_hir);
+    merge!(enable_change_detection_for_debugging);
+    merge!(throw_unknown_exception_testonly);
+
+    // Option<bool> field
+    if let Some(v) = n.enable_reset_cache_on_source_file_changes {
+        env.enable_reset_cache_on_source_file_changes = Some(v);
+    }
+
+    // Hook pattern
+    if let Some(v) = n.hook_pattern {
+        env.hook_pattern = Some(v);
+    }
+
+    env
+}
+
+// ── Transform API ────────────────────────────────────────────────
 
 #[napi(object)]
 pub struct TransformOptions {
@@ -17,6 +150,8 @@ pub struct TransformOptions {
     pub target: Option<String>,
     /// Whether to generate source maps. Defaults to `true`.
     pub source_map: Option<bool>,
+    /// Environment configuration for validation and feature flags.
+    pub environment: Option<NapiEnvironmentConfig>,
 }
 
 #[napi(object)]
@@ -32,7 +167,7 @@ pub fn transform(
     source: String,
     options: Option<TransformOptions>,
 ) -> TransformResult {
-    let opts = parse_options(options);
+    let opts = parse_transform_options(options);
     let result = oxc_react_compiler::compile(&filename, &source, &opts);
     TransformResult {
         transformed: result.transformed,
@@ -41,7 +176,9 @@ pub fn transform(
     }
 }
 
-fn parse_options(options: Option<TransformOptions>) -> oxc_react_compiler::options::PluginOptions {
+fn parse_transform_options(
+    options: Option<TransformOptions>,
+) -> oxc_react_compiler::options::PluginOptions {
     let Some(opts) = options else {
         return oxc_react_compiler::options::PluginOptions::default();
     };
@@ -63,19 +200,83 @@ fn parse_options(options: Option<TransformOptions>) -> oxc_react_compiler::optio
         compilation_mode,
         panic_threshold,
         target: opts.target.unwrap_or_else(|| "19".to_string()),
-        environment: EnvironmentConfig::default(),
-        custom_opt_out_directives: Vec::new(),
-        ignore_use_no_forget: false,
-        gating: None,
-        dynamic_gating: None,
-        no_emit: false,
-        eslint_suppression_rules: None,
-        flow_suppressions: true,
+        environment: merge_env_config(opts.environment),
         source_map: opts.source_map.unwrap_or(true),
+        ..PluginOptions::default()
     }
 }
 
-// ── Lint API ──────────────────────────────────────────────────────
+// ── Lint API ─────────────────────────────────────────────────────
+
+#[napi(object)]
+pub struct NapiLintOptions {
+    #[napi(ts_type = "'infer' | 'annotation' | 'all'")]
+    pub compilation_mode: Option<String>,
+    pub target: Option<String>,
+    pub environment: Option<NapiEnvironmentConfig>,
+    pub custom_opt_out_directives: Option<Vec<String>>,
+    pub ignore_use_no_forget: Option<bool>,
+    pub eslint_suppression_rules: Option<Vec<String>>,
+    pub flow_suppressions: Option<bool>,
+}
+
+fn parse_lint_options(
+    options: Option<NapiLintOptions>,
+) -> oxc_react_compiler::options::PluginOptions {
+    use oxc_react_compiler::options::*;
+
+    let Some(opts) = options else {
+        return lint_defaults();
+    };
+
+    let compilation_mode = match opts.compilation_mode.as_deref() {
+        Some("annotation") => CompilationMode::Annotation,
+        Some("all") => CompilationMode::All,
+        Some("infer") => CompilationMode::Infer,
+        _ => CompilationMode::Infer,
+    };
+
+    PluginOptions {
+        compilation_mode,
+        panic_threshold: PanicThreshold::None,
+        target: opts.target.unwrap_or_else(|| "19".to_string()),
+        environment: merge_env_config(opts.environment),
+        custom_opt_out_directives: opts.custom_opt_out_directives.unwrap_or_default(),
+        ignore_use_no_forget: opts.ignore_use_no_forget.unwrap_or(false),
+        eslint_suppression_rules: opts.eslint_suppression_rules,
+        flow_suppressions: opts.flow_suppressions.unwrap_or(false),
+        no_emit: true,
+        source_map: false,
+        ..PluginOptions::default()
+    }
+}
+
+/// Default lint options matching upstream eslint-plugin-react-compiler COMPILER_OPTIONS.
+fn lint_defaults() -> oxc_react_compiler::options::PluginOptions {
+    use oxc_react_compiler::options::*;
+    PluginOptions {
+        compilation_mode: CompilationMode::Infer,
+        panic_threshold: PanicThreshold::None,
+        no_emit: true,
+        flow_suppressions: false,
+        source_map: false,
+        environment: EnvironmentConfig {
+            validate_hooks_usage: true,
+            validate_ref_access_during_render: true,
+            validate_no_set_state_in_render: true,
+            validate_no_set_state_in_effects: true,
+            validate_no_derived_computations_in_effects: true,
+            validate_no_jsx_in_try_statements: true,
+            validate_no_impure_functions_in_render: true,
+            validate_static_components: true,
+            validate_no_freezing_known_mutable_functions: true,
+            validate_no_void_use_memo: true,
+            validate_no_capitalized_calls: Some(Vec::new()),
+            ..EnvironmentConfig::default()
+        },
+        ..PluginOptions::default()
+    }
+}
 
 #[napi(object)]
 #[derive(Clone)]
@@ -114,44 +315,7 @@ pub struct NapiLintDiagnostic {
     pub suggestions: Vec<NapiLintSuggestion>,
 }
 
-// ── LRU Cache ─────────────────────────────────────────────────────
-
-const LINT_CACHE_SIZE: usize = 10;
-
-thread_local! {
-    static LINT_CACHE: RefCell<VecDeque<(u64, Vec<NapiLintDiagnostic>)>> =
-        RefCell::new(VecDeque::with_capacity(LINT_CACHE_SIZE));
-}
-
-fn compute_cache_key(filename: &str, source: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    filename.hash(&mut hasher);
-    source.hash(&mut hasher);
-    hasher.finish()
-}
-
-fn cache_get(key: u64) -> Option<Vec<NapiLintDiagnostic>> {
-    LINT_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        let pos = cache.iter().position(|(k, _)| *k == key)?;
-        let entry = cache.remove(pos)?;
-        let result = entry.1.clone();
-        cache.push_back(entry);
-        Some(result)
-    })
-}
-
-fn cache_insert(key: u64, diagnostics: Vec<NapiLintDiagnostic>) {
-    LINT_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if cache.len() >= LINT_CACHE_SIZE {
-            cache.pop_front();
-        }
-        cache.push_back((key, diagnostics));
-    });
-}
-
-// ── Conversion helpers ────────────────────────────────────────────
+// ── Conversion helpers ───────────────────────────────────────────
 
 fn convert_diagnostic(diag: oxc_react_compiler::error::LintDiagnostic) -> NapiLintDiagnostic {
     NapiLintDiagnostic {
@@ -204,16 +368,12 @@ fn convert_diagnostic(diag: oxc_react_compiler::error::LintDiagnostic) -> NapiLi
 }
 
 #[napi]
-pub fn lint(filename: String, source: String) -> Vec<NapiLintDiagnostic> {
-    let cache_key = compute_cache_key(&filename, &source);
-
-    if let Some(cached) = cache_get(cache_key) {
-        return cached;
-    }
-
-    let diagnostics = oxc_react_compiler::lint(&filename, &source);
-    let result: Vec<NapiLintDiagnostic> = diagnostics.into_iter().map(convert_diagnostic).collect();
-
-    cache_insert(cache_key, result.clone());
-    result
+pub fn lint(
+    filename: String,
+    source: String,
+    options: Option<NapiLintOptions>,
+) -> Vec<NapiLintDiagnostic> {
+    let opts = parse_lint_options(options);
+    let diagnostics = oxc_react_compiler::lint(&filename, &source, &opts);
+    diagnostics.into_iter().map(convert_diagnostic).collect()
 }
