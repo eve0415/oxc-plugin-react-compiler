@@ -10,7 +10,7 @@ export default defineConfig({
     format: 'esm',
     outDir: 'napi/dist',
     inputOptions: {
-      external: ['@oxc-plugin-react-compiler/binding', 'vite', 'eslint'],
+      external: ['@oxc-plugin-react-compiler/binding', '#binding', 'vite', 'eslint'],
     },
     deps: {
       onlyBundle: false,
