@@ -6,7 +6,9 @@
 
 use std::collections::HashMap;
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
+use crate::error::{
+    BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory, extract_span,
+};
 use crate::hir::types::*;
 
 /// The kind of reference observed for a given identifier.
@@ -226,6 +228,9 @@ fn validate_impl(
                             diagnostics: vec![CompilerDiagnostic {
                                 severity: DiagnosticSeverity::Todo,
                                 message: "Handle lvalues for this instruction kind".to_string(),
+                                category: ErrorCategory::Immutability,
+                                span: extract_span(&instr.loc),
+                                ..Default::default()
                             }],
                         }));
                     }
@@ -254,6 +259,9 @@ fn visit(
                     diagnostics: vec![CompilerDiagnostic {
                         severity: DiagnosticSeverity::Todo,
                         message: "Support destructuring of context variables".to_string(),
+                        category: ErrorCategory::Immutability,
+                        span: extract_span(&place.loc),
+                        ..Default::default()
                     }],
                 }));
             }
@@ -272,6 +280,9 @@ fn visit(
                 diagnostics: vec![CompilerDiagnostic {
                     severity: DiagnosticSeverity::Invariant,
                     message: format!("this is {:?}", prev_kind),
+                    category: ErrorCategory::Immutability,
+                    span: extract_span(&place.loc),
+                    ..Default::default()
                 }],
             }));
         }

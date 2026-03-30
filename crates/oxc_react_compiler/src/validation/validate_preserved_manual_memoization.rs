@@ -13,7 +13,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
 use crate::hir::types::*;
 
 // ---------------------------------------------------------------------------
@@ -56,6 +56,8 @@ pub fn validate_preserved_manual_memoization(func: &ReactiveFunction) -> Result<
                      preserved. This value was memoized in source but not \
                      in compilation output"
                     .to_string(),
+                category: ErrorCategory::PreserveManualMemo,
+                ..Default::default()
             });
             if debug_manual_memo {
                 eprintln!(
@@ -91,6 +93,8 @@ pub fn validate_preserved_manual_memoization(func: &ReactiveFunction) -> Result<
                         mutated later, which could cause the value to \
                         change unexpectedly"
                     .to_string(),
+                category: ErrorCategory::PreserveManualMemo,
+                ..Default::default()
             });
         } else if unclosed.saw_side_effect_use_of_decl {
             state.errors.push(CompilerDiagnostic {
@@ -100,6 +104,8 @@ pub fn validate_preserved_manual_memoization(func: &ReactiveFunction) -> Result<
                      preserved. This value was memoized in source but not \
                      in compilation output"
                     .to_string(),
+                category: ErrorCategory::PreserveManualMemo,
+                ..Default::default()
             });
         }
     }
@@ -479,6 +485,8 @@ fn validate_inferred_dep(
     errors.push(CompilerDiagnostic {
         severity: DiagnosticSeverity::CannotPreserveMemoization,
         message: description.trim().to_string(),
+        category: ErrorCategory::PreserveManualMemo,
+        ..Default::default()
     });
 }
 
@@ -760,6 +768,8 @@ impl Visitor {
                             mutated later, which could cause the value to \
                             change unexpectedly"
                         .to_string(),
+                    category: ErrorCategory::PreserveManualMemo,
+                    ..Default::default()
                 });
                 state.errors.push(CompilerDiagnostic {
                     severity: DiagnosticSeverity::CannotPreserveMemoization,
@@ -768,6 +778,8 @@ impl Visitor {
                          preserved. This value was memoized in source but not \
                          in compilation output"
                         .to_string(),
+                    category: ErrorCategory::PreserveManualMemo,
+                    ..Default::default()
                 });
             }
         }
@@ -1028,6 +1040,8 @@ impl Visitor {
                                         mutated later, which could cause the value to \
                                         change unexpectedly"
                                     .to_string(),
+                                category: ErrorCategory::PreserveManualMemo,
+                                ..Default::default()
                             });
                         }
                     }
@@ -1162,6 +1176,8 @@ impl Visitor {
                                      preserved. This value was memoized in source but not \
                                      in compilation output"
                                     .to_string(),
+                                category: ErrorCategory::PreserveManualMemo,
+                                ..Default::default()
                             });
                         }
                     }

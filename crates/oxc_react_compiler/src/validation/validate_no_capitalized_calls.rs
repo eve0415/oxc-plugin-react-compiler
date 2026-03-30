@@ -9,7 +9,9 @@
 
 use std::collections::HashMap;
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
+use crate::error::{
+    BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory, extract_span,
+};
 use crate::hir::types::*;
 use crate::options::EnvironmentConfig;
 
@@ -99,6 +101,9 @@ pub fn validate_no_capitalized_calls(
                                     "{}. {} may be a component",
                                     CAPITALIZED_CALL_REASON, callee_name
                                 ),
+                                category: ErrorCategory::CapitalizedCalls,
+                                span: extract_span(&instr.loc),
+                                ..Default::default()
                             }],
                         }));
                     }
@@ -131,6 +136,9 @@ pub fn validate_no_capitalized_calls(
                                 "{}. {} may be a component",
                                 CAPITALIZED_CALL_REASON, property_name
                             ),
+                            category: ErrorCategory::CapitalizedCalls,
+                            span: extract_span(&instr.loc),
+                            ..Default::default()
                         });
                     }
                 }

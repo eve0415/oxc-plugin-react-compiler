@@ -13,7 +13,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
+use crate::error::{
+    BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory, extract_span,
+};
 use crate::hir::types::*;
 use crate::hir::visitors::{for_each_instruction_operand, for_each_terminal_operand};
 use crate::inference::aliasing_effects::AliasingEffect;
@@ -33,7 +35,6 @@ fn push_mutable_function_error(
         Some(IdentifierName::Named(name)) => format!("`{}`", name),
         _ => "a local variable".to_string(),
     };
-    let _ = loc;
     diagnostics.push(CompilerDiagnostic {
         severity: DiagnosticSeverity::InvalidReact,
         message: format!(
@@ -43,6 +44,9 @@ fn push_mutable_function_error(
                  Consider using state instead",
             variable
         ),
+        category: ErrorCategory::Immutability,
+        span: extract_span(loc),
+        ..Default::default()
     });
 }
 

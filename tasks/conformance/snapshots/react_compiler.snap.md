@@ -4,6 +4,7 @@
 
 ## Failed
 
+
 ## Passed
 
 - `alias-capture-in-method-receiver`

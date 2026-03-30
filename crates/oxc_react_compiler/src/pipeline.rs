@@ -25,7 +25,10 @@ use crate::codegen_backend::{
     CompiledParamPrefixStatement, CompiledPropertyKey, ModuleEmitArgs,
     SynthesizedDefaultParamCache,
 };
-use crate::error::CompilerError;
+use crate::error::{
+    CompilerDiagnostic, CompilerError, ErrorCategory, LintDiagnostic, LintRelated, LintSuggestion,
+    SuggestionOp,
+};
 use crate::hir::build;
 use crate::hir::types::HIRFunction;
 use crate::optimization;
@@ -1868,6 +1871,9 @@ fn run_hir_pipeline(
                 diagnostics: vec![crate::error::CompilerDiagnostic {
                     severity: crate::error::DiagnosticSeverity::InvalidReact,
                     message: "Modifying a value used previously in an effect function or as an effect dependency is not allowed. Consider moving the modification before calling useEffect()".to_string(),
+                    category: ErrorCategory::Immutability,
+                    span: None,
+                    ..Default::default()
                 }],
             }));
         }
@@ -4790,6 +4796,9 @@ fn conflicting_global_bailout(name: &str) -> CompilerError {
         diagnostics: vec![crate::error::CompilerDiagnostic {
             severity: crate::error::DiagnosticSeverity::Todo,
             message: format!("Conflict from local binding {}.", name),
+            category: ErrorCategory::Todo,
+            span: None,
+            ..Default::default()
         }],
     })
 }
@@ -7146,6 +7155,9 @@ fn validate_no_unsupported_global_calls(func: &HIRFunction) -> Result<(), Compil
                                      It is an anti-pattern in JavaScript, and the code executed \
                                      cannot be analyzed by React Compiler."
                             .to_string(),
+                        category: ErrorCategory::Globals,
+                        span: None,
+                        ..Default::default()
                     }],
                 }));
             }
@@ -7182,6 +7194,9 @@ fn validate_no_dynamic_components_or_hooks(
                  but it's defined inside `{parent_name}`. \
                  Components and Hooks should always be declared at module scope",
             ),
+            category: ErrorCategory::Invariant,
+            span: None,
+            ..Default::default()
         })
     }
 
@@ -7423,6 +7438,586 @@ fn check_var_init_for_dynamic_components(
         _ => {}
     }
     Ok(())
+}
+
+// =========================================================================
+// Lint pipeline — collect diagnostics without emitting code
+// =========================================================================
+
+/// Lint options matching upstream's eslint-plugin-react-compiler COMPILER_OPTIONS.
+fn lint_options() -> PluginOptions {
+    use crate::options::*;
+    PluginOptions {
+        compilation_mode: CompilationMode::All,
+        panic_threshold: PanicThreshold::None,
+        no_emit: true,
+        flow_suppressions: false,
+        source_map: false,
+        environment: EnvironmentConfig {
+            validate_hooks_usage: true,
+            validate_ref_access_during_render: true,
+            validate_no_set_state_in_render: true,
+            validate_no_set_state_in_effects: true,
+            validate_no_derived_computations_in_effects: true,
+            validate_no_jsx_in_try_statements: true,
+            validate_no_impure_functions_in_render: true,
+            validate_static_components: true,
+            validate_no_freezing_known_mutable_functions: true,
+            validate_no_void_use_memo: true,
+            validate_no_capitalized_calls: Some(Vec::new()),
+            ..EnvironmentConfig::default()
+        },
+        ..PluginOptions::default()
+    }
+}
+
+/// Run the HIR pipeline in lint mode, collecting all diagnostics instead of bailing.
+fn run_hir_pipeline_lint(
+    mut hir_func: HIRFunction,
+    _name: &str,
+    env_config: &crate::options::EnvironmentConfig,
+) -> Vec<CompilerDiagnostic> {
+    let mut diagnostics: Vec<CompilerDiagnostic> = Vec::new();
+
+    macro_rules! collect_validation {
+        ($expr:expr) => {
+            if let Err(err) = $expr {
+                match err {
+                    crate::error::CompilerError::Bail(bailout) => {
+                        diagnostics.extend(bailout.diagnostics);
+                    }
+                    crate::error::CompilerError::LoweringFailed(msg) => {
+                        diagnostics.push(CompilerDiagnostic {
+                            severity: crate::error::DiagnosticSeverity::InvalidReact,
+                            message: msg,
+                            category: ErrorCategory::Syntax,
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+        };
+    }
+
+    // Phase 0.5: Pre-validation
+    collect_validation!(validate_no_unsupported_global_calls(&hir_func));
+
+    // Phase 1: HIR Pre-processing
+    prune_maybe_throws::prune_maybe_throws(&mut hir_func);
+    collect_validation!(
+        validate_context_variable_lvalues::validate_context_variable_lvalues(&hir_func)
+    );
+    collect_validation!(validate_use_memo::validate_use_memo(&hir_func));
+    collect_validation!(validate_use_memo::validate_no_void_use_memo(&hir_func));
+
+    // Drop manual memoization
+    if !env_config.enable_preserve_existing_manual_use_memo
+        && !env_config.disable_memoization_for_debugging
+        && !env_config.enable_change_detection_for_debugging
+    {
+        collect_validation!(drop_manual_memoization::drop_manual_memoization(
+            &mut hir_func
+        ));
+    }
+
+    inline_iifes::inline_iifes(&mut hir_func);
+    merge_consecutive_blocks::merge_consecutive_blocks(&mut hir_func);
+
+    // Phase 2: SSA + Analysis
+    if enter_ssa::enter_ssa(&mut hir_func).is_err() {
+        return diagnostics;
+    }
+    eliminate_redundant_phi::eliminate_redundant_phi(&mut hir_func);
+    constant_propagation::constant_propagation(&mut hir_func);
+    type_inference::infer_types(&mut hir_func);
+
+    // Post-SSA validations
+    collect_validation!(validate_hooks_usage::validate_hooks_usage(&hir_func));
+    if env_config.validate_no_capitalized_calls.is_some() {
+        collect_validation!(
+            validate_no_capitalized_calls::validate_no_capitalized_calls(&hir_func, env_config)
+        );
+    }
+
+    // TransformFire
+    if env_config.enable_fire {
+        collect_validation!(crate::hir::transform_fire::transform_fire(&mut hir_func));
+    }
+
+    if let Some(lowered_context_callee_config) = env_config.lower_context_access.as_ref() {
+        optimization::lower_context_access::lower_context_access(
+            &mut hir_func,
+            lowered_context_callee_config,
+        );
+    }
+
+    // Phase 3: Mutation/Aliasing Analysis
+    optimization::optimize_props_method_calls::optimize_props_method_calls(&mut hir_func);
+    analyse_functions::analyse_functions(&mut hir_func);
+    infer_mutation_aliasing_effects::infer_mutation_aliasing_effects(&mut hir_func, false, true);
+
+    // DCE
+    dead_code_elimination::dead_code_elimination(&mut hir_func);
+
+    if env_config.enable_instruction_reordering {
+        optimization::instruction_reordering::instruction_reordering(&mut hir_func);
+    }
+
+    prune_maybe_throws::prune_maybe_throws(&mut hir_func);
+    collect_validation!(
+        crate::inference::infer_mutation_aliasing_ranges::infer_mutation_aliasing_ranges(
+            &mut hir_func,
+            false,
+        )
+    );
+
+    // Post-aliasing validations — run ALL unconditionally
+    collect_validation!(
+        validate_locals_not_reassigned_after_render::validate_locals_not_reassigned_after_render(
+            &hir_func,
+        )
+    );
+    collect_validation!(
+        validate_no_ref_access_in_render::validate_no_ref_access_in_render(&hir_func)
+    );
+    collect_validation!(
+        validate_no_set_state_in_render::validate_no_set_state_in_render(&hir_func)
+    );
+    collect_validation!(
+        validate_no_derived_computations_in_effects::validate_no_derived_computations_in_effects(
+            &hir_func,
+        )
+    );
+    collect_validation!(
+        validate_no_set_state_in_effects::validate_no_set_state_in_effects(
+            &hir_func,
+            env_config.enable_allow_set_state_from_refs_in_effects,
+        )
+    );
+    collect_validation!(
+        validate_no_jsx_in_try_statement::validate_no_jsx_in_try_statement(&hir_func)
+    );
+    collect_validation!(
+        validate_no_impure_functions_in_render::validate_no_impure_functions_in_render(&hir_func)
+    );
+    collect_validation!(
+        validate_no_freezing_known_mutable_functions::validate_no_freezing_known_mutable_functions(
+            &hir_func,
+        )
+    );
+
+    // Reactive scope construction — needed for reactive-level validators and
+    // static component validation.
+    let _has_reactive = infer_reactive::infer_reactive_places(&mut hir_func);
+    if rewrite_instruction_kinds::rewrite_instruction_kinds(&mut hir_func).is_err() {
+        return diagnostics;
+    }
+
+    collect_validation!(validate_static_components::validate_static_components(
+        &hir_func
+    ));
+
+    // Build reactive scopes for ReactiveFunction-level validators
+    infer_scope_variables::infer_reactive_scope_variables_with_aliasing(&mut hir_func);
+    memoize_fbt_operands::memoize_fbt_and_macro_operands_in_same_scope(&mut hir_func);
+    build_reactive_scope_terminals::build_reactive_scope_terminals(&mut hir_func);
+    flatten_reactive_loops::flatten_reactive_loops_hir(&mut hir_func);
+    flatten_scopes_with_hooks::flatten_scopes_with_hooks_or_use_hir(&mut hir_func);
+    align_scopes::align_reactive_scopes_to_block_scopes(&mut hir_func);
+    merge_overlapping_scopes::merge_overlapping_reactive_scopes(&mut hir_func);
+    align_method_call_scopes::align_method_call_scopes(&mut hir_func);
+    align_object_method_scopes::align_object_method_scopes(&mut hir_func);
+    prune_unused_labels::prune_unused_labels_hir(&mut hir_func);
+    propagate_scope_dependencies_hir::propagate_scope_dependencies_hir(&mut hir_func);
+
+    // Build reactive function for ReactiveFunction-level validators
+    let reactive_fn = build_reactive_function::build_reactive_function(hir_func);
+    collect_validation!(
+        crate::validation::validate_memoized_effect_dependencies::validate_memoized_effect_dependencies(&reactive_fn)
+    );
+    collect_validation!(
+        crate::validation::validate_preserved_manual_memoization::validate_preserved_manual_memoization(&reactive_fn)
+    );
+
+    diagnostics
+}
+
+/// Lower a function to HIR and run the lint pipeline.
+#[allow(clippy::too_many_arguments)]
+fn lint_function<'a>(
+    body: &ast::FunctionBody<'a>,
+    params: &ast::FormalParameters<'a>,
+    name: &str,
+    span: oxc_span::Span,
+    is_generator: bool,
+    is_async: bool,
+    source: &str,
+    semantic: &oxc_semantic::Semantic<'a>,
+    env_config: &crate::options::EnvironmentConfig,
+) -> Vec<CompilerDiagnostic> {
+    let env = crate::environment::Environment::new(env_config.clone());
+    let lowering_cx = build::LoweringContext::new(semantic, source, env);
+    let lower_result = match build::lower_function(
+        body,
+        params,
+        lowering_cx,
+        build::LowerFunctionOptions::function(Some(name), span, is_generator, is_async),
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            return vec![CompilerDiagnostic {
+                severity: crate::error::DiagnosticSeverity::InvalidReact,
+                message: format!("{e:?}"),
+                category: ErrorCategory::Syntax,
+                ..Default::default()
+            }];
+        }
+    };
+
+    let mut hir_func = lower_result.func;
+    match get_react_function_type(name, body, params) {
+        Some("Component") => hir_func.fn_type = crate::hir::types::ReactFunctionType::Component,
+        Some("Hook") => hir_func.fn_type = crate::hir::types::ReactFunctionType::Hook,
+        _ => {}
+    }
+
+    run_hir_pipeline_lint(hir_func, name, env_config)
+}
+
+/// Convert a `CompilerDiagnostic` to a `LintDiagnostic` with line:column info.
+fn compiler_diag_to_lint_diag(diag: CompilerDiagnostic, source: &str) -> LintDiagnostic {
+    let (start_line, start_column, end_line, end_column, has_location) =
+        if let Some(span) = diag.span {
+            let line_starts = build_line_starts(source);
+            let (sl, sc) = byte_offset_to_line_col(span.start, &line_starts);
+            let (el, ec) = byte_offset_to_line_col(span.end, &line_starts);
+            (sl, sc, el, ec, true)
+        } else {
+            (0, 0, 0, 0, false)
+        };
+
+    LintDiagnostic {
+        category: diag.category,
+        message: diag.message,
+        severity: diag.category.default_severity(),
+        start_line,
+        start_column,
+        end_line,
+        end_column,
+        has_location,
+        related: diag
+            .related
+            .into_iter()
+            .filter_map(|r| {
+                let span = r.span?;
+                let line_starts = build_line_starts(source);
+                let (sl, sc) = byte_offset_to_line_col(span.start, &line_starts);
+                let (el, ec) = byte_offset_to_line_col(span.end, &line_starts);
+                Some(LintRelated {
+                    message: r.message,
+                    start_line: sl,
+                    start_column: sc,
+                    end_line: el,
+                    end_column: ec,
+                })
+            })
+            .collect(),
+        suggestions: diag
+            .suggestions
+            .into_iter()
+            .map(|s| match s {
+                crate::error::CompilerSuggestion::InsertBefore {
+                    description,
+                    range,
+                    text,
+                } => LintSuggestion {
+                    description,
+                    op: SuggestionOp::InsertBefore,
+                    range,
+                    text: Some(text),
+                },
+                crate::error::CompilerSuggestion::InsertAfter {
+                    description,
+                    range,
+                    text,
+                } => LintSuggestion {
+                    description,
+                    op: SuggestionOp::InsertAfter,
+                    range,
+                    text: Some(text),
+                },
+                crate::error::CompilerSuggestion::Remove { description, range } => LintSuggestion {
+                    description,
+                    op: SuggestionOp::Remove,
+                    range,
+                    text: None,
+                },
+                crate::error::CompilerSuggestion::Replace {
+                    description,
+                    range,
+                    text,
+                } => LintSuggestion {
+                    description,
+                    op: SuggestionOp::Replace,
+                    range,
+                    text: Some(text),
+                },
+            })
+            .collect(),
+    }
+}
+
+fn build_line_starts(source: &str) -> Vec<u32> {
+    let mut starts = vec![0u32];
+    for (idx, byte) in source.bytes().enumerate() {
+        if byte == b'\n' {
+            starts.push((idx as u32) + 1);
+        }
+    }
+    starts
+}
+
+fn byte_offset_to_line_col(offset: u32, line_starts: &[u32]) -> (u32, u32) {
+    let line = line_starts
+        .partition_point(|&start| start <= offset)
+        .saturating_sub(1);
+    let column = offset - line_starts[line];
+    ((line as u32) + 1, column) // 1-based line, 0-based column
+}
+
+/// Lint a single source file. Runs the full compilation pipeline in lint mode
+/// on every function, collecting all diagnostics.
+pub fn lint(filename: &str, source: &str) -> Vec<LintDiagnostic> {
+    let options = lint_options();
+
+    crate::source_lines::set_current_source(source);
+    CURRENT_FILENAME.with(|cell| *cell.borrow_mut() = filename.to_string());
+    FLOW_COMPONENT_NAMES.with(|set| {
+        *set.borrow_mut() = collect_flow_component_names(source);
+    });
+    FLOW_HOOK_NAMES.with(|set| {
+        *set.borrow_mut() = collect_flow_hook_names(source);
+    });
+
+    // Pre-process Flow syntax
+    let mut source_owned = preprocess_flow_syntax(source);
+    source_owned = rewrite_flow_component_param_lists(&source_owned);
+    let source = source_owned.as_str();
+
+    let allocator = oxc_allocator::Allocator::default();
+
+    // Parse
+    let source_type = if filename.ends_with(".tsx") {
+        oxc_span::SourceType::tsx()
+    } else if filename.ends_with(".ts") {
+        oxc_span::SourceType::ts().with_jsx(true)
+    } else if filename.ends_with(".jsx") {
+        oxc_span::SourceType::jsx()
+    } else {
+        oxc_span::SourceType::mjs().with_jsx(true)
+    };
+
+    let parser_ret = oxc_parser::Parser::new(&allocator, source, source_type).parse();
+
+    let program = if !parser_ret.errors.is_empty() && !source_type.is_typescript() {
+        let ts_type = oxc_span::SourceType::tsx();
+        let ts_ret = oxc_parser::Parser::new(&allocator, source, ts_type).parse();
+        if ts_ret.panicked || !ts_ret.errors.is_empty() {
+            if parser_ret.panicked {
+                return Vec::new();
+            }
+            parser_ret.program
+        } else {
+            drop(ts_ret);
+            oxc_parser::Parser::new(&allocator, source, ts_type)
+                .parse()
+                .program
+        }
+    } else {
+        if parser_ret.panicked {
+            return Vec::new();
+        }
+        parser_ret.program
+    };
+
+    // Skip already-compiled files
+    if has_memo_cache_import(&program) {
+        return Vec::new();
+    }
+
+    // Build semantic
+    let semantic_ret = oxc_semantic::SemanticBuilder::new().build(&program);
+    let semantic = semantic_ret.semantic;
+
+    let mut all_diagnostics = Vec::new();
+    let env_config = &options.environment;
+
+    // Lint every function in the program
+    for stmt in &program.body {
+        lint_statement(stmt, source, &semantic, env_config, &mut all_diagnostics);
+    }
+
+    // Convert to LintDiagnostic with line:column info
+    all_diagnostics
+        .into_iter()
+        .map(|d| compiler_diag_to_lint_diag(d, source))
+        .collect()
+}
+
+/// Recursively lint functions within a statement.
+fn lint_statement<'a>(
+    stmt: &ast::Statement<'a>,
+    source: &str,
+    semantic: &oxc_semantic::Semantic<'a>,
+    env_config: &crate::options::EnvironmentConfig,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    match stmt {
+        ast::Statement::FunctionDeclaration(func) => {
+            if let Some(name) = func.id.as_ref().map(|id| id.name.as_str())
+                && let Some(body) = func.body.as_ref()
+            {
+                diagnostics.extend(lint_function(
+                    body,
+                    &func.params,
+                    name,
+                    func.span,
+                    func.generator,
+                    func.r#async,
+                    source,
+                    semantic,
+                    env_config,
+                ));
+            }
+        }
+        ast::Statement::ExportDefaultDeclaration(export) => match &export.declaration {
+            ast::ExportDefaultDeclarationKind::FunctionDeclaration(func) => {
+                let name = func
+                    .id
+                    .as_ref()
+                    .map(|id| id.name.as_str())
+                    .unwrap_or("Component");
+                if let Some(body) = func.body.as_ref() {
+                    diagnostics.extend(lint_function(
+                        body,
+                        &func.params,
+                        name,
+                        func.span,
+                        func.generator,
+                        func.r#async,
+                        source,
+                        semantic,
+                        env_config,
+                    ));
+                }
+            }
+            ast::ExportDefaultDeclarationKind::ArrowFunctionExpression(arrow) => {
+                diagnostics.extend(lint_function(
+                    &arrow.body,
+                    &arrow.params,
+                    "Component",
+                    arrow.span,
+                    false,
+                    arrow.r#async,
+                    source,
+                    semantic,
+                    env_config,
+                ));
+            }
+            _ => {}
+        },
+        ast::Statement::ExportNamedDeclaration(export) => {
+            if let Some(decl) = &export.declaration {
+                lint_declaration(decl, source, semantic, env_config, diagnostics);
+            }
+        }
+        ast::Statement::VariableDeclaration(var_decl) => {
+            for decl in &var_decl.declarations {
+                lint_var_declarator(decl, source, semantic, env_config, diagnostics);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lint_declaration<'a>(
+    decl: &ast::Declaration<'a>,
+    source: &str,
+    semantic: &oxc_semantic::Semantic<'a>,
+    env_config: &crate::options::EnvironmentConfig,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    match decl {
+        ast::Declaration::FunctionDeclaration(func) => {
+            if let Some(name) = func.id.as_ref().map(|id| id.name.as_str())
+                && let Some(body) = func.body.as_ref()
+            {
+                diagnostics.extend(lint_function(
+                    body,
+                    &func.params,
+                    name,
+                    func.span,
+                    func.generator,
+                    func.r#async,
+                    source,
+                    semantic,
+                    env_config,
+                ));
+            }
+        }
+        ast::Declaration::VariableDeclaration(var_decl) => {
+            for decl in &var_decl.declarations {
+                lint_var_declarator(decl, source, semantic, env_config, diagnostics);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lint_var_declarator<'a>(
+    decl: &ast::VariableDeclarator<'a>,
+    source: &str,
+    semantic: &oxc_semantic::Semantic<'a>,
+    env_config: &crate::options::EnvironmentConfig,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    let name = match &decl.id {
+        ast::BindingPattern::BindingIdentifier(id) => id.name.as_str(),
+        _ => return,
+    };
+    let Some(init) = &decl.init else { return };
+    match init {
+        ast::Expression::ArrowFunctionExpression(arrow) => {
+            diagnostics.extend(lint_function(
+                &arrow.body,
+                &arrow.params,
+                name,
+                arrow.span,
+                false,
+                arrow.r#async,
+                source,
+                semantic,
+                env_config,
+            ));
+        }
+        ast::Expression::FunctionExpression(func) => {
+            let fn_name = func.id.as_ref().map(|id| id.name.as_str()).unwrap_or(name);
+            if let Some(body) = func.body.as_ref() {
+                diagnostics.extend(lint_function(
+                    body,
+                    &func.params,
+                    fn_name,
+                    func.span,
+                    func.generator,
+                    func.r#async,
+                    source,
+                    semantic,
+                    env_config,
+                ));
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]

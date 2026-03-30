@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
 use crate::hir::types::*;
 
 /// Prune hoisted context declarations and rewrite store kinds.
@@ -255,6 +255,9 @@ fn transform_instruction_in_place(
                     severity: DiagnosticSeverity::Todo,
                     message: "[PruneHoistedContexts] Rewrite hoisted function references"
                         .to_string(),
+                    category: ErrorCategory::Invariant,
+                    span: None,
+                    ..Default::default()
                 }],
             }));
         }
@@ -277,6 +280,9 @@ fn transform_instruction_in_place(
                                     severity: DiagnosticSeverity::Invariant,
                                     message: "[PruneHoistedContexts] Unexpected hoisted function"
                                         .to_string(),
+                                    category: ErrorCategory::Invariant,
+                                    span: None,
+                                    ..Default::default()
                                 }],
                             }));
                         }
@@ -296,6 +302,9 @@ fn transform_instruction_in_place(
                                 "[PruneHoistedContexts] Unexpected kind ({:?})",
                                 lvalue.kind
                             ),
+                            category: ErrorCategory::Invariant,
+                            span: None,
+                            ..Default::default()
                         }],
                     }));
                 }
@@ -350,6 +359,9 @@ fn visit_instruction_places(
                             severity: DiagnosticSeverity::Todo,
                             message: "[PruneHoistedContexts] Rewrite hoisted function references"
                                 .to_string(),
+                            category: ErrorCategory::Invariant,
+                            span: None,
+                            ..Default::default()
                         }],
                     }));
                 }
