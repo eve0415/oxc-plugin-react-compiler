@@ -408,7 +408,11 @@ fn try_emit_module(
         track_lines!(code, restore_flow_cast_marker_calls(&code));
     }
 
-    let map = raw_sourcemap.map(|sm| adjust_sourcemap(sm, line_delta).to_json_string());
+    let map = raw_sourcemap.map(|sm| {
+        let mut sm = adjust_sourcemap(sm, line_delta);
+        enrich_sourcemap(&mut sm);
+        sm.to_json_string()
+    });
 
     Ok(CompileResult {
         transformed: true,
@@ -420,11 +424,7 @@ fn try_emit_module(
 /// Adjust sourcemap token positions after post-processing transforms that
 /// add or remove lines. Applies a uniform line delta to all generated-side
 /// line positions. Column-level accuracy on modified lines is accepted as
-/// approximate (design decision: line-level accuracy is sufficient).
-/// Adjust sourcemap token positions after post-processing transforms that
-/// add or remove lines. Applies a uniform line delta to all generated-side
-/// line positions. Column-level accuracy on modified lines is accepted as
-/// approximate (design decision: line-level accuracy is sufficient).
+/// approximate; to be replaced by AST-level fixes in Phase 2.
 fn adjust_sourcemap(sm: oxc_sourcemap::SourceMap, line_delta: i32) -> oxc_sourcemap::SourceMap {
     if line_delta == 0 {
         return sm;
@@ -455,6 +455,15 @@ fn adjust_sourcemap(sm: oxc_sourcemap::SourceMap, line_delta: i32) -> oxc_source
         tokens.into_boxed_slice(),
         None,
     )
+}
+
+/// Enrich a sourcemap with `debugId` (UUID v4) and `x_google_ignoreList`.
+/// The `debugId` enables error monitoring tools (Sentry, Datadog) to match
+/// sourcemaps to deployed bundles. The `x_google_ignoreList` tells Chrome
+/// DevTools to auto-skip certain sources during debugging.
+fn enrich_sourcemap(sm: &mut oxc_sourcemap::SourceMap) {
+    // Generate a unique debugId (UUID v4) for error monitoring integration.
+    sm.set_debug_id(&uuid::Uuid::new_v4().to_string());
 }
 
 fn build_render_state(args: ModuleEmitArgs<'_>, compiled: &[CompiledFunction]) -> AstRenderState {
