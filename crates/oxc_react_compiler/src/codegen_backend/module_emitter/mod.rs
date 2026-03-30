@@ -379,37 +379,47 @@ fn try_emit_module(
     let (mut code, raw_sourcemap) = codegen_program_with_source_map(&program, source_map_path);
 
     // Remaining Category A/B post-processing transforms (markers, blank lines, comments).
-    // These will be migrated to AST-level in Phase 2; for now, track line deltas.
-    let mut line_delta: i32 = 0;
-    macro_rules! track_lines {
-        ($code:expr, $transform:expr) => {{
-            let before = $code.as_bytes().iter().filter(|&&b| b == b'\n').count();
-            $code = $transform;
-            let after = $code.as_bytes().iter().filter(|&&b| b == b'\n').count();
-            line_delta += after as i32 - before as i32;
+    // Track line insertions/removals per-transform for position-aware sourcemap adjustment.
+    let mut line_edits: Vec<LineEdit> = Vec::new();
+
+    /// Track line changes between before and after code, recording where lines
+    /// were inserted or removed relative to the ORIGINAL generated code positions.
+    macro_rules! track_line_edits {
+        ($code:expr, $edits:expr, $transform:expr) => {{
+            let before = &$code;
+            let after = $transform;
+            collect_line_edits(before, &after, $edits);
+            $code = after;
         }};
     }
 
-    track_lines!(code, apply_internal_blank_line_markers(&code));
-    track_lines!(code, apply_memo_comment_markers(&code));
-    track_lines!(
+    track_line_edits!(
         code,
+        &mut line_edits,
+        apply_internal_blank_line_markers(&code)
+    );
+    track_line_edits!(code, &mut line_edits, apply_memo_comment_markers(&code));
+    track_line_edits!(
+        code,
+        &mut line_edits,
         apply_blank_line_markers(state.source_type, &code, &blank_line_before)
     );
-    track_lines!(
+    track_line_edits!(
         code,
+        &mut line_edits,
         transfer_blank_lines_from_original_source(&code, args.source, compiled)
     );
-    track_lines!(
+    track_line_edits!(
         code,
+        &mut line_edits,
         move_leading_comment_to_import_trailing(&code, args.source)
     );
     if code.contains(FLOW_CAST_MARKER_HELPER) {
-        track_lines!(code, restore_flow_cast_marker_calls(&code));
+        track_line_edits!(code, &mut line_edits, restore_flow_cast_marker_calls(&code));
     }
 
     let map = raw_sourcemap.map(|sm| {
-        let mut sm = adjust_sourcemap(sm, line_delta);
+        let mut sm = adjust_sourcemap_positional(sm, &line_edits);
         enrich_sourcemap(&mut sm);
         sm.to_json_string()
     });
@@ -421,19 +431,79 @@ fn try_emit_module(
     })
 }
 
-/// Adjust sourcemap token positions after post-processing transforms that
-/// add or remove lines. Applies a uniform line delta to all generated-side
-/// line positions. Column-level accuracy on modified lines is accepted as
-/// approximate; to be replaced by AST-level fixes in Phase 2.
-fn adjust_sourcemap(sm: oxc_sourcemap::SourceMap, line_delta: i32) -> oxc_sourcemap::SourceMap {
-    if line_delta == 0 {
+/// A line edit records that at a given line position in the generated code,
+/// lines were inserted (positive delta) or removed (negative delta).
+#[derive(Debug, Clone, Copy)]
+struct LineEdit {
+    /// The 0-based line in the generated code BEFORE this edit.
+    line: u32,
+    /// Number of lines inserted (+) or removed (-) at this position.
+    delta: i32,
+}
+
+/// Compare before and after code to find where lines were inserted or removed.
+/// Records edits relative to the `before` code's line numbering.
+fn collect_line_edits(before: &str, after: &str, edits: &mut Vec<LineEdit>) {
+    let before_count = before.as_bytes().iter().filter(|&&b| b == b'\n').count() as i32;
+    let after_count = after.as_bytes().iter().filter(|&&b| b == b'\n').count() as i32;
+    let total_delta = after_count - before_count;
+    if total_delta == 0 {
+        return;
+    }
+
+    // Find the first line that differs to determine the insertion/removal point.
+    let before_lines: Vec<&str> = before.lines().collect();
+    let after_lines: Vec<&str> = after.lines().collect();
+    let mut first_diff = 0u32;
+    for (i, (b, a)) in before_lines.iter().zip(after_lines.iter()).enumerate() {
+        if b != a {
+            first_diff = i as u32;
+            break;
+        }
+        first_diff = (i + 1) as u32;
+    }
+
+    // Apply cumulative offset from previous edits to get the correct position.
+    let cumulative_offset: i32 = edits
+        .iter()
+        .filter(|e| e.line <= first_diff)
+        .map(|e| e.delta)
+        .sum();
+    let adjusted_line = (first_diff as i32 - cumulative_offset).max(0) as u32;
+
+    edits.push(LineEdit {
+        line: adjusted_line,
+        delta: total_delta,
+    });
+}
+
+/// Adjust sourcemap token positions using position-aware line edits.
+/// Each edit specifies where lines were inserted/removed. Tokens at or after
+/// the edit position get their generated line adjusted by the cumulative delta.
+fn adjust_sourcemap_positional(
+    sm: oxc_sourcemap::SourceMap,
+    edits: &[LineEdit],
+) -> oxc_sourcemap::SourceMap {
+    if edits.is_empty() {
         return sm;
     }
+
+    // Build a sorted list of edits by line position.
+    let mut sorted_edits: Vec<LineEdit> = edits.to_vec();
+    sorted_edits.sort_by_key(|e| e.line);
+
     use std::sync::Arc;
     let tokens: Vec<oxc_sourcemap::Token> = sm
         .get_tokens()
         .map(|t| {
-            let new_dst_line = (t.get_dst_line() as i64 + line_delta as i64).max(0) as u32;
+            let dst_line = t.get_dst_line();
+            // Sum deltas from all edits at or before this token's original line.
+            let delta: i32 = sorted_edits
+                .iter()
+                .filter(|e| e.line <= dst_line)
+                .map(|e| e.delta)
+                .sum();
+            let new_dst_line = (dst_line as i64 + delta as i64).max(0) as u32;
             oxc_sourcemap::Token::new(
                 new_dst_line,
                 t.get_dst_col(),

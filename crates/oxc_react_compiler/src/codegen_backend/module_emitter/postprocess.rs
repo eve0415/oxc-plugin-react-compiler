@@ -1128,6 +1128,68 @@ function Component(props) {
         }
     }
 
+    // --- OXC comment attachment spike tests ---
+
+    #[test]
+    fn spike_oxc_preserves_comments_from_source() {
+        // Test: parse source with comments → codegen → verify comments survive
+        let source = "// leading comment\nconst x = 1;\n// trailing comment\nconst y = 2;\n";
+        let allocator = oxc_allocator::Allocator::default();
+        let source_type = oxc_span::SourceType::mjs();
+        let parsed = oxc_parser::Parser::new(&allocator, source, source_type).parse();
+        assert!(!parsed.panicked);
+        let code = super::codegen_program(&parsed.program);
+        assert!(
+            code.contains("// leading comment"),
+            "leading comment should survive codegen, got:\n{code}"
+        );
+        assert!(
+            code.contains("// trailing comment"),
+            "trailing comment should survive codegen, got:\n{code}"
+        );
+    }
+
+    #[test]
+    fn spike_oxc_preserves_added_comments() {
+        // Test: parse source, add a comment to the program's comment list,
+        // then codegen → verify the added comment appears in output.
+        let source = "const x = 1;\nconst y = 2;\n";
+        let allocator = oxc_allocator::Allocator::default();
+        let source_type = oxc_span::SourceType::mjs();
+        let parsed = oxc_parser::Parser::new(&allocator, source, source_type).parse();
+        assert!(!parsed.panicked);
+
+        // Check: does codegen reproduce the source faithfully?
+        let code = super::codegen_program(&parsed.program);
+        assert!(
+            code.contains("const x = 1"),
+            "basic round-trip should work: {code}"
+        );
+
+        // Note: OXC codegen only emits comments that are in the program's
+        // comments list AND positioned relative to AST nodes. We can't
+        // synthetically inject comments easily since they need valid spans
+        // that reference positions in the original source text.
+        // This test verifies the baseline behavior.
+        let comment_count = parsed.program.comments.len();
+        eprintln!("source has {comment_count} comments");
+    }
+
+    #[test]
+    fn spike_oxc_blank_line_via_empty_comment() {
+        // Test: can we insert a blank line by using a comment with specific formatting?
+        let source = "// first\nconst x = 1;\n\n// second\nconst y = 2;\n";
+        let allocator = oxc_allocator::Allocator::default();
+        let source_type = oxc_span::SourceType::mjs();
+        let parsed = oxc_parser::Parser::new(&allocator, source, source_type).parse();
+        let code = super::codegen_program(&parsed.program);
+        // Check if the blank line between statements is preserved
+        let has_blank_line = code.contains(";\n\n");
+        eprintln!("blank line preserved: {has_blank_line}");
+        eprintln!("output:\n{code}");
+        // This documents the behavior — may or may not preserve blank lines
+    }
+
     #[test]
     fn sourcemap_unique_debug_ids() {
         // Two compilations should produce different debugIds
