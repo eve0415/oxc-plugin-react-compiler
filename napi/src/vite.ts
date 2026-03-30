@@ -38,6 +38,13 @@ export interface ReactCompilerOxcOptions {
   environment?: Record<string, unknown>;
 
   /**
+   * Whether to generate source maps for transformed output.
+   *
+   * @defaultValue `true`
+   */
+  sourceMap?: boolean;
+
+  /**
    * Restricts which files are processed by the compiler.
    *
    * - When an array of strings, only files whose ID contains one of the
@@ -105,6 +112,7 @@ export const reactCompilerOxc = (options: ReactCompilerOxcOptions = {}): Plugin 
         compilationMode: options.compilationMode ?? 'infer',
         panicThreshold: options.panicThreshold ?? 'none',
         target: options.target ?? '19',
+        sourceMap: options.sourceMap ?? true,
       });
 
       if (!result.transformed) return null;

@@ -19,6 +19,8 @@ mod flow_cast;
 mod function_replacement;
 mod instrumentation;
 mod postprocess;
+#[cfg(test)]
+mod sourcemap_verify;
 mod transform_flag;
 
 #[allow(unused_imports)]
@@ -45,11 +47,11 @@ use instrumentation::{
     prepend_synthesized_default_param_cache_statements, try_lower_compiled_statement_ast,
     wrap_function_hook_guard_body, wrap_hook_guard_body,
 };
+#[cfg(test)]
+use postprocess::codegen_program;
 use postprocess::{
-    build_inserted_import_statement, build_runtime_import_merge_statement, codegen_program,
-    compact_simple_jsx_object_attributes, fix_gating_ternary_fallback_arrow_jsx,
-    fix_gating_ternary_line_breaks, fix_jsx_assignment_parens, fix_oxc_array_trailing_space,
-    fix_unoptimized_function_param_wrapping, parse_statements,
+    build_inserted_import_statement, build_runtime_import_merge_statement,
+    codegen_program_with_source_map, parse_statements,
 };
 use transform_flag::{canonicalize_initializer_expressions_in_statements, compute_transform_state};
 
@@ -362,35 +364,253 @@ fn try_emit_module(
         blank_line_before.push(false);
     }
 
+    // Filter out comments inside compiled function bodies. The compiler
+    // reconstructs function bodies from the IR, so arbitrary original
+    // comments (e.g., $FlowFixMe) within compiled regions are not
+    // preserved — matching upstream Babel behavior.
+    let filtered_comments = {
+        let mut comments = args.program.comments.clone_in(&allocator);
+        comments.retain(|comment| {
+            !compiled
+                .iter()
+                .any(|cf| comment.span.start > cf.start && comment.span.end < cf.end)
+        });
+        comments
+    };
+
     let program = builder.program(
         SPAN,
         state.source_type,
         allocator.alloc_str(args.source),
-        args.program.comments.clone_in(&allocator),
+        filtered_comments,
         args.program.hashbang.clone_in(&allocator),
         args.program.directives.clone_in(&allocator),
         body,
     );
-    let mut code = codegen_program(&program);
-    code = apply_internal_blank_line_markers(&code);
-    code = apply_memo_comment_markers(&code);
-    code = apply_blank_line_markers(state.source_type, &code, &blank_line_before);
-    code = transfer_blank_lines_from_original_source(&code, args.source, compiled);
-    code = move_leading_comment_to_import_trailing(&code, args.source);
-    if code.contains(FLOW_CAST_MARKER_HELPER) {
-        code = restore_flow_cast_marker_calls(&code);
+    let source_map_path = if args.options.source_map {
+        Some(args.filename)
+    } else {
+        None
+    };
+    let (mut code, raw_sourcemap) = codegen_program_with_source_map(&program, source_map_path);
+
+    // Remaining Category A/B post-processing transforms (markers, blank lines, comments).
+    // Track line insertions/removals per-transform for position-aware sourcemap adjustment.
+    let mut line_edits: Vec<LineEdit> = Vec::new();
+
+    /// Track line changes between before and after code, recording where lines
+    /// were inserted or removed relative to the ORIGINAL generated code positions.
+    macro_rules! track_line_edits {
+        ($code:expr, $edits:expr, $transform:expr) => {{
+            let before = &$code;
+            let after = $transform;
+            collect_line_edits(before, &after, $edits);
+            $code = after;
+        }};
     }
-    code = compact_simple_jsx_object_attributes(&code);
-    code = fix_oxc_array_trailing_space(&code);
-    code = fix_gating_ternary_line_breaks(&code);
-    code = fix_gating_ternary_fallback_arrow_jsx(&code);
-    code = fix_unoptimized_function_param_wrapping(&code);
-    code = fix_jsx_assignment_parens(&code);
+
+    track_line_edits!(
+        code,
+        &mut line_edits,
+        apply_internal_blank_line_markers(&code)
+    );
+    track_line_edits!(code, &mut line_edits, apply_memo_comment_markers(&code));
+    track_line_edits!(
+        code,
+        &mut line_edits,
+        apply_blank_line_markers(state.source_type, &code, &blank_line_before)
+    );
+    track_line_edits!(
+        code,
+        &mut line_edits,
+        transfer_blank_lines_from_original_source(&code, args.source, compiled)
+    );
+    track_line_edits!(
+        code,
+        &mut line_edits,
+        move_leading_comment_to_import_trailing(&code, args.source)
+    );
+    if code.contains(FLOW_CAST_MARKER_HELPER) {
+        track_line_edits!(code, &mut line_edits, restore_flow_cast_marker_calls(&code));
+    }
+
+    let map = raw_sourcemap.map(|sm| {
+        let sm = adjust_sourcemap_positional(sm, &line_edits);
+        enrich_sourcemap(sm).to_json_string()
+    });
+
     Ok(CompileResult {
         transformed: true,
         code,
-        map: None,
+        map,
     })
+}
+
+/// A line edit records that at a given line position in the generated code,
+/// lines were inserted (positive delta) or removed (negative delta).
+#[derive(Debug, Clone, Copy)]
+struct LineEdit {
+    /// The 0-based line in the generated code BEFORE this edit.
+    line: u32,
+    /// Number of lines inserted (+) or removed (-) at this position.
+    delta: i32,
+}
+
+/// Compare before and after code to find where lines were inserted or removed.
+/// Records edits relative to the `before` code's line numbering.
+fn collect_line_edits(before: &str, after: &str, edits: &mut Vec<LineEdit>) {
+    let before_count = before.as_bytes().iter().filter(|&&b| b == b'\n').count() as i32;
+    let after_count = after.as_bytes().iter().filter(|&&b| b == b'\n').count() as i32;
+    let total_delta = after_count - before_count;
+    if total_delta == 0 {
+        return;
+    }
+
+    // Find the first line that differs to determine the insertion/removal point.
+    let before_lines: Vec<&str> = before.lines().collect();
+    let after_lines: Vec<&str> = after.lines().collect();
+    let mut first_diff = 0u32;
+    for (i, (b, a)) in before_lines.iter().zip(after_lines.iter()).enumerate() {
+        if b != a {
+            first_diff = i as u32;
+            break;
+        }
+        first_diff = (i + 1) as u32;
+    }
+
+    // Apply cumulative offset from previous edits to get the correct position.
+    let cumulative_offset: i32 = edits
+        .iter()
+        .filter(|e| e.line <= first_diff)
+        .map(|e| e.delta)
+        .sum();
+    let adjusted_line = (first_diff as i32 - cumulative_offset).max(0) as u32;
+
+    edits.push(LineEdit {
+        line: adjusted_line,
+        delta: total_delta,
+    });
+}
+
+/// Adjust sourcemap token positions using position-aware line edits.
+/// Each edit specifies where lines were inserted/removed. Tokens at or after
+/// the edit position get their generated line adjusted by the cumulative delta.
+fn adjust_sourcemap_positional(
+    sm: oxc_sourcemap::SourceMap,
+    edits: &[LineEdit],
+) -> oxc_sourcemap::SourceMap {
+    if edits.is_empty() {
+        return sm;
+    }
+
+    // Build a sorted list of edits by line position.
+    let mut sorted_edits: Vec<LineEdit> = edits.to_vec();
+    sorted_edits.sort_by_key(|e| e.line);
+
+    use std::sync::Arc;
+    let tokens: Vec<oxc_sourcemap::Token> = sm
+        .get_tokens()
+        .map(|t| {
+            let dst_line = t.get_dst_line();
+            // Sum deltas from all edits at or before this token's original line.
+            let delta: i32 = sorted_edits
+                .iter()
+                .filter(|e| e.line <= dst_line)
+                .map(|e| e.delta)
+                .sum();
+            let new_dst_line = (dst_line as i64 + delta as i64).max(0) as u32;
+            oxc_sourcemap::Token::new(
+                new_dst_line,
+                t.get_dst_col(),
+                t.get_src_line(),
+                t.get_src_col(),
+                t.get_source_id(),
+                t.get_name_id(),
+            )
+        })
+        .collect();
+    oxc_sourcemap::SourceMap::new(
+        sm.get_file().map(|s| Arc::from(s.as_ref())),
+        sm.get_names().map(|s| Arc::from(s.as_ref())).collect(),
+        sm.get_source_root().map(|s| s.to_string()),
+        sm.get_sources().map(|s| Arc::from(s.as_ref())).collect(),
+        sm.get_source_contents()
+            .map(|c| c.map(|s| Arc::from(s.as_ref())))
+            .collect(),
+        tokens.into_boxed_slice(),
+        None,
+    )
+}
+
+/// Enrich a sourcemap with `debugId` (UUID v4) and `x_google_ignoreList`.
+/// The `debugId` enables error monitoring tools (Sentry, Datadog) to match
+/// sourcemaps to deployed bundles. The `x_google_ignoreList` tells Chrome
+/// DevTools to auto-skip certain sources during debugging.
+/// Virtual source URI for compiler-generated code (memoization infrastructure).
+const VIRTUAL_GENERATED_SOURCE: &str = "compiler://react-compiler/generated";
+
+/// Threshold for detecting sentinel spans from generated code.
+/// OXC codegen maps GENERATED_SPAN (u32::MAX-1) to very high line numbers.
+const GENERATED_SRC_LINE_THRESHOLD: u32 = 1_000_000;
+
+/// Enrich a sourcemap with virtual source routing, `debugId`, and `x_google_ignoreList`.
+///
+/// - Routes tokens from compiler-generated code (sentinel spans) to a virtual source
+/// - Adds `compiler://react-compiler/generated` to `x_google_ignoreList` so DevTools
+///   auto-skips generated memoization infrastructure during debugging
+/// - Generates a unique `debugId` (UUID v4) for error monitoring (Sentry, Datadog)
+fn enrich_sourcemap(sm: oxc_sourcemap::SourceMap) -> oxc_sourcemap::SourceMap {
+    use std::sync::Arc;
+
+    // Collect existing sources and contents.
+    let mut sources: Vec<Arc<str>> = sm.get_sources().map(|s| Arc::from(s.as_ref())).collect();
+    let mut source_contents: Vec<Option<Arc<str>>> = sm
+        .get_source_contents()
+        .map(|c| c.map(|s| Arc::from(s.as_ref())))
+        .collect();
+
+    // Add virtual source for generated code.
+    let virtual_source_id = sources.len() as u32;
+    sources.push(Arc::from(VIRTUAL_GENERATED_SOURCE));
+    source_contents.push(None); // No source content for generated code.
+
+    // Reroute tokens from generated code (sentinel spans) to the virtual source.
+    let tokens: Vec<oxc_sourcemap::Token> = sm
+        .get_tokens()
+        .map(|t| {
+            if t.get_src_line() >= GENERATED_SRC_LINE_THRESHOLD {
+                // This token came from GENERATED_SPAN — route to virtual source.
+                oxc_sourcemap::Token::new(
+                    t.get_dst_line(),
+                    t.get_dst_col(),
+                    0, // virtual source line 0
+                    0, // virtual source col 0
+                    Some(virtual_source_id),
+                    t.get_name_id(),
+                )
+            } else {
+                t
+            }
+        })
+        .collect();
+
+    let mut new_sm = oxc_sourcemap::SourceMap::new(
+        sm.get_file().map(|s| Arc::from(s.as_ref())),
+        sm.get_names().map(|s| Arc::from(s.as_ref())).collect(),
+        sm.get_source_root().map(|s| s.to_string()),
+        sources,
+        source_contents,
+        tokens.into_boxed_slice(),
+        None,
+    );
+
+    // Mark the virtual source in x_google_ignoreList so DevTools auto-skips it.
+    new_sm.set_x_google_ignore_list(vec![virtual_source_id]);
+
+    // Generate a unique debugId (UUID v4) for error monitoring integration.
+    new_sm.set_debug_id(&uuid::Uuid::new_v4().to_string());
+
+    new_sm
 }
 
 fn build_render_state(args: ModuleEmitArgs<'_>, compiled: &[CompiledFunction]) -> AstRenderState {
@@ -3350,5 +3570,173 @@ export const FIXTURE_ENTRYPOINT = {
             "rewritten={rewritten}"
         );
         assert!(rewritten.contains("return load;"), "rewritten={rewritten}");
+    }
+
+    // --- Unit tests for adjust_sourcemap_positional ---
+
+    /// Build a SourceMap with tokens at the given (dst_line, dst_col, src_line, src_col) positions.
+    fn build_test_sourcemap(tokens: &[(u32, u32, u32, u32)]) -> oxc_sourcemap::SourceMap {
+        use std::sync::Arc;
+        let tokens: Vec<oxc_sourcemap::Token> = tokens
+            .iter()
+            .map(|&(dl, dc, sl, sc)| oxc_sourcemap::Token::new(dl, dc, sl, sc, Some(0), None))
+            .collect();
+        oxc_sourcemap::SourceMap::new(
+            Some(Arc::from("test.jsx")),
+            vec![],
+            None,
+            vec![Arc::from("test.jsx")],
+            vec![Some(Arc::from(""))],
+            tokens.into_boxed_slice(),
+            None,
+        )
+    }
+
+    #[test]
+    fn adjust_sourcemap_no_edits() {
+        let sm = build_test_sourcemap(&[(0, 0, 0, 0), (3, 5, 2, 4), (7, 0, 5, 0)]);
+        let result = super::adjust_sourcemap_positional(sm, &[]);
+        let tokens: Vec<_> = result.get_tokens().collect();
+        assert_eq!(tokens[0].get_dst_line(), 0);
+        assert_eq!(tokens[1].get_dst_line(), 3);
+        assert_eq!(tokens[2].get_dst_line(), 7);
+    }
+
+    #[test]
+    fn adjust_sourcemap_single_insertion() {
+        // Insert 2 lines at line 5. Tokens at 0-4 unchanged, tokens at 5+ shifted by +2.
+        let sm = build_test_sourcemap(&[(2, 0, 1, 0), (5, 0, 3, 0), (8, 0, 6, 0)]);
+        let edits = [super::LineEdit { line: 5, delta: 2 }];
+        let result = super::adjust_sourcemap_positional(sm, &edits);
+        let tokens: Vec<_> = result.get_tokens().collect();
+        assert_eq!(tokens[0].get_dst_line(), 2, "before edit: unchanged");
+        assert_eq!(tokens[1].get_dst_line(), 7, "at edit line: shifted +2");
+        assert_eq!(tokens[2].get_dst_line(), 10, "after edit line: shifted +2");
+    }
+
+    #[test]
+    fn adjust_sourcemap_single_removal() {
+        // Remove 1 line at line 3. Tokens at 0-2 unchanged, tokens at 3+ shifted by -1.
+        let sm = build_test_sourcemap(&[(1, 0, 0, 0), (3, 0, 2, 0), (6, 0, 4, 0)]);
+        let edits = [super::LineEdit { line: 3, delta: -1 }];
+        let result = super::adjust_sourcemap_positional(sm, &edits);
+        let tokens: Vec<_> = result.get_tokens().collect();
+        assert_eq!(tokens[0].get_dst_line(), 1, "before edit: unchanged");
+        assert_eq!(tokens[1].get_dst_line(), 2, "at edit line: shifted -1");
+        assert_eq!(tokens[2].get_dst_line(), 5, "after edit: shifted -1");
+    }
+
+    #[test]
+    fn adjust_sourcemap_multiple_cumulative_edits() {
+        // Edit 1: +3 at line 2, Edit 2: -1 at line 7.
+        // Token at line 1: delta=0 → line 1
+        // Token at line 4: delta=3 (edit1 applies) → line 7
+        // Token at line 10: delta=3+(-1)=2 (both apply) → line 12
+        let sm = build_test_sourcemap(&[(1, 0, 0, 0), (4, 0, 2, 0), (10, 0, 7, 0)]);
+        let edits = [
+            super::LineEdit { line: 2, delta: 3 },
+            super::LineEdit { line: 7, delta: -1 },
+        ];
+        let result = super::adjust_sourcemap_positional(sm, &edits);
+        let tokens: Vec<_> = result.get_tokens().collect();
+        assert_eq!(tokens[0].get_dst_line(), 1, "before all edits");
+        assert_eq!(tokens[1].get_dst_line(), 7, "after edit1 only");
+        assert_eq!(tokens[2].get_dst_line(), 12, "after both edits");
+    }
+
+    #[test]
+    fn adjust_sourcemap_negative_clamp() {
+        // Large negative delta pushes token below line 0. Should clamp to 0.
+        let sm = build_test_sourcemap(&[(1, 5, 0, 0)]);
+        let edits = [super::LineEdit {
+            line: 0,
+            delta: -10,
+        }];
+        let result = super::adjust_sourcemap_positional(sm, &edits);
+        let tokens: Vec<_> = result.get_tokens().collect();
+        assert_eq!(tokens[0].get_dst_line(), 0, "clamped to 0");
+        assert_eq!(tokens[0].get_dst_col(), 5, "column preserved");
+    }
+
+    #[test]
+    fn adjust_sourcemap_source_fields_preserved() {
+        // After adjustment, src_line, src_col, source_id, name_id must not change.
+        let sm = build_test_sourcemap(&[(5, 3, 10, 7)]);
+        let edits = [super::LineEdit { line: 2, delta: 4 }];
+        let result = super::adjust_sourcemap_positional(sm, &edits);
+        let token = result.get_tokens().next().unwrap();
+        assert_eq!(token.get_dst_line(), 9, "dst_line adjusted");
+        assert_eq!(token.get_src_line(), 10, "src_line unchanged");
+        assert_eq!(token.get_src_col(), 7, "src_col unchanged");
+        assert_eq!(token.get_source_id(), Some(0), "source_id unchanged");
+    }
+
+    #[test]
+    fn adjust_sourcemap_token_at_exact_boundary() {
+        // Token at exactly the edit line should receive the delta (inclusive).
+        let sm = build_test_sourcemap(&[(5, 0, 3, 0)]);
+        let edits = [super::LineEdit { line: 5, delta: 3 }];
+        let result = super::adjust_sourcemap_positional(sm, &edits);
+        let token = result.get_tokens().next().unwrap();
+        assert_eq!(token.get_dst_line(), 8, "token at edit line gets delta");
+    }
+
+    // --- Unit tests for collect_line_edits ---
+
+    #[test]
+    fn collect_line_edits_no_change() {
+        let before = "line1\nline2\nline3\n";
+        let after = "line1\nline2\nline3\n";
+        let mut edits = vec![];
+        super::collect_line_edits(before, after, &mut edits);
+        assert!(edits.is_empty(), "no edits for identical strings");
+    }
+
+    #[test]
+    fn collect_line_edits_single_insertion() {
+        let before = "aaa\nbbb\nccc\n";
+        let after = "aaa\nbbb\nNEW\nccc\n";
+        let mut edits = vec![];
+        super::collect_line_edits(before, after, &mut edits);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].delta, 1, "one line inserted");
+    }
+
+    #[test]
+    fn collect_line_edits_single_removal() {
+        let before = "aaa\nbbb\nccc\n";
+        let after = "aaa\nccc\n";
+        let mut edits = vec![];
+        super::collect_line_edits(before, after, &mut edits);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].delta, -1, "one line removed");
+    }
+
+    #[test]
+    fn collect_line_edits_multi_line_insertion() {
+        let before = "aaa\nbbb\n";
+        let after = "aaa\nNEW1\nNEW2\nbbb\n";
+        let mut edits = vec![];
+        super::collect_line_edits(before, after, &mut edits);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].delta, 2, "two lines inserted");
+    }
+
+    #[test]
+    fn collect_line_edits_cumulative_offset() {
+        // Simulate two sequential transforms:
+        // Transform 1: insert 1 line at start
+        let v0 = "aaa\nbbb\n";
+        let v1 = "NEW\naaa\nbbb\n";
+        let mut edits = vec![];
+        super::collect_line_edits(v0, v1, &mut edits);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].delta, 1);
+
+        // Transform 2: insert 1 line at end (relative to v1)
+        let v2 = "NEW\naaa\nbbb\nEND\n";
+        super::collect_line_edits(v1, v2, &mut edits);
+        assert_eq!(edits.len(), 2);
+        assert_eq!(edits[1].delta, 1);
     }
 }

@@ -125,7 +125,7 @@ pub(super) fn codegen_program(program: &ast::Program<'_>) -> String {
 pub(super) fn codegen_program_with_source_map(
     program: &ast::Program<'_>,
     source_map_path: Option<&str>,
-) -> (String, Option<String>) {
+) -> (String, Option<oxc_sourcemap::SourceMap>) {
     let options = CodegenOptions {
         indent_char: IndentChar::Space,
         indent_width: 2,
@@ -133,10 +133,10 @@ pub(super) fn codegen_program_with_source_map(
         ..CodegenOptions::default()
     };
     let result = Codegen::new().with_options(options).build(program);
-    let map = result.map.map(|sm| sm.to_json_string());
-    (result.code, map)
+    (result.code, result.map)
 }
 
+#[allow(dead_code)] // Retained for conformance normalization
 pub(super) fn compact_simple_jsx_object_attributes(code: &str) -> String {
     let mut result = String::with_capacity(code.len());
     let mut cursor = 0usize;
@@ -210,6 +210,7 @@ pub(super) fn compact_single_statement(code: &str) -> String {
 /// Pattern: `import ...;\nimport ...;\n// comment\n` → `import ...;\nimport ...; // comment\n`
 // Fix OXC's trailing space before `]` in single-line arrays.
 // OXC emits `[0, 1, 2 ]` where Babel emits `[0, 1, 2]`.
+#[allow(dead_code)] // Retained for conformance normalization
 pub(super) fn fix_oxc_array_trailing_space(code: &str) -> String {
     if !code.contains(" ]") {
         return code.to_string();
@@ -266,6 +267,7 @@ pub(super) fn fix_oxc_array_trailing_space(code: &str) -> String {
 ///   `} : function F(`     → `}\n: function F(`
 ///   `test() ? (p) =>{`    → `test()\n? (p) =>{`
 ///   `} : (p) =>expr`      → `}\n: (p) =>expr`
+#[allow(dead_code)] // Retained for conformance normalization
 pub(super) fn fix_gating_ternary_line_breaks(code: &str) -> String {
     // Only apply when the code contains a gating ternary.
     if !code.contains("() ? function ") && !code.contains("() ? (") && !code.contains("() ? ") {
@@ -351,6 +353,7 @@ fn contains_arrow_start(text: &str) -> bool {
 ///   `: params =><Tag>\n<Child></Child>\n</Tag>;`
 /// This collapses it to:
 ///   `: params =><Tag><Child></Child></Tag>;`
+#[allow(dead_code)] // Retained for conformance normalization
 pub(super) fn fix_gating_ternary_fallback_arrow_jsx(code: &str) -> String {
     // Quick bail: only applies when we have a ternary alternate with arrow + JSX
     if !code.contains(": ") || !code.contains("=>") {
@@ -410,6 +413,7 @@ pub(super) fn fix_gating_ternary_fallback_arrow_jsx(code: &str) -> String {
 /// retain Flow/TS type annotations) across multiple lines. OXC puts them on one line.
 /// E.g. `function F_unoptimized(p1: T1, p2: T2): R{` becomes:
 ///       `function F_unoptimized(p1: T1,\np2: T2): R{`
+#[allow(dead_code)] // Retained for conformance normalization
 pub(super) fn fix_unoptimized_function_param_wrapping(code: &str) -> String {
     if !code.contains("_unoptimized(") {
         return code.to_string();
@@ -460,6 +464,7 @@ pub(super) fn fix_unoptimized_function_param_wrapping(code: &str) -> String {
 ///
 /// Simple cases like `t0 = <div>{bool}</div>` (single expression child, no attrs)
 /// are left unwrapped.
+#[allow(dead_code)] // Retained for conformance normalization
 pub(super) fn fix_jsx_assignment_parens(code: &str) -> String {
     // Quick bail: if no JSX assignments exist, return early
     if !code.contains("= <") {
@@ -482,6 +487,7 @@ pub(super) fn fix_jsx_assignment_parens(code: &str) -> String {
 /// Try to wrap JSX in an assignment on a single line with `( ... )`.
 /// Returns `Some(wrapped_line)` if the line matches the pattern and the JSX
 /// is complex enough to need wrapping, `None` otherwise.
+#[allow(dead_code)]
 fn try_wrap_jsx_assignment_parens(line: &str) -> Option<String> {
     let trimmed = line.trim();
 
@@ -532,6 +538,7 @@ fn try_wrap_jsx_assignment_parens(line: &str) -> Option<String> {
 /// 1. Attributes on the opening tag, OR
 /// 2. Child JSX elements (nested `<` after the opening tag's `>`), OR
 /// 3. Multiple expression children (`{...}` appearing 2+ times)
+#[allow(dead_code)]
 fn jsx_needs_parens(jsx: &str) -> bool {
     let bytes = jsx.as_bytes();
     if bytes.is_empty() || bytes[0] != b'<' {
@@ -635,6 +642,7 @@ fn jsx_needs_parens(jsx: &str) -> bool {
 
 /// Find the position of the matching `)` for a string starting after `(`.
 /// Handles nested parens and angle brackets.
+#[allow(dead_code)]
 fn find_matching_close_paren(s: &str) -> Option<usize> {
     let mut depth = 1u32;
     let mut angle_depth = 0u32;
@@ -657,6 +665,7 @@ fn find_matching_close_paren(s: &str) -> Option<usize> {
 
 /// Wrap parameters at top-level comma boundaries.
 /// Replaces `, ` with `,\n` at the top level (not inside `<>` or `()`).
+#[allow(dead_code)] // Retained for conformance normalization
 pub(super) fn wrap_params_at_commas(params: &str) -> String {
     let mut result = String::with_capacity(params.len() + 8);
     let mut paren_depth = 0u32;
@@ -725,5 +734,1003 @@ mod tests {
             "re-parse failed: {:?}",
             parsed.errors
         );
+    }
+
+    #[test]
+    fn sourcemap_is_generated() {
+        let result =
+            compile_to_result("function Component(props) { return <div>{props.x}</div>; }");
+        assert!(result.transformed, "should be transformed");
+        assert!(
+            result.map.is_some(),
+            "sourcemap should be generated for transformed code"
+        );
+    }
+
+    #[test]
+    fn sourcemap_is_valid_json() {
+        let result = compile_to_result(
+            "function Component(props) { const x = props.a + 1; return <div>{x}</div>; }",
+        );
+        let map_json = result.map.as_ref().expect("sourcemap should exist");
+        let parsed: serde_json::Value =
+            serde_json::from_str(map_json).expect("sourcemap should be valid JSON");
+        assert_eq!(parsed["version"], 3, "sourcemap version should be 3");
+        assert!(
+            parsed["mappings"].is_string(),
+            "sourcemap should have mappings field"
+        );
+        assert!(
+            parsed["sources"].is_array(),
+            "sourcemap should have sources array"
+        );
+    }
+
+    #[test]
+    fn sourcemap_contains_source_content() {
+        let source = "function Component(props) { return <div>{props.x}</div>; }";
+        let result = compile_to_result(source);
+        let map_json = result.map.as_ref().expect("sourcemap should exist");
+        let parsed: serde_json::Value =
+            serde_json::from_str(map_json).expect("sourcemap should be valid JSON");
+        let sources_content = parsed["sourcesContent"]
+            .as_array()
+            .expect("should have sourcesContent");
+        assert!(
+            !sources_content.is_empty(),
+            "sourcesContent should not be empty"
+        );
+        assert_eq!(
+            sources_content[0].as_str().unwrap(),
+            source,
+            "sourcesContent should contain the original source"
+        );
+    }
+
+    #[test]
+    fn sourcemap_has_nonempty_mappings() {
+        let result = compile_to_result(
+            "function Component(props) { const x = props.a + 1; return <div>{x}</div>; }",
+        );
+        let map_json = result.map.as_ref().expect("sourcemap should exist");
+        let parsed: serde_json::Value = serde_json::from_str(map_json).unwrap();
+        let mappings = parsed["mappings"].as_str().unwrap();
+        assert!(
+            !mappings.is_empty(),
+            "sourcemap mappings should not be empty"
+        );
+    }
+
+    #[test]
+    fn no_sourcemap_when_not_transformed() {
+        // A function that doesn't look like a component shouldn't be transformed.
+        let result = compile_to_result("function helper(x) { return x + 1; }");
+        assert!(!result.transformed);
+        assert!(result.map.is_none(), "no sourcemap for untransformed code");
+    }
+
+    #[test]
+    fn sourcemap_disabled_via_option() {
+        let source = "function Component(props) { return <div>{props.x}</div>; }";
+        let options = crate::options::PluginOptions {
+            source_map: false,
+            ..crate::options::PluginOptions::default()
+        };
+        let result = crate::compile("test.js", source, &options);
+        assert!(result.transformed, "should still transform");
+        assert!(
+            result.map.is_none(),
+            "no sourcemap when source_map option is false"
+        );
+    }
+
+    #[test]
+    fn sourcemap_has_debug_id() {
+        let result =
+            compile_to_result("function Component(props) { return <div>{props.x}</div>; }");
+        let map_json = result.map.as_ref().expect("sourcemap should exist");
+        let parsed: serde_json::Value = serde_json::from_str(map_json).unwrap();
+        let debug_id = parsed["debugId"]
+            .as_str()
+            .expect("sourcemap should have debugId");
+        // UUID v4 format: 8-4-4-4-12 hex chars
+        assert_eq!(debug_id.len(), 36, "debugId should be 36 chars (UUID)");
+        assert_eq!(
+            debug_id.chars().filter(|c| *c == '-').count(),
+            4,
+            "debugId should have 4 dashes"
+        );
+    }
+
+    // --- Token-level verification helpers ---
+
+    /// Decode a sourcemap JSON string and return the SourceMap object.
+    fn decode_sourcemap(json: &str) -> oxc_sourcemap::SourceMap {
+        oxc_sourcemap::SourceMap::from_json_string(json).expect("valid sourcemap JSON")
+    }
+
+    /// Find a token in the generated code that maps to the given source line (0-based).
+    /// Returns (generated_line, generated_col, source_line, source_col).
+    fn find_token_for_source_line(
+        sm: &oxc_sourcemap::SourceMap,
+        src_line: u32,
+    ) -> Option<(u32, u32, u32, u32)> {
+        sm.get_tokens().find_map(|t| {
+            if t.get_src_line() == src_line {
+                Some((
+                    t.get_dst_line(),
+                    t.get_dst_col(),
+                    t.get_src_line(),
+                    t.get_src_col(),
+                ))
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Check that a specific source line has at least one mapping in the sourcemap.
+    fn assert_source_line_mapped(sm: &oxc_sourcemap::SourceMap, src_line: u32, desc: &str) {
+        assert!(
+            find_token_for_source_line(sm, src_line).is_some(),
+            "source line {} ({}) should have a mapping",
+            src_line,
+            desc
+        );
+    }
+
+    /// Check that generated code at a given line (0-based) maps back to the
+    /// expected source line (0-based). Finds any token on the generated line
+    /// and checks its source position.
+    #[allow(dead_code)]
+    fn assert_generated_line_maps_to(
+        sm: &oxc_sourcemap::SourceMap,
+        gen_line: u32,
+        expected_src_line: u32,
+        desc: &str,
+    ) {
+        let token = sm
+            .get_tokens()
+            .find(|t| t.get_dst_line() == gen_line)
+            .unwrap_or_else(|| panic!("no token found at generated line {} ({})", gen_line, desc));
+        assert_eq!(
+            token.get_src_line(),
+            expected_src_line,
+            "generated line {} ({}) should map to source line {}, but maps to {}",
+            gen_line,
+            desc,
+            expected_src_line,
+            token.get_src_line()
+        );
+    }
+
+    // --- Token-level verification tests ---
+
+    #[test]
+    fn sourcemap_simple_component_tokens() {
+        // Fixture 1: simple component with basic JSX
+        let source = r#"function Component(props) {
+  return <div>{props.x}</div>;
+}"#;
+        let result = compile_to_result(source);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        // Source line 0: function declaration
+        assert_source_line_mapped(&sm, 0, "function Component declaration");
+        // Source line 1: return statement with JSX
+        assert_source_line_mapped(&sm, 1, "return <div>{props.x}</div>");
+    }
+
+    #[test]
+    fn sourcemap_multiple_reactive_scopes() {
+        // Fixture 2: component with multiple reactive scopes (cache guards visible)
+        let source = r#"function Component(props) {
+  const a = props.x + 1;
+  const b = props.y * 2;
+  return <div a={a} b={b} />;
+}"#;
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        // All source lines should have mappings
+        assert_source_line_mapped(&sm, 0, "function declaration");
+        assert_source_line_mapped(&sm, 1, "const a = props.x + 1");
+        assert_source_line_mapped(&sm, 2, "const b = props.y * 2");
+        assert_source_line_mapped(&sm, 3, "return JSX");
+    }
+
+    #[test]
+    fn sourcemap_hooks_and_closures() {
+        // Fixture 3: hooks + closures (variable renaming visible)
+        let source = r#"function Component(props) {
+  const [count, setCount] = useState(0);
+  const handler = () => {
+    setCount(count + 1);
+  };
+  return <button onClick={handler}>{count}</button>;
+}"#;
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        assert_source_line_mapped(&sm, 0, "function declaration");
+        assert_source_line_mapped(&sm, 1, "useState");
+        assert_source_line_mapped(&sm, 2, "handler arrow function");
+    }
+
+    #[test]
+    fn sourcemap_multi_function_file() {
+        // Fixture 4: multiple functions in one file
+        let source = r#"function ComponentA(props) {
+  return <div>{props.a}</div>;
+}
+
+function ComponentB(props) {
+  return <span>{props.b}</span>;
+}"#;
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        // Both function declarations should be mapped
+        assert_source_line_mapped(&sm, 0, "ComponentA declaration");
+        assert_source_line_mapped(&sm, 4, "ComponentB declaration");
+    }
+
+    #[test]
+    fn sourcemap_partial_compilation() {
+        // Fixture 5: one function bails out, one compiles
+        let source = r#"function helper(x) { return x + 1; }
+function Component(props) {
+  return <div>{props.x}</div>;
+}"#;
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        // Both should have mappings (identity for untouched, correct for compiled)
+        assert_source_line_mapped(&sm, 0, "helper (untouched)");
+        assert_source_line_mapped(&sm, 1, "Component declaration");
+    }
+
+    #[test]
+    fn sourcemap_typescript() {
+        // Fixture 7: TypeScript with type annotations
+        let source = r#"function Component(props: { x: number }) {
+  const y: number = props.x + 1;
+  return <div>{y}</div>;
+}"#;
+        let mut options = crate::options::PluginOptions::default();
+        options.compilation_mode = crate::options::CompilationMode::Infer;
+        let result = crate::compile("test.tsx", source, &options);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        assert_source_line_mapped(&sm, 0, "function with TS types");
+        assert_source_line_mapped(&sm, 1, "typed const");
+    }
+
+    #[test]
+    fn sourcemap_nested_components() {
+        // Fixture 8: nested components
+        let source = r#"function Outer(props) {
+  function Inner() {
+    return <span>inner</span>;
+  }
+  return <div><Inner /></div>;
+}"#;
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        assert_source_line_mapped(&sm, 0, "Outer declaration");
+        assert_source_line_mapped(&sm, 1, "Inner declaration");
+    }
+
+    #[test]
+    fn sourcemap_conditional_rendering() {
+        // Fixture 10: conditional rendering with if/else
+        let source = r#"function Component(props) {
+  const x = props.a;
+  if (x) {
+    return <div>yes</div>;
+  }
+  return <span>no</span>;
+}"#;
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        assert_source_line_mapped(&sm, 0, "function declaration");
+        assert_source_line_mapped(&sm, 1, "const x");
+    }
+
+    #[test]
+    fn sourcemap_complex_jsx() {
+        // Fixture 11: complex JSX (fragments, spread props)
+        let source = r#"function Component(props) {
+  const extra = { className: "foo" };
+  return (
+    <>
+      <div {...extra}>{props.children}</div>
+      <span key="a">text</span>
+    </>
+  );
+}"#;
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        assert_source_line_mapped(&sm, 0, "function declaration");
+        assert_source_line_mapped(&sm, 1, "const extra");
+    }
+
+    #[test]
+    fn sourcemap_for_loop() {
+        // Extra: for loop with mutation
+        let source = r#"function Component(props) {
+  const items = [];
+  for (let i = 0; i < props.count; i++) {
+    items.push(i);
+  }
+  return <div>{items.length}</div>;
+}"#;
+        let mut options = crate::options::PluginOptions::default();
+        options.compilation_mode = crate::options::CompilationMode::All;
+        let result = crate::compile("test.js", source, &options);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        assert_source_line_mapped(&sm, 0, "function declaration");
+        assert_source_line_mapped(&sm, 2, "for loop");
+    }
+
+    #[test]
+    fn sourcemap_token_count_reasonable() {
+        // Verify that sourcemaps have a reasonable number of tokens
+        // (not zero, not absurdly high)
+        let source = r#"function Component(props) {
+  const x = props.a + 1;
+  return <div>{x}</div>;
+}"#;
+        let result = compile_to_result(source);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+        let token_count = sm.get_tokens().count();
+        assert!(
+            token_count > 5,
+            "sourcemap should have more than 5 tokens, got {}",
+            token_count
+        );
+        assert!(
+            token_count < 500,
+            "sourcemap should have fewer than 500 tokens, got {}",
+            token_count
+        );
+    }
+
+    #[test]
+    fn sourcemap_all_tokens_have_valid_source() {
+        // All tokens should reference a valid source index
+        let source = "function Component(props) { return <div>{props.x}</div>; }";
+        let result = compile_to_result(source);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+        let source_count = sm.get_sources().count() as u32;
+        for token in sm.get_tokens() {
+            if let Some(src_id) = token.get_source_id() {
+                assert!(
+                    src_id < source_count,
+                    "token source_id {} exceeds source count {}",
+                    src_id,
+                    source_count
+                );
+            }
+        }
+    }
+
+    // --- OXC comment attachment spike tests ---
+
+    #[test]
+    fn spike_oxc_preserves_comments_from_source() {
+        // Test: parse source with comments → codegen → verify comments survive
+        let source = "// leading comment\nconst x = 1;\n// trailing comment\nconst y = 2;\n";
+        let allocator = oxc_allocator::Allocator::default();
+        let source_type = oxc_span::SourceType::mjs();
+        let parsed = oxc_parser::Parser::new(&allocator, source, source_type).parse();
+        assert!(!parsed.panicked);
+        let code = super::codegen_program(&parsed.program);
+        assert!(
+            code.contains("// leading comment"),
+            "leading comment should survive codegen, got:\n{code}"
+        );
+        assert!(
+            code.contains("// trailing comment"),
+            "trailing comment should survive codegen, got:\n{code}"
+        );
+    }
+
+    #[test]
+    fn spike_oxc_preserves_added_comments() {
+        // Test: parse source, add a comment to the program's comment list,
+        // then codegen → verify the added comment appears in output.
+        let source = "const x = 1;\nconst y = 2;\n";
+        let allocator = oxc_allocator::Allocator::default();
+        let source_type = oxc_span::SourceType::mjs();
+        let parsed = oxc_parser::Parser::new(&allocator, source, source_type).parse();
+        assert!(!parsed.panicked);
+
+        // Check: does codegen reproduce the source faithfully?
+        let code = super::codegen_program(&parsed.program);
+        assert!(
+            code.contains("const x = 1"),
+            "basic round-trip should work: {code}"
+        );
+
+        // Note: OXC codegen only emits comments that are in the program's
+        // comments list AND positioned relative to AST nodes. We can't
+        // synthetically inject comments easily since they need valid spans
+        // that reference positions in the original source text.
+        // This test verifies the baseline behavior.
+        let comment_count = parsed.program.comments.len();
+        eprintln!("source has {comment_count} comments");
+    }
+
+    #[test]
+    fn spike_oxc_blank_line_via_empty_comment() {
+        // Test: can we insert a blank line by using a comment with specific formatting?
+        let source = "// first\nconst x = 1;\n\n// second\nconst y = 2;\n";
+        let allocator = oxc_allocator::Allocator::default();
+        let source_type = oxc_span::SourceType::mjs();
+        let parsed = oxc_parser::Parser::new(&allocator, source, source_type).parse();
+        let code = super::codegen_program(&parsed.program);
+        // Check if the blank line between statements is preserved
+        let has_blank_line = code.contains(";\n\n");
+        eprintln!("blank line preserved: {has_blank_line}");
+        eprintln!("output:\n{code}");
+        // This documents the behavior — may or may not preserve blank lines
+    }
+
+    #[test]
+    fn sourcemap_unique_debug_ids() {
+        // Two compilations should produce different debugIds
+        let source = "function Component(props) { return <div>{props.x}</div>; }";
+        let result1 = compile_to_result(source);
+        let result2 = compile_to_result(source);
+        let parsed1: serde_json::Value =
+            serde_json::from_str(result1.map.as_ref().unwrap()).unwrap();
+        let parsed2: serde_json::Value =
+            serde_json::from_str(result2.map.as_ref().unwrap()).unwrap();
+        assert_ne!(
+            parsed1["debugId"], parsed2["debugId"],
+            "different compilations should have different debugIds"
+        );
+    }
+
+    #[test]
+    fn sourcemap_has_virtual_source() {
+        let result =
+            compile_to_result("function Component(props) { return <div>{props.x}</div>; }");
+        let map_json = result.map.as_ref().expect("sourcemap should exist");
+        let parsed: serde_json::Value = serde_json::from_str(map_json).unwrap();
+        let sources = parsed["sources"].as_array().expect("should have sources");
+        assert!(
+            sources
+                .iter()
+                .any(|s| s.as_str() == Some("compiler://react-compiler/generated")),
+            "sources should include virtual generated source, got: {sources:?}"
+        );
+    }
+
+    #[test]
+    fn sourcemap_has_x_google_ignore_list() {
+        let result =
+            compile_to_result("function Component(props) { return <div>{props.x}</div>; }");
+        let map_json = result.map.as_ref().expect("sourcemap should exist");
+        let parsed: serde_json::Value = serde_json::from_str(map_json).unwrap();
+        let ignore_list = parsed["x_google_ignoreList"]
+            .as_array()
+            .expect("should have x_google_ignoreList");
+        assert!(
+            !ignore_list.is_empty(),
+            "x_google_ignoreList should not be empty"
+        );
+        // The virtual source should be in the ignore list
+        let sources = parsed["sources"].as_array().unwrap();
+        let virtual_idx = sources
+            .iter()
+            .position(|s| s.as_str() == Some("compiler://react-compiler/generated"))
+            .expect("virtual source should exist");
+        assert!(
+            ignore_list.contains(&serde_json::Value::from(virtual_idx as u64)),
+            "x_google_ignoreList should contain the virtual source index"
+        );
+    }
+
+    #[test]
+    fn sourcemap_generated_code_routed_to_virtual_source() {
+        // Compiled component should have some tokens routed to the virtual source
+        // (cache infrastructure like useMemoCache, $[0] assignments)
+        let result =
+            compile_to_result("function Component(props) { return <div>{props.x}</div>; }");
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+        let sources: Vec<_> = sm.get_sources().collect();
+        let virtual_idx = sources
+            .iter()
+            .position(|s| s.as_ref() == "compiler://react-compiler/generated");
+        // Virtual source should exist in the sources array
+        assert!(
+            virtual_idx.is_some(),
+            "virtual source should be in sources array"
+        );
+    }
+
+    #[test]
+    fn sourcemap_partial_compilation_identity_mapping() {
+        // When one function bails out and another compiles, the untouched
+        // function's code should still have sourcemap entries pointing to
+        // correct source positions (identity mapping).
+        let source = r#"function helper(x) { return x + 1; }
+function Component(props) {
+  return <div>{props.x}</div>;
+}"#;
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        // The helper function (untouched) is at source line 0.
+        // Verify it has tokens mapping to source line 0.
+        assert_source_line_mapped(&sm, 0, "helper function (untouched)");
+
+        // The Component (compiled) is at source line 1.
+        assert_source_line_mapped(&sm, 1, "Component function (compiled)");
+
+        // Verify tokens for the helper map to approximately the same generated line
+        // (identity-ish mapping — the helper should be near the top of output too).
+        let helper_tokens: Vec<_> = sm.get_tokens().filter(|t| t.get_src_line() == 0).collect();
+        assert!(
+            !helper_tokens.is_empty(),
+            "helper function should have sourcemap tokens"
+        );
+        // The first token for source line 0 should be at generated line 0 or close to it
+        let first_helper_gen_line = helper_tokens[0].get_dst_line();
+        assert!(
+            first_helper_gen_line <= 2,
+            "helper function should be near the top of generated output, got line {}",
+            first_helper_gen_line
+        );
+    }
+
+    #[test]
+    fn sourcemap_hoc_pattern() {
+        // Fixture 9: Higher-order component pattern
+        let source = r#"function withLogging(WrappedComponent) {
+  function EnhancedComponent(props) {
+    console.log("render");
+    return <WrappedComponent {...props} />;
+  }
+  return EnhancedComponent;
+}
+function MyComponent(props) {
+  return <div>{props.name}</div>;
+}"#;
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        // Both function declarations should have mappings
+        assert_source_line_mapped(&sm, 0, "withLogging declaration");
+        assert_source_line_mapped(&sm, 7, "MyComponent declaration");
+    }
+
+    #[test]
+    fn sourcemap_token_positions_monotonic() {
+        // Generated lines in sourcemap tokens should be monotonically non-decreasing
+        // (sourcemaps require tokens to be ordered by generated position).
+        let result = compile_to_result(
+            "function Component(props) { const x = props.a + 1; return <div>{x}</div>; }",
+        );
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+        let mut prev_line = 0u32;
+        let mut prev_col = 0u32;
+        for token in sm.get_tokens() {
+            let line = token.get_dst_line();
+            let col = token.get_dst_col();
+            if line == prev_line {
+                assert!(
+                    col >= prev_col,
+                    "tokens on same generated line should have non-decreasing columns: \
+                     prev={}:{}, curr={}:{}",
+                    prev_line,
+                    prev_col,
+                    line,
+                    col
+                );
+            } else {
+                assert!(
+                    line >= prev_line,
+                    "generated lines should be non-decreasing: prev={}, curr={}",
+                    prev_line,
+                    line
+                );
+            }
+            prev_line = line;
+            prev_col = col;
+        }
+    }
+
+    #[test]
+    fn sourcemap_manual_token_verification() {
+        // Manual verification: compile a known source and check specific token mappings.
+        // Source is on one line so we can verify precisely.
+        let source = "function Component(props) {\n  return <div>{props.x}</div>;\n}";
+        let result = compile_to_result(source);
+        assert!(result.transformed);
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+
+        // Collect all user-source tokens (exclude virtual generated source)
+        let sources: Vec<_> = sm.get_sources().collect();
+        let virtual_idx = sources
+            .iter()
+            .position(|s| s.as_ref() == "compiler://react-compiler/generated")
+            .map(|i| i as u32);
+
+        let user_tokens: Vec<_> = sm
+            .get_tokens()
+            .filter(|t| t.get_source_id() != virtual_idx)
+            .collect();
+
+        // There should be user tokens (not all generated)
+        assert!(
+            !user_tokens.is_empty(),
+            "should have user-source tokens, not all generated"
+        );
+
+        // At least one token should map to source line 0 (function declaration)
+        assert!(
+            user_tokens.iter().any(|t| t.get_src_line() == 0),
+            "should have tokens mapping to function declaration (line 0)"
+        );
+
+        // At least one token should map to source line 1 (return statement)
+        assert!(
+            user_tokens.iter().any(|t| t.get_src_line() == 1),
+            "should have tokens mapping to return statement (line 1)"
+        );
+    }
+
+    // --- Round-trip sourcemap validation ---
+
+    /// Validate sourcemap round-trip accuracy for a compiled fixture.
+    ///
+    /// For every user-source token:
+    /// - If the token has a name, verify that name appears at (src_line, src_col) in the source
+    /// - Verify src_line/src_col are within bounds of the original source
+    /// - Verify dst_line/dst_col are within bounds of the generated code
+    /// - Verify at least one user-source token and one virtual-source token exist
+    fn validate_sourcemap_round_trip(source: &str, filename: &str) {
+        let options = crate::options::PluginOptions::default();
+        let result = crate::compile(filename, source, &options);
+        assert!(
+            result.transformed,
+            "fixture should be transformed: {filename}"
+        );
+        let map_json = result
+            .map
+            .as_ref()
+            .unwrap_or_else(|| panic!("sourcemap should exist for {filename}"));
+        let sm = decode_sourcemap(map_json);
+
+        let source_lines: Vec<&str> = source.lines().collect();
+        let gen_lines: Vec<&str> = result.code.lines().collect();
+        let sources: Vec<_> = sm.get_sources().collect();
+        let names: Vec<_> = sm.get_names().collect();
+
+        let virtual_idx = sources
+            .iter()
+            .position(|s| s.as_ref() == "compiler://react-compiler/generated")
+            .map(|i| i as u32);
+
+        let mut user_token_count = 0u32;
+        let mut virtual_token_count = 0u32;
+
+        for token in sm.get_tokens() {
+            let is_virtual = token.get_source_id() == virtual_idx;
+            if is_virtual {
+                virtual_token_count += 1;
+                continue;
+            }
+            user_token_count += 1;
+
+            let src_line = token.get_src_line() as usize;
+            let src_col = token.get_src_col() as usize;
+            let dst_line = token.get_dst_line() as usize;
+
+            // Verify source line is within bounds.
+            assert!(
+                src_line < source_lines.len(),
+                "[{filename}] token src_line {src_line} out of bounds (source has {} lines)",
+                source_lines.len()
+            );
+
+            // Verify generated line is within bounds.
+            assert!(
+                dst_line < gen_lines.len(),
+                "[{filename}] token dst_line {dst_line} out of bounds (generated has {} lines)",
+                gen_lines.len()
+            );
+
+            // If the token has a single-line name, verify it appears at the source position.
+            if let Some(name_id) = token.get_name_id() {
+                let name_idx = name_id as usize;
+                if name_idx < names.len() {
+                    let name = names[name_idx].as_ref();
+                    // Skip multi-line names (OXC may embed full expressions).
+                    if !name.contains('\n') && src_col < source_lines[src_line].len() {
+                        let src_text = &source_lines[src_line][src_col..];
+                        assert!(
+                            src_text.starts_with(name),
+                            "[{filename}] token name {:?} not found at src {}:{} — found {:?}",
+                            name,
+                            src_line,
+                            src_col,
+                            &src_text[..src_text.len().min(30)]
+                        );
+                    }
+                }
+            }
+        }
+
+        assert!(
+            user_token_count > 0,
+            "[{filename}] should have at least one user-source token"
+        );
+        // Only assert virtual tokens if the output contains memoization infrastructure.
+        // Trivial components may not produce any generated code tokens.
+        if result.code.contains("useMemoCache") || result.code.contains("_c[") {
+            assert!(
+                virtual_token_count > 0,
+                "[{filename}] memoized output should have virtual-source tokens"
+            );
+        }
+    }
+
+    #[test]
+    fn roundtrip_smoke_test() {
+        validate_sourcemap_round_trip(
+            "function Component(props) {\n  return <div>{props.x}</div>;\n}",
+            "test.jsx",
+        );
+    }
+
+    /// Validate sourcemap bounds for fixtures that need CompilationMode::All.
+    /// Same as validate_sourcemap_round_trip but with custom options.
+    fn validate_sourcemap_round_trip_all_mode(source: &str, filename: &str) {
+        let options = crate::options::PluginOptions {
+            compilation_mode: crate::options::CompilationMode::All,
+            ..crate::options::PluginOptions::default()
+        };
+        let result = crate::compile(filename, source, &options);
+        if !result.transformed {
+            return; // Some fixtures may not transform in all mode
+        }
+        let map_json = result
+            .map
+            .as_ref()
+            .unwrap_or_else(|| panic!("sourcemap should exist for {filename}"));
+        let sm = decode_sourcemap(map_json);
+
+        let source_lines: Vec<&str> = source.lines().collect();
+        let gen_lines: Vec<&str> = result.code.lines().collect();
+        let sources: Vec<_> = sm.get_sources().collect();
+        let names: Vec<_> = sm.get_names().collect();
+
+        let virtual_idx = sources
+            .iter()
+            .position(|s| s.as_ref() == "compiler://react-compiler/generated")
+            .map(|i| i as u32);
+
+        let mut user_token_count = 0u32;
+        for token in sm.get_tokens() {
+            if token.get_source_id() == virtual_idx {
+                continue;
+            }
+            user_token_count += 1;
+
+            let src_line = token.get_src_line() as usize;
+            let src_col = token.get_src_col() as usize;
+            let dst_line = token.get_dst_line() as usize;
+
+            assert!(
+                src_line < source_lines.len(),
+                "[{filename}] src_line {src_line} OOB (source has {} lines)",
+                source_lines.len()
+            );
+            assert!(
+                dst_line < gen_lines.len(),
+                "[{filename}] dst_line {dst_line} OOB (gen has {} lines)",
+                gen_lines.len()
+            );
+
+            if let Some(name_id) = token.get_name_id() {
+                let name_idx = name_id as usize;
+                if name_idx < names.len() {
+                    let name = names[name_idx].as_ref();
+                    if !name.contains('\n') && src_col < source_lines[src_line].len() {
+                        let src_text = &source_lines[src_line][src_col..];
+                        assert!(
+                            src_text.starts_with(name),
+                            "[{filename}] name {:?} not at src {}:{} — found {:?}",
+                            name,
+                            src_line,
+                            src_col,
+                            &src_text[..src_text.len().min(30)]
+                        );
+                    }
+                }
+            }
+        }
+
+        assert!(
+            user_token_count > 0,
+            "[{filename}] should have user-source tokens"
+        );
+    }
+
+    // --- Round-trip tests: third_party conformance fixtures ---
+
+    #[test]
+    fn roundtrip_simple_function() {
+        let source = include_str!(
+            "../../../../../third_party/react/compiler/packages/\
+             babel-plugin-react-compiler/src/__tests__/fixtures/compiler/simple-function-1.js"
+        );
+        validate_sourcemap_round_trip_all_mode(source, "simple-function-1.js");
+    }
+
+    #[test]
+    fn roundtrip_capturing_func_simple_alias() {
+        let source = include_str!(
+            "../../../../../third_party/react/compiler/packages/\
+             babel-plugin-react-compiler/src/__tests__/fixtures/compiler/\
+             capturing-func-simple-alias.js"
+        );
+        validate_sourcemap_round_trip_all_mode(source, "capturing-func-simple-alias.js");
+    }
+
+    #[test]
+    fn roundtrip_conditional_early_return() {
+        let source = include_str!(
+            "../../../../../third_party/react/compiler/packages/\
+             babel-plugin-react-compiler/src/__tests__/fixtures/compiler/\
+             conditional-early-return.js"
+        );
+        validate_sourcemap_round_trip_all_mode(source, "conditional-early-return.js");
+    }
+
+    #[test]
+    fn roundtrip_for_in_statement() {
+        let source = include_str!(
+            "../../../../../third_party/react/compiler/packages/\
+             babel-plugin-react-compiler/src/__tests__/fixtures/compiler/\
+             for-in-statement-body-always-returns.js"
+        );
+        validate_sourcemap_round_trip_all_mode(source, "for-in-statement-body-always-returns.js");
+    }
+
+    #[test]
+    fn roundtrip_jsx_mutations() {
+        let source = include_str!(
+            "../../../../../third_party/react/compiler/packages/\
+             babel-plugin-react-compiler/src/__tests__/fixtures/compiler/\
+             builtin-jsx-tag-lowered-between-mutations.js"
+        );
+        validate_sourcemap_round_trip(source, "builtin-jsx-tag-lowered-between-mutations.js");
+    }
+
+    #[test]
+    fn roundtrip_nested_function_captures() {
+        let source = include_str!(
+            "../../../../../third_party/react/compiler/packages/\
+             babel-plugin-react-compiler/src/__tests__/fixtures/compiler/\
+             capturing-variable-in-nested-function.js"
+        );
+        validate_sourcemap_round_trip_all_mode(source, "capturing-variable-in-nested-function.js");
+    }
+
+    #[test]
+    fn roundtrip_tsx_inner_functions() {
+        let source = include_str!(
+            "../../../../../third_party/react/compiler/packages/\
+             babel-plugin-react-compiler/src/__tests__/fixtures/compiler/\
+             component-inner-function-with-many-args.tsx"
+        );
+        validate_sourcemap_round_trip(source, "component-inner-function-with-many-args.tsx");
+    }
+
+    #[test]
+    fn roundtrip_tsx_aliased_nested_scope() {
+        let source = include_str!(
+            "../../../../../third_party/react/compiler/packages/\
+             babel-plugin-react-compiler/src/__tests__/fixtures/compiler/\
+             aliased-nested-scope-fn-expr.tsx"
+        );
+        validate_sourcemap_round_trip(source, "aliased-nested-scope-fn-expr.tsx");
+    }
+
+    // --- Round-trip tests: custom compiler fixtures (tests/fixtures/compiler/) ---
+
+    #[test]
+    fn roundtrip_catch_forloop_same_name() {
+        let source = include_str!(
+            "../../../../../tests/fixtures/compiler/catch-forloop-same-name-variable.jsx"
+        );
+        validate_sourcemap_round_trip(source, "catch-forloop-same-name-variable.jsx");
+    }
+
+    #[test]
+    fn roundtrip_closure_scope_leak() {
+        let source = include_str!(
+            "../../../../../tests/fixtures/compiler/closure-multiple-calls-scope-leak.jsx"
+        );
+        validate_sourcemap_round_trip(source, "closure-multiple-calls-scope-leak.jsx");
+    }
+
+    #[test]
+    fn roundtrip_local_function_extra_memo() {
+        let source = include_str!(
+            "../../../../../tests/fixtures/compiler/local-function-call-extra-memo.jsx"
+        );
+        validate_sourcemap_round_trip(source, "local-function-call-extra-memo.jsx");
+    }
+
+    #[test]
+    fn roundtrip_conditional_extra_scope() {
+        let source =
+            include_str!("../../../../../tests/fixtures/compiler/conditional-expr-extra-scope.jsx");
+        validate_sourcemap_round_trip(source, "conditional-expr-extra-scope.jsx");
+    }
+
+    #[test]
+    fn roundtrip_labeled_block_scoping_tsx() {
+        let source =
+            include_str!("../../../../../tests/fixtures/compiler/labeled-block-scoping.tsx");
+        validate_sourcemap_round_trip(source, "labeled-block-scoping.tsx");
+    }
+
+    // --- Round-trip tests: shadcn real-world components ---
+
+    #[test]
+    fn roundtrip_shadcn_dialog() {
+        let source =
+            include_str!("../../../../../tests/fixtures/shadcn-app/src/components/ui/Dialog.tsx");
+        validate_sourcemap_round_trip(source, "Dialog.tsx");
+    }
+
+    #[test]
+    fn roundtrip_shadcn_dashboard() {
+        let source =
+            include_str!("../../../../../tests/fixtures/shadcn-app/src/components/Dashboard.tsx");
+        validate_sourcemap_round_trip(source, "Dashboard.tsx");
+    }
+
+    #[test]
+    fn roundtrip_shadcn_button() {
+        let source =
+            include_str!("../../../../../tests/fixtures/shadcn-app/src/components/ui/Button.tsx");
+        validate_sourcemap_round_trip(source, "Button.tsx");
+    }
+
+    #[test]
+    fn roundtrip_shadcn_tabs() {
+        let source =
+            include_str!("../../../../../tests/fixtures/shadcn-app/src/components/ui/Tabs.tsx");
+        validate_sourcemap_round_trip(source, "Tabs.tsx");
+    }
+
+    #[test]
+    fn roundtrip_shadcn_select() {
+        let source =
+            include_str!("../../../../../tests/fixtures/shadcn-app/src/components/ui/Select.tsx");
+        validate_sourcemap_round_trip(source, "Select.tsx");
     }
 }

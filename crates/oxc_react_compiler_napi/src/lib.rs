@@ -9,6 +9,8 @@ pub struct TransformOptions {
     #[napi(ts_type = "'none' | 'all'")]
     pub panic_threshold: Option<String>,
     pub target: Option<String>,
+    /// Whether to generate source maps. Defaults to `true`.
+    pub source_map: Option<bool>,
 }
 
 #[napi(object)]
@@ -63,5 +65,6 @@ fn parse_options(options: Option<TransformOptions>) -> oxc_react_compiler::optio
         no_emit: false,
         eslint_suppression_rules: None,
         flow_suppressions: true,
+        source_map: opts.source_map.unwrap_or(true),
     }
 }
