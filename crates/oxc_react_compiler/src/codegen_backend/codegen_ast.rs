@@ -195,10 +195,15 @@ struct CodegenContext<'a> {
 }
 
 /// Convert a `SourceLocation` to an OXC `Span` for sourcemap generation.
+/// Sentinel span used for compiler-generated code (no source equivalent).
+/// OXC codegen maps this to a recognizable position that the sourcemap
+/// post-processor routes to the virtual source `compiler://react-compiler/generated`.
+pub(crate) const GENERATED_SPAN: Span = Span::new(u32::MAX - 1, u32::MAX - 1);
+
 fn loc_to_span(loc: &SourceLocation) -> Span {
     match loc {
         SourceLocation::Source(range) => range.original_span,
-        SourceLocation::Generated => SPAN,
+        SourceLocation::Generated => GENERATED_SPAN,
     }
 }
 

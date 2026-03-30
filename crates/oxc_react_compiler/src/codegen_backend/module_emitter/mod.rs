@@ -419,9 +419,8 @@ fn try_emit_module(
     }
 
     let map = raw_sourcemap.map(|sm| {
-        let mut sm = adjust_sourcemap_positional(sm, &line_edits);
-        enrich_sourcemap(&mut sm);
-        sm.to_json_string()
+        let sm = adjust_sourcemap_positional(sm, &line_edits);
+        enrich_sourcemap(sm).to_json_string()
     });
 
     Ok(CompileResult {
@@ -531,9 +530,71 @@ fn adjust_sourcemap_positional(
 /// The `debugId` enables error monitoring tools (Sentry, Datadog) to match
 /// sourcemaps to deployed bundles. The `x_google_ignoreList` tells Chrome
 /// DevTools to auto-skip certain sources during debugging.
-fn enrich_sourcemap(sm: &mut oxc_sourcemap::SourceMap) {
+/// Virtual source URI for compiler-generated code (memoization infrastructure).
+const VIRTUAL_GENERATED_SOURCE: &str = "compiler://react-compiler/generated";
+
+/// Threshold for detecting sentinel spans from generated code.
+/// OXC codegen maps GENERATED_SPAN (u32::MAX-1) to very high line numbers.
+const GENERATED_SRC_LINE_THRESHOLD: u32 = 1_000_000;
+
+/// Enrich a sourcemap with virtual source routing, `debugId`, and `x_google_ignoreList`.
+///
+/// - Routes tokens from compiler-generated code (sentinel spans) to a virtual source
+/// - Adds `compiler://react-compiler/generated` to `x_google_ignoreList` so DevTools
+///   auto-skips generated memoization infrastructure during debugging
+/// - Generates a unique `debugId` (UUID v4) for error monitoring (Sentry, Datadog)
+fn enrich_sourcemap(sm: oxc_sourcemap::SourceMap) -> oxc_sourcemap::SourceMap {
+    use std::sync::Arc;
+
+    // Collect existing sources and contents.
+    let mut sources: Vec<Arc<str>> = sm.get_sources().map(|s| Arc::from(s.as_ref())).collect();
+    let mut source_contents: Vec<Option<Arc<str>>> = sm
+        .get_source_contents()
+        .map(|c| c.map(|s| Arc::from(s.as_ref())))
+        .collect();
+
+    // Add virtual source for generated code.
+    let virtual_source_id = sources.len() as u32;
+    sources.push(Arc::from(VIRTUAL_GENERATED_SOURCE));
+    source_contents.push(None); // No source content for generated code.
+
+    // Reroute tokens from generated code (sentinel spans) to the virtual source.
+    let tokens: Vec<oxc_sourcemap::Token> = sm
+        .get_tokens()
+        .map(|t| {
+            if t.get_src_line() >= GENERATED_SRC_LINE_THRESHOLD {
+                // This token came from GENERATED_SPAN — route to virtual source.
+                oxc_sourcemap::Token::new(
+                    t.get_dst_line(),
+                    t.get_dst_col(),
+                    0, // virtual source line 0
+                    0, // virtual source col 0
+                    Some(virtual_source_id),
+                    t.get_name_id(),
+                )
+            } else {
+                t
+            }
+        })
+        .collect();
+
+    let mut new_sm = oxc_sourcemap::SourceMap::new(
+        sm.get_file().map(|s| Arc::from(s.as_ref())),
+        sm.get_names().map(|s| Arc::from(s.as_ref())).collect(),
+        sm.get_source_root().map(|s| s.to_string()),
+        sources,
+        source_contents,
+        tokens.into_boxed_slice(),
+        None,
+    );
+
+    // Mark the virtual source in x_google_ignoreList so DevTools auto-skips it.
+    new_sm.set_x_google_ignore_list(vec![virtual_source_id]);
+
     // Generate a unique debugId (UUID v4) for error monitoring integration.
-    sm.set_debug_id(&uuid::Uuid::new_v4().to_string());
+    new_sm.set_debug_id(&uuid::Uuid::new_v4().to_string());
+
+    new_sm
 }
 
 fn build_render_state(args: ModuleEmitArgs<'_>, compiled: &[CompiledFunction]) -> AstRenderState {

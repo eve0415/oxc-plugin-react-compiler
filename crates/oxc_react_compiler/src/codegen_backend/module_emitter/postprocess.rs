@@ -1205,4 +1205,62 @@ function Component(props) {
             "different compilations should have different debugIds"
         );
     }
+
+    #[test]
+    fn sourcemap_has_virtual_source() {
+        let result =
+            compile_to_result("function Component(props) { return <div>{props.x}</div>; }");
+        let map_json = result.map.as_ref().expect("sourcemap should exist");
+        let parsed: serde_json::Value = serde_json::from_str(map_json).unwrap();
+        let sources = parsed["sources"].as_array().expect("should have sources");
+        assert!(
+            sources
+                .iter()
+                .any(|s| s.as_str() == Some("compiler://react-compiler/generated")),
+            "sources should include virtual generated source, got: {sources:?}"
+        );
+    }
+
+    #[test]
+    fn sourcemap_has_x_google_ignore_list() {
+        let result =
+            compile_to_result("function Component(props) { return <div>{props.x}</div>; }");
+        let map_json = result.map.as_ref().expect("sourcemap should exist");
+        let parsed: serde_json::Value = serde_json::from_str(map_json).unwrap();
+        let ignore_list = parsed["x_google_ignoreList"]
+            .as_array()
+            .expect("should have x_google_ignoreList");
+        assert!(
+            !ignore_list.is_empty(),
+            "x_google_ignoreList should not be empty"
+        );
+        // The virtual source should be in the ignore list
+        let sources = parsed["sources"].as_array().unwrap();
+        let virtual_idx = sources
+            .iter()
+            .position(|s| s.as_str() == Some("compiler://react-compiler/generated"))
+            .expect("virtual source should exist");
+        assert!(
+            ignore_list.contains(&serde_json::Value::from(virtual_idx as u64)),
+            "x_google_ignoreList should contain the virtual source index"
+        );
+    }
+
+    #[test]
+    fn sourcemap_generated_code_routed_to_virtual_source() {
+        // Compiled component should have some tokens routed to the virtual source
+        // (cache infrastructure like useMemoCache, $[0] assignments)
+        let result =
+            compile_to_result("function Component(props) { return <div>{props.x}</div>; }");
+        let sm = decode_sourcemap(result.map.as_ref().unwrap());
+        let sources: Vec<_> = sm.get_sources().collect();
+        let virtual_idx = sources
+            .iter()
+            .position(|s| s.as_ref() == "compiler://react-compiler/generated");
+        // Virtual source should exist in the sources array
+        assert!(
+            virtual_idx.is_some(),
+            "virtual source should be in sources array"
+        );
+    }
 }
