@@ -14,7 +14,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::environment::Environment;
-use crate::error::{CompilerDiagnostic, DiagnosticSeverity, ErrorCategory};
+use crate::error::{CompilerDiagnostic, DiagnosticSeverity, ErrorCategory, extract_span};
 use crate::hir::builder::terminal_successors;
 use crate::hir::object_shape::{
     FunctionSignature, ReturnType, TEST_KNOWN_INCOMPATIBLE_INDIRECT_RESULT_ID,
@@ -3312,7 +3312,10 @@ fn compute_signature_for_instruction(
             if is_reassign_to_outer_named_identifier(&lval.place, ctx, lval.kind) {
                 effects.push(AliasingEffect::MutateGlobal {
                     place: lval.place.clone(),
-                    error: global_reassignment_diagnostic(&variable_name_for_error(&lval.place)),
+                    error: global_reassignment_diagnostic(
+                        variable_name_for_error(&lval.place),
+                        &lval.place.loc,
+                    ),
                 });
             } else if ctx.is_function_expression
                 && ctx
@@ -3407,7 +3410,10 @@ fn compute_signature_for_instruction(
                 if is_reassign_to_outer_named_identifier(item_place, ctx, lval.kind) {
                     effects.push(AliasingEffect::MutateGlobal {
                         place: item_place.clone(),
-                        error: global_reassignment_diagnostic(&variable_name_for_error(item_place)),
+                        error: global_reassignment_diagnostic(
+                            variable_name_for_error(item_place),
+                            &item_place.loc,
+                        ),
                     });
                 } else if is_primitive_type(&item_place.identifier) {
                     effects.push(AliasingEffect::Create {
@@ -3461,7 +3467,7 @@ fn compute_signature_for_instruction(
         } => {
             effects.push(AliasingEffect::MutateGlobal {
                 place: val.clone(),
-                error: global_reassignment_diagnostic(&format!("`{name}`")),
+                error: global_reassignment_diagnostic(format!("`{name}`"), &val.loc),
             });
             effects.push(AliasingEffect::Assign {
                 from: val.clone(),
@@ -4685,14 +4691,17 @@ fn is_reassign_to_outer_named_identifier(
             .contains(&place.identifier.declaration_id)
 }
 
-fn global_reassignment_diagnostic(variable: &str) -> CompilerDiagnostic {
+fn global_reassignment_diagnostic(
+    variable: String,
+    loc: &SourceLocation,
+) -> CompilerDiagnostic {
     CompilerDiagnostic {
         severity: DiagnosticSeverity::InvalidReact,
         message: format!(
             "Cannot reassign variables declared outside of the component/hook ({variable} cannot be reassigned)"
         ),
         category: ErrorCategory::Immutability,
-        span: None,
+        span: extract_span(loc),
         ..Default::default()
     }
 }
@@ -4705,7 +4714,7 @@ fn uninitialized_value_kind_diagnostic(place: &Place) -> CompilerDiagnostic {
             "[InferMutationAliasingEffects] Expected value kind to be initialized ({variable} is uninitialized)"
         ),
         category: ErrorCategory::Immutability,
-        span: None,
+        span: extract_span(&place.loc),
         ..Default::default()
     }
 }
@@ -4744,16 +4753,20 @@ fn mutate_frozen_diagnostic(
                 "Cannot access variable before it is declared ({variable} is accessed before declaration)"
             ),
             category: ErrorCategory::Immutability,
-            span: None,
+            span: extract_span(&value.loc),
             ..Default::default()
         };
     }
 
     let abs_val = state.kind(value.identifier.id);
-    let mut message = format!(
-        "{variable} cannot be modified: {}",
-        write_error_reason_for_kind(abs_val.kind, &abs_val.reasons)
-    );
+    let mut message = if abs_val.reasons.contains(&ValueReason::State) {
+        "Modifying a value returned from 'useState()' is not allowed".to_string()
+    } else {
+        format!(
+            "{variable} cannot be modified: {}",
+            write_error_reason_for_kind(abs_val.kind, &abs_val.reasons)
+        )
+    };
     if is_assign_current_property {
         message.push_str(
             " Hint: if this value is a Ref (returned by useRef), rename it to end with `Ref`.",
@@ -4764,7 +4777,7 @@ fn mutate_frozen_diagnostic(
         severity: DiagnosticSeverity::InvalidReact,
         message,
         category: ErrorCategory::Immutability,
-        span: None,
+        span: extract_span(&value.loc),
         ..Default::default()
     }
 }

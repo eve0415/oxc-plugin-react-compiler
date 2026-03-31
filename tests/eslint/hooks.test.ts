@@ -35,6 +35,28 @@ testRule('hooks', rules['hooks'], {
       `,
       options: [{ flowSuppressions: true }],
     },
+    {
+      name: '[Invariant] defined after use does not crash',
+      code: normalizeIndent`
+        function Component(props) {
+          let y = function () {
+            m(x);
+          };
+
+          let x = { a };
+          m(x);
+          return y;
+        }
+      `,
+    },
+    {
+      name: "Classes don't throw",
+      code: normalizeIndent`
+        class Foo {
+          #bar() {}
+        }
+      `,
+    },
   ],
   invalid: [
     {
@@ -45,6 +67,17 @@ testRule('hooks', rules['hooks'], {
             useState(0);
           }
           return <div />;
+        }
+      `,
+      errors: [makeTestCaseError('Hooks must always be called in a consistent order')],
+    },
+    {
+      name: 'Simple hook-function violation',
+      code: normalizeIndent`
+        function useConditional() {
+          if (cond) {
+            useConditionalHook();
+          }
         }
       `,
       errors: [makeTestCaseError('Hooks must always be called in a consistent order')],

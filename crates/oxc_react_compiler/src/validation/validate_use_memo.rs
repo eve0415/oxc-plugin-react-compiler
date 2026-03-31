@@ -5,7 +5,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
+use crate::error::{
+    BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory, extract_span,
+};
 use crate::hir::types::*;
 
 /// Validates that useMemo callbacks:
@@ -214,6 +216,10 @@ fn validate_void_use_memo_call(
 
     if !has_non_void_return(&body.func) {
         let prefix = if is_react { "React.useMemo" } else { "useMemo" };
+        let span = match first_arg {
+            Argument::Place(p) => extract_span(&p.loc),
+            Argument::Spread(_) => None,
+        };
         diagnostics.push(CompilerDiagnostic {
             severity: DiagnosticSeverity::InvalidReact,
             message: format!(
@@ -223,6 +229,7 @@ fn validate_void_use_memo_call(
                 prefix
             ),
             category: ErrorCategory::UseMemo,
+            span,
             ..Default::default()
         });
     }
@@ -247,6 +254,10 @@ fn validate_use_memo_call(
     };
 
     if !body.func.params.is_empty() {
+        let span = match first_arg {
+            Argument::Place(p) => extract_span(&p.loc),
+            Argument::Spread(_) => None,
+        };
         diagnostics.push(CompilerDiagnostic {
             severity: DiagnosticSeverity::InvalidReact,
             message: "useMemo() callbacks may not accept parameters. \
@@ -255,17 +266,23 @@ fn validate_use_memo_call(
                       or local variables needed for the computation"
                 .to_string(),
             category: ErrorCategory::UseMemo,
+            span,
             ..Default::default()
         });
     }
 
     if body.func.async_ || body.func.generator {
+        let span = match first_arg {
+            Argument::Place(p) => extract_span(&p.loc),
+            Argument::Spread(_) => None,
+        };
         diagnostics.push(CompilerDiagnostic {
             severity: DiagnosticSeverity::InvalidReact,
             message: "useMemo() callbacks may not be async or generator functions. \
                       useMemo() callbacks are called once and must synchronously return a value"
                 .to_string(),
             category: ErrorCategory::UseMemo,
+            span,
             ..Default::default()
         });
     }

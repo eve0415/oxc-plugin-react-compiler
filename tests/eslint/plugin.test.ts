@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import { RuleTester } from 'eslint';
 
 import { configs, meta, rules } from '../../napi/src/eslint.js';
-import { normalizeIndent, testRule } from './shared-utils.js';
+import { makeTestCaseError, normalizeIndent, testRule } from './shared-utils.js';
 
 describe('eslint plugin metadata', () => {
   it('exports meta with name and version', () => {
@@ -72,16 +72,13 @@ describe('plugin recommended rules', () => {
 const TestRecommendedRules: Rule.RuleModule = {
   meta: {
     type: 'problem',
+    hasSuggestions: true,
     schema: [{ type: 'object', additionalProperties: true }],
   },
   create(context) {
-    const recommendedRuleEntries = Object.entries(configs.recommended.rules ?? {});
-    for (const [fullName] of recommendedRuleEntries) {
-      const shortName = fullName.replace('oxc-react-compiler/', '');
-      const ruleModule = rules[shortName];
-      if (ruleModule) {
-        ruleModule.create(context);
-      }
+    const pluginRules = configs.recommended.plugins?.['oxc-react-compiler']?.rules ?? {};
+    for (const ruleModule of Object.values(pluginRules)) {
+      ruleModule.create(context);
     }
     return {};
   },
@@ -127,6 +124,136 @@ describe('aggregated recommended rules', () => {
       invalid: [],
     });
   });
+
+  it('invalid: multiple diagnostics within the same file are surfaced', () => {
+    tester.run('aggregated', TestRecommendedRules, {
+      valid: [],
+      invalid: [
+        {
+          name: 'Multiple diagnostics within the same file',
+          code: normalizeIndent`
+            function useConditional1() {
+              'use memo';
+              return cond ?? useConditionalHook();
+            }
+            function useConditional2(props) {
+              'use memo';
+              return props.cond && useConditionalHook();
+            }
+          `,
+          errors: [
+            makeTestCaseError('Hooks must always be called in a consistent order'),
+            makeTestCaseError('Hooks must always be called in a consistent order'),
+          ],
+        },
+      ],
+    });
+  });
+
+  it('invalid: multiple diagnostic kinds from the same function are surfaced', () => {
+    tester.run('aggregated', TestRecommendedRules, {
+      valid: [],
+      invalid: [
+        {
+          name: 'Multiple diagnostic kinds from the same function',
+          code: normalizeIndent`
+            import Child from './Child';
+            function Component() {
+              const result = cond ?? useConditionalHook();
+              return <>
+                {Child(result)}
+              </>;
+            }
+          `,
+          errors: [makeTestCaseError('Hooks must always be called in a consistent order')],
+        },
+      ],
+    });
+  });
+
+  it("invalid: 'use no forget' does not disable lint rules", () => {
+    tester.run('aggregated', TestRecommendedRules, {
+      valid: [],
+      invalid: [
+        {
+          name: "'use no forget' does not disable lint rules",
+          code: normalizeIndent`
+            function Component() {
+              'use no forget';
+              return cond ?? useConditionalHook();
+            }
+          `,
+          errors: [makeTestCaseError('Hooks must always be called in a consistent order')],
+        },
+      ],
+    });
+  });
+
+  it('invalid: pipeline errors are reported', () => {
+    tester.run('aggregated', TestRecommendedRules, {
+      valid: [],
+      invalid: [
+        {
+          name: 'Pipeline errors are reported',
+          code: normalizeIndent`
+            import useMyEffect from 'useMyEffect';
+            import {AUTODEPS} from 'react';
+            function Component({a}) {
+              'use no memo';
+              useMyEffect(() => console.log(a.b), AUTODEPS);
+              return <div>Hello world</div>;
+            }
+          `,
+          options: [
+            {
+              environment: {
+                inferEffectDependencies: [
+                  {
+                    function: {
+                      source: 'useMyEffect',
+                      importSpecifierName: 'default',
+                    },
+                    autodepsIndex: 1,
+                  },
+                ],
+              },
+            },
+          ],
+          errors: [{ message: /Cannot infer dependencies of this effect/ }],
+        },
+      ],
+    });
+  });
+
+  it('invalid: multiple non-fatal useMemo diagnostics are surfaced', () => {
+    tester.run('aggregated', TestRecommendedRules, {
+      valid: [],
+      invalid: [
+        {
+          name: 'Multiple non-fatal useMemo diagnostics are surfaced',
+          code: normalizeIndent`
+            import {useMemo, useState} from 'react';
+
+            function Component({item, cond}) {
+              const [prevItem, setPrevItem] = useState(item);
+              const [state, setState] = useState(0);
+
+              useMemo(() => {
+                if (cond) {
+                  setPrevItem(item);
+                  setState(0);
+                }
+              }, [cond, item, init]);
+
+              return <Child x={state} />;
+            }
+          `,
+          errors: [makeTestCaseError('useMemo() callbacks must return a value')],
+        },
+      ],
+    });
+  });
+
 });
 
 describe('options passthrough', () => {

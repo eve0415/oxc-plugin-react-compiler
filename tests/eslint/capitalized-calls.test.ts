@@ -24,5 +24,29 @@ testRule('capitalized-calls', rules['capitalized-calls'], {
       options: [{ environment: { validateNoCapitalizedCalls: [] } }],
       errors: [makeTestCaseError('Capitalized functions are reserved for components')],
     },
+    {
+      name: 'Capitalized method call instead of JSX',
+      code: normalizeIndent`
+        function Component() {
+          const x = MyModule.Child();
+          return <div>{x}</div>;
+        }
+      `,
+      options: [{ environment: { validateNoCapitalizedCalls: [] } }],
+      errors: [makeTestCaseError('Capitalized functions are reserved for components')],
+    },
+    {
+      name: 'Multiple capitalized-call violations in one function are deduplicated',
+      code: normalizeIndent`
+        function Component() {
+          return <>
+            {Child1()}
+            {MyModule.Child2()}
+          </>;
+        }
+      `,
+      options: [{ environment: { validateNoCapitalizedCalls: [] } }],
+      errors: [makeTestCaseError('Capitalized functions are reserved for components')],
+    },
   ],
 });

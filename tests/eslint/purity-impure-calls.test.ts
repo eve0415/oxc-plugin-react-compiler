@@ -48,5 +48,22 @@ testRule('immutability-impure-calls', rules['immutability'], {
       options: [{ environment: { validateNoImpureFunctionsInRender: true } }],
       errors: [makeTestCaseError('Cannot call impure function `performance.now` during render')],
     },
+    {
+      name: 'Multiple impure function calls are all reported',
+      code: normalizeIndent`
+        function Component() {
+          const date = Date.now();
+          const now = performance.now();
+          const rand = Math.random();
+          return <Foo date={date} now={now} rand={rand} />;
+        }
+      `,
+      options: [{ environment: { validateNoImpureFunctionsInRender: true } }],
+      errors: [
+        makeTestCaseError('Cannot call impure function `Date.now` during render'),
+        makeTestCaseError('Cannot call impure function `performance.now` during render'),
+        makeTestCaseError('Cannot call impure function `Math.random` during render'),
+      ],
+    },
   ],
 });

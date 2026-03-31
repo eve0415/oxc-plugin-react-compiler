@@ -11,6 +11,15 @@ testRule('no-unused-directives', rules['no-unused-directives'], {
         }
       `,
     },
+    {
+      name: 'Directive is not reported as unused when another compiler error exists',
+      code: normalizeIndent`
+        function Component() {
+          'use no forget';
+          return cond ?? useConditionalHook();
+        }
+      `,
+    },
   ],
   invalid: [
     {
@@ -48,6 +57,26 @@ testRule('no-unused-directives', rules['no-unused-directives'], {
             {
               desc: 'Remove the directive',
               output: '\nfunction Component() {\n  \n  return <div>Hello</div>;\n}\n',
+            },
+          ],
+        },
+      ],
+    },
+    {
+      name: "Unused 'use no forget' is reported for non-component functions too",
+      code: normalizeIndent`
+        function notacomponent() {
+          'use no forget';
+          return 1 + 1;
+        }
+      `,
+      errors: [
+        {
+          message: "Unused 'use no forget' directive",
+          suggestions: [
+            {
+              desc: 'Remove the directive',
+              output: '\nfunction notacomponent() {\n  \n  return 1 + 1;\n}\n',
             },
           ],
         },

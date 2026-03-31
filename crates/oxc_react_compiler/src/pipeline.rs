@@ -3955,6 +3955,7 @@ fn has_infer_effect_autodeps_default_import_property_call(
 
 type NameSet = std::collections::HashSet<String>;
 type CallMatcher = fn(&ast::CallExpression<'_>, &NameSet) -> bool;
+type AutodepsTargetMap = std::collections::HashMap<String, usize>;
 
 fn has_nested_fbt_call_in_param_value(program: &ast::Program<'_>) -> bool {
     let fbt_bindings = collect_fbt_module_bindings(program);
@@ -3964,6 +3965,417 @@ fn has_nested_fbt_call_in_param_value(program: &ast::Program<'_>) -> bool {
     program.body.iter().any(|stmt| {
         stmt_has_call_match(stmt, &fbt_bindings, is_fbt_param_call_with_nested_fbt_value)
     })
+}
+
+fn collect_infer_effect_dependency_targets(program: &ast::Program<'_>, options: &PluginOptions) -> AutodepsTargetMap {
+    let Some(configs) = options.environment.infer_effect_dependencies.as_ref() else {
+        return AutodepsTargetMap::new();
+    };
+
+    let mut targets = AutodepsTargetMap::new();
+    for stmt in &program.body {
+        let ast::Statement::ImportDeclaration(import_decl) = stmt else {
+            continue;
+        };
+        if import_decl.import_kind == ast::ImportOrExportKind::Type {
+            continue;
+        }
+        let module_name = import_decl.source.value.as_str();
+        let Some(specifiers) = &import_decl.specifiers else {
+            continue;
+        };
+        for config in configs {
+            if config.function_module != module_name {
+                continue;
+            }
+            for specifier in specifiers {
+                match specifier {
+                    ast::ImportDeclarationSpecifier::ImportDefaultSpecifier(default_spec)
+                        if config.function_name == "default" =>
+                    {
+                        targets.insert(
+                            default_spec.local.name.as_str().to_string(),
+                            config.autodeps_index,
+                        );
+                    }
+                    ast::ImportDeclarationSpecifier::ImportSpecifier(import_spec)
+                        if import_spec.imported.name() == config.function_name =>
+                    {
+                        targets.insert(
+                            import_spec.local.name.as_str().to_string(),
+                            config.autodeps_index,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    targets
+}
+
+fn is_autodeps_arg(arg: &ast::Argument<'_>) -> bool {
+    let expr = match arg {
+        ast::Argument::SpreadElement(_) => return false,
+        _ => arg.to_expression(),
+    };
+    match expr {
+        ast::Expression::Identifier(id) => id.name == "AUTODEPS",
+        ast::Expression::StaticMemberExpression(member) => {
+            matches!(&member.object, ast::Expression::Identifier(obj) if obj.name == "React")
+                && member.property.name == "AUTODEPS"
+        }
+        _ => false,
+    }
+}
+
+fn collect_untransformed_infer_effect_dependency_diagnostics(
+    program: &ast::Program<'_>,
+    options: &PluginOptions,
+) -> Vec<CompilerDiagnostic> {
+    let targets = collect_infer_effect_dependency_targets(program, options);
+    if targets.is_empty() {
+        return Vec::new();
+    }
+
+    let mut diagnostics = Vec::new();
+    for stmt in &program.body {
+        collect_untransformed_infer_effect_dependency_diagnostics_in_stmt(
+            stmt,
+            &targets,
+            &mut diagnostics,
+        );
+    }
+    diagnostics
+}
+
+fn collect_untransformed_infer_effect_dependency_diagnostics_in_stmt(
+    stmt: &ast::Statement<'_>,
+    targets: &AutodepsTargetMap,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    match stmt {
+        ast::Statement::FunctionDeclaration(func) => {
+            if let Some(body) = &func.body {
+                for stmt in &body.statements {
+                    collect_untransformed_infer_effect_dependency_diagnostics_in_stmt(
+                        stmt,
+                        targets,
+                        diagnostics,
+                    );
+                }
+            }
+        }
+        ast::Statement::ExportDefaultDeclaration(export) => match &export.declaration {
+            ast::ExportDefaultDeclarationKind::FunctionDeclaration(func) => {
+                if let Some(body) = &func.body {
+                    for stmt in &body.statements {
+                        collect_untransformed_infer_effect_dependency_diagnostics_in_stmt(
+                            stmt,
+                            targets,
+                            diagnostics,
+                        );
+                    }
+                }
+            }
+            ast::ExportDefaultDeclarationKind::ArrowFunctionExpression(arrow) => {
+                for stmt in &arrow.body.statements {
+                    collect_untransformed_infer_effect_dependency_diagnostics_in_stmt(
+                        stmt,
+                        targets,
+                        diagnostics,
+                    );
+                }
+            }
+            _ => {}
+        },
+        ast::Statement::ExportNamedDeclaration(export) => {
+            if let Some(decl) = &export.declaration {
+                match decl {
+                    ast::Declaration::FunctionDeclaration(func) => {
+                        if let Some(body) = &func.body {
+                            for stmt in &body.statements {
+                                collect_untransformed_infer_effect_dependency_diagnostics_in_stmt(
+                                    stmt,
+                                    targets,
+                                    diagnostics,
+                                );
+                            }
+                        }
+                    }
+                    ast::Declaration::VariableDeclaration(var_decl) => {
+                        for declarator in &var_decl.declarations {
+                            if let Some(init) = &declarator.init {
+                                collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                                    init,
+                                    targets,
+                                    diagnostics,
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ast::Statement::ExpressionStatement(expr_stmt) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &expr_stmt.expression,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Statement::ReturnStatement(ret) => {
+            if let Some(arg) = &ret.argument {
+                collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                    arg,
+                    targets,
+                    diagnostics,
+                );
+            }
+        }
+        ast::Statement::VariableDeclaration(decl) => {
+            for declarator in &decl.declarations {
+                if let Some(init) = &declarator.init {
+                    collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                        init,
+                        targets,
+                        diagnostics,
+                    );
+                }
+            }
+        }
+        ast::Statement::BlockStatement(block) => {
+            for stmt in &block.body {
+                collect_untransformed_infer_effect_dependency_diagnostics_in_stmt(
+                    stmt,
+                    targets,
+                    diagnostics,
+                );
+            }
+        }
+        ast::Statement::IfStatement(if_stmt) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &if_stmt.test,
+                targets,
+                diagnostics,
+            );
+            collect_untransformed_infer_effect_dependency_diagnostics_in_stmt(
+                &if_stmt.consequent,
+                targets,
+                diagnostics,
+            );
+            if let Some(alt) = &if_stmt.alternate {
+                collect_untransformed_infer_effect_dependency_diagnostics_in_stmt(
+                    alt,
+                    targets,
+                    diagnostics,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+    expr: &ast::Expression<'_>,
+    targets: &AutodepsTargetMap,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    match expr {
+        ast::Expression::CallExpression(call_expr) => {
+            if let ast::Expression::Identifier(callee) = &call_expr.callee
+                && let Some(&autodeps_index) = targets.get(callee.name.as_str())
+                && call_expr
+                    .arguments
+                    .get(autodeps_index)
+                    .is_some_and(is_autodeps_arg)
+            {
+                diagnostics.push(CompilerDiagnostic {
+                    severity: crate::error::DiagnosticSeverity::InvalidReact,
+                    message: "Cannot infer dependencies of this effect. This will break your build!"
+                        .to_string(),
+                    category: ErrorCategory::AutomaticEffectDependencies,
+                    span: Some(call_expr.span),
+                    ..Default::default()
+                });
+            }
+
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &call_expr.callee,
+                targets,
+                diagnostics,
+            );
+            for arg in &call_expr.arguments {
+                if let ast::Argument::SpreadElement(spread) = arg {
+                    collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                        &spread.argument,
+                        targets,
+                        diagnostics,
+                    );
+                } else {
+                    collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                        arg.to_expression(),
+                        targets,
+                        diagnostics,
+                    );
+                }
+            }
+        }
+        ast::Expression::ConditionalExpression(cond) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &cond.test,
+                targets,
+                diagnostics,
+            );
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &cond.consequent,
+                targets,
+                diagnostics,
+            );
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &cond.alternate,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Expression::LogicalExpression(logical) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &logical.left,
+                targets,
+                diagnostics,
+            );
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &logical.right,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Expression::AssignmentExpression(assign) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &assign.right,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Expression::SequenceExpression(seq) => {
+            for expr in &seq.expressions {
+                collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                    expr,
+                    targets,
+                    diagnostics,
+                );
+            }
+        }
+        ast::Expression::ParenthesizedExpression(paren) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &paren.expression,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Expression::TSAsExpression(ts) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &ts.expression,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Expression::TSSatisfiesExpression(ts) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &ts.expression,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Expression::TSNonNullExpression(ts) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &ts.expression,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Expression::TSTypeAssertion(ts) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &ts.expression,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Expression::AwaitExpression(await_expr) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &await_expr.argument,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Expression::ObjectExpression(obj) => {
+            for prop in &obj.properties {
+                match prop {
+                    ast::ObjectPropertyKind::ObjectProperty(p) => {
+                        collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                            &p.value,
+                            targets,
+                            diagnostics,
+                        );
+                    }
+                    ast::ObjectPropertyKind::SpreadProperty(spread) => {
+                        collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                            &spread.argument,
+                            targets,
+                            diagnostics,
+                        );
+                    }
+                }
+            }
+        }
+        ast::Expression::ArrayExpression(arr) => {
+            for elem in &arr.elements {
+                match elem {
+                    ast::ArrayExpressionElement::SpreadElement(spread) => {
+                        collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                            &spread.argument,
+                            targets,
+                            diagnostics,
+                        );
+                    }
+                    ast::ArrayExpressionElement::Elision(_) => {}
+                    _ => collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                        elem.to_expression(),
+                        targets,
+                        diagnostics,
+                    ),
+                }
+            }
+        }
+        ast::Expression::JSXElement(jsx) => {
+            for child in &jsx.children {
+                if let ast::JSXChild::ExpressionContainer(container) = child
+                    && let Some(expr) = container.expression.as_expression()
+                {
+                    collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                        expr,
+                        targets,
+                        diagnostics,
+                    );
+                }
+            }
+        }
+        ast::Expression::JSXFragment(frag) => {
+            for child in &frag.children {
+                if let ast::JSXChild::ExpressionContainer(container) = child
+                    && let Some(expr) = container.expression.as_expression()
+                {
+                    collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                        expr,
+                        targets,
+                        diagnostics,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn collect_fbt_module_bindings(program: &ast::Program<'_>) -> NameSet {
@@ -7449,6 +7861,7 @@ fn check_var_init_for_dynamic_components(
 /// Run the HIR pipeline in lint mode, collecting all diagnostics instead of bailing.
 fn run_hir_pipeline_lint(
     mut hir_func: HIRFunction,
+    fn_span: oxc_span::Span,
     _name: &str,
     env_config: &crate::options::EnvironmentConfig,
 ) -> Vec<CompilerDiagnostic> {
@@ -7456,10 +7869,29 @@ fn run_hir_pipeline_lint(
 
     macro_rules! collect_validation {
         ($expr:expr) => {
+            let prev_len = diagnostics.len();
             if let Err(err) = $expr {
                 match err {
                     crate::error::CompilerError::Bail(bailout) => {
-                        diagnostics.extend(bailout.diagnostics);
+                        if bailout.diagnostics.is_empty() {
+                            let category = if bailout
+                                .reason
+                                .starts_with("Cannot infer dependencies of this effect")
+                            {
+                                ErrorCategory::AutomaticEffectDependencies
+                            } else {
+                                ErrorCategory::Invariant
+                            };
+                            diagnostics.push(CompilerDiagnostic {
+                                severity: crate::error::DiagnosticSeverity::InvalidReact,
+                                message: bailout.reason,
+                                category,
+                                span: Some(fn_span),
+                                ..Default::default()
+                            });
+                        } else {
+                            diagnostics.extend(bailout.diagnostics);
+                        }
                     }
                     crate::error::CompilerError::LoweringFailed(msg) => {
                         diagnostics.push(CompilerDiagnostic {
@@ -7470,6 +7902,9 @@ fn run_hir_pipeline_lint(
                         });
                     }
                 }
+            }
+            if diagnostics.len() > prev_len {
+                return diagnostics;
             }
         };
     }
@@ -7605,6 +8040,33 @@ fn run_hir_pipeline_lint(
     prune_unused_labels::prune_unused_labels_hir(&mut hir_func);
     propagate_scope_dependencies_hir::propagate_scope_dependencies_hir(&mut hir_func);
 
+    if hir_func.env.config().infer_effect_dependencies.is_some() {
+        let has_unresolved_effect_autodeps =
+            infer_effect_dependencies::infer_effect_dependencies(&mut hir_func, false);
+        if has_unresolved_effect_autodeps {
+            diagnostics.push(CompilerDiagnostic {
+                severity: crate::error::DiagnosticSeverity::InvalidReact,
+                message: "Cannot infer dependencies of this effect. This will break your build!"
+                    .to_string(),
+                category: ErrorCategory::AutomaticEffectDependencies,
+                span: Some(fn_span),
+                ..Default::default()
+            });
+            return diagnostics;
+        }
+
+        if infer_effect_dependencies::has_mutation_after_effect_dependency_use(&hir_func) {
+            diagnostics.push(CompilerDiagnostic {
+                severity: crate::error::DiagnosticSeverity::InvalidReact,
+                message: "Modifying a value used previously in an effect function or as an effect dependency is not allowed. Consider moving the modification before calling useEffect()".to_string(),
+                category: ErrorCategory::Immutability,
+                span: Some(fn_span),
+                ..Default::default()
+            });
+            return diagnostics;
+        }
+    }
+
     // Build reactive function for ReactiveFunction-level validators
     let reactive_fn = build_reactive_function::build_reactive_function(hir_func);
     collect_validation!(
@@ -7656,7 +8118,7 @@ fn lint_function<'a>(
         _ => {}
     }
 
-    run_hir_pipeline_lint(hir_func, name, env_config)
+    run_hir_pipeline_lint(hir_func, span, name, env_config)
 }
 
 /// Convert a `CompilerDiagnostic` to a `LintDiagnostic` with line:column info.
@@ -7997,6 +8459,10 @@ pub fn lint(filename: &str, source: &str, options: &PluginOptions) -> Vec<LintDi
     let mut options = options.clone();
     options.no_emit = true;
     options.panic_threshold = crate::options::PanicThreshold::None;
+    // Upstream eslint-plugin-react-compiler does not treat opt-out directives as
+    // lint suppressions. It still reports the underlying diagnostics and only
+    // reports unused directives when the file is otherwise clean.
+    options.ignore_use_no_forget = true;
 
     crate::source_lines::set_current_source(source);
     CURRENT_FILENAME.with(|cell| *cell.borrow_mut() = filename.to_string());
@@ -8053,13 +8519,6 @@ pub fn lint(filename: &str, source: &str, options: &PluginOptions) -> Vec<LintDi
         return Vec::new();
     }
 
-    // Module-level opt-out: 'use no memo' / 'use no forget' / custom directives
-    if !options.ignore_use_no_forget
-        && has_module_scope_opt_out(&program, &options.custom_opt_out_directives)
-    {
-        return Vec::new();
-    }
-
     // Build semantic
     let semantic_ret = oxc_semantic::SemanticBuilder::new().build(&program);
     let semantic = semantic_ret.semantic;
@@ -8084,6 +8543,10 @@ pub fn lint(filename: &str, source: &str, options: &PluginOptions) -> Vec<LintDi
             &mut all_diagnostics,
         );
     }
+
+    all_diagnostics.extend(collect_untransformed_infer_effect_dependency_diagnostics(
+        &program, &options,
+    ));
 
     // Per-diagnostic Flow suppression dedup (matching upstream RunReactCompiler.ts).
     // Only suppress Hooks (react-rule-hook) and Refs (react-rule-unsafe-ref).
