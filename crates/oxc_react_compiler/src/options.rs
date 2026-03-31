@@ -9,6 +9,8 @@ pub enum CompilationMode {
     /// Compile functions that React can use (components and hooks), inferred by usage.
     #[default]
     Infer,
+    /// Compile only functions declared with explicit Flow component/hook syntax.
+    Syntax,
     /// Compile functions annotated with `"use memo"` directive.
     Annotation,
     /// Compile all top-level functions.

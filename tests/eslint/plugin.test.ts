@@ -183,4 +183,30 @@ describe('options passthrough', () => {
     ],
     invalid: [],
   });
+
+  testRule('top-level-option-passthrough', rules['set-state-in-render'], {
+    valid: [
+      {
+        name: 'panicThreshold, gating, and dynamicGating options are accepted',
+        code: normalizeIndent`
+          function Component() {
+            return <div>Hello</div>;
+          }
+        `,
+        options: [
+          {
+            panicThreshold: 'all',
+            gating: {
+              source: 'feature-flags',
+              importSpecifierName: 'isForgetEnabled',
+            },
+            dynamicGating: {
+              source: 'feature-flags',
+            },
+          },
+        ],
+      },
+    ],
+    invalid: [],
+  });
 });

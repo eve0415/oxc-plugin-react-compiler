@@ -87,6 +87,17 @@ pub struct NapiLowerContextAccessConfig {
     pub imported_name: String,
 }
 
+#[napi(object)]
+pub struct NapiGatingConfig {
+    pub source: String,
+    pub import_specifier_name: String,
+}
+
+#[napi(object)]
+pub struct NapiDynamicGatingConfig {
+    pub source: String,
+}
+
 /// Custom macro config. `props` is `['*']` for wildcard, `['name']` for named property.
 #[napi(object)]
 pub struct NapiCustomMacroConfig {
@@ -228,7 +239,7 @@ fn merge_env_config(
 
 #[napi(object)]
 pub struct TransformOptions {
-    #[napi(ts_type = "'infer' | 'annotation' | 'all'")]
+    #[napi(ts_type = "'infer' | 'syntax' | 'annotation' | 'all'")]
     pub compilation_mode: Option<String>,
     #[napi(ts_type = "'none' | 'all'")]
     pub panic_threshold: Option<String>,
@@ -237,6 +248,8 @@ pub struct TransformOptions {
     pub source_map: Option<bool>,
     /// Environment configuration for validation and feature flags.
     pub environment: Option<NapiEnvironmentConfig>,
+    pub gating: Option<NapiGatingConfig>,
+    pub dynamic_gating: Option<NapiDynamicGatingConfig>,
 }
 
 #[napi(object)]
@@ -271,6 +284,7 @@ fn parse_transform_options(
     use oxc_react_compiler::options::*;
 
     let compilation_mode = match opts.compilation_mode.as_deref() {
+        Some("syntax") => CompilationMode::Syntax,
         Some("annotation") => CompilationMode::Annotation,
         Some("all") => CompilationMode::All,
         _ => CompilationMode::Infer,
@@ -286,6 +300,13 @@ fn parse_transform_options(
         panic_threshold,
         target: opts.target.unwrap_or_else(|| "19".to_string()),
         environment: merge_env_config(opts.environment),
+        gating: opts.gating.map(|g| GatingConfig {
+            source: g.source,
+            import_specifier_name: g.import_specifier_name,
+        }),
+        dynamic_gating: opts
+            .dynamic_gating
+            .map(|g| DynamicGatingConfig { source: g.source }),
         source_map: opts.source_map.unwrap_or(true),
         ..PluginOptions::default()
     }
@@ -295,14 +316,18 @@ fn parse_transform_options(
 
 #[napi(object)]
 pub struct NapiLintOptions {
-    #[napi(ts_type = "'infer' | 'annotation' | 'all'")]
+    #[napi(ts_type = "'infer' | 'syntax' | 'annotation' | 'all'")]
     pub compilation_mode: Option<String>,
+    #[napi(ts_type = "'none' | 'all'")]
+    pub panic_threshold: Option<String>,
     pub target: Option<String>,
     pub environment: Option<NapiEnvironmentConfig>,
     pub custom_opt_out_directives: Option<Vec<String>>,
     pub ignore_use_no_forget: Option<bool>,
     pub eslint_suppression_rules: Option<Vec<String>>,
     pub flow_suppressions: Option<bool>,
+    pub gating: Option<NapiGatingConfig>,
+    pub dynamic_gating: Option<NapiDynamicGatingConfig>,
 }
 
 fn parse_lint_options(
@@ -315,21 +340,33 @@ fn parse_lint_options(
     };
 
     let compilation_mode = match opts.compilation_mode.as_deref() {
+        Some("syntax") => CompilationMode::Syntax,
         Some("annotation") => CompilationMode::Annotation,
         Some("all") => CompilationMode::All,
         Some("infer") => CompilationMode::Infer,
         _ => CompilationMode::Infer,
     };
+    let panic_threshold = match opts.panic_threshold.as_deref() {
+        Some("all") => PanicThreshold::All,
+        _ => PanicThreshold::None,
+    };
 
     PluginOptions {
         compilation_mode,
-        panic_threshold: PanicThreshold::None,
+        panic_threshold,
         target: opts.target.unwrap_or_else(|| "19".to_string()),
         environment: merge_env_config(opts.environment),
         custom_opt_out_directives: opts.custom_opt_out_directives.unwrap_or_default(),
         ignore_use_no_forget: opts.ignore_use_no_forget.unwrap_or(false),
         eslint_suppression_rules: opts.eslint_suppression_rules,
         flow_suppressions: opts.flow_suppressions.unwrap_or(false),
+        gating: opts.gating.map(|g| GatingConfig {
+            source: g.source,
+            import_specifier_name: g.import_specifier_name,
+        }),
+        dynamic_gating: opts
+            .dynamic_gating
+            .map(|g| DynamicGatingConfig { source: g.source }),
         no_emit: true,
         source_map: false,
         ..PluginOptions::default()

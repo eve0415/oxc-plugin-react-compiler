@@ -3186,6 +3186,7 @@ fn get_react_function_type(
 /// Determine whether a function should be compiled based on compilation mode.
 /// In `All` mode: compile everything (matching upstream's behavior of assigning 'Other' type).
 /// In `Infer` mode: only components/hooks.
+/// In `Syntax` mode: only Flow `component` / `hook` declarations.
 /// In `Annotation` mode: only functions with "use memo" directive.
 fn should_compile_function(
     name: &str,
@@ -3196,6 +3197,7 @@ fn should_compile_function(
     match mode {
         CompilationMode::All => true,
         CompilationMode::Infer => get_react_function_type(name, body, params).is_some(),
+        CompilationMode::Syntax => is_flow_component_name(name) || is_flow_hook_name(name),
         CompilationMode::Annotation => {
             // Only compile if function has "use memo", "use memo if(...)" or "use forget" directive
             body.directives.iter().any(|d| {
@@ -8754,6 +8756,42 @@ function BadComponent() {
         assert!(
             !diagnostics.is_empty(),
             "should lint annotated function in Annotation mode"
+        );
+    }
+
+    #[test]
+    fn lint_compilation_mode_syntax_skips_inferred_components() {
+        let source = r#"function Component() {
+  const ref = useRef(null);
+  console.log(ref.current);
+  return <div />;
+}"#;
+        let opts = PluginOptions {
+            compilation_mode: crate::options::CompilationMode::Syntax,
+            ..PluginOptions::default()
+        };
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        assert!(
+            diagnostics.is_empty(),
+            "should skip inferred component in Syntax mode"
+        );
+    }
+
+    #[test]
+    fn lint_compilation_mode_syntax_lints_flow_component_declarations() {
+        let source = r#"component Component() {
+  const ref = useRef(null);
+  console.log(ref.current);
+  return <div />;
+}"#;
+        let opts = PluginOptions {
+            compilation_mode: crate::options::CompilationMode::Syntax,
+            ..PluginOptions::default()
+        };
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        assert!(
+            !diagnostics.is_empty(),
+            "should lint Flow component declarations in Syntax mode"
         );
     }
 

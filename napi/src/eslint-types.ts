@@ -1,3 +1,9 @@
+import type {
+  ReactCompilerCompilationMode,
+  ReactCompilerPanicThreshold,
+  ReactCompilerSources,
+} from './compiler-options';
+
 /** Location within source text, using 1-based lines and 0-based columns. */
 export interface DiagnosticLocation {
   line: number;
@@ -86,11 +92,16 @@ export interface OxcReactCompilerEnvironment {
  * Mirrors upstream's PluginOptions structure.
  */
 export interface OxcReactCompilerOptions {
-  compilationMode?: 'infer' | 'annotation' | 'all';
+  compilationMode?: ReactCompilerCompilationMode;
+  panicThreshold?: ReactCompilerPanicThreshold;
   target?: string;
   environment?: OxcReactCompilerEnvironment;
   customOptOutDirectives?: string[];
   ignoreUseNoForget?: boolean;
   eslintSuppressionRules?: string[];
   flowSuppressions?: boolean;
+  gating?: { source: string; importSpecifierName: string };
+  dynamicGating?: { source: string };
+  sources?: ReactCompilerSources;
+  enableReanimatedCheck?: boolean;
 }
