@@ -1,9 +1,10 @@
 import type { Rule } from 'eslint';
 
-import { describe, it, expect } from 'vite-plus/test';
 import { RuleTester } from 'eslint';
+import { describe, expect, it } from 'vite-plus/test';
 
 import { configs, meta, rules } from '../../napi/src/eslint.js';
+
 import { makeTestCaseError, normalizeIndent, testRule } from './shared-utils.js';
 
 describe('eslint plugin metadata', () => {
@@ -29,15 +30,15 @@ describe('eslint plugin metadata', () => {
   });
 
   it('recommended config includes recommended rules', () => {
-    const ruleKeys = Object.keys(configs.recommended.rules ?? {});
+    const ruleKeys = Object.keys(configs.recommended?.rules ?? {});
     expect(ruleKeys.some(k => k.includes('purity'))).toBe(true);
     expect(ruleKeys.some(k => k.includes('refs'))).toBe(true);
     expect(ruleKeys.some(k => k.includes('no-unused-directives'))).toBe(true);
   });
 
   it('all config includes all rules', () => {
-    const allRuleKeys = Object.keys(configs.all.rules ?? {});
-    expect(allRuleKeys.length).toBeGreaterThan(Object.keys(configs.recommended.rules ?? {}).length);
+    const allRuleKeys = Object.keys(configs.all?.rules ?? {});
+    expect(allRuleKeys.length).toBeGreaterThan(Object.keys(configs.recommended?.rules ?? {}).length);
   });
 });
 
@@ -76,7 +77,7 @@ const TestRecommendedRules: Rule.RuleModule = {
     schema: [{ type: 'object', additionalProperties: true }],
   },
   create(context) {
-    const pluginRules = configs.recommended.plugins?.['oxc-react-compiler']?.rules ?? {};
+    const pluginRules = configs.recommended?.plugins?.['oxc-react-compiler']?.rules ?? {};
     for (const ruleModule of Object.values(pluginRules)) {
       ruleModule.create(context);
     }
@@ -253,7 +254,6 @@ describe('aggregated recommended rules', () => {
       ],
     });
   });
-
 });
 
 describe('options passthrough', () => {

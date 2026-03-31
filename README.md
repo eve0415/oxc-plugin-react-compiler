@@ -57,9 +57,7 @@ The lint plugin is exposed from the `oxc-plugin-react-compiler/eslint` subpath:
 ```ts
 import reactCompiler from 'oxc-plugin-react-compiler/eslint';
 
-export default [
-  reactCompiler.configs.recommended,
-];
+export default [reactCompiler.configs.recommended];
 ```
 
 The exported rules use the `oxc-react-compiler/*` namespace.

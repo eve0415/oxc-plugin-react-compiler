@@ -1,8 +1,4 @@
-import type {
-  ReactCompilerCompilationMode,
-  ReactCompilerPanicThreshold,
-  ReactCompilerSources,
-} from './compiler-options';
+import type { ReactCompilerCompilationMode, ReactCompilerPanicThreshold, ReactCompilerSources } from './compiler-options';
 
 /** Location within source text, using 1-based lines and 0-based columns. */
 export interface DiagnosticLocation {
@@ -77,13 +73,13 @@ export interface OxcReactCompilerEnvironment {
   enableTreatRefLikeIdentifiersAsRefs?: boolean;
   enableTreatSetIdentifiersAsStateSetters?: boolean;
   hookPattern?: string;
-  inferEffectDependencies?: Array<{
+  inferEffectDependencies?: {
     function: { source: string; importSpecifierName: string };
     autodepsIndex: number;
-  }>;
+  }[];
   inlineJsxTransform?: { elementSymbol: string; globalDevVar: string };
   lowerContextAccess?: { module: string; importedName: string };
-  customMacros?: Array<{ name: string; props: Array<string | '*'> }>;
+  customMacros?: { name: string; props: string[] }[];
   [key: string]: unknown;
 }
 

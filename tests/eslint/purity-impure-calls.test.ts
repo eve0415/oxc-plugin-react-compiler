@@ -1,4 +1,5 @@
 import { rules } from '../../napi/src/eslint.js';
+
 import { makeTestCaseError, normalizeIndent, testRule } from './shared-utils.js';
 
 // Impure function calls are categorized as Immutability in our compiler

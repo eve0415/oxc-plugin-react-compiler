@@ -1,4 +1,5 @@
 import { rules } from '../../napi/src/eslint.js';
+
 import { makeTestCaseError, normalizeIndent, testRuleTs } from './shared-utils.js';
 
 testRuleTs('typescript-set-state-in-render', rules['set-state-in-render'], {

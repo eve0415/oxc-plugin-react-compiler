@@ -43,8 +43,8 @@
     "vite": "npm:@voidzero-dev/vite-plus-core@0.1.14"
   },
   "peerDependencies": {
-    "vite": ">=8.0.0",
-    "eslint": ">=9.0.0"
+    "eslint": ">=9.0.0",
+    "vite": ">=8.0.0"
   },
   "peerDependenciesMeta": {
     "vite": {

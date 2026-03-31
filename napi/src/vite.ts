@@ -1,12 +1,7 @@
+import type { ReactCompilerCompilationMode, ReactCompilerPanicThreshold, ReactCompilerSources } from './compiler-options';
 import type { Plugin } from 'vite';
 
-import {
-  isFilePartOfSources,
-  type ReactCompilerCompilationMode,
-  type ReactCompilerPanicThreshold,
-  type ReactCompilerSources,
-  withDetectedReanimatedSupport,
-} from './compiler-options';
+import { isFilePartOfSources, withDetectedReanimatedSupport } from './compiler-options';
 
 /**
  * Options for the OXC React Compiler Vite plugin.
@@ -109,11 +104,7 @@ const jsExtRe = /\.[jt]sx?$/;
  */
 export const reactCompilerOxc = (options: ReactCompilerOxcOptions = {}): Plugin => {
   const codeFilter =
-    options.compilationMode === 'annotation'
-      ? /['"]use memo['"]/
-      : options.compilationMode === 'syntax'
-        ? /\bcomponent\b|\bhook\b/
-        : /\b[A-Z]|\buse/;
+    options.compilationMode === 'annotation' ? /['"]use memo['"]/ : options.compilationMode === 'syntax' ? /\bcomponent\b|\bhook\b/ : /\b[A-Z]|\buse/;
 
   return {
     name: 'oxc-plugin-react-compiler',

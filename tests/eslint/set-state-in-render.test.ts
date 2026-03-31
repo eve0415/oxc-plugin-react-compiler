@@ -1,4 +1,5 @@
 import { rules } from '../../napi/src/eslint.js';
+
 import { normalizeIndent, testRule } from './shared-utils.js';
 
 testRule('set-state-in-render', rules['set-state-in-render'], {

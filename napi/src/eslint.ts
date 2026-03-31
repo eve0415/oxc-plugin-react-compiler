@@ -14,9 +14,7 @@ const configs: Record<string, Linter.Config> = {
     plugins: {
       'oxc-react-compiler': { meta, rules },
     },
-    rules: Object.fromEntries(
-      Object.entries(recommendedRules).map(([name, config]) => [`oxc-react-compiler/${name}`, mapSeverityToESLint(config.severity)]),
-    ),
+    rules: Object.fromEntries(Object.entries(recommendedRules).map(([name, config]) => [`oxc-react-compiler/${name}`, mapSeverityToESLint(config.severity)])),
   },
   all: {
     plugins: {

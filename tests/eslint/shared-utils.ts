@@ -1,8 +1,8 @@
 import type { Rule, RuleTester as RuleTesterType } from 'eslint';
 
-import { describe, it } from 'vite-plus/test';
-import { RuleTester } from 'eslint';
 import tsParser from '@typescript-eslint/parser';
+import { RuleTester } from 'eslint';
+import { describe, it } from 'vite-plus/test';
 
 /**
  * Template tag that normalizes indentation to match the first non-empty line.
@@ -21,7 +21,7 @@ export const normalizeIndent = (strings: TemplateStringsArray, ...values: unknow
   let minIndent = Infinity;
   for (const line of lines) {
     if (line.trim().length === 0) continue;
-    const indent = line.match(/^(\s*)/)?.[1].length ?? 0;
+    const indent = line.match(/^(\s*)/)?.[1]?.length ?? 0;
     if (indent < minIndent) minIndent = indent;
   }
   if (minIndent === Infinity) minIndent = 0;
@@ -33,7 +33,7 @@ export const normalizeIndent = (strings: TemplateStringsArray, ...values: unknow
  * Port of upstream's makeTestCaseError from shared-utils.ts.
  */
 export const makeTestCaseError = (reason: string): RuleTesterType.TestCaseError => ({
-  message: new RegExp(reason.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+  message: new RegExp(reason.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)),
 });
 
 /**
@@ -41,12 +41,14 @@ export const makeTestCaseError = (reason: string): RuleTesterType.TestCaseError 
  */
 export const testRule = (
   name: string,
-  rule: Rule.RuleModule,
+  rule: Rule.RuleModule | undefined,
   tests: {
     valid: RuleTester.ValidTestCase[];
     invalid: RuleTester.InvalidTestCase[];
   },
 ): void => {
+  if (!rule) throw new Error(`Rule "${name}" not found`);
+
   const tester = new RuleTester({
     languageOptions: {
       ecmaVersion: 2024,
@@ -66,12 +68,14 @@ export const testRule = (
  */
 export const testRuleTs = (
   name: string,
-  rule: Rule.RuleModule,
+  rule: Rule.RuleModule | undefined,
   tests: {
     valid: RuleTester.ValidTestCase[];
     invalid: RuleTester.InvalidTestCase[];
   },
 ): void => {
+  if (!rule) throw new Error(`Rule "${name}" not found`);
+
   const tester = new RuleTester({
     languageOptions: {
       parser: tsParser,
@@ -95,7 +99,7 @@ const runTests = (
 ): void => {
   describe(name, () => {
     for (const testCase of tests.valid) {
-      const testName = typeof testCase === 'string' ? testCase.slice(0, 50) : (testCase.name ?? 'valid case');
+      const testName = testCase.name ?? 'valid case';
       it(`valid: ${testName}`, () => {
         tester.run(name, rule, { valid: [testCase], invalid: [] });
       });

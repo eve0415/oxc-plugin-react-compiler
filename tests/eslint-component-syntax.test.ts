@@ -13,7 +13,7 @@ describe('eslint component syntax parity', () => {
       }
     `;
 
-    const diagnostics = lint('test.jsx', source, undefined);
+    const diagnostics = lint('test.jsx', source);
     expect(diagnostics).toEqual([]);
   });
 });

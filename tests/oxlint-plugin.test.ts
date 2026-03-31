@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,15 +13,16 @@ const REPO_ROOT = resolve(TEST_DIR, '..');
 const PNPM_DIR = resolve(REPO_ROOT, 'node_modules/.pnpm');
 const SYMLINK_TYPE = process.platform === 'win32' ? 'junction' : 'dir';
 
-type CommandResult = {
+interface CommandResult {
   code: number | string;
   stdout: string;
   stderr: string;
-};
+}
 
 const findOxlintPackageDir = async (): Promise<string> => {
-  const entry = (await readdir(PNPM_DIR)).sort().find(name => name.startsWith('oxlint@'));
-  if (entry == null) {
+  const dirs = await readdir(PNPM_DIR);
+  const entry = dirs.toSorted().find(name => name.startsWith('oxlint@'));
+  if (entry === undefined) {
     throw new Error(`Could not find Oxlint package in ${PNPM_DIR}`);
   }
   return resolve(PNPM_DIR, entry, 'node_modules/oxlint');
@@ -30,11 +31,11 @@ const findOxlintPackageDir = async (): Promise<string> => {
 const runCommand = async (cwd: string, file: string, args: string[]): Promise<CommandResult> =>
   execFileAsync(file, args, { cwd }).then(
     ({ stdout, stderr }) => ({ code: 0, stdout, stderr }),
-    (error: Error & { code?: number | string; stdout?: string; stderr?: string }) => ({
-      code: error.code ?? 1,
-      stdout: error.stdout ?? '',
-      stderr: error.stderr ?? '',
-    }),
+    (error: unknown) => {
+      const err = error instanceof Error ? error : new Error(String(error));
+      const withFields = err as Error & { code?: number | string; stdout?: string; stderr?: string };
+      return { code: withFields.code ?? 1, stdout: withFields.stdout ?? '', stderr: withFields.stderr ?? '' };
+    },
   );
 
 const createOxlintWorkspace = async (): Promise<{ workspaceDir: string; cleanup: () => Promise<void> }> => {
@@ -65,7 +66,7 @@ describe('oxlint js plugin integration', () => {
           "import reactCompiler from 'oxc-plugin-react-compiler/eslint';",
           `writeFileSync(${JSON.stringify(outputPath)}, JSON.stringify({`,
           '  name: reactCompiler.meta.name,',
-          "  hasRecommended: reactCompiler.configs?.recommended != null,",
+          '  hasRecommended: reactCompiler.configs?.recommended != null,',
           '  ruleCount: Object.keys(reactCompiler.rules ?? {}).length,',
           '}));',
           '',
@@ -75,6 +76,7 @@ describe('oxlint js plugin integration', () => {
       const result = await runCommand(workspaceDir, 'node', [scriptPath]);
       expect(result.code).toBe(0);
 
+      // eslint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- test-only JSON parse
       const payload = JSON.parse(await readFile(outputPath, 'utf8')) as {
         name: string;
         hasRecommended: boolean;
@@ -110,16 +112,7 @@ describe('oxlint js plugin integration', () => {
           2,
         )}\n`,
       );
-      await writeFile(
-        sourcePath,
-        [
-          'function Component() {',
-          '  const x = Foo();',
-          '  return <div>{x}</div>;',
-          '}',
-          '',
-        ].join('\n'),
-      );
+      await writeFile(sourcePath, ['function Component() {', '  const x = Foo();', '  return <div>{x}</div>;', '}', ''].join('\n'));
 
       const result = await runCommand(workspaceDir, 'node', [oxlintBin, '-c', configPath, sourcePath]);
       expect(result.code).not.toBe(0);

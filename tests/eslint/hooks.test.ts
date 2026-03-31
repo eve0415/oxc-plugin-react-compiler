@@ -1,4 +1,5 @@
 import { rules } from '../../napi/src/eslint.js';
+
 import { makeTestCaseError, normalizeIndent, testRule } from './shared-utils.js';
 
 testRule('hooks', rules['hooks'], {
@@ -109,10 +110,7 @@ testRule('hooks', rules['hooks'], {
           return <div />;
         }
       `,
-      errors: [
-        makeTestCaseError('Hooks must always be called in a consistent order'),
-        makeTestCaseError('Hooks must always be called in a consistent order'),
-      ],
+      errors: [makeTestCaseError('Hooks must always be called in a consistent order'), makeTestCaseError('Hooks must always be called in a consistent order')],
     },
   ],
 });

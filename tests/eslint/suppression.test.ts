@@ -1,4 +1,5 @@
 import { rules } from '../../napi/src/eslint.js';
+
 import { normalizeIndent, testRule } from './shared-utils.js';
 
 // Use real ESLint rule names (built-in) to avoid ESLint 10's "rule not found"

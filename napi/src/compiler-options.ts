@@ -4,10 +4,10 @@ export type ReactCompilerCompilationMode = 'infer' | 'syntax' | 'annotation' | '
 export type ReactCompilerPanicThreshold = 'none' | 'all';
 export type ReactCompilerSources = string[] | ((filename: string) => boolean);
 
-type HasEnvironment = {
+interface HasEnvironment {
   environment?: Record<string, unknown>;
   enableReanimatedCheck?: boolean;
-};
+}
 
 const require = createRequire(import.meta.url);
 
@@ -16,23 +16,15 @@ const hasModule = (name: string): boolean => {
     require.resolve(name);
     return true;
   } catch (error) {
-    if (
-      error instanceof Error &&
-      'code' in error &&
-      error.code === 'MODULE_NOT_FOUND' &&
-      error.message.includes(name)
-    ) {
+    if (error instanceof Error && 'code' in error && error.code === 'MODULE_NOT_FOUND' && error.message.includes(name)) {
       return false;
     }
     throw error;
   }
 };
 
-export const isFilePartOfSources = (
-  filename: string,
-  sources: ReactCompilerSources | undefined,
-): boolean => {
-  if (sources == null) {
+export const isFilePartOfSources = (filename: string, sources?: ReactCompilerSources): boolean => {
+  if (sources === undefined) {
     return !filename.includes('node_modules');
   }
   if (typeof sources === 'function') {
@@ -41,10 +33,7 @@ export const isFilePartOfSources = (
   return sources.some(prefix => filename.includes(prefix));
 };
 
-export const withDetectedReanimatedSupport = <T extends HasEnvironment>(
-  options: T,
-  moduleExists: (name: string) => boolean = hasModule,
-): T => {
+export const withDetectedReanimatedSupport = <T extends HasEnvironment>(options: T, moduleExists: (name: string) => boolean = hasModule): T => {
   if (options.enableReanimatedCheck === false || !moduleExists('react-native-reanimated')) {
     return options;
   }
