@@ -8140,7 +8140,9 @@ fn find_flow_suppressions(source: &str) -> Vec<FlowSuppression> {
             if let Some(pos) = trimmed.find(prefix) {
                 let rest = &trimmed[pos + prefix.len()..];
                 // Extract [code] bracket
-                if rest.starts_with('[') && let Some(end) = rest.find(']') {
+                if rest.starts_with('[')
+                    && let Some(end) = rest.find(']')
+                {
                     let code = &rest[1..end];
                     result.push(FlowSuppression {
                         line: (line_idx + 1) as u32, // 1-based
