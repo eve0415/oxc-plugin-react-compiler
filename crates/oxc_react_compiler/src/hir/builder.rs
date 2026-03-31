@@ -421,6 +421,9 @@ impl HIRBuilder {
         self.errors.push(crate::error::CompilerDiagnostic {
             severity: crate::error::DiagnosticSeverity::Todo,
             message,
+            category: crate::error::ErrorCategory::Syntax,
+            span: None,
+            ..Default::default()
         });
     }
 
@@ -429,6 +432,9 @@ impl HIRBuilder {
         self.errors.push(crate::error::CompilerDiagnostic {
             severity: crate::error::DiagnosticSeverity::Invariant,
             message,
+            category: crate::error::ErrorCategory::Syntax,
+            span: None,
+            ..Default::default()
         });
     }
 

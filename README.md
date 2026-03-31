@@ -25,10 +25,12 @@ We have achieved **100% conformance parity** with the upstream React Compiler. T
 npm install oxc-plugin-react-compiler
 ```
 
-> [!NOTE]
-> This plugin requires **Vite 8.0 or later**.
-
 ## Usage
+
+### Vite
+
+> [!NOTE]
+> The Vite integration requires **Vite 8.0 or later**.
 
 ```ts
 import { defineConfig } from 'vite';
@@ -47,6 +49,37 @@ export default defineConfig({
   ],
 });
 ```
+
+### ESLint
+
+The lint plugin is exposed from the `oxc-plugin-react-compiler/eslint` subpath:
+
+```ts
+import reactCompiler from 'oxc-plugin-react-compiler/eslint';
+
+export default [reactCompiler.configs.recommended];
+```
+
+The exported rules use the `oxc-react-compiler/*` namespace.
+
+### Oxlint
+
+Oxlint JS plugin support is also exposed from the same `oxc-plugin-react-compiler/eslint` subpath:
+
+```json
+{
+  "jsPlugins": ["oxc-plugin-react-compiler/eslint"],
+  "rules": {
+    "oxc-react-compiler/purity": "error",
+    "oxc-react-compiler/refs": "error",
+    "oxc-react-compiler/no-unused-directives": "error"
+  }
+}
+```
+
+Use `oxc-plugin-react-compiler/eslint` as the Oxlint JS plugin specifier. The bare
+`oxc-plugin-react-compiler` package root is the Vite plugin entrypoint, not the
+Oxlint plugin entrypoint.
 
 ## Experimental Nature
 

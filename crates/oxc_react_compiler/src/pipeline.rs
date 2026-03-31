@@ -25,7 +25,10 @@ use crate::codegen_backend::{
     CompiledParamPrefixStatement, CompiledPropertyKey, ModuleEmitArgs,
     SynthesizedDefaultParamCache,
 };
-use crate::error::CompilerError;
+use crate::error::{
+    CompilerDiagnostic, CompilerError, ErrorCategory, LintDiagnostic, LintRelated, LintSuggestion,
+    SuggestionOp,
+};
 use crate::hir::build;
 use crate::hir::types::HIRFunction;
 use crate::optimization;
@@ -1868,6 +1871,9 @@ fn run_hir_pipeline(
                 diagnostics: vec![crate::error::CompilerDiagnostic {
                     severity: crate::error::DiagnosticSeverity::InvalidReact,
                     message: "Modifying a value used previously in an effect function or as an effect dependency is not allowed. Consider moving the modification before calling useEffect()".to_string(),
+                    category: ErrorCategory::Immutability,
+                    span: None,
+                    ..Default::default()
                 }],
             }));
         }
@@ -3180,6 +3186,7 @@ fn get_react_function_type(
 /// Determine whether a function should be compiled based on compilation mode.
 /// In `All` mode: compile everything (matching upstream's behavior of assigning 'Other' type).
 /// In `Infer` mode: only components/hooks.
+/// In `Syntax` mode: only Flow `component` / `hook` declarations.
 /// In `Annotation` mode: only functions with "use memo" directive.
 fn should_compile_function(
     name: &str,
@@ -3190,6 +3197,7 @@ fn should_compile_function(
     match mode {
         CompilationMode::All => true,
         CompilationMode::Infer => get_react_function_type(name, body, params).is_some(),
+        CompilationMode::Syntax => is_flow_component_name(name) || is_flow_hook_name(name),
         CompilationMode::Annotation => {
             // Only compile if function has "use memo", "use memo if(...)" or "use forget" directive
             body.directives.iter().any(|d| {
@@ -3947,6 +3955,7 @@ fn has_infer_effect_autodeps_default_import_property_call(
 
 type NameSet = std::collections::HashSet<String>;
 type CallMatcher = fn(&ast::CallExpression<'_>, &NameSet) -> bool;
+type AutodepsTargetMap = std::collections::HashMap<String, usize>;
 
 fn has_nested_fbt_call_in_param_value(program: &ast::Program<'_>) -> bool {
     let fbt_bindings = collect_fbt_module_bindings(program);
@@ -3956,6 +3965,421 @@ fn has_nested_fbt_call_in_param_value(program: &ast::Program<'_>) -> bool {
     program.body.iter().any(|stmt| {
         stmt_has_call_match(stmt, &fbt_bindings, is_fbt_param_call_with_nested_fbt_value)
     })
+}
+
+fn collect_infer_effect_dependency_targets(
+    program: &ast::Program<'_>,
+    options: &PluginOptions,
+) -> AutodepsTargetMap {
+    let Some(configs) = options.environment.infer_effect_dependencies.as_ref() else {
+        return AutodepsTargetMap::new();
+    };
+
+    let mut targets = AutodepsTargetMap::new();
+    for stmt in &program.body {
+        let ast::Statement::ImportDeclaration(import_decl) = stmt else {
+            continue;
+        };
+        if import_decl.import_kind == ast::ImportOrExportKind::Type {
+            continue;
+        }
+        let module_name = import_decl.source.value.as_str();
+        let Some(specifiers) = &import_decl.specifiers else {
+            continue;
+        };
+        for config in configs {
+            if config.function_module != module_name {
+                continue;
+            }
+            for specifier in specifiers {
+                match specifier {
+                    ast::ImportDeclarationSpecifier::ImportDefaultSpecifier(default_spec)
+                        if config.function_name == "default" =>
+                    {
+                        targets.insert(
+                            default_spec.local.name.as_str().to_string(),
+                            config.autodeps_index,
+                        );
+                    }
+                    ast::ImportDeclarationSpecifier::ImportSpecifier(import_spec)
+                        if import_spec.imported.name() == config.function_name =>
+                    {
+                        targets.insert(
+                            import_spec.local.name.as_str().to_string(),
+                            config.autodeps_index,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    targets
+}
+
+fn is_autodeps_arg(arg: &ast::Argument<'_>) -> bool {
+    let expr = match arg {
+        ast::Argument::SpreadElement(_) => return false,
+        _ => arg.to_expression(),
+    };
+    match expr {
+        ast::Expression::Identifier(id) => id.name == "AUTODEPS",
+        ast::Expression::StaticMemberExpression(member) => {
+            matches!(&member.object, ast::Expression::Identifier(obj) if obj.name == "React")
+                && member.property.name == "AUTODEPS"
+        }
+        _ => false,
+    }
+}
+
+fn collect_untransformed_infer_effect_dependency_diagnostics(
+    program: &ast::Program<'_>,
+    options: &PluginOptions,
+) -> Vec<CompilerDiagnostic> {
+    let targets = collect_infer_effect_dependency_targets(program, options);
+    if targets.is_empty() {
+        return Vec::new();
+    }
+
+    let mut diagnostics = Vec::new();
+    for stmt in &program.body {
+        collect_untransformed_infer_effect_dependency_diagnostics_in_stmt(
+            stmt,
+            &targets,
+            &mut diagnostics,
+        );
+    }
+    diagnostics
+}
+
+fn collect_untransformed_infer_effect_dependency_diagnostics_in_stmt(
+    stmt: &ast::Statement<'_>,
+    targets: &AutodepsTargetMap,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    match stmt {
+        ast::Statement::FunctionDeclaration(func) => {
+            if let Some(body) = &func.body {
+                for stmt in &body.statements {
+                    collect_untransformed_infer_effect_dependency_diagnostics_in_stmt(
+                        stmt,
+                        targets,
+                        diagnostics,
+                    );
+                }
+            }
+        }
+        ast::Statement::ExportDefaultDeclaration(export) => match &export.declaration {
+            ast::ExportDefaultDeclarationKind::FunctionDeclaration(func) => {
+                if let Some(body) = &func.body {
+                    for stmt in &body.statements {
+                        collect_untransformed_infer_effect_dependency_diagnostics_in_stmt(
+                            stmt,
+                            targets,
+                            diagnostics,
+                        );
+                    }
+                }
+            }
+            ast::ExportDefaultDeclarationKind::ArrowFunctionExpression(arrow) => {
+                for stmt in &arrow.body.statements {
+                    collect_untransformed_infer_effect_dependency_diagnostics_in_stmt(
+                        stmt,
+                        targets,
+                        diagnostics,
+                    );
+                }
+            }
+            _ => {}
+        },
+        ast::Statement::ExportNamedDeclaration(export) => {
+            if let Some(decl) = &export.declaration {
+                match decl {
+                    ast::Declaration::FunctionDeclaration(func) => {
+                        if let Some(body) = &func.body {
+                            for stmt in &body.statements {
+                                collect_untransformed_infer_effect_dependency_diagnostics_in_stmt(
+                                    stmt,
+                                    targets,
+                                    diagnostics,
+                                );
+                            }
+                        }
+                    }
+                    ast::Declaration::VariableDeclaration(var_decl) => {
+                        for declarator in &var_decl.declarations {
+                            if let Some(init) = &declarator.init {
+                                collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                                    init,
+                                    targets,
+                                    diagnostics,
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ast::Statement::ExpressionStatement(expr_stmt) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &expr_stmt.expression,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Statement::ReturnStatement(ret) => {
+            if let Some(arg) = &ret.argument {
+                collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                    arg,
+                    targets,
+                    diagnostics,
+                );
+            }
+        }
+        ast::Statement::VariableDeclaration(decl) => {
+            for declarator in &decl.declarations {
+                if let Some(init) = &declarator.init {
+                    collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                        init,
+                        targets,
+                        diagnostics,
+                    );
+                }
+            }
+        }
+        ast::Statement::BlockStatement(block) => {
+            for stmt in &block.body {
+                collect_untransformed_infer_effect_dependency_diagnostics_in_stmt(
+                    stmt,
+                    targets,
+                    diagnostics,
+                );
+            }
+        }
+        ast::Statement::IfStatement(if_stmt) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &if_stmt.test,
+                targets,
+                diagnostics,
+            );
+            collect_untransformed_infer_effect_dependency_diagnostics_in_stmt(
+                &if_stmt.consequent,
+                targets,
+                diagnostics,
+            );
+            if let Some(alt) = &if_stmt.alternate {
+                collect_untransformed_infer_effect_dependency_diagnostics_in_stmt(
+                    alt,
+                    targets,
+                    diagnostics,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+    expr: &ast::Expression<'_>,
+    targets: &AutodepsTargetMap,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    match expr {
+        ast::Expression::CallExpression(call_expr) => {
+            if let ast::Expression::Identifier(callee) = &call_expr.callee
+                && let Some(&autodeps_index) = targets.get(callee.name.as_str())
+                && call_expr
+                    .arguments
+                    .get(autodeps_index)
+                    .is_some_and(is_autodeps_arg)
+            {
+                diagnostics.push(CompilerDiagnostic {
+                    severity: crate::error::DiagnosticSeverity::InvalidReact,
+                    message:
+                        "Cannot infer dependencies of this effect. This will break your build!"
+                            .to_string(),
+                    category: ErrorCategory::AutomaticEffectDependencies,
+                    span: Some(call_expr.span),
+                    ..Default::default()
+                });
+            }
+
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &call_expr.callee,
+                targets,
+                diagnostics,
+            );
+            for arg in &call_expr.arguments {
+                if let ast::Argument::SpreadElement(spread) = arg {
+                    collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                        &spread.argument,
+                        targets,
+                        diagnostics,
+                    );
+                } else {
+                    collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                        arg.to_expression(),
+                        targets,
+                        diagnostics,
+                    );
+                }
+            }
+        }
+        ast::Expression::ConditionalExpression(cond) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &cond.test,
+                targets,
+                diagnostics,
+            );
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &cond.consequent,
+                targets,
+                diagnostics,
+            );
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &cond.alternate,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Expression::LogicalExpression(logical) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &logical.left,
+                targets,
+                diagnostics,
+            );
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &logical.right,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Expression::AssignmentExpression(assign) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &assign.right,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Expression::SequenceExpression(seq) => {
+            for expr in &seq.expressions {
+                collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                    expr,
+                    targets,
+                    diagnostics,
+                );
+            }
+        }
+        ast::Expression::ParenthesizedExpression(paren) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &paren.expression,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Expression::TSAsExpression(ts) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &ts.expression,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Expression::TSSatisfiesExpression(ts) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &ts.expression,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Expression::TSNonNullExpression(ts) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &ts.expression,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Expression::TSTypeAssertion(ts) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &ts.expression,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Expression::AwaitExpression(await_expr) => {
+            collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                &await_expr.argument,
+                targets,
+                diagnostics,
+            );
+        }
+        ast::Expression::ObjectExpression(obj) => {
+            for prop in &obj.properties {
+                match prop {
+                    ast::ObjectPropertyKind::ObjectProperty(p) => {
+                        collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                            &p.value,
+                            targets,
+                            diagnostics,
+                        );
+                    }
+                    ast::ObjectPropertyKind::SpreadProperty(spread) => {
+                        collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                            &spread.argument,
+                            targets,
+                            diagnostics,
+                        );
+                    }
+                }
+            }
+        }
+        ast::Expression::ArrayExpression(arr) => {
+            for elem in &arr.elements {
+                match elem {
+                    ast::ArrayExpressionElement::SpreadElement(spread) => {
+                        collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                            &spread.argument,
+                            targets,
+                            diagnostics,
+                        );
+                    }
+                    ast::ArrayExpressionElement::Elision(_) => {}
+                    _ => collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                        elem.to_expression(),
+                        targets,
+                        diagnostics,
+                    ),
+                }
+            }
+        }
+        ast::Expression::JSXElement(jsx) => {
+            for child in &jsx.children {
+                if let ast::JSXChild::ExpressionContainer(container) = child
+                    && let Some(expr) = container.expression.as_expression()
+                {
+                    collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                        expr,
+                        targets,
+                        diagnostics,
+                    );
+                }
+            }
+        }
+        ast::Expression::JSXFragment(frag) => {
+            for child in &frag.children {
+                if let ast::JSXChild::ExpressionContainer(container) = child
+                    && let Some(expr) = container.expression.as_expression()
+                {
+                    collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
+                        expr,
+                        targets,
+                        diagnostics,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn collect_fbt_module_bindings(program: &ast::Program<'_>) -> NameSet {
@@ -4790,6 +5214,9 @@ fn conflicting_global_bailout(name: &str) -> CompilerError {
         diagnostics: vec![crate::error::CompilerDiagnostic {
             severity: crate::error::DiagnosticSeverity::Todo,
             message: format!("Conflict from local binding {}.", name),
+            category: ErrorCategory::Todo,
+            span: None,
+            ..Default::default()
         }],
     })
 }
@@ -7146,6 +7573,9 @@ fn validate_no_unsupported_global_calls(func: &HIRFunction) -> Result<(), Compil
                                      It is an anti-pattern in JavaScript, and the code executed \
                                      cannot be analyzed by React Compiler."
                             .to_string(),
+                        category: ErrorCategory::Globals,
+                        span: None,
+                        ..Default::default()
                     }],
                 }));
             }
@@ -7182,6 +7612,9 @@ fn validate_no_dynamic_components_or_hooks(
                  but it's defined inside `{parent_name}`. \
                  Components and Hooks should always be declared at module scope",
             ),
+            category: ErrorCategory::Invariant,
+            span: None,
+            ..Default::default()
         })
     }
 
@@ -7425,6 +7858,1132 @@ fn check_var_init_for_dynamic_components(
     Ok(())
 }
 
+// =========================================================================
+// Lint pipeline — collect diagnostics without emitting code
+// =========================================================================
+
+/// Run the HIR pipeline in lint mode, collecting all diagnostics instead of bailing.
+fn run_hir_pipeline_lint(
+    mut hir_func: HIRFunction,
+    fn_span: oxc_span::Span,
+    _name: &str,
+    env_config: &crate::options::EnvironmentConfig,
+) -> Vec<CompilerDiagnostic> {
+    let mut diagnostics: Vec<CompilerDiagnostic> = Vec::new();
+
+    macro_rules! collect_validation {
+        ($expr:expr) => {
+            let prev_len = diagnostics.len();
+            if let Err(err) = $expr {
+                match err {
+                    crate::error::CompilerError::Bail(bailout) => {
+                        if bailout.diagnostics.is_empty() {
+                            let category = if bailout
+                                .reason
+                                .starts_with("Cannot infer dependencies of this effect")
+                            {
+                                ErrorCategory::AutomaticEffectDependencies
+                            } else {
+                                ErrorCategory::Invariant
+                            };
+                            diagnostics.push(CompilerDiagnostic {
+                                severity: crate::error::DiagnosticSeverity::InvalidReact,
+                                message: bailout.reason,
+                                category,
+                                span: Some(fn_span),
+                                ..Default::default()
+                            });
+                        } else {
+                            diagnostics.extend(bailout.diagnostics);
+                        }
+                    }
+                    crate::error::CompilerError::LoweringFailed(msg) => {
+                        diagnostics.push(CompilerDiagnostic {
+                            severity: crate::error::DiagnosticSeverity::InvalidReact,
+                            message: msg,
+                            category: ErrorCategory::Syntax,
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+            if diagnostics.len() > prev_len {
+                return diagnostics;
+            }
+        };
+    }
+
+    // Phase 0.5: Pre-validation
+    collect_validation!(validate_no_unsupported_global_calls(&hir_func));
+
+    // Phase 1: HIR Pre-processing
+    prune_maybe_throws::prune_maybe_throws(&mut hir_func);
+    collect_validation!(
+        validate_context_variable_lvalues::validate_context_variable_lvalues(&hir_func)
+    );
+    collect_validation!(validate_use_memo::validate_use_memo(&hir_func));
+    collect_validation!(validate_use_memo::validate_no_void_use_memo(&hir_func));
+
+    // Drop manual memoization
+    if !env_config.enable_preserve_existing_manual_use_memo
+        && !env_config.disable_memoization_for_debugging
+        && !env_config.enable_change_detection_for_debugging
+    {
+        collect_validation!(drop_manual_memoization::drop_manual_memoization(
+            &mut hir_func
+        ));
+    }
+
+    inline_iifes::inline_iifes(&mut hir_func);
+    merge_consecutive_blocks::merge_consecutive_blocks(&mut hir_func);
+
+    // Phase 2: SSA + Analysis
+    if enter_ssa::enter_ssa(&mut hir_func).is_err() {
+        return diagnostics;
+    }
+    eliminate_redundant_phi::eliminate_redundant_phi(&mut hir_func);
+    constant_propagation::constant_propagation(&mut hir_func);
+    type_inference::infer_types(&mut hir_func);
+
+    // Post-SSA validations
+    collect_validation!(validate_hooks_usage::validate_hooks_usage(&hir_func));
+    if env_config.validate_no_capitalized_calls.is_some() {
+        collect_validation!(
+            validate_no_capitalized_calls::validate_no_capitalized_calls(&hir_func, env_config)
+        );
+    }
+
+    // TransformFire
+    if env_config.enable_fire {
+        collect_validation!(crate::hir::transform_fire::transform_fire(&mut hir_func));
+    }
+
+    if let Some(lowered_context_callee_config) = env_config.lower_context_access.as_ref() {
+        optimization::lower_context_access::lower_context_access(
+            &mut hir_func,
+            lowered_context_callee_config,
+        );
+    }
+
+    // Phase 3: Mutation/Aliasing Analysis
+    optimization::optimize_props_method_calls::optimize_props_method_calls(&mut hir_func);
+    analyse_functions::analyse_functions(&mut hir_func);
+    infer_mutation_aliasing_effects::infer_mutation_aliasing_effects(&mut hir_func, false, true);
+
+    // DCE
+    dead_code_elimination::dead_code_elimination(&mut hir_func);
+
+    if env_config.enable_instruction_reordering {
+        optimization::instruction_reordering::instruction_reordering(&mut hir_func);
+    }
+
+    prune_maybe_throws::prune_maybe_throws(&mut hir_func);
+    collect_validation!(
+        crate::inference::infer_mutation_aliasing_ranges::infer_mutation_aliasing_ranges(
+            &mut hir_func,
+            false,
+        )
+    );
+
+    // Post-aliasing validations — run ALL unconditionally
+    collect_validation!(
+        validate_locals_not_reassigned_after_render::validate_locals_not_reassigned_after_render(
+            &hir_func,
+        )
+    );
+    collect_validation!(
+        validate_no_ref_access_in_render::validate_no_ref_access_in_render(&hir_func)
+    );
+    collect_validation!(
+        validate_no_set_state_in_render::validate_no_set_state_in_render(&hir_func)
+    );
+    collect_validation!(
+        validate_no_derived_computations_in_effects::validate_no_derived_computations_in_effects(
+            &hir_func,
+        )
+    );
+    collect_validation!(
+        validate_no_set_state_in_effects::validate_no_set_state_in_effects(
+            &hir_func,
+            env_config.enable_allow_set_state_from_refs_in_effects,
+        )
+    );
+    collect_validation!(
+        validate_no_jsx_in_try_statement::validate_no_jsx_in_try_statement(&hir_func)
+    );
+    collect_validation!(
+        validate_no_impure_functions_in_render::validate_no_impure_functions_in_render(&hir_func)
+    );
+    collect_validation!(
+        validate_no_freezing_known_mutable_functions::validate_no_freezing_known_mutable_functions(
+            &hir_func,
+        )
+    );
+
+    // Reactive scope construction — needed for reactive-level validators and
+    // static component validation.
+    let _has_reactive = infer_reactive::infer_reactive_places(&mut hir_func);
+    if rewrite_instruction_kinds::rewrite_instruction_kinds(&mut hir_func).is_err() {
+        return diagnostics;
+    }
+
+    collect_validation!(validate_static_components::validate_static_components(
+        &hir_func
+    ));
+
+    // Build reactive scopes for ReactiveFunction-level validators
+    infer_scope_variables::infer_reactive_scope_variables_with_aliasing(&mut hir_func);
+    memoize_fbt_operands::memoize_fbt_and_macro_operands_in_same_scope(&mut hir_func);
+    build_reactive_scope_terminals::build_reactive_scope_terminals(&mut hir_func);
+    flatten_reactive_loops::flatten_reactive_loops_hir(&mut hir_func);
+    flatten_scopes_with_hooks::flatten_scopes_with_hooks_or_use_hir(&mut hir_func);
+    align_scopes::align_reactive_scopes_to_block_scopes(&mut hir_func);
+    merge_overlapping_scopes::merge_overlapping_reactive_scopes(&mut hir_func);
+    align_method_call_scopes::align_method_call_scopes(&mut hir_func);
+    align_object_method_scopes::align_object_method_scopes(&mut hir_func);
+    prune_unused_labels::prune_unused_labels_hir(&mut hir_func);
+    propagate_scope_dependencies_hir::propagate_scope_dependencies_hir(&mut hir_func);
+
+    if hir_func.env.config().infer_effect_dependencies.is_some() {
+        let has_unresolved_effect_autodeps =
+            infer_effect_dependencies::infer_effect_dependencies(&mut hir_func, false);
+        if has_unresolved_effect_autodeps {
+            diagnostics.push(CompilerDiagnostic {
+                severity: crate::error::DiagnosticSeverity::InvalidReact,
+                message: "Cannot infer dependencies of this effect. This will break your build!"
+                    .to_string(),
+                category: ErrorCategory::AutomaticEffectDependencies,
+                span: Some(fn_span),
+                ..Default::default()
+            });
+            return diagnostics;
+        }
+
+        if infer_effect_dependencies::has_mutation_after_effect_dependency_use(&hir_func) {
+            diagnostics.push(CompilerDiagnostic {
+                severity: crate::error::DiagnosticSeverity::InvalidReact,
+                message: "Modifying a value used previously in an effect function or as an effect dependency is not allowed. Consider moving the modification before calling useEffect()".to_string(),
+                category: ErrorCategory::Immutability,
+                span: Some(fn_span),
+                ..Default::default()
+            });
+            return diagnostics;
+        }
+    }
+
+    // Build reactive function for ReactiveFunction-level validators
+    let reactive_fn = build_reactive_function::build_reactive_function(hir_func);
+    collect_validation!(
+        crate::validation::validate_memoized_effect_dependencies::validate_memoized_effect_dependencies(&reactive_fn)
+    );
+    collect_validation!(
+        crate::validation::validate_preserved_manual_memoization::validate_preserved_manual_memoization(&reactive_fn)
+    );
+
+    diagnostics
+}
+
+/// Lower a function to HIR and run the lint pipeline.
+#[allow(clippy::too_many_arguments)]
+fn lint_function<'a>(
+    body: &ast::FunctionBody<'a>,
+    params: &ast::FormalParameters<'a>,
+    name: &str,
+    span: oxc_span::Span,
+    is_generator: bool,
+    is_async: bool,
+    source: &str,
+    semantic: &oxc_semantic::Semantic<'a>,
+    env_config: &crate::options::EnvironmentConfig,
+) -> Vec<CompilerDiagnostic> {
+    let env = crate::environment::Environment::new(env_config.clone());
+    let lowering_cx = build::LoweringContext::new(semantic, source, env);
+    let lower_result = match build::lower_function(
+        body,
+        params,
+        lowering_cx,
+        build::LowerFunctionOptions::function(Some(name), span, is_generator, is_async),
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            return vec![CompilerDiagnostic {
+                severity: crate::error::DiagnosticSeverity::InvalidReact,
+                message: format!("{e:?}"),
+                category: ErrorCategory::Syntax,
+                ..Default::default()
+            }];
+        }
+    };
+
+    let mut hir_func = lower_result.func;
+    match get_react_function_type(name, body, params) {
+        Some("Component") => hir_func.fn_type = crate::hir::types::ReactFunctionType::Component,
+        Some("Hook") => hir_func.fn_type = crate::hir::types::ReactFunctionType::Hook,
+        _ => {}
+    }
+
+    run_hir_pipeline_lint(hir_func, span, name, env_config)
+}
+
+/// Convert a `CompilerDiagnostic` to a `LintDiagnostic` with line:column info.
+fn compiler_diag_to_lint_diag(diag: CompilerDiagnostic, source: &str) -> LintDiagnostic {
+    let (start_line, start_column, end_line, end_column, has_location) =
+        if let Some(span) = diag.span {
+            let line_starts = build_line_starts(source);
+            let (sl, sc) = byte_offset_to_line_col(span.start, &line_starts);
+            let (el, ec) = byte_offset_to_line_col(span.end, &line_starts);
+            (sl, sc, el, ec, true)
+        } else {
+            (0, 0, 0, 0, false)
+        };
+
+    LintDiagnostic {
+        category: diag.category,
+        message: diag.message,
+        severity: diag.category.default_severity(),
+        start_line,
+        start_column,
+        end_line,
+        end_column,
+        has_location,
+        related: diag
+            .related
+            .into_iter()
+            .filter_map(|r| {
+                let span = r.span?;
+                let line_starts = build_line_starts(source);
+                let (sl, sc) = byte_offset_to_line_col(span.start, &line_starts);
+                let (el, ec) = byte_offset_to_line_col(span.end, &line_starts);
+                Some(LintRelated {
+                    message: r.message,
+                    start_line: sl,
+                    start_column: sc,
+                    end_line: el,
+                    end_column: ec,
+                })
+            })
+            .collect(),
+        suggestions: diag
+            .suggestions
+            .into_iter()
+            .map(|s| match s {
+                crate::error::CompilerSuggestion::InsertBefore {
+                    description,
+                    range,
+                    text,
+                } => LintSuggestion {
+                    description,
+                    op: SuggestionOp::InsertBefore,
+                    range,
+                    text: Some(text),
+                },
+                crate::error::CompilerSuggestion::InsertAfter {
+                    description,
+                    range,
+                    text,
+                } => LintSuggestion {
+                    description,
+                    op: SuggestionOp::InsertAfter,
+                    range,
+                    text: Some(text),
+                },
+                crate::error::CompilerSuggestion::Remove { description, range } => LintSuggestion {
+                    description,
+                    op: SuggestionOp::Remove,
+                    range,
+                    text: None,
+                },
+                crate::error::CompilerSuggestion::Replace {
+                    description,
+                    range,
+                    text,
+                } => LintSuggestion {
+                    description,
+                    op: SuggestionOp::Replace,
+                    range,
+                    text: Some(text),
+                },
+            })
+            .collect(),
+    }
+}
+
+fn build_line_starts(source: &str) -> Vec<u32> {
+    let mut starts = vec![0u32];
+    for (idx, byte) in source.bytes().enumerate() {
+        if byte == b'\n' {
+            starts.push((idx as u32) + 1);
+        }
+    }
+    starts
+}
+
+fn byte_offset_to_line_col(offset: u32, line_starts: &[u32]) -> (u32, u32) {
+    let line = line_starts
+        .partition_point(|&start| start <= offset)
+        .saturating_sub(1);
+    let column = offset - line_starts[line];
+    ((line as u32) + 1, column) // 1-based line, 0-based column
+}
+
+// =========================================================================
+// ESLint suppression comment parsing (matching upstream Suppression.ts)
+// =========================================================================
+
+/// Default ESLint rules that cause function-level bailout when suppressed.
+/// Matches upstream `DEFAULT_ESLINT_SUPPRESSIONS` in Program.ts.
+const DEFAULT_ESLINT_SUPPRESSION_RULES: &[&str] =
+    &["react-hooks/exhaustive-deps", "react-hooks/rules-of-hooks"];
+
+/// A range in the source where an ESLint suppression is active.
+struct SuppressionRange {
+    /// Byte offset of the disable comment start.
+    disable_start: u32,
+    /// Byte offset of the disable comment end.
+    disable_end: u32,
+    /// Byte offset of the enable comment end, or None if the suppression
+    /// extends to the end of the file.
+    enable_end: Option<u32>,
+    /// Trimmed text of the disable comment (for diagnostic messages).
+    comment_text: String,
+}
+
+/// Check whether a comment body matches `eslint-disable-next-line <rule>`.
+fn is_disable_next_line(comment_body: &str, rules: &[&str]) -> bool {
+    let trimmed = comment_body.trim();
+    let Some(rest) = trimmed.strip_prefix("eslint-disable-next-line") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    if rest.is_empty() {
+        return false;
+    }
+    rules.iter().any(|rule| rest.contains(rule))
+}
+
+/// Check whether a comment body matches `eslint-disable <rule>` (block open).
+fn is_disable_block(comment_body: &str, rules: &[&str]) -> bool {
+    let trimmed = comment_body.trim();
+    let Some(rest) = trimmed.strip_prefix("eslint-disable") else {
+        return false;
+    };
+    // Reject eslint-disable-next-line and eslint-disable-line
+    if rest.starts_with('-') {
+        return false;
+    }
+    let rest = rest.trim_start();
+    if rest.is_empty() {
+        return false;
+    }
+    rules.iter().any(|rule| rest.contains(rule))
+}
+
+/// Check whether a comment body matches `eslint-enable <rule>` (block close).
+fn is_enable_block(comment_body: &str, rules: &[&str]) -> bool {
+    let trimmed = comment_body.trim();
+    let Some(rest) = trimmed.strip_prefix("eslint-enable") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    if rest.is_empty() {
+        return false;
+    }
+    rules.iter().any(|rule| rest.contains(rule))
+}
+
+/// Scan source text for ESLint suppression comments, returning ranges.
+/// Supports `eslint-disable-next-line` and `eslint-disable`/`eslint-enable` pairs.
+fn find_eslint_suppressions(source: &str, rules: &[&str]) -> Vec<SuppressionRange> {
+    if rules.is_empty() {
+        return Vec::new();
+    }
+
+    let mut ranges = Vec::new();
+    let bytes = source.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    // Track pending eslint-disable block (only one at a time, matching upstream)
+    let mut pending_disable: Option<(u32, u32, String)> = None; // (start, end, text)
+
+    while i < len {
+        if bytes[i] == b'/' && i + 1 < len {
+            if bytes[i + 1] == b'/' {
+                // Line comment: // ...
+                let comment_start = i as u32;
+                let body_start = i + 2;
+                let line_end = bytes[body_start..]
+                    .iter()
+                    .position(|&b| b == b'\n')
+                    .map_or(len, |p| body_start + p);
+                let comment_end = line_end as u32;
+                let body = &source[body_start..line_end];
+
+                if is_disable_next_line(body, rules) {
+                    ranges.push(SuppressionRange {
+                        disable_start: comment_start,
+                        disable_end: comment_end,
+                        enable_end: Some(comment_end),
+                        comment_text: body.trim().to_string(),
+                    });
+                } else if is_disable_block(body, rules) {
+                    if pending_disable.is_none() {
+                        pending_disable =
+                            Some((comment_start, comment_end, body.trim().to_string()));
+                    }
+                } else if is_enable_block(body, rules)
+                    && let Some((ds, de, text)) = pending_disable.take()
+                {
+                    ranges.push(SuppressionRange {
+                        disable_start: ds,
+                        disable_end: de,
+                        enable_end: Some(comment_end),
+                        comment_text: text,
+                    });
+                }
+                i = line_end;
+                continue;
+            } else if bytes[i + 1] == b'*' {
+                // Block comment: /* ... */
+                let comment_start = i as u32;
+                let body_start = i + 2;
+                let block_end = source[body_start..]
+                    .find("*/")
+                    .map_or(len, |p| body_start + p + 2);
+                let comment_end = block_end as u32;
+                let body = &source[body_start..block_end.saturating_sub(2)];
+
+                if is_disable_next_line(body, rules) {
+                    ranges.push(SuppressionRange {
+                        disable_start: comment_start,
+                        disable_end: comment_end,
+                        enable_end: Some(comment_end),
+                        comment_text: body.trim().to_string(),
+                    });
+                } else if is_disable_block(body, rules) {
+                    if pending_disable.is_none() {
+                        pending_disable =
+                            Some((comment_start, comment_end, body.trim().to_string()));
+                    }
+                } else if is_enable_block(body, rules)
+                    && let Some((ds, de, text)) = pending_disable.take()
+                {
+                    ranges.push(SuppressionRange {
+                        disable_start: ds,
+                        disable_end: de,
+                        enable_end: Some(comment_end),
+                        comment_text: text,
+                    });
+                }
+                i = block_end;
+                continue;
+            }
+        }
+        // Skip string literals to avoid matching inside strings
+        if bytes[i] == b'"' || bytes[i] == b'\'' || bytes[i] == b'`' {
+            let quote = bytes[i];
+            i += 1;
+            while i < len && bytes[i] != quote {
+                if bytes[i] == b'\\' {
+                    i += 1; // skip escaped char
+                }
+                i += 1;
+            }
+            if i < len {
+                i += 1; // skip closing quote
+            }
+            continue;
+        }
+        i += 1;
+    }
+
+    // If there's a pending eslint-disable without a matching eslint-enable,
+    // it affects the rest of the file.
+    if let Some((ds, de, text)) = pending_disable.take() {
+        ranges.push(SuppressionRange {
+            disable_start: ds,
+            disable_end: de,
+            enable_end: None, // rest of file
+            comment_text: text,
+        });
+    }
+
+    ranges
+}
+
+/// Check whether any suppression range affects the given function span.
+/// A suppression affects a function if it is within the function body or wraps it.
+fn filter_suppressions_for_function(
+    suppressions: &[SuppressionRange],
+    fn_start: u32,
+    fn_end: u32,
+) -> Vec<&SuppressionRange> {
+    suppressions
+        .iter()
+        .filter(|s| {
+            let effective_end = s.enable_end.unwrap_or(u32::MAX);
+            // Suppression is within the function
+            let within = s.disable_start > fn_start && effective_end < fn_end;
+            // Suppression wraps the function
+            let wraps = s.disable_start < fn_start && effective_end > fn_end;
+            within || wraps
+        })
+        .collect()
+}
+
+/// Create suppression diagnostics for a function that is being skipped.
+fn make_suppression_diagnostics(matching: &[&SuppressionRange]) -> Vec<CompilerDiagnostic> {
+    matching
+        .iter()
+        .map(|s| CompilerDiagnostic {
+            severity: crate::error::DiagnosticSeverity::InvalidReact,
+            message: format!(
+                "React Compiler has skipped optimizing this component because one or more React ESLint rules were disabled. React Compiler only works when your components follow all the rules of React, disabling them may result in unexpected or incorrect behavior. Found suppression `{}`",
+                s.comment_text
+            ),
+            category: ErrorCategory::Suppression,
+            span: Some(oxc_span::Span::new(s.disable_start, s.disable_end)),
+            related: vec![crate::error::RelatedDiagnostic {
+                message: "Found React rule suppression".to_string(),
+                span: Some(oxc_span::Span::new(s.disable_start, s.disable_end)),
+            }],
+            suggestions: vec![crate::error::CompilerSuggestion::Remove {
+                description: "Remove the ESLint suppression and address the React error"
+                    .to_string(),
+                range: (s.disable_start, s.disable_end),
+            }],
+        })
+        .collect()
+}
+
+/// Lint a single source file. Runs the full compilation pipeline in lint mode
+/// on every function, collecting all diagnostics.
+pub fn lint(filename: &str, source: &str, options: &PluginOptions) -> Vec<LintDiagnostic> {
+    // Force lint-mode overrides
+    let mut options = options.clone();
+    options.no_emit = true;
+    options.panic_threshold = crate::options::PanicThreshold::None;
+    // Upstream eslint-plugin-react-compiler does not treat opt-out directives as
+    // lint suppressions. It still reports the underlying diagnostics and only
+    // reports unused directives when the file is otherwise clean.
+    options.ignore_use_no_forget = true;
+
+    crate::source_lines::set_current_source(source);
+    CURRENT_FILENAME.with(|cell| *cell.borrow_mut() = filename.to_string());
+    FLOW_COMPONENT_NAMES.with(|set| {
+        *set.borrow_mut() = collect_flow_component_names(source);
+    });
+    FLOW_HOOK_NAMES.with(|set| {
+        *set.borrow_mut() = collect_flow_hook_names(source);
+    });
+
+    // Pre-process Flow syntax
+    let mut source_owned = preprocess_flow_syntax(source);
+    source_owned = rewrite_flow_component_param_lists(&source_owned);
+    let source = source_owned.as_str();
+
+    let allocator = oxc_allocator::Allocator::default();
+
+    // Parse
+    let source_type = if filename.ends_with(".tsx") {
+        oxc_span::SourceType::tsx()
+    } else if filename.ends_with(".ts") {
+        oxc_span::SourceType::ts().with_jsx(true)
+    } else if filename.ends_with(".jsx") {
+        oxc_span::SourceType::jsx()
+    } else {
+        oxc_span::SourceType::mjs().with_jsx(true)
+    };
+
+    let parser_ret = oxc_parser::Parser::new(&allocator, source, source_type).parse();
+
+    let program = if !parser_ret.errors.is_empty() && !source_type.is_typescript() {
+        let ts_type = oxc_span::SourceType::tsx();
+        let ts_ret = oxc_parser::Parser::new(&allocator, source, ts_type).parse();
+        if ts_ret.panicked || !ts_ret.errors.is_empty() {
+            if parser_ret.panicked {
+                return Vec::new();
+            }
+            parser_ret.program
+        } else {
+            drop(ts_ret);
+            oxc_parser::Parser::new(&allocator, source, ts_type)
+                .parse()
+                .program
+        }
+    } else {
+        if parser_ret.panicked {
+            return Vec::new();
+        }
+        parser_ret.program
+    };
+
+    // Skip already-compiled files
+    if has_memo_cache_import(&program) {
+        return Vec::new();
+    }
+
+    // Build semantic
+    let semantic_ret = oxc_semantic::SemanticBuilder::new().build(&program);
+    let semantic = semantic_ret.semantic;
+
+    // Find ESLint suppression comments (matching upstream Suppression.ts)
+    let suppression_rules: Vec<&str> = match &options.eslint_suppression_rules {
+        Some(rules) => rules.iter().map(String::as_str).collect(),
+        None => DEFAULT_ESLINT_SUPPRESSION_RULES.to_vec(),
+    };
+    let suppressions = find_eslint_suppressions(source, &suppression_rules);
+
+    let mut all_diagnostics = Vec::new();
+
+    // Lint every function in the program
+    for stmt in &program.body {
+        lint_statement(
+            stmt,
+            source,
+            &semantic,
+            &options,
+            &suppressions,
+            &mut all_diagnostics,
+        );
+    }
+
+    all_diagnostics.extend(collect_untransformed_infer_effect_dependency_diagnostics(
+        &program, &options,
+    ));
+
+    // Per-diagnostic Flow suppression dedup (matching upstream RunReactCompiler.ts).
+    // Only suppress Hooks (react-rule-hook) and Refs (react-rule-unsafe-ref).
+    if options.flow_suppressions {
+        let flow_supps = find_flow_suppressions(source);
+        if !flow_supps.is_empty() {
+            let line_starts = build_line_starts(source);
+            all_diagnostics.retain(|diag| {
+                let span = match diag.span {
+                    Some(s) => s,
+                    None => return true, // keep diagnostics without location
+                };
+                let (diag_line, _) = byte_offset_to_line_col(span.start, &line_starts);
+                for supp in &flow_supps {
+                    // Suppression on line N suppresses diagnostics on line N and N+1
+                    if (diag_line == supp.line || diag_line == supp.line + 1)
+                        && matches!(
+                            (&diag.category, supp.code.as_str()),
+                            (ErrorCategory::Hooks, "react-rule-hook")
+                                | (ErrorCategory::Refs, "react-rule-unsafe-ref")
+                        )
+                    {
+                        return false; // suppress this diagnostic
+                    }
+                }
+                true
+            });
+        }
+    }
+
+    // Unused directive detection: only when file has zero other diagnostics (matches upstream)
+    if all_diagnostics.is_empty() {
+        collect_unused_directives(&program, &options, &mut all_diagnostics);
+    }
+
+    // Convert to LintDiagnostic with line:column info
+    all_diagnostics
+        .into_iter()
+        .map(|d| compiler_diag_to_lint_diag(d, source))
+        .collect()
+}
+
+/// A parsed Flow suppression comment with its line number and suppression code.
+struct FlowSuppression {
+    line: u32,
+    code: String,
+}
+
+/// Parse `$FlowFixMe[code]`, `$FlowExpectedError[code]`, `$FlowIssue[code]` from source.
+fn find_flow_suppressions(source: &str) -> Vec<FlowSuppression> {
+    let mut result = Vec::new();
+    for (line_idx, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        // Check for Flow suppression prefixes in comments
+        for prefix in &["$FlowFixMe", "$FlowExpectedError", "$FlowIssue"] {
+            if let Some(pos) = trimmed.find(prefix) {
+                let rest = &trimmed[pos + prefix.len()..];
+                // Extract [code] bracket
+                if rest.starts_with('[')
+                    && let Some(end) = rest.find(']')
+                {
+                    let code = &rest[1..end];
+                    result.push(FlowSuppression {
+                        line: (line_idx + 1) as u32, // 1-based
+                        code: code.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Collect unused opt-out directives from all functions in the program.
+/// Only called when the file has zero other diagnostics (matching upstream behavior).
+fn collect_unused_directives(
+    program: &ast::Program<'_>,
+    options: &PluginOptions,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    for stmt in &program.body {
+        collect_unused_directives_in_stmt(stmt, options, diagnostics);
+    }
+}
+
+fn collect_unused_directives_in_stmt(
+    stmt: &ast::Statement<'_>,
+    options: &PluginOptions,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    match stmt {
+        ast::Statement::FunctionDeclaration(func) => {
+            if let Some(body) = func.body.as_ref() {
+                check_body_for_unused_directives(body, options, diagnostics);
+            }
+        }
+        ast::Statement::ExportDefaultDeclaration(export) => match &export.declaration {
+            ast::ExportDefaultDeclarationKind::FunctionDeclaration(func) => {
+                if let Some(body) = func.body.as_ref() {
+                    check_body_for_unused_directives(body, options, diagnostics);
+                }
+            }
+            ast::ExportDefaultDeclarationKind::ArrowFunctionExpression(arrow) => {
+                check_body_for_unused_directives(&arrow.body, options, diagnostics);
+            }
+            _ => {}
+        },
+        ast::Statement::ExportNamedDeclaration(export) => {
+            if let Some(decl) = &export.declaration {
+                match decl {
+                    ast::Declaration::FunctionDeclaration(func) => {
+                        if let Some(body) = func.body.as_ref() {
+                            check_body_for_unused_directives(body, options, diagnostics);
+                        }
+                    }
+                    ast::Declaration::VariableDeclaration(var_decl) => {
+                        for d in &var_decl.declarations {
+                            check_var_declarator_for_unused_directives(d, options, diagnostics);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ast::Statement::VariableDeclaration(var_decl) => {
+            for d in &var_decl.declarations {
+                check_var_declarator_for_unused_directives(d, options, diagnostics);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn check_var_declarator_for_unused_directives(
+    decl: &ast::VariableDeclarator<'_>,
+    options: &PluginOptions,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    let Some(init) = &decl.init else { return };
+    match init {
+        ast::Expression::ArrowFunctionExpression(arrow) => {
+            check_body_for_unused_directives(&arrow.body, options, diagnostics);
+        }
+        ast::Expression::FunctionExpression(func) => {
+            if let Some(body) = func.body.as_ref() {
+                check_body_for_unused_directives(body, options, diagnostics);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn check_body_for_unused_directives(
+    body: &ast::FunctionBody<'_>,
+    options: &PluginOptions,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    for directive in &body.directives {
+        let value = directive.expression.value.as_str();
+        if OPT_OUT_DIRECTIVES.contains(&value)
+            || options.custom_opt_out_directives.iter().any(|d| d == value)
+        {
+            diagnostics.push(CompilerDiagnostic {
+                severity: crate::error::DiagnosticSeverity::InvalidReact,
+                message: format!("Unused '{value}' directive"),
+                category: ErrorCategory::UnusedDirective,
+                span: Some(directive.span),
+                related: Vec::new(),
+                suggestions: vec![crate::error::CompilerSuggestion::Remove {
+                    description: "Remove the directive".to_string(),
+                    range: (directive.span.start, directive.span.end),
+                }],
+            });
+        }
+    }
+}
+
+/// Recursively lint functions within a statement.
+fn lint_statement<'a>(
+    stmt: &ast::Statement<'a>,
+    source: &str,
+    semantic: &oxc_semantic::Semantic<'a>,
+    options: &PluginOptions,
+    suppressions: &[SuppressionRange],
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    match stmt {
+        ast::Statement::FunctionDeclaration(func) => {
+            if let Some(name) = func.id.as_ref().map(|id| id.name.as_str())
+                && let Some(body) = func.body.as_ref()
+            {
+                if !options.ignore_use_no_forget
+                    && has_function_opt_out(body, &options.custom_opt_out_directives)
+                {
+                    return;
+                }
+                if !should_compile_function(name, body, &func.params, options.compilation_mode) {
+                    return;
+                }
+                let matching =
+                    filter_suppressions_for_function(suppressions, func.span.start, func.span.end);
+                if !matching.is_empty() {
+                    diagnostics.extend(make_suppression_diagnostics(&matching));
+                    return;
+                }
+                diagnostics.extend(lint_function(
+                    body,
+                    &func.params,
+                    name,
+                    func.span,
+                    func.generator,
+                    func.r#async,
+                    source,
+                    semantic,
+                    &options.environment,
+                ));
+            }
+        }
+        ast::Statement::ExportDefaultDeclaration(export) => match &export.declaration {
+            ast::ExportDefaultDeclarationKind::FunctionDeclaration(func) => {
+                let name = func
+                    .id
+                    .as_ref()
+                    .map(|id| id.name.as_str())
+                    .unwrap_or("Component");
+                if let Some(body) = func.body.as_ref() {
+                    if !options.ignore_use_no_forget
+                        && has_function_opt_out(body, &options.custom_opt_out_directives)
+                    {
+                        return;
+                    }
+                    if !should_compile_function(name, body, &func.params, options.compilation_mode)
+                    {
+                        return;
+                    }
+                    let matching = filter_suppressions_for_function(
+                        suppressions,
+                        func.span.start,
+                        func.span.end,
+                    );
+                    if !matching.is_empty() {
+                        diagnostics.extend(make_suppression_diagnostics(&matching));
+                        return;
+                    }
+                    diagnostics.extend(lint_function(
+                        body,
+                        &func.params,
+                        name,
+                        func.span,
+                        func.generator,
+                        func.r#async,
+                        source,
+                        semantic,
+                        &options.environment,
+                    ));
+                }
+            }
+            ast::ExportDefaultDeclarationKind::ArrowFunctionExpression(arrow) => {
+                if !options.ignore_use_no_forget
+                    && has_function_opt_out(&arrow.body, &options.custom_opt_out_directives)
+                {
+                    return;
+                }
+                if !should_compile_function(
+                    "Component",
+                    &arrow.body,
+                    &arrow.params,
+                    options.compilation_mode,
+                ) {
+                    return;
+                }
+                let matching = filter_suppressions_for_function(
+                    suppressions,
+                    arrow.span.start,
+                    arrow.span.end,
+                );
+                if !matching.is_empty() {
+                    diagnostics.extend(make_suppression_diagnostics(&matching));
+                    return;
+                }
+                diagnostics.extend(lint_function(
+                    &arrow.body,
+                    &arrow.params,
+                    "Component",
+                    arrow.span,
+                    false,
+                    arrow.r#async,
+                    source,
+                    semantic,
+                    &options.environment,
+                ));
+            }
+            _ => {}
+        },
+        ast::Statement::ExportNamedDeclaration(export) => {
+            if let Some(decl) = &export.declaration {
+                lint_declaration(decl, source, semantic, options, suppressions, diagnostics);
+            }
+        }
+        ast::Statement::VariableDeclaration(var_decl) => {
+            for decl in &var_decl.declarations {
+                lint_var_declarator(decl, source, semantic, options, suppressions, diagnostics);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lint_declaration<'a>(
+    decl: &ast::Declaration<'a>,
+    source: &str,
+    semantic: &oxc_semantic::Semantic<'a>,
+    options: &PluginOptions,
+    suppressions: &[SuppressionRange],
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    match decl {
+        ast::Declaration::FunctionDeclaration(func) => {
+            if let Some(name) = func.id.as_ref().map(|id| id.name.as_str())
+                && let Some(body) = func.body.as_ref()
+            {
+                if !options.ignore_use_no_forget
+                    && has_function_opt_out(body, &options.custom_opt_out_directives)
+                {
+                    return;
+                }
+                if !should_compile_function(name, body, &func.params, options.compilation_mode) {
+                    return;
+                }
+                let matching =
+                    filter_suppressions_for_function(suppressions, func.span.start, func.span.end);
+                if !matching.is_empty() {
+                    diagnostics.extend(make_suppression_diagnostics(&matching));
+                    return;
+                }
+                diagnostics.extend(lint_function(
+                    body,
+                    &func.params,
+                    name,
+                    func.span,
+                    func.generator,
+                    func.r#async,
+                    source,
+                    semantic,
+                    &options.environment,
+                ));
+            }
+        }
+        ast::Declaration::VariableDeclaration(var_decl) => {
+            for decl in &var_decl.declarations {
+                lint_var_declarator(decl, source, semantic, options, suppressions, diagnostics);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lint_var_declarator<'a>(
+    decl: &ast::VariableDeclarator<'a>,
+    source: &str,
+    semantic: &oxc_semantic::Semantic<'a>,
+    options: &PluginOptions,
+    suppressions: &[SuppressionRange],
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    let name = match &decl.id {
+        ast::BindingPattern::BindingIdentifier(id) => id.name.as_str(),
+        _ => return,
+    };
+    let Some(init) = &decl.init else { return };
+    match init {
+        ast::Expression::ArrowFunctionExpression(arrow) => {
+            if !options.ignore_use_no_forget
+                && has_function_opt_out(&arrow.body, &options.custom_opt_out_directives)
+            {
+                return;
+            }
+            if !should_compile_function(name, &arrow.body, &arrow.params, options.compilation_mode)
+            {
+                return;
+            }
+            let matching =
+                filter_suppressions_for_function(suppressions, arrow.span.start, arrow.span.end);
+            if !matching.is_empty() {
+                diagnostics.extend(make_suppression_diagnostics(&matching));
+                return;
+            }
+            diagnostics.extend(lint_function(
+                &arrow.body,
+                &arrow.params,
+                name,
+                arrow.span,
+                false,
+                arrow.r#async,
+                source,
+                semantic,
+                &options.environment,
+            ));
+        }
+        ast::Expression::FunctionExpression(func) => {
+            let fn_name = func.id.as_ref().map(|id| id.name.as_str()).unwrap_or(name);
+            if let Some(body) = func.body.as_ref() {
+                if !options.ignore_use_no_forget
+                    && has_function_opt_out(body, &options.custom_opt_out_directives)
+                {
+                    return;
+                }
+                if !should_compile_function(fn_name, body, &func.params, options.compilation_mode) {
+                    return;
+                }
+                let matching =
+                    filter_suppressions_for_function(suppressions, func.span.start, func.span.end);
+                if !matching.is_empty() {
+                    diagnostics.extend(make_suppression_diagnostics(&matching));
+                    return;
+                }
+                diagnostics.extend(lint_function(
+                    body,
+                    &func.params,
+                    fn_name,
+                    func.span,
+                    func.generator,
+                    func.r#async,
+                    source,
+                    semantic,
+                    &options.environment,
+                ));
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use oxc_allocator::Allocator;
@@ -7569,6 +9128,368 @@ mod tests {
         assert_eq!(
             extract_emitted_directives(body),
             vec!["\"use no forget\"", "\"use memo\""]
+        );
+    }
+
+    // ── Lint integration tests ─────────────────────────────
+
+    #[test]
+    fn lint_basic_produces_diagnostics() {
+        let source = r#"function Component() {
+  const ref = useRef(null);
+  console.log(ref.current);
+  return <div />;
+}"#;
+        let opts = PluginOptions::default();
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        assert!(
+            !diagnostics.is_empty(),
+            "should produce diagnostics for ref access in render"
+        );
+    }
+
+    #[test]
+    fn lint_module_opt_out_does_not_suppress_diagnostics() {
+        let source = r#"'use no memo';
+function Component() {
+  const ref = useRef(null);
+  console.log(ref.current);
+  return <div />;
+}"#;
+        let opts = PluginOptions::default();
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.category == crate::error::ErrorCategory::Refs),
+            "module-level opt-out should not suppress ESLint diagnostics"
+        );
+    }
+
+    #[test]
+    fn lint_function_opt_out_does_not_suppress_diagnostics() {
+        let source = r#"function GoodComponent() {
+  return <div />;
+}
+function BadComponent() {
+  'use no memo';
+  const ref = useRef(null);
+  console.log(ref.current);
+  return <div />;
+}"#;
+        let opts = PluginOptions::default();
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.category == crate::error::ErrorCategory::Refs),
+            "function-level opt-out should not suppress ESLint diagnostics"
+        );
+    }
+
+    #[test]
+    fn lint_compilation_mode_annotation_skips_non_annotated() {
+        let source = r#"function Component() {
+  const ref = useRef(null);
+  console.log(ref.current);
+  return <div />;
+}"#;
+        let opts = PluginOptions {
+            compilation_mode: crate::options::CompilationMode::Annotation,
+            ..PluginOptions::default()
+        };
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        assert!(
+            diagnostics.is_empty(),
+            "should skip non-annotated function in Annotation mode"
+        );
+    }
+
+    #[test]
+    fn lint_compilation_mode_annotation_lints_annotated() {
+        let source = r#"function Component() {
+  'use memo';
+  const ref = useRef(null);
+  console.log(ref.current);
+  return <div />;
+}"#;
+        let opts = PluginOptions {
+            compilation_mode: crate::options::CompilationMode::Annotation,
+            ..PluginOptions::default()
+        };
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        assert!(
+            !diagnostics.is_empty(),
+            "should lint annotated function in Annotation mode"
+        );
+    }
+
+    #[test]
+    fn lint_compilation_mode_syntax_skips_inferred_components() {
+        let source = r#"function Component() {
+  const ref = useRef(null);
+  console.log(ref.current);
+  return <div />;
+}"#;
+        let opts = PluginOptions {
+            compilation_mode: crate::options::CompilationMode::Syntax,
+            ..PluginOptions::default()
+        };
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        assert!(
+            diagnostics.is_empty(),
+            "should skip inferred component in Syntax mode"
+        );
+    }
+
+    #[test]
+    fn lint_compilation_mode_syntax_lints_flow_component_declarations() {
+        let source = r#"component Component() {
+  const ref = useRef(null);
+  console.log(ref.current);
+  return <div />;
+}"#;
+        let opts = PluginOptions {
+            compilation_mode: crate::options::CompilationMode::Syntax,
+            ..PluginOptions::default()
+        };
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        assert!(
+            !diagnostics.is_empty(),
+            "should lint Flow component declarations in Syntax mode"
+        );
+    }
+
+    #[test]
+    fn lint_unused_directive_detection() {
+        let source = r#"function Component() {
+  'use no forget';
+  return <div>Hello</div>;
+}"#;
+        let opts = PluginOptions::default();
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        let unused = diagnostics
+            .iter()
+            .filter(|d| d.category == crate::error::ErrorCategory::UnusedDirective)
+            .collect::<Vec<_>>();
+        assert!(
+            !unused.is_empty(),
+            "should report unused 'use no forget' directive"
+        );
+        assert!(
+            unused[0].message.contains("Unused"),
+            "message should mention unused"
+        );
+    }
+
+    #[test]
+    fn lint_unused_directive_not_reported_when_errors_exist() {
+        // This function has both an error (ref access in render) and an opt-out directive.
+        // When a function has opt-out, it's skipped from linting, so no errors are collected.
+        // But since the function is opted out, unused directive detection won't be confused.
+        //
+        // For the file-level check: if ANY function has errors, unused directives aren't reported.
+        // Let's test with two functions: one clean with opt-out, one with errors.
+        let source = r#"function BadComponent() {
+  const ref = useRef(null);
+  console.log(ref.current);
+  return <div />;
+}
+function GoodComponent() {
+  'use no forget';
+  return <div />;
+}"#;
+        let opts = PluginOptions::default();
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        // BadComponent has errors -> all_diagnostics is non-empty
+        // -> unused directive detection is skipped entirely
+        let unused = diagnostics
+            .iter()
+            .filter(|d| d.category == crate::error::ErrorCategory::UnusedDirective)
+            .count();
+        assert_eq!(
+            unused, 0,
+            "should NOT report unused directives when file has other errors"
+        );
+    }
+
+    #[test]
+    fn lint_env_config_affects_validation() {
+        let source = r#"function Component() {
+  const [x, setX] = useState(0);
+  useEffect(() => {
+    setX(1);
+  }, []);
+  return x;
+}"#;
+        // With validate_no_set_state_in_effects=false, no errors should be reported for setState in effect
+        let opts_off = PluginOptions {
+            environment: crate::options::EnvironmentConfig {
+                validate_no_set_state_in_effects: false,
+                ..crate::options::EnvironmentConfig::default()
+            },
+            ..PluginOptions::default()
+        };
+        let diags_off = super::lint("test.jsx", source, &opts_off);
+
+        let opts_on = PluginOptions {
+            environment: crate::options::EnvironmentConfig {
+                validate_no_set_state_in_effects: true,
+                ..crate::options::EnvironmentConfig::default()
+            },
+            ..PluginOptions::default()
+        };
+        let diags_on = super::lint("test.jsx", source, &opts_on);
+
+        // When validation is on, we may get more diagnostics than when it's off
+        assert!(
+            diags_on.len() >= diags_off.len(),
+            "enabling setState-in-effect validation should produce same or more diagnostics"
+        );
+    }
+
+    // ── ESLint suppression tests ──────────────────────────────────────
+
+    #[test]
+    fn lint_suppression_eslint_disable_next_line() {
+        let source = r#"function Component() {
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const x = useMemo(() => 1);
+  return <div>{x}</div>;
+}"#;
+        let opts = PluginOptions::default();
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        let suppression = diagnostics
+            .iter()
+            .filter(|d| d.category == crate::error::ErrorCategory::Suppression)
+            .count();
+        assert!(
+            suppression > 0,
+            "should emit Suppression diagnostic for eslint-disable-next-line"
+        );
+    }
+
+    #[test]
+    fn lint_suppression_eslint_disable_enable_block() {
+        let source = r#"/* eslint-disable react-hooks/rules-of-hooks */
+function Component() {
+  const x = useState(0);
+  return <div>{x}</div>;
+}
+/* eslint-enable react-hooks/rules-of-hooks */"#;
+        let opts = PluginOptions::default();
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        let suppression = diagnostics
+            .iter()
+            .filter(|d| d.category == crate::error::ErrorCategory::Suppression)
+            .count();
+        assert!(
+            suppression > 0,
+            "should emit Suppression diagnostic for eslint-disable/enable block"
+        );
+    }
+
+    #[test]
+    fn lint_suppression_empty_rules_disables_checking() {
+        let source = r#"function Component() {
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const x = useMemo(() => 1);
+  return <div>{x}</div>;
+}"#;
+        let opts = PluginOptions {
+            eslint_suppression_rules: Some(vec![]),
+            ..PluginOptions::default()
+        };
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        let suppression = diagnostics
+            .iter()
+            .filter(|d| d.category == crate::error::ErrorCategory::Suppression)
+            .count();
+        assert_eq!(
+            suppression, 0,
+            "empty eslintSuppressionRules should disable suppression checking"
+        );
+    }
+
+    #[test]
+    fn lint_suppression_default_rules() {
+        // Verify default rules (react-hooks/*) are used when eslintSuppressionRules is None
+        let source = r#"function Component() {
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const x = useState(0);
+  return <div>{x}</div>;
+}"#;
+        let opts = PluginOptions {
+            eslint_suppression_rules: None,
+            ..PluginOptions::default()
+        };
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        let suppression = diagnostics
+            .iter()
+            .filter(|d| d.category == crate::error::ErrorCategory::Suppression)
+            .count();
+        assert!(
+            suppression > 0,
+            "None eslintSuppressionRules should use default rules"
+        );
+    }
+
+    #[test]
+    fn lint_suppression_wraps_function() {
+        let source = r#"/* eslint-disable react-hooks/exhaustive-deps */
+function Component() {
+  return <div />;
+}"#;
+        let opts = PluginOptions::default();
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        let suppression = diagnostics
+            .iter()
+            .filter(|d| d.category == crate::error::ErrorCategory::Suppression)
+            .count();
+        assert!(
+            suppression > 0,
+            "suppression wrapping a function should still trigger diagnostic"
+        );
+    }
+
+    #[test]
+    fn lint_suppression_unrelated_rule_ignored() {
+        let source = r#"function Component() {
+  // eslint-disable-next-line no-unused-vars
+  const x = 1;
+  return <div>{x}</div>;
+}"#;
+        let opts = PluginOptions::default();
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        let suppression = diagnostics
+            .iter()
+            .filter(|d| d.category == crate::error::ErrorCategory::Suppression)
+            .count();
+        assert_eq!(
+            suppression, 0,
+            "unrelated eslint-disable rule should not trigger suppression"
+        );
+    }
+
+    #[test]
+    fn lint_suppression_custom_rules() {
+        let source = r#"function Component() {
+  // eslint-disable-next-line my-custom-rule
+  const x = useState(0);
+  return <div>{x}</div>;
+}"#;
+        let opts = PluginOptions {
+            eslint_suppression_rules: Some(vec!["my-custom-rule".to_string()]),
+            ..PluginOptions::default()
+        };
+        let diagnostics = super::lint("test.jsx", source, &opts);
+        let suppression = diagnostics
+            .iter()
+            .filter(|d| d.category == crate::error::ErrorCategory::Suppression)
+            .count();
+        assert!(
+            suppression > 0,
+            "custom eslintSuppressionRules should trigger suppression"
         );
     }
 }

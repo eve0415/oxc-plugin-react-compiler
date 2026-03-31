@@ -5,12 +5,12 @@ export default defineConfig({
     '*': 'vp check --fix',
   },
   pack: {
-    entry: ['napi/src/vite.ts'],
+    entry: ['napi/src/vite.ts', 'napi/src/eslint.ts'],
     dts: { tsgo: true },
     format: 'esm',
     outDir: 'napi/dist',
     inputOptions: {
-      external: ['@oxc-plugin-react-compiler/binding', 'vite'],
+      external: ['@oxc-plugin-react-compiler/binding', '#binding', 'vite', 'eslint'],
     },
     deps: {
       onlyBundle: false,

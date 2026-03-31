@@ -766,6 +766,7 @@ dependencies = [
  "oxc_sourcemap",
  "oxc_span",
  "oxc_syntax",
+ "serde",
  "serde_json",
  "sha2",
  "uuid",

@@ -1,5 +1,7 @@
-import type { TransformOptions } from '#binding';
+import type { ReactCompilerCompilationMode, ReactCompilerPanicThreshold, ReactCompilerSources } from './compiler-options';
 import type { Plugin } from 'vite';
+
+import { isFilePartOfSources, withDetectedReanimatedSupport } from './compiler-options';
 
 /**
  * Options for the OXC React Compiler Vite plugin.
@@ -12,10 +14,11 @@ export interface ReactCompilerOxcOptions {
    * Controls which functions are compiled.
    *
    * - `'infer'` — compile functions that look like React components or hooks (default)
+   * - `'syntax'` — only compile functions declared with Flow component/hook syntax
    * - `'annotation'` — only compile functions annotated with `"use memo"`
    * - `'all'` — compile every top-level function
    */
-  compilationMode?: TransformOptions['compilationMode'];
+  compilationMode?: ReactCompilerCompilationMode;
 
   /**
    * Controls how the compiler handles internal errors (bailouts).
@@ -23,19 +26,36 @@ export interface ReactCompilerOxcOptions {
    * - `'none'` — silently skip functions that fail to compile (default)
    * - `'all'` — throw on any compilation failure
    */
-  panicThreshold?: TransformOptions['panicThreshold'];
+  panicThreshold?: ReactCompilerPanicThreshold;
 
   /**
    * The React version to target for generated memoization code.
    *
    * @defaultValue `'19'`
    */
-  target?: TransformOptions['target'];
+  target?: string;
 
   /**
    * Optional environment configuration passed to the compiler.
    */
   environment?: Record<string, unknown>;
+
+  /**
+   * Optional gating configuration for compiler output.
+   */
+  gating?: { source: string; importSpecifierName: string };
+
+  /**
+   * Optional dynamic gating configuration for `use memo if(...)`.
+   */
+  dynamicGating?: { source: string };
+
+  /**
+   * Automatically enables React Native Reanimated type handling when the module is installed.
+   *
+   * @defaultValue `true`
+   */
+  enableReanimatedCheck?: boolean;
 
   /**
    * Whether to generate source maps for transformed output.
@@ -53,7 +73,7 @@ export interface ReactCompilerOxcOptions {
    *   `true` to compile that file.
    * - When omitted, all files outside `node_modules` are compiled.
    */
-  sources?: string[] | ((id: string) => boolean);
+  sources?: ReactCompilerSources;
 }
 
 const jsExtRe = /\.[jt]sx?$/;
@@ -83,7 +103,8 @@ const jsExtRe = /\.[jt]sx?$/;
  * @returns A Vite plugin instance.
  */
 export const reactCompilerOxc = (options: ReactCompilerOxcOptions = {}): Plugin => {
-  const codeFilter = options.compilationMode === 'annotation' ? /['"]use memo['"]/ : /\b[A-Z]|\buse/;
+  const codeFilter =
+    options.compilationMode === 'annotation' ? /['"]use memo['"]/ : options.compilationMode === 'syntax' ? /\bcomponent\b|\bhook\b/ : /\b[A-Z]|\buse/;
 
   return {
     name: 'oxc-plugin-react-compiler',
@@ -95,25 +116,25 @@ export const reactCompilerOxc = (options: ReactCompilerOxcOptions = {}): Plugin 
 
     async transform(code, id) {
       if (!jsExtRe.test(id)) return null;
-      if (options.sources) {
-        if (Array.isArray(options.sources)) {
-          if (!options.sources.some(s => id.includes(s))) return null;
-        } else if (typeof options.sources === 'function') {
-          if (!options.sources(id)) return null;
-        }
-      } else if (id.includes('node_modules')) {
+      if (!isFilePartOfSources(id, options.sources)) {
         return null;
       }
 
       if (!codeFilter.test(code)) return null;
 
       const { transform } = await import('#binding');
-      const result = transform(id, code, {
+      const normalizedOptions = withDetectedReanimatedSupport({
         compilationMode: options.compilationMode ?? 'infer',
         panicThreshold: options.panicThreshold ?? 'none',
         target: options.target ?? '19',
         sourceMap: options.sourceMap ?? true,
+        environment: options.environment,
+        gating: options.gating,
+        dynamicGating: options.dynamicGating,
+        enableReanimatedCheck: options.enableReanimatedCheck,
       });
+      const { enableReanimatedCheck: _enableReanimatedCheck, ...bindingOptions } = normalizedOptions;
+      const result = transform(id, code, bindingOptions);
 
       if (!result.transformed) return null;
       return { code: result.code, map: result.map ?? undefined };

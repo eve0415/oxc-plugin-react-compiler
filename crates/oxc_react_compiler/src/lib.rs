@@ -10,7 +10,7 @@
 
 mod codegen_backend;
 pub(crate) mod environment;
-pub(crate) mod error;
+pub mod error;
 pub(crate) mod hir;
 pub(crate) mod inference;
 pub(crate) mod optimization;
@@ -30,6 +30,19 @@ pub(crate) mod test_utils;
 pub fn compile(filename: &str, source: &str, options: &options::PluginOptions) -> CompileResult {
     crate::optimization::dead_code_elimination::clear_preserved_top_level_let_initializers();
     pipeline::compile(filename, source, options)
+}
+
+/// Lint a single file. Runs the full compilation pipeline in validation-only mode
+/// with all validators enabled, collecting all diagnostics without emitting code.
+///
+/// Returns a list of structured diagnostics with source locations, categories,
+/// and optional auto-fix suggestions.
+pub fn lint(
+    filename: &str,
+    source: &str,
+    options: &options::PluginOptions,
+) -> Vec<error::LintDiagnostic> {
+    pipeline::lint(filename, source, options)
 }
 
 /// Result of compiling a file.

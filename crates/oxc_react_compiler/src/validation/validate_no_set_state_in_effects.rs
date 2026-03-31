@@ -13,7 +13,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
+use crate::error::{
+    BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory, extract_span,
+};
 use crate::hir::types::*;
 use crate::hir::visitors::for_each_instruction_operand;
 
@@ -153,6 +155,9 @@ fn check_effect_call(
                      [{:?}]",
                     set_state_place.loc
                 ),
+                category: ErrorCategory::EffectSetState,
+                span: extract_span(&set_state_place.loc),
+                ..Default::default()
             });
     }
 }

@@ -98,6 +98,20 @@ describe('reactCompilerOxc', () => {
         // NAPI binary not available — filter was passed
       }
     });
+
+    it('in syntax mode, skips files without component or hook syntax', async () => {
+      const code = 'function App() { return <div /> }';
+      expect(await callTransform({ compilationMode: 'syntax' }, 'app.tsx', code)).toBeNull();
+    });
+
+    it('in syntax mode, passes files with component syntax', async () => {
+      const code = 'component App() { return <div /> }';
+      try {
+        await callTransform({ compilationMode: 'syntax' }, 'app.tsx', code);
+      } catch {
+        // NAPI binary not available — filter was passed
+      }
+    });
   });
 
   describe('applyToEnvironment', () => {

@@ -24,6 +24,7 @@ indexmap = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 uuid = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

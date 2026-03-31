@@ -9,7 +9,9 @@
 
 use std::collections::HashMap;
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
+use crate::error::{
+    BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory, extract_span,
+};
 use crate::hir::types::*;
 
 /// Validates that components used in JSX are not dynamically created during render.
@@ -55,6 +57,9 @@ pub fn validate_static_components(func: &HIRFunction) -> Result<(), CompilerErro
                         diagnostics.push(CompilerDiagnostic {
                                 severity: DiagnosticSeverity::InvalidReact,
                                 message: "Components created during render will reset their state each time they are created. Declare components outside of render".to_string(),
+                                category: ErrorCategory::StaticComponents,
+                                span: extract_span(&instr.loc),
+                                ..Default::default()
                             });
                     }
                 }

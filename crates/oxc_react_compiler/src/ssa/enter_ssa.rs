@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
+use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory};
 use crate::hir::builder::each_terminal_successor;
 use crate::hir::types::*;
 use crate::hir::visitors;
@@ -590,6 +590,9 @@ impl SSAContext {
                     diagnostics: vec![CompilerDiagnostic {
                         severity: DiagnosticSeverity::Todo,
                         message: format!("Identifier {} is undefined.", name),
+                        category: ErrorCategory::Invariant,
+                        span: None,
+                        ..Default::default()
                     }],
                 }));
             }

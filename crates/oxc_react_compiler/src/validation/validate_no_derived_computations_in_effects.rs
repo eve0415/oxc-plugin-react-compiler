@@ -10,7 +10,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity};
+use crate::error::{
+    BailOut, CompilerDiagnostic, CompilerError, DiagnosticSeverity, ErrorCategory, extract_span,
+};
 use crate::hir::types::*;
 use crate::hir::visitors::{for_each_instruction_operand, for_each_terminal_operand};
 
@@ -282,10 +284,13 @@ fn validate_effect(
         seen_blocks.insert(block.id);
     }
 
-    for _loc in &set_state_locations {
+    for loc in &set_state_locations {
         diagnostics.push(CompilerDiagnostic {
             severity: DiagnosticSeverity::InvalidReact,
             message: "Values derived from props and state should be calculated during render, not in an effect. (https://react.dev/learn/you-might-not-need-an-effect#updating-state-based-on-props-or-state)".to_string(),
+            category: ErrorCategory::EffectDerivationsOfState,
+            span: extract_span(loc),
+            ..Default::default()
         });
     }
 }
