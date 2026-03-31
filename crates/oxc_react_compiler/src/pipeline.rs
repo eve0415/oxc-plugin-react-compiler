@@ -9145,7 +9145,7 @@ mod tests {
     }
 
     #[test]
-    fn lint_module_opt_out_returns_empty() {
+    fn lint_module_opt_out_does_not_suppress_diagnostics() {
         let source = r#"'use no memo';
 function Component() {
   const ref = useRef(null);
@@ -9155,13 +9155,15 @@ function Component() {
         let opts = PluginOptions::default();
         let diagnostics = super::lint("test.jsx", source, &opts);
         assert!(
-            diagnostics.is_empty(),
-            "should skip file with module-level 'use no memo'"
+            diagnostics
+                .iter()
+                .any(|d| d.category == crate::error::ErrorCategory::Refs),
+            "module-level opt-out should not suppress ESLint diagnostics"
         );
     }
 
     #[test]
-    fn lint_function_opt_out_skips_function() {
+    fn lint_function_opt_out_does_not_suppress_diagnostics() {
         let source = r#"function GoodComponent() {
   return <div />;
 }
@@ -9173,15 +9175,11 @@ function BadComponent() {
 }"#;
         let opts = PluginOptions::default();
         let diagnostics = super::lint("test.jsx", source, &opts);
-        // BadComponent has 'use no memo' so its ref access violation should be skipped.
-        // GoodComponent is clean, so the only diagnostics would be from BadComponent if not skipped.
-        // Since BadComponent is opted out and GoodComponent is clean, we should get unused directive diagnostics.
-        let has_ref_diag = diagnostics
-            .iter()
-            .any(|d| d.category == crate::error::ErrorCategory::Refs);
         assert!(
-            !has_ref_diag,
-            "should not report ref access for opted-out function"
+            diagnostics
+                .iter()
+                .any(|d| d.category == crate::error::ErrorCategory::Refs),
+            "function-level opt-out should not suppress ESLint diagnostics"
         );
     }
 
