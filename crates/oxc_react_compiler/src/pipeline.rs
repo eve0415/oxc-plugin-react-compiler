@@ -3967,7 +3967,10 @@ fn has_nested_fbt_call_in_param_value(program: &ast::Program<'_>) -> bool {
     })
 }
 
-fn collect_infer_effect_dependency_targets(program: &ast::Program<'_>, options: &PluginOptions) -> AutodepsTargetMap {
+fn collect_infer_effect_dependency_targets(
+    program: &ast::Program<'_>,
+    options: &PluginOptions,
+) -> AutodepsTargetMap {
     let Some(configs) = options.environment.infer_effect_dependencies.as_ref() else {
         return AutodepsTargetMap::new();
     };
@@ -4193,8 +4196,9 @@ fn collect_untransformed_infer_effect_dependency_diagnostics_in_expr(
             {
                 diagnostics.push(CompilerDiagnostic {
                     severity: crate::error::DiagnosticSeverity::InvalidReact,
-                    message: "Cannot infer dependencies of this effect. This will break your build!"
-                        .to_string(),
+                    message:
+                        "Cannot infer dependencies of this effect. This will break your build!"
+                            .to_string(),
                     category: ErrorCategory::AutomaticEffectDependencies,
                     span: Some(call_expr.span),
                     ..Default::default()

@@ -369,7 +369,6 @@ fn parse_lint_options(
             .map(|g| DynamicGatingConfig { source: g.source }),
         no_emit: true,
         source_map: false,
-        ..PluginOptions::default()
     }
 }
 

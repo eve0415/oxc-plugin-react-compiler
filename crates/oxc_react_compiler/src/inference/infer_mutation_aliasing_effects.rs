@@ -4691,10 +4691,7 @@ fn is_reassign_to_outer_named_identifier(
             .contains(&place.identifier.declaration_id)
 }
 
-fn global_reassignment_diagnostic(
-    variable: String,
-    loc: &SourceLocation,
-) -> CompilerDiagnostic {
+fn global_reassignment_diagnostic(variable: String, loc: &SourceLocation) -> CompilerDiagnostic {
     CompilerDiagnostic {
         severity: DiagnosticSeverity::InvalidReact,
         message: format!(
