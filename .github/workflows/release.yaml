@@ -45,7 +45,7 @@ jobs:
           run-install: true
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # 5.0.0
+        uses: pnpm/action-setup@08c4be7e2e672a47d11bd04269e27e5f3e8529cb # 6.0.0
 
       - name: Build NAPI binding
         run: pnpm exec napi build --platform --release --esm -p oxc_react_compiler_napi --package-json-path napi/package.json -o napi/dist
@@ -81,7 +81,7 @@ jobs:
           registry-url: 'https://registry.npmjs.org/'
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # 5.0.0
+        uses: pnpm/action-setup@08c4be7e2e672a47d11bd04269e27e5f3e8529cb # 6.0.0
 
       - name: Download all artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # 8.0.1
