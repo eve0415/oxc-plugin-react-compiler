@@ -15,16 +15,16 @@ categories = ["development-tools", "web-programming"]
 
 [workspace.dependencies]
 oxc = { version = "0.122.0", features = ["full"] }
-oxc_allocator = { version = "0.122.0" }
-oxc_ast = { version = "0.122.0" }
-oxc_ast_visit = { version = "0.122.0" }
-oxc_parser = { version = "0.122.0" }
-oxc_semantic = { version = "0.122.0" }
-oxc_codegen = { version = "0.122.0" }
-oxc_span = { version = "0.122.0" }
+oxc_allocator = { version = "0.127.0" }
+oxc_ast = { version = "0.127.0" }
+oxc_ast_visit = { version = "0.127.0" }
+oxc_parser = { version = "0.127.0" }
+oxc_semantic = { version = "0.127.0" }
+oxc_codegen = { version = "0.127.0" }
+oxc_span = { version = "0.127.0" }
 oxc_diagnostics = { version = "0.122.0" }
 oxc_sourcemap = { version = "6.1.1" }
-oxc_syntax = { version = "0.122.0" }
+oxc_syntax = { version = "0.127.0" }
 
 indexmap = "2.13.0"
 hmac = "0.12.1"
